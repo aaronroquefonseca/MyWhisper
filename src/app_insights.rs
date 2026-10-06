@@ -158,24 +158,46 @@ pub fn page(state: &Rc<AppState>) -> ScrolledWindow {
     ht.set_xalign(0.0);
     card.append(&ht);
 
-    let grid = Grid::new();
-    grid.set_row_spacing(5);
-    grid.set_column_spacing(5);
-    // Month labels across the top (first column where the month turns).
+    // Centered heat area: grid (weekdays + cells only, so every
+    // column stays exactly one cell wide) under a fixed-position
+    // month row (labels in a Grid would stretch their column to the
+    // month-name width).
+    const PITCH: i32 = CELL + 5;
+    const DAY_COL_W: i32 = 38;
+    const MONTH_X0: i32 = DAY_COL_W + 5;
+    let heat_center = GtkBox::new(Orientation::Horizontal, 0);
+    heat_center.set_halign(gtk4::Align::Center);
+    heat_center.set_hexpand(true);
+    card.append(&heat_center);
+    let heat_col = GtkBox::new(Orientation::Vertical, 2);
+    heat_center.append(&heat_col);
+
+    let months = gtk4::Fixed::new();
+    months.set_size_request(MONTH_X0 + WEEKS * PITCH, 18);
     let mut prev_month = cell_date(0, 0).1;
     for week in 0..WEEKS {
         let month = cell_date(week, 0).1;
         if week == 0 || month != prev_month {
             let m = Label::new(Some(MONTHS[(month - 1) as usize]));
             m.add_css_class("dim");
-            grid.attach(&m, week + 1, 0, 1, 1);
+            m.set_halign(gtk4::Align::Start);
+            months.put(&m, (MONTH_X0 + week * PITCH) as f64, 0.0);
             prev_month = month;
         }
+    }
+    heat_col.append(&months);
+
+    let grid = Grid::new();
+    grid.set_row_spacing(5);
+    grid.set_column_spacing(5);
+    for week in 0..WEEKS {
         for day in 0..7 {
             if week == 0 {
                 let w = Label::new(Some(WEEKDAYS[day as usize]));
                 w.add_css_class("dim");
-                grid.attach(&w, 0, day as i32 + 1, 1, 1);
+                w.set_size_request(DAY_COL_W, -1);
+                w.set_halign(gtk4::Align::Start);
+                grid.attach(&w, 0, day, 1, 1);
             }
             let level = level_for(week, day);
             let (y, mo, d) = cell_date(week, day);
@@ -190,10 +212,10 @@ pub fn page(state: &Rc<AppState>) -> ScrolledWindow {
                 "{y:04}-{mo:02}-{d:02}: {words} word{}",
                 if words == 1 { "" } else { "s" }
             )));
-            grid.attach(&cell, week + 1, day + 1, 1, 1);
+            grid.attach(&cell, week + 1, day, 1, 1);
         }
     }
-    card.append(&grid);
+    heat_col.append(&grid);
 
     // Legend: Less [swatches] More.
     let legend = GtkBox::new(Orientation::Horizontal, 4);
