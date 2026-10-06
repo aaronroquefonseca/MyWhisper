@@ -1,13 +1,9 @@
-mod mic;
-mod overlay;
-mod viz;
-
 use gtk4::Application;
 use gtk4::prelude::*;
 
-use overlay::VoiceOverlay;
+use mywhisper::overlay::VoiceOverlay;
 
-const APP_ID: &str = "org.example.VoiceOverlayPoc";
+const APP_ID: &str = "com.mywhisper.Pill";
 
 /// Minimal host for the pill component. All visual options are CLI
 /// flags (useful for autostart entries); the pill itself exposes the
@@ -40,7 +36,7 @@ fn value_of(args: &[String], key: &str) -> Option<String> {
 }
 
 fn apply_cli(overlay: &VoiceOverlay) {
-    use viz::{IdleStyle, Ornament, VizMode, VizTheme};
+    use mywhisper::viz::{IdleStyle, Ornament, VizMode, VizTheme};
     let args: Vec<String> = std::env::args().collect();
 
     match value_of(&args, "--mode").as_deref() {
@@ -92,9 +88,9 @@ fn apply_cli(overlay: &VoiceOverlay) {
         Some(other) => eprintln!("[poc] WARNING: unknown --mic {other:?}"),
     }
     match value_of(&args, "--sim").as_deref() {
-        Some("lively") => overlay.set_viz_sim(viz::SimCadence::Lively),
-        Some("quiet") => overlay.set_viz_sim(viz::SimCadence::Quiet),
-        Some("off") => overlay.set_viz_sim(viz::SimCadence::Off),
+        Some("lively") => overlay.set_viz_sim(mywhisper::viz::SimCadence::Lively),
+        Some("quiet") => overlay.set_viz_sim(mywhisper::viz::SimCadence::Quiet),
+        Some("off") => overlay.set_viz_sim(mywhisper::viz::SimCadence::Off),
         None => {}
         Some(other) => eprintln!("[poc] WARNING: unknown --sim {other:?}"),
     }

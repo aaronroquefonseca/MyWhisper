@@ -61,14 +61,14 @@ impl OverlayState {
     }
 }
 
-const NAMESPACE: &str = "voice-overlay";
+const NAMESPACE: &str = "mywhisper-pill";
 const BOTTOM_MARGIN: i32 = 24;
 /// Expand/collapse/pop animation length; hide fade is shorter.
 const ANIM_MS: u64 = 220;
 const HIDE_MS: u64 = 120;
 
 const CSS: &str = r#"
-window.voice-overlay {
+window.mywhisper-pill {
     background: transparent;
 }
 .voice-pill {
@@ -142,7 +142,7 @@ impl VoiceOverlay {
         let window = Window::new();
         window.set_application(Some(app));
         window.set_decorated(false);
-        window.add_css_class("voice-overlay");
+        window.add_css_class("mywhisper-pill");
 
         if supported {
             window.init_layer_shell();
