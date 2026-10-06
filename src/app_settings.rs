@@ -92,8 +92,28 @@ fn spin_row(parent: &GtkBox, label: &str, value: f64, min: f64, max: f64, step: 
     let s = SpinButton::with_range(min, max, step);
     s.set_value(value);
     s.set_sensitive(false); // not wired yet
+    spin_text_buttons(&s);
     b.append(&s);
     parent.append(&b);
+}
+
+/// GtkSpinButton arrows are icon-theme images and can render blank
+/// when the active theme lacks them. Replace them with text labels:
+/// first button is decrement, second is increment (GTK lays them out
+/// − then +). `flat` keeps the native joined spinbutton look.
+fn spin_text_buttons(spin: &SpinButton) {
+    let mut first = true;
+    let mut child = spin.first_child();
+    while let Some(c) = child {
+        child = c.next_sibling();
+        if let Ok(btn) = c.downcast::<Button>() {
+            // Single child is the icon image; drop it, keep text.
+            btn.set_child(None::<&gtk4::Widget>);
+            btn.set_label(if first { "−" } else { "+" });
+            btn.add_css_class("flat");
+            first = false;
+        }
+    }
 }
 
 /// Index of `value` in `options`, clamped to 0.
@@ -573,11 +593,13 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     // enable it: this one is wired.
     if let Some(row_box) = smart_rows.last_child() {
         let mut child = row_box.first_child();
+        let mut found = false;
         while let Some(c) = child {
             if let Ok(spin) = c.clone().downcast::<SpinButton>() {
+                found = true;
                 spin.set_sensitive(true);
                 let state = state.clone();
-                let persist = persist.clone();
+                let persist = persist_prefs(state.clone());
                 spin.connect_value_changed(move |s| {
                     state.settings.borrow_mut().hotkeys.smart_tap_ms = s.value() as u64;
                     persist();
