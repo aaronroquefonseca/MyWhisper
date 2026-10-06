@@ -425,54 +425,6 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
     );
     root.append(&card);
 
-    let (card, rows) = group("Startup");
-    // Launch-at-login installs/removes the systemd user unit for
-    // `mywhisper-app --service`. Initial position reflects the real
-    // unit state, not just the stored preference.
-    {
-        let (b, _) = row("Launch at login (background service)");
-        let sw = Switch::new();
-        sw.set_active(crate::service::login_enabled());
-        sw.set_valign(gtk4::Align::Center);
-        {
-            let state = state.clone();
-            sw.connect_state_set(move |_, active| {
-                match crate::service::set_login_enabled(active) {
-                    Ok(msg) => eprintln!("[app] {msg}"),
-                    Err(e) => eprintln!("[app] login toggle failed: {e}"),
-                }
-                state.settings.borrow_mut().preferences.launch_at_login = active;
-                let settings = state.settings.borrow();
-                if let Err(e) = state.store.save_settings(&settings) {
-                    eprintln!("[app] login pref save failed: {e}");
-                }
-                gtk4::glib::Propagation::Proceed
-            });
-        }
-        b.append(&sw);
-        rows.append(&b);
-    }
-    {
-        let (b, _) = row("Start minimized");
-        let sw = Switch::new();
-        sw.set_active(p.start_minimized);
-        sw.set_valign(gtk4::Align::Center);
-        {
-            let state = state.clone();
-            sw.connect_state_set(move |_, active| {
-                state.settings.borrow_mut().preferences.start_minimized = active;
-                let settings = state.settings.borrow();
-                if let Err(e) = state.store.save_settings(&settings) {
-                    eprintln!("[app] minimized pref save failed: {e}");
-                }
-                gtk4::glib::Propagation::Proceed
-            });
-        }
-        b.append(&sw);
-        rows.append(&b);
-    }
-    root.append(&card);
-
     let (card, rows) = group("Microphone");
     combo_row(
         &rows,

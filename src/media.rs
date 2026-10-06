@@ -153,7 +153,11 @@ mod tests {
     fn no_players_is_empty_success() {
         set_enabled(true);
         let paused = pause_playing();
-        assert!(paused.iter().all(|n| n.starts_with("org.mpris.MediaPlayer2.")));
+        assert!(
+            paused
+                .iter()
+                .all(|n| n.starts_with("org.mpris.MediaPlayer2."))
+        );
         resume(&paused);
         resume(&[]);
         set_enabled(false);

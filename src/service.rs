@@ -73,10 +73,10 @@ pub fn engine_running_paths(lock_path: &std::path::Path) -> bool {
     file.try_lock_exclusive().is_err()
 }
 
-/// Start/stop the user service (requires the unit installed via the
-/// Login toggle; otherwise systemctl reports it and we surface that).
+/// Start/stop the user service (installs the unit first if needed).
 pub fn set_service_running(running: bool) -> Result<String, String> {
     if running {
+        ensure_unit_installed()?;
         systemctl(&["start", UNIT_NAME])?;
         Ok("background service started".to_string())
     } else {
@@ -261,31 +261,19 @@ fn systemctl(args: &[&str]) -> Result<String, String> {
     }
 }
 
-/// Is the user service enabled?
-pub fn login_enabled() -> bool {
-    systemctl(&["is-enabled", "--quiet", UNIT_NAME])
-        .map(|_| true)
-        .unwrap_or(false)
-}
-
 /// Install/remove the systemd user unit and enable/disable it.
 /// Uses the current executable path, so run this from the binary you
 /// want started at login (release install, not a dev target dir).
-pub fn set_login_enabled(enabled: bool) -> Result<String, String> {
+pub fn ensure_unit_installed() -> Result<String, String> {
     let path = unit_path().ok_or_else(|| "no HOME".to_string())?;
-    if enabled {
-        let exe = std::env::current_exe().map_err(|e| format!("own path: {e}"))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
-        }
-        std::fs::write(&path, unit_body(&exe)).map_err(|e| format!("write unit: {e}"))?;
-        systemctl(&["daemon-reload"])?;
-        systemctl(&["enable", "--now", UNIT_NAME])?;
-        Ok(format!("service enabled ({})", exe.display()))
-    } else {
-        let _ = systemctl(&["disable", "--now", UNIT_NAME]);
-        std::fs::remove_file(&path).ok();
-        systemctl(&["daemon-reload"]).ok();
-        Ok("service disabled".to_string())
+    if path.exists() {
+        return Ok("unit already installed".to_string());
     }
+    let exe = std::env::current_exe().map_err(|e| format!("own path: {e}"))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
+    }
+    std::fs::write(&path, unit_body(&exe)).map_err(|e| format!("write unit: {e}"))?;
+    systemctl(&["daemon-reload"])?;
+    Ok(format!("unit installed ({})", exe.display()))
 }
