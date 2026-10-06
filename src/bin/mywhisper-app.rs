@@ -109,6 +109,7 @@ fn main() -> gtk4::glib::ExitCode {
         }
         apply_theme(state.settings.borrow().preferences.theme);
         log_theme_state();
+        mywhisper::hotkey::apply_from_settings(&state);
         let window = build_app_window(app, &state, &page, &section);
         window.present();
     });

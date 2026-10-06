@@ -138,17 +138,102 @@ pub enum ActivationMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotkeyBinding {
+    /// Combo string, e.g. "F13" or "Ctrl+Alt+D".
+    pub combo: String,
+    /// Hold-to-talk vs press-to-toggle, per binding.
+    pub mode: ActivationMode,
+}
+
+fn de_bindings<'de, D>(d: D) -> Result<Vec<HotkeyBinding>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Compat {
+        Full(HotkeyBinding),
+        Legacy(String),
+    }
+    let v = Vec::<Compat>::deserialize(d)?;
+    Ok(v.into_iter()
+        .map(|c| match c {
+            Compat::Full(b) => b,
+            // Pre-per-key-mode databases stored bare strings; they
+            // arrive as Push (the default).
+            Compat::Legacy(combo) => HotkeyBinding {
+                combo,
+                mode: ActivationMode::Push,
+            },
+        })
+        .collect())
+}
+
+fn default_dictation_hotkeys() -> Vec<HotkeyBinding> {
+    vec![HotkeyBinding {
+        combo: "F13".to_string(),
+        mode: ActivationMode::Push,
+    }]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotkeySettings {
-    /// Human-readable accelerator, e.g. "Super+Alt+D".
+    /// Dictation bindings, any-of fires. Per-binding mode means one
+    /// key can hold-to-talk while another toggles.
+    #[serde(
+        default = "default_dictation_hotkeys",
+        deserialize_with = "de_bindings"
+    )]
+    pub dictation_hotkeys: Vec<HotkeyBinding>,
+    /// Legacy single combo (pre-multi-binding). Migrated into
+    /// `dictation_hotkeys` on load, then ignored on save.
+    #[serde(default)]
     pub dictation_hotkey: String,
-    pub activation_mode: ActivationMode,
 }
 
 impl Default for HotkeySettings {
     fn default() -> Self {
         Self {
-            dictation_hotkey: "Super+Alt+D".to_string(),
-            activation_mode: ActivationMode::Push,
+            dictation_hotkeys: default_dictation_hotkeys(),
+            dictation_hotkey: String::new(),
+        }
+    }
+}
+
+impl HotkeySettings {
+    /// Effective bindings: the list is authoritative. The legacy
+    /// single slot only fills an empty list (one-time migration for
+    /// pre-multi-binding databases); an empty list with no legacy
+    /// means F13, never a stale default.
+    pub fn effective_hotkeys(&self) -> Vec<HotkeyBinding> {
+        if !self.dictation_hotkeys.is_empty() {
+            return self.dictation_hotkeys.clone();
+        }
+        if !self.dictation_hotkey.is_empty() {
+            return vec![HotkeyBinding {
+                combo: self.dictation_hotkey.clone(),
+                mode: ActivationMode::Push,
+            }];
+        }
+        default_dictation_hotkeys()
+    }
+
+    /// Fold the legacy slot into the list once, then clear it so it
+    /// can never resurface after the user removes everything.
+    /// Returns true when it changed something (caller persists).
+    pub fn migrate_legacy(&mut self) -> bool {
+        if self.dictation_hotkeys.is_empty() && !self.dictation_hotkey.is_empty() {
+            self.dictation_hotkeys.push(HotkeyBinding {
+                combo: self.dictation_hotkey.clone(),
+                mode: ActivationMode::Push,
+            });
+            self.dictation_hotkey.clear();
+            true
+        } else if !self.dictation_hotkey.is_empty() {
+            self.dictation_hotkey.clear();
+            true
+        } else {
+            false
         }
     }
 }

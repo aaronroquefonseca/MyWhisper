@@ -56,7 +56,12 @@ impl AppState {
             std::sync::Mutex<std::collections::HashMap<String, crate::net::Discovered>>,
         >,
     ) -> Rc<Self> {
-        let settings = store.load_settings();
+        let mut settings = store.load_settings();
+        // One-time hotkey migration (legacy single -> list); persist
+        // so the old value can never resurface.
+        if settings.hotkeys.migrate_legacy() {
+            let _ = store.save_settings(&settings);
+        }
         let history = store.load_history(200).unwrap_or_default();
         let words_spoken: u64 = history.iter().map(|e| e.word_count as u64).sum();
         let secs: u64 = history.iter().map(|e| e.duration_secs.max(0) as u64).sum();

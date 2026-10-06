@@ -7,9 +7,10 @@
 
 use gtk4::prelude::*;
 use gtk4::{
-    Box as GtkBox, Button, DropDown, Entry, Label, Orientation, SpinButton, Stack, StringList,
-    Switch, TextView,
+    Box as GtkBox, Button, DropDown, Entry, EventControllerKey, Label, Orientation, SpinButton,
+    Stack, StringList, Switch, TextView,
 };
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::app::{AppState, apply_theme, log_theme_state};
@@ -224,29 +225,467 @@ fn preferences_page(s: &AppSettings, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBox {
     root
 }
 
-fn hotkeys_page(s: &AppSettings) -> GtkBox {
-    let root = section_box("Hotkeys", "Global shortcuts. Capture comes later.");
-    let h = &s.hotkeys;
+fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
+    let root = section_box(
+        "Hotkeys",
+        "Global shortcuts, read straight from your keyboards.",
+    );
+    let persist: Rc<dyn Fn()> = {
+        let state = state.clone();
+        Rc::new(move || {
+            let settings = state.settings.borrow();
+            if let Err(e) = state.store.save_settings(&settings) {
+                eprintln!("[app] hotkey save failed: {e}");
+            }
+            crate::hotkey::apply_from_settings(&state);
+        })
+    };
 
     let (card, rows) = group("Dictation");
-    entry_row(&rows, "Dictation hotkey", &h.dictation_hotkey, false);
-    combo_row(
-        &rows,
-        "Activation",
-        &["Hold to talk", "Press to toggle"],
-        match h.activation_mode {
-            crate::settings::ActivationMode::Push => 0,
-            crate::settings::ActivationMode::Tap => 1,
-        },
+    // One row per binding, each with its own Remove. Refill is a
+    // plain fn (list + state passed in) so Remove closures recurse
+    // without self-referential Rc tricks.
+    let list = GtkBox::new(Orientation::Vertical, 4);
+    rows.append(&list);
+    refill_hotkey_list(&list, state, &persist);
+
+    // Add row: text field + per-binding mode + Add/Record. Validated
+    // by the same parser the listener uses; invalid combos are
+    // refused with a hint.
+    let (add_row, _) = row("Add combo (e.g. F13, Ctrl+Alt+D)");
+    let add_entry = Entry::new();
+    add_entry.set_hexpand(true);
+    add_entry.set_placeholder_text(Some("F13"));
+    add_row.append(&add_entry);
+    let add_mode = DropDown::new(
+        Some(StringList::new(&["Hold", "Toggle"])),
+        None::<gtk4::Expression>,
     );
+    add_mode.set_tooltip_text(Some("Behavior for the new binding"));
+    add_row.append(&add_mode);
+    let add_btn = Button::with_label("Add");
+    {
+        let state = state.clone();
+        let list = list.clone();
+        let persist = persist.clone();
+        let add_entry = add_entry.clone();
+        let add_mode = add_mode.clone();
+        add_btn.connect_clicked(move |_| {
+            let raw = add_entry.text().trim().to_string();
+            if raw.is_empty() {
+                return;
+            }
+            if crate::hotkey::parse_combo(&raw).is_none() {
+                add_entry.set_text("");
+                add_entry.set_placeholder_text(Some("Invalid combo, try F13"));
+                return;
+            }
+            let mode = match add_mode.selected() {
+                1 => crate::settings::ActivationMode::Tap,
+                _ => crate::settings::ActivationMode::Push,
+            };
+            {
+                let mut s = state.settings.borrow_mut();
+                if !s.hotkeys.dictation_hotkeys.iter().any(|b| b.combo == raw) {
+                    s.hotkeys
+                        .dictation_hotkeys
+                        .push(crate::settings::HotkeyBinding { combo: raw, mode });
+                }
+            }
+            add_entry.set_text("");
+            persist();
+            refill_hotkey_list(&list, &state, &persist);
+        });
+    }
+    add_row.append(&add_btn);
+    let record_btn = Button::with_label("Record");
+    record_btn.set_tooltip_text(Some("Click, then press the key combo"));
+    add_row.append(&record_btn);
+    rows.append(&add_row);
+
     let (b, _) = row("Reset to default");
     let reset = Button::with_label("Reset");
-    reset.set_sensitive(false); // not wired yet
+    {
+        let state = state.clone();
+        let list = list.clone();
+        let persist = persist.clone();
+        reset.connect_clicked(move |_| {
+            state.settings.borrow_mut().hotkeys.dictation_hotkeys =
+                vec![crate::settings::HotkeyBinding {
+                    combo: "F13".to_string(),
+                    mode: crate::settings::ActivationMode::Push,
+                }];
+            persist();
+            refill_hotkey_list(&list, &state, &persist);
+        });
+    }
     b.append(&reset);
     rows.append(&b);
     root.append(&card);
 
+    attach_hotkey_capture(
+        &root,
+        state,
+        &list,
+        &persist,
+        &record_btn,
+        &add_entry,
+        &add_mode,
+    );
+
     root
+}
+
+/// Repaint the binding rows from the model. Each row shows the
+/// combo, its own Hold/Toggle picker, and Remove.
+fn refill_hotkey_list(list: &GtkBox, state: &Rc<AppState>, persist: &Rc<dyn Fn()>) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    for binding in state.settings.borrow().hotkeys.effective_hotkeys() {
+        let (b, _) = row(&binding.combo);
+        let mode_drop = DropDown::new(
+            Some(StringList::new(&["Hold", "Toggle"])),
+            None::<gtk4::Expression>,
+        );
+        mode_drop.set_selected(match binding.mode {
+            crate::settings::ActivationMode::Push => 0,
+            crate::settings::ActivationMode::Tap => 1,
+        });
+        {
+            let state = state.clone();
+            let persist = persist.clone();
+            let combo = binding.combo.clone();
+            mode_drop.connect_selected_notify(move |d| {
+                let mode = match d.selected() {
+                    1 => crate::settings::ActivationMode::Tap,
+                    _ => crate::settings::ActivationMode::Push,
+                };
+                if let Some(b) = state
+                    .settings
+                    .borrow_mut()
+                    .hotkeys
+                    .dictation_hotkeys
+                    .iter_mut()
+                    .find(|b| b.combo == combo)
+                {
+                    b.mode = mode;
+                }
+                persist();
+            });
+        }
+        b.append(&mode_drop);
+        let remove = Button::with_label("Remove");
+        {
+            let state = state.clone();
+            let list = list.clone();
+            let persist = persist.clone();
+            let combo = binding.combo.clone();
+            remove.connect_clicked(move |_| {
+                state
+                    .settings
+                    .borrow_mut()
+                    .hotkeys
+                    .dictation_hotkeys
+                    .retain(|b| b.combo != combo);
+                persist();
+                refill_hotkey_list(&list, &state, &persist);
+            });
+        }
+        b.append(&remove);
+        list.append(&b);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Press-to-record combo capture
+// ---------------------------------------------------------------------------
+//
+// Click Record, press the desired keys: the next non-modifier press
+// finalizes (e.g. F13, Ctrl+Alt+D). Pressing only modifiers and
+// releasing finalizes a modifier-only combo. Esc with nothing held
+// cancels.
+
+/// Canonical modifier slot: 0 Ctrl, 1 Alt, 2 Shift, 3 Super.
+fn capture_modifier(key: gtk4::gdk::Key) -> Option<usize> {
+    use gtk4::gdk::Key as K;
+    if key == K::Control_L || key == K::Control_R {
+        Some(0)
+    } else if key == K::Alt_L || key == K::Alt_R {
+        Some(1)
+    } else if key == K::Shift_L || key == K::Shift_R {
+        Some(2)
+    } else if key == K::Super_L
+        || key == K::Super_R
+        || key == K::Meta_L
+        || key == K::Meta_R
+        || key == K::Hyper_L
+    {
+        Some(3)
+    } else {
+        None
+    }
+}
+
+/// Map a GDK key to our combo token vocabulary (same strings
+/// `hotkey::parse_combo` accepts). `None` = unsupported key;
+/// modifiers return `None` here (handled as modifiers, not keys).
+fn capture_token(key: gtk4::gdk::Key) -> Option<String> {
+    if capture_modifier(key).is_some() {
+        return None;
+    }
+    let name = key.name()?.to_string();
+    let upper = name.to_ascii_uppercase().replace('_', "");
+    // F-keys and well-known names pass through normalized.
+    const KNOWN: &[&str] = &[
+        "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14",
+        "F15", "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24", "TAB", "UP", "DOWN",
+        "LEFT", "RIGHT", "HOME", "END", "INSERT", "DELETE", "PAGEUP", "PAGEDOWN",
+    ];
+    if KNOWN.contains(&upper.as_str()) {
+        return Some(upper);
+    }
+    match upper.as_str() {
+        "SPACE" => Some("Space".to_string()),
+        "RETURN" => Some("Enter".to_string()),
+        "BACKSPACE" => Some("Backspace".to_string()),
+        "ESCAPE" => Some("Escape".to_string()),
+        _ if name.len() == 1 => {
+            let c = name.chars().next().unwrap();
+            Some(if c.is_ascii_alphabetic() {
+                c.to_ascii_uppercase().to_string()
+            } else {
+                c.to_string()
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Canonical combo string from modifier slots + optional key.
+fn combo_string(mods: &[bool; 4], key: Option<&str>) -> String {
+    let mut parts = Vec::new();
+    if mods[0] {
+        parts.push("Ctrl");
+    }
+    if mods[1] {
+        parts.push("Alt");
+    }
+    if mods[2] {
+        parts.push("Shift");
+    }
+    if mods[3] {
+        parts.push("Super");
+    }
+    if let Some(k) = key {
+        parts.push(k);
+    }
+    parts.join("+")
+}
+
+fn mods_from_state(state: gtk4::gdk::ModifierType) -> [bool; 4] {
+    use gtk4::gdk::ModifierType as M;
+    [
+        state.contains(M::CONTROL_MASK),
+        state.contains(M::ALT_MASK),
+        state.contains(M::SHIFT_MASK),
+        state.contains(M::SUPER_MASK) || state.contains(M::META_MASK),
+    ]
+}
+
+struct Capture {
+    capturing: Rc<Cell<bool>>,
+    /// Modifier slots currently held (press-tracked).
+    held: Rc<RefCell<[bool; 4]>>,
+    /// Modifier slots pressed at any point this round (for
+    /// modifier-only finalize on release).
+    pressed: Rc<RefCell<[bool; 4]>>,
+    record_btn: Button,
+    add_entry: Entry,
+}
+
+impl Capture {
+    fn stop(&self) {
+        self.capturing.set(false);
+        self.held.replace([false; 4]);
+        self.pressed.replace([false; 4]);
+        self.record_btn.set_label("Record");
+        self.add_entry.set_sensitive(true);
+        self.add_entry.set_placeholder_text(Some("F13"));
+    }
+
+    fn begin(&self) {
+        // Suspend the global listener while recording so the very
+        // keypress being recorded doesn't also fire dictation.
+        crate::hotkey::stop();
+        self.capturing.set(true);
+        self.live_label();
+        self.add_entry.set_sensitive(false);
+        self.add_entry.set_placeholder_text(Some("Press keys now…"));
+    }
+
+    fn live_label(&self) {
+        let held = *self.held.borrow();
+        let shown = combo_string(&held, None);
+        self.record_btn.set_label(&format!(
+            "{}… (Esc cancels)",
+            if shown.is_empty() {
+                "Press keys".to_string()
+            } else {
+                shown
+            }
+        ));
+    }
+
+    fn finish(
+        &self,
+        combo: String,
+        mode: crate::settings::ActivationMode,
+        state: &Rc<AppState>,
+        list: &GtkBox,
+        persist: &Rc<dyn Fn()>,
+    ) {
+        if crate::hotkey::parse_combo(&combo).is_none() {
+            self.record_btn.set_label("Invalid, try again");
+            return;
+        }
+        {
+            let mut s = state.settings.borrow_mut();
+            if !s.hotkeys.dictation_hotkeys.iter().any(|b| b.combo == combo) {
+                s.hotkeys
+                    .dictation_hotkeys
+                    .push(crate::settings::HotkeyBinding { combo, mode });
+            }
+        }
+        persist();
+        refill_hotkey_list(list, state, persist);
+        self.stop();
+        // Recording is over either way: bring the listener back with
+        // the fresh bindings.
+        crate::hotkey::apply_from_settings(state);
+    }
+}
+
+/// Wire the Record button + a capture-phase key controller onto the
+/// hotkeys page. Any keypress while capturing is swallowed (never
+/// reaches entries).
+fn attach_hotkey_capture(
+    root: &GtkBox,
+    state: &Rc<AppState>,
+    list: &GtkBox,
+    persist: &Rc<dyn Fn()>,
+    record_btn: &Button,
+    add_entry: &Entry,
+    add_mode: &DropDown,
+) {
+    let cap = Rc::new(Capture {
+        capturing: Rc::new(Cell::new(false)),
+        held: Rc::new(RefCell::new([false; 4])),
+        pressed: Rc::new(RefCell::new([false; 4])),
+        record_btn: record_btn.clone(),
+        add_entry: add_entry.clone(),
+    });
+    {
+        let cap = cap.clone();
+        let state = state.clone();
+        record_btn.connect_clicked(move |_| {
+            if cap.capturing.get() {
+                cap.stop();
+                crate::hotkey::apply_from_settings(&state);
+            } else {
+                cap.begin();
+            }
+        });
+    }
+
+    let ctl = EventControllerKey::new();
+    ctl.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    {
+        let cap = cap.clone();
+        let state = state.clone();
+        let list = list.clone();
+        let persist = persist.clone();
+        let add_mode = add_mode.clone();
+        ctl.connect_key_pressed(move |_, key, keycode, mod_state| {
+            if !cap.capturing.get() {
+                return gtk4::glib::Propagation::Proceed;
+            }
+            // Seed from the event's own modifier state (covers
+            // modifiers held before capture started).
+            for (slot, on) in mods_from_state(mod_state).iter().enumerate() {
+                if *on {
+                    cap.held.borrow_mut()[slot] = true;
+                    cap.pressed.borrow_mut()[slot] = true;
+                }
+            }
+            if let Some(slot) = capture_modifier(key) {
+                cap.held.borrow_mut()[slot] = true;
+                cap.pressed.borrow_mut()[slot] = true;
+                cap.live_label();
+                return gtk4::glib::Propagation::Stop;
+            }
+            // Bare Escape (nothing held) cancels.
+            use gtk4::gdk::Key as K;
+            let held = *cap.held.borrow();
+            if key == K::Escape && !held.iter().any(|h| *h) {
+                cap.stop();
+                crate::hotkey::apply_from_settings(&state);
+                return gtk4::glib::Propagation::Stop;
+            }
+            // Hardware keycode first (XKB keycode = evdev + 8): this is
+            // the same vocabulary the listener uses, immune to layout
+            // keysyms like XF86Tools-on-an-F13-key. Keyval name only
+            // as fallback.
+            let token = keycode
+                .checked_sub(8)
+                .and_then(|c| crate::hotkey::token_for_evdev_code(c as u16).map(str::to_string))
+                .or_else(|| capture_token(key));
+            eprintln!("[hotkey] capture saw keycode={keycode} token={token:?}");
+            match token {
+                Some(token) => {
+                    let combo = combo_string(&held, Some(&token));
+                    let mode = match add_mode.selected() {
+                        1 => crate::settings::ActivationMode::Tap,
+                        _ => crate::settings::ActivationMode::Push,
+                    };
+                    cap.finish(combo, mode, &state, &list, &persist);
+                }
+                None => {
+                    cap.record_btn.set_label("Unsupported key, try again");
+                }
+            }
+            gtk4::glib::Propagation::Stop
+        });
+    }
+    {
+        let cap = cap.clone();
+        let state = state.clone();
+        let list = list.clone();
+        let persist = persist.clone();
+        let add_mode = add_mode.clone();
+        ctl.connect_key_released(move |_, key, _, _| {
+            if !cap.capturing.get() {
+                return;
+            }
+            if let Some(slot) = capture_modifier(key) {
+                cap.held.borrow_mut()[slot] = false;
+                // All modifiers released with no regular key seen:
+                // finalize a modifier-only combo.
+                if !cap.held.borrow().iter().any(|h| *h) {
+                    let pressed = *cap.pressed.borrow();
+                    if pressed.iter().any(|h| *h) {
+                        let combo = combo_string(&pressed, None);
+                        let mode = match add_mode.selected() {
+                            1 => crate::settings::ActivationMode::Tap,
+                            _ => crate::settings::ActivationMode::Push,
+                        };
+                        cap.finish(combo, mode, &state, &list, &persist);
+                    }
+                }
+            }
+        });
+    }
+    root.add_controller(ctl);
 }
 
 fn stt_page(s: &AppSettings) -> GtkBox {
@@ -476,7 +915,7 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
     });
     let sections = [
         ("Preferences", preferences_page(s, &on_theme)),
-        ("Hotkeys", hotkeys_page(s)),
+        ("Hotkeys", hotkeys_page(state)),
         ("Speech to Text", stt_page(s)),
         ("Language Models", language_models_page(s)),
         ("Privacy & Data", privacy_page(s)),
@@ -525,4 +964,36 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
     stack.set_visible_child_name(initial);
 
     root
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_maps_keys_to_combo_tokens() {
+        use gtk4::gdk::Key as K;
+        assert_eq!(capture_modifier(K::Control_L), Some(0));
+        assert_eq!(capture_modifier(K::Super_R), Some(3));
+        assert_eq!(capture_modifier(K::F13), None);
+        assert_eq!(capture_token(K::F13).as_deref(), Some("F13"));
+        assert_eq!(capture_token(K::space).as_deref(), Some("Space"));
+        assert_eq!(capture_token(K::Return).as_deref(), Some("Enter"));
+        // Single chars normalize to uppercase.
+        assert_eq!(capture_token(K::d).as_deref(), Some("D"));
+        // Modifiers are not keys.
+        assert_eq!(capture_token(K::Shift_L), None);
+        // Every emitted token must survive the listener parser.
+        for token in ["F13", "Space", "Enter", "D", "Escape", "Tab"] {
+            let combo = combo_string(&[true, false, true, false], Some(token));
+            assert!(
+                crate::hotkey::parse_combo(&combo).is_some(),
+                "roundtrip failed for {combo}"
+            );
+        }
+        // Modifier-only combo is valid (matches OpenWhispr support).
+        assert!(
+            crate::hotkey::parse_combo(&combo_string(&[true, false, false, true], None)).is_some()
+        );
+    }
 }

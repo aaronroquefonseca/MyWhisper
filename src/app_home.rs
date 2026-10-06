@@ -31,7 +31,15 @@ fn fill_history(container: &GtkBox, state: &Rc<AppState>, history: &[HistoryEntr
         let h = Label::new(Some(
             format!(
                 "Your history will appear here.\nDefault hotkey: {}",
-                state.settings.borrow().hotkeys.dictation_hotkey
+                state
+                    .settings
+                    .borrow()
+                    .hotkeys
+                    .effective_hotkeys()
+                    .iter()
+                    .map(|b| b.combo.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" / ")
             )
             .as_str(),
         ));
