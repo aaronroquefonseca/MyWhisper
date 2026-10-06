@@ -18,7 +18,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Extensible action set. Only dictation exists today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -272,7 +272,7 @@ fn is_keyboard(dev: &Device) -> bool {
     }
 }
 
-fn open_keyboards() -> (Vec<Device>, bool) {
+fn open_keyboards() -> (Vec<(std::path::PathBuf, Device)>, bool) {
     let mut devices = Vec::new();
     let mut denied = false;
     let dir = match std::fs::read_dir("/dev/input") {
@@ -300,7 +300,7 @@ fn open_keyboards() -> (Vec<Device>, bool) {
                     // which would wedge the poll loop on the first
                     // quiet device while another holds new events.
                     let _ = dev.set_nonblocking(true);
-                    devices.push(dev);
+                    devices.push((entry.path(), dev));
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => denied = true,
@@ -311,6 +311,21 @@ fn open_keyboards() -> (Vec<Device>, bool) {
 }
 
 // ---------------------------------------------------------------- state
+
+/// Merge a rescan into the live set: keep existing fds untouched
+/// (their buffered events and held state survive), open only new
+/// nodes, drop vanished ones.
+fn merge_devices(
+    devices: &mut Vec<(std::path::PathBuf, Device)>,
+    found: Vec<(std::path::PathBuf, Device)>,
+) {
+    for (path, dev) in found {
+        if !devices.iter().any(|(p, _)| p == &path) {
+            devices.push((path, dev));
+        }
+    }
+    devices.retain(|(p, _)| p.exists());
+}
 
 fn ctrl_held(held: &HashSet<KeyCode>) -> bool {
     held.contains(&KeyCode::KEY_LEFTCTRL) || held.contains(&KeyCode::KEY_RIGHTCTRL)
@@ -350,24 +365,37 @@ fn is_modifier(code: KeyCode) -> bool {
 }
 
 /// One watched binding: parsed combo + its action + its own mode +
-/// edge state.
+/// edge state. `active_since` bounds a Push hold: if a release is
+/// ever lost (fd torn down mid-press), the watchdog force-releases
+/// instead of wedging dictation on.
 struct Watched {
     action: HotkeyAction,
     combo: Combo,
     mode: crate::settings::ActivationMode,
     active: bool,
+    active_since: Option<Instant>,
 }
 
+/// Push holds wedged active longer than this are force-released.
+/// Tap bindings are exempt (toggled-on is a legitimate long state).
+const MAX_PUSH_SECS: u64 = 60;
+
 fn poll_events(
-    devices: &mut [Device],
+    devices: &mut Vec<(std::path::PathBuf, Device)>,
     held: &mut HashSet<KeyCode>,
     watched: &mut [Watched],
     on_event: &HotkeyCallback,
 ) {
-    for dev in devices.iter_mut() {
+    let mut dead = Vec::new();
+    for (i, (_, dev)) in devices.iter_mut().enumerate() {
         let events: Vec<_> = match dev.fetch_events() {
             Ok(it) => it.collect(),
-            Err(_) => continue,
+            // Nonblocking fds report WouldBlock when idle: not death.
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(_) => {
+                dead.push(i);
+                continue;
+            }
         };
         for ev in events {
             let EventSummary::Key(_, key, value) = ev.destructure() else {
@@ -392,9 +420,11 @@ fn poll_events(
                     }
                     if pressed && !w.active && mods_ok(c, held) {
                         w.active = true;
+                        w.active_since = Some(Instant::now());
                         on_event(HotkeyEvent::Down(w.action, w.mode));
                     } else if !pressed && w.active {
                         w.active = false;
+                        w.active_since = None;
                         on_event(HotkeyEvent::Up(w.action, w.mode));
                     }
                 } else {
@@ -404,14 +434,22 @@ fn poll_events(
                     }
                     if mods_ok(c, held) && !w.active {
                         w.active = true;
+                        w.active_since = Some(Instant::now());
                         on_event(HotkeyEvent::Down(w.action, w.mode));
                     } else if !mods_ok(c, held) && w.active {
                         w.active = false;
+                        w.active_since = None;
                         on_event(HotkeyEvent::Up(w.action, w.mode));
                     }
                 }
             }
         }
+    }
+    // Prune dead fds (unplugged mid-poll). Reverse order keeps
+    // indexes valid.
+    for i in dead.into_iter().rev() {
+        eprintln!("[hotkey] device gone, dropping fd");
+        devices.remove(i);
     }
 }
 
@@ -424,7 +462,7 @@ fn run_loop(
     on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static>,
 ) {
     let mut held: HashSet<KeyCode> = HashSet::new();
-    let mut devices: Vec<Device> = Vec::new();
+    let mut devices: Vec<(std::path::PathBuf, Device)> = Vec::new();
     let mut reported = false;
     let mut rescan_in = 0u32;
     loop {
@@ -433,9 +471,12 @@ fn run_loop(
         }
         if rescan_in == 0 {
             let (found, denied) = open_keyboards();
-            // Merge: keep existing fds, add new ones. (Simplest
-            // correct: replace the set; held keys re-derive below.)
-            devices = found;
+            // Merge by node path: keep existing fds (with their
+            // kernel-buffered events and held state), add only new
+            // nodes, drop vanished ones. Replacing the whole set
+            // here used to lose a release landing mid-rescan and
+            // wedge the pill on.
+            merge_devices(&mut devices, found);
             if devices.is_empty() {
                 if denied {
                     if !reported {
@@ -449,7 +490,7 @@ fn run_loop(
             } else if !reported {
                 let names: Vec<String> = devices
                     .iter()
-                    .map(|d| d.name().unwrap_or("?").to_string())
+                    .map(|(_, d)| d.name().unwrap_or("?").to_string())
                     .collect();
                 eprintln!(
                     "[hotkey] watching {} keyboard(s): {}",
@@ -465,6 +506,21 @@ fn run_loop(
         // Seed held state from the kernel so a boot-time-held key
         // cannot wedge an edge.
         poll_events(&mut devices, &mut held, &mut watched, &on_event);
+        // Watchdog: a Push hold wedged by a lost release is
+        // force-released instead of sticking dictation on forever.
+        for w in watched.iter_mut() {
+            if w.active
+                && w.mode == crate::settings::ActivationMode::Push
+                && w.active_since
+                    .map(|t| t.elapsed() > Duration::from_secs(MAX_PUSH_SECS))
+                    .unwrap_or(false)
+            {
+                eprintln!("[hotkey] WARNING: push stuck >{MAX_PUSH_SECS}s, force release");
+                w.active = false;
+                w.active_since = None;
+                on_event(HotkeyEvent::Up(w.action, w.mode));
+            }
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
 }
@@ -495,6 +551,7 @@ pub fn start(
                         combo,
                         mode: b.mode,
                         active: false,
+                        active_since: None,
                     });
                 }
                 None => eprintln!("[hotkey] WARNING: skipping invalid combo {:?}", b.combo),
@@ -513,49 +570,121 @@ pub fn stop() {
     HOTKEY_GEN.fetch_add(1, Ordering::SeqCst);
 }
 
-/// (Re)start the listener from live settings. Each binding behaves
-/// per its own mode; the STT pipeline hooks into `dictation_down` /
-/// `dictation_up` below. Call on startup and after every hotkey change.
-pub fn apply_from_settings(state: &crate::app::AppState) {
+/// Dictation edge hook: must be `Send` (runs on the listener
+/// thread). The pill lives on the GTK thread, so service callbacks
+/// typically forward through a channel + `idle_add`.
+pub type DictationHook = Arc<dyn Fn() + Send + Sync + 'static>;
+
+/// Smart-mode tap ceiling default (ms): a press shorter than this
+/// toggles, a longer one holds. Overridable per install via the
+/// `smart_tap_ms` setting; releases log their duration for calibration.
+pub const SMART_TAP_MS: u64 = 150;
+
+/// Smart press outcome, pure for testability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SmartDown {
+    /// Was idle: dictation started, this press owns the session.
+    Open,
+    /// Was active: dictation stopped (toggle-off), press owns nothing.
+    Close,
+}
+
+fn smart_down(dictating: bool) -> SmartDown {
+    if dictating {
+        SmartDown::Close
+    } else {
+        SmartDown::Open
+    }
+}
+
+/// Whether a smart release stops dictation: only when the press that
+/// opened the session was held past the tap ceiling.
+fn smart_up_should_stop(opener: bool, held_ms: u64, tap_ms: u64) -> bool {
+    opener && held_ms >= tap_ms
+}
+
+/// (Re)start the listener from live settings with explicit dictation
+/// hooks. Each binding behaves per its own mode; the STT pipeline (or
+/// the pill) hooks into `down` / `up`. Call on startup and after
+/// every hotkey change.
+pub fn start_dictation(
+    bindings: Vec<crate::settings::HotkeyBinding>,
+    tap_ms: u64,
+    down: DictationHook,
+    up: DictationHook,
+) {
     use crate::settings::ActivationMode;
-    let combos = state.settings.borrow().hotkeys.effective_hotkeys();
-    let mut bindings = HashMap::new();
-    bindings.insert(HotkeyAction::DictationToggle, combos);
+    let mut map = HashMap::new();
+    map.insert(HotkeyAction::DictationToggle, bindings);
     // Shared toggle state across bindings of the same action; the
     // mode travels on the event so mixed Push+Tap bindings coexist.
     let dictating = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Smart presses: what the press did + when, decided at release.
+    let smart_press: Arc<std::sync::Mutex<Option<(Instant, bool)>>> =
+        Arc::new(std::sync::Mutex::new(None));
     let on_event: HotkeyCallback = Arc::new(move |ev| match ev {
         HotkeyEvent::Down(HotkeyAction::DictationToggle, ActivationMode::Push) => {
             dictating.store(true, Ordering::SeqCst);
-            dictation_down();
+            down();
         }
         HotkeyEvent::Up(HotkeyAction::DictationToggle, ActivationMode::Push) => {
             dictating.store(false, Ordering::SeqCst);
-            dictation_up();
+            up();
         }
         HotkeyEvent::Down(HotkeyAction::DictationToggle, ActivationMode::Tap) => {
             let was = dictating.fetch_xor(true, Ordering::SeqCst);
             if !was {
-                dictation_down();
+                down();
             } else {
-                dictation_up();
+                up();
+            }
+        }
+        HotkeyEvent::Down(HotkeyAction::DictationToggle, ActivationMode::Smart) => {
+            match smart_down(dictating.load(Ordering::SeqCst)) {
+                SmartDown::Open => {
+                    dictating.store(true, Ordering::SeqCst);
+                    *smart_press.lock().unwrap() = Some((Instant::now(), true));
+                    down();
+                }
+                SmartDown::Close => {
+                    dictating.store(false, Ordering::SeqCst);
+                    *smart_press.lock().unwrap() = Some((Instant::now(), false));
+                    up();
+                }
+            }
+        }
+        HotkeyEvent::Up(HotkeyAction::DictationToggle, ActivationMode::Smart) => {
+            if let Some((t0, opener)) = smart_press.lock().unwrap().take() {
+                let held_ms = t0.elapsed().as_millis() as u64;
+                eprintln!("[hotkey] smart release after {held_ms}ms (ceiling {tap_ms}ms)");
+                if smart_up_should_stop(opener, held_ms, tap_ms) {
+                    dictating.store(false, Ordering::SeqCst);
+                    up();
+                }
             }
         }
         _ => {}
     });
     let on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static> =
         Arc::new(|st| eprintln!("[hotkey] status: {st:?}"));
-    start(bindings, on_event, on_status);
+    start(map, on_event, on_status);
 }
 
-/// Dictation start stub: STT pipeline hooks here.
-fn dictation_down() {
-    eprintln!("[hotkey] dictation START (pipeline hook)");
+/// Log-only hooks for standalone GUI mode (no pill in this process).
+fn log_hooks() -> (DictationHook, DictationHook) {
+    (
+        Arc::new(|| eprintln!("[hotkey] dictation START (pipeline hook)")),
+        Arc::new(|| eprintln!("[hotkey] dictation STOP (pipeline hook)")),
+    )
 }
 
-/// Dictation stop stub: STT pipeline hooks here.
-fn dictation_up() {
-    eprintln!("[hotkey] dictation STOP (pipeline hook)");
+/// (Re)start the listener from live settings with log-only hooks.
+/// Standalone GUI mode uses this; the service passes pill hooks to
+/// `start_dictation` instead.
+pub fn apply_from_settings(state: &crate::app::AppState) {
+    let hotkeys = state.settings.borrow().hotkeys.clone();
+    let (down, up) = log_hooks();
+    start_dictation(hotkeys.dictation_hotkeys, hotkeys.smart_tap_ms, down, up);
 }
 
 #[cfg(test)]
@@ -575,6 +704,30 @@ mod tests {
     }
 
     #[test]
+    fn smart_tap_holds_toggle() {
+        // Tap (under the ceiling) toggles: opener release keeps on.
+        assert_eq!(smart_down(false), SmartDown::Open);
+        assert!(!smart_up_should_stop(true, SMART_TAP_MS - 1, SMART_TAP_MS));
+        // Hold (at/over the ceiling) behaves like push: release stops.
+        assert!(smart_up_should_stop(true, SMART_TAP_MS, SMART_TAP_MS));
+        assert!(smart_up_should_stop(
+            true,
+            SMART_TAP_MS + 5000,
+            SMART_TAP_MS
+        ));
+        // A press that closed (toggle-off) never stops on release.
+        assert_eq!(smart_down(true), SmartDown::Close);
+        assert!(!smart_up_should_stop(
+            false,
+            SMART_TAP_MS + 5000,
+            SMART_TAP_MS
+        ));
+        // Custom ceiling honored.
+        assert!(!smart_up_should_stop(true, 100, 150));
+        assert!(smart_up_should_stop(true, 150, 150));
+    }
+
+    #[test]
     fn mods_gate_correctly() {
         let c = parse_combo("Ctrl+D").unwrap();
         let mut held = HashSet::new();
@@ -582,6 +735,24 @@ mod tests {
         assert!(mods_ok(&c, &held));
         held.clear();
         assert!(!mods_ok(&c, &held));
+    }
+
+    /// Rescans must merge, never replace: no path is ever opened
+    /// twice (dup fds would split one device's event stream), and a
+    /// merge is idempotent. Counts are not asserted: other tests
+    /// create virtual keyboards concurrently, so the device set
+    /// churns mid-suite by design.
+    #[test]
+    fn rescan_merge_keeps_fds() {
+        use std::collections::HashSet;
+        let mut live = Vec::new();
+        for _ in 0..3 {
+            let (found, _) = open_keyboards();
+            merge_devices(&mut live, found);
+            let paths: HashSet<_> = live.iter().map(|(p, _)| p).collect();
+            assert_eq!(paths.len(), live.len(), "merge must never duplicate an fd");
+        }
+        assert!(!live.is_empty(), "needs a real keyboard to test against");
     }
 
     #[test]

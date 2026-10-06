@@ -27,6 +27,8 @@ fn section_box(title: &str, subtitle: &str) -> GtkBox {
     let s = Label::new(Some(subtitle));
     s.add_css_class("page-subtitle");
     s.set_xalign(0.0);
+    s.set_wrap(true);
+    s.set_max_width_chars(80);
     root.append(&t);
     root.append(&s);
     root
@@ -101,9 +103,9 @@ fn idx_of(options: &[&str], value: &str) -> usize {
 
 // ---------------------------------------------------------------- sections
 
-fn preferences_page(s: &AppSettings, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBox {
+fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBox {
     let root = section_box("Preferences", "General application behavior.");
-    let p = &s.preferences;
+    let p = state.settings.borrow().preferences.clone();
 
     let (card, rows) = group("Appearance");
     // The theme picker is wired: it writes the model and applies the
@@ -184,8 +186,51 @@ fn preferences_page(s: &AppSettings, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBox {
     root.append(&card);
 
     let (card, rows) = group("Startup");
-    switch_row(&rows, "Launch at login", p.launch_at_login);
-    switch_row(&rows, "Start minimized", p.start_minimized);
+    // Launch-at-login installs/removes the systemd user unit for
+    // `mywhisper-app --service`. Initial position reflects the real
+    // unit state, not just the stored preference.
+    {
+        let (b, _) = row("Launch at login (background service)");
+        let sw = Switch::new();
+        sw.set_active(crate::service::login_enabled());
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                match crate::service::set_login_enabled(active) {
+                    Ok(msg) => eprintln!("[app] {msg}"),
+                    Err(e) => eprintln!("[app] login toggle failed: {e}"),
+                }
+                state.settings.borrow_mut().preferences.launch_at_login = active;
+                let settings = state.settings.borrow();
+                if let Err(e) = state.store.save_settings(&settings) {
+                    eprintln!("[app] login pref save failed: {e}");
+                }
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
+    {
+        let (b, _) = row("Start minimized");
+        let sw = Switch::new();
+        sw.set_active(p.start_minimized);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state.settings.borrow_mut().preferences.start_minimized = active;
+                let settings = state.settings.borrow();
+                if let Err(e) = state.store.save_settings(&settings) {
+                    eprintln!("[app] minimized pref save failed: {e}");
+                }
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
     root.append(&card);
 
     let (card, rows) = group("Microphone");
@@ -228,7 +273,9 @@ fn preferences_page(s: &AppSettings, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBox {
 fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     let root = section_box(
         "Hotkeys",
-        "Global shortcuts, read straight from your keyboards.",
+        "Global shortcuts, read straight from your keyboards.\n\
+         Hold = talk while held. Toggle = press to start/stop. \
+         Smart = quick tap toggles, longer press holds.",
     );
     let persist: Rc<dyn Fn()> = {
         let state = state.clone();
@@ -258,7 +305,7 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     add_entry.set_placeholder_text(Some("F13"));
     add_row.append(&add_entry);
     let add_mode = DropDown::new(
-        Some(StringList::new(&["Hold", "Toggle"])),
+        Some(StringList::new(&["Hold", "Toggle", "Smart"])),
         None::<gtk4::Expression>,
     );
     add_mode.set_tooltip_text(Some("Behavior for the new binding"));
@@ -282,6 +329,7 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
             }
             let mode = match add_mode.selected() {
                 1 => crate::settings::ActivationMode::Tap,
+                2 => crate::settings::ActivationMode::Smart,
                 _ => crate::settings::ActivationMode::Push,
             };
             {
@@ -323,6 +371,34 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     rows.append(&b);
     root.append(&card);
 
+    let (smart_card, smart_rows) = group("Smart timing");
+    spin_row(
+        &smart_rows,
+        "Tap ceiling (ms): shorter taps toggle, longer holds",
+        state.settings.borrow().hotkeys.smart_tap_ms as f64,
+        20.0,
+        1000.0,
+        5.0,
+    );
+    // spin_row leaves the control insensitive (display-only helper);
+    // enable it: this one is wired.
+    if let Some(row_box) = smart_rows.last_child() {
+        let mut child = row_box.first_child();
+        while let Some(c) = child {
+            if let Ok(spin) = c.clone().downcast::<SpinButton>() {
+                spin.set_sensitive(true);
+                let state = state.clone();
+                let persist = persist.clone();
+                spin.connect_value_changed(move |s| {
+                    state.settings.borrow_mut().hotkeys.smart_tap_ms = s.value() as u64;
+                    persist();
+                });
+            }
+            child = c.next_sibling();
+        }
+    }
+    root.append(&smart_card);
+
     attach_hotkey_capture(
         &root,
         state,
@@ -345,12 +421,13 @@ fn refill_hotkey_list(list: &GtkBox, state: &Rc<AppState>, persist: &Rc<dyn Fn()
     for binding in state.settings.borrow().hotkeys.effective_hotkeys() {
         let (b, _) = row(&binding.combo);
         let mode_drop = DropDown::new(
-            Some(StringList::new(&["Hold", "Toggle"])),
+            Some(StringList::new(&["Hold", "Toggle", "Smart"])),
             None::<gtk4::Expression>,
         );
         mode_drop.set_selected(match binding.mode {
             crate::settings::ActivationMode::Push => 0,
             crate::settings::ActivationMode::Tap => 1,
+            crate::settings::ActivationMode::Smart => 2,
         });
         {
             let state = state.clone();
@@ -359,6 +436,7 @@ fn refill_hotkey_list(list: &GtkBox, state: &Rc<AppState>, persist: &Rc<dyn Fn()
             mode_drop.connect_selected_notify(move |d| {
                 let mode = match d.selected() {
                     1 => crate::settings::ActivationMode::Tap,
+                    2 => crate::settings::ActivationMode::Smart,
                     _ => crate::settings::ActivationMode::Push,
                 };
                 if let Some(b) = state
@@ -646,6 +724,7 @@ fn attach_hotkey_capture(
                     let combo = combo_string(&held, Some(&token));
                     let mode = match add_mode.selected() {
                         1 => crate::settings::ActivationMode::Tap,
+                        2 => crate::settings::ActivationMode::Smart,
                         _ => crate::settings::ActivationMode::Push,
                     };
                     cap.finish(combo, mode, &state, &list, &persist);
@@ -677,6 +756,7 @@ fn attach_hotkey_capture(
                         let combo = combo_string(&pressed, None);
                         let mode = match add_mode.selected() {
                             1 => crate::settings::ActivationMode::Tap,
+                            2 => crate::settings::ActivationMode::Smart,
                             _ => crate::settings::ActivationMode::Push,
                         };
                         cap.finish(combo, mode, &state, &list, &persist);
@@ -914,7 +994,7 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
         }
     });
     let sections = [
-        ("Preferences", preferences_page(s, &on_theme)),
+        ("Preferences", preferences_page(state, &on_theme)),
         ("Hotkeys", hotkeys_page(state)),
         ("Speech to Text", stt_page(s)),
         ("Language Models", language_models_page(s)),

@@ -135,6 +135,8 @@ pub enum ActivationMode {
     Tap,
     /// Hold to talk.
     Push,
+    /// Quick tap (< ~35ms) toggles; longer press holds. Best of both.
+    Smart,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +191,14 @@ pub struct HotkeySettings {
     /// `dictation_hotkeys` on load, then ignored on save.
     #[serde(default)]
     pub dictation_hotkey: String,
+    /// Smart-mode tap ceiling in ms: presses shorter than this
+    /// toggle, longer ones hold. Default 150.
+    #[serde(default = "default_smart_tap_ms")]
+    pub smart_tap_ms: u64,
+}
+
+fn default_smart_tap_ms() -> u64 {
+    150
 }
 
 impl Default for HotkeySettings {
@@ -196,6 +206,7 @@ impl Default for HotkeySettings {
         Self {
             dictation_hotkeys: default_dictation_hotkeys(),
             dictation_hotkey: String::new(),
+            smart_tap_ms: default_smart_tap_ms(),
         }
     }
 }
