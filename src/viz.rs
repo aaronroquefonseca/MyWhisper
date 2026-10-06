@@ -360,6 +360,12 @@ impl Visualizer {
         self.state.borrow_mut().mic.burst();
         eprintln!("[poc] viz burst triggered");
     }
+
+    /// Dictation gate: open capture while the pill is visible, drop
+    /// it the moment it hides.
+    pub fn set_mic_active(&self, active: bool) {
+        self.state.borrow_mut().mic.set_active(active);
+    }
 }
 
 fn bars_width(count: usize) -> f64 {

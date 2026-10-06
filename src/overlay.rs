@@ -520,6 +520,9 @@ impl VoiceOverlay {
             .set(self.inner.anim_gen.get().wrapping_add(1));
         self.inner.state.set(next);
         self.inner.mirror.store(next.code(), Ordering::SeqCst);
+        // Capture follows visibility exactly: open on any shown
+        // state, drop on hide. No idle-open mic, ever.
+        self.inner.viz.set_mic_active(next != OverlayState::Hidden);
         eprintln!("[poc] overlay state: {prev} -> {next}");
 
         match next {
