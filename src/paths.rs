@@ -59,6 +59,13 @@ impl AppPaths {
     pub fn device_key_file(&self) -> PathBuf {
         self.config_dir.join(DEVICE_KEY_FILE)
     }
+
+    /// Engine lockfile: whoever holds an exclusive flock on this is
+    /// the single engine owner (hotkeys, sync listener, pill). The
+    /// GUI runs frontend-only while another process holds it.
+    pub fn engine_lock_file(&self) -> PathBuf {
+        self.data_dir.join("engine.lock")
+    }
 }
 
 /// Install the global `tracing` subscriber writing to the daily-rotated

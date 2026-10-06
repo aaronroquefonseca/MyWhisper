@@ -286,10 +286,14 @@ pub fn page(state: &Rc<AppState>) -> ScrolledWindow {
         use std::cell::Cell;
         use std::time::Duration;
         let state = state.clone();
-        let seen = Rc::new(Cell::new(crate::store::data_gen()));
+        let seen = Rc::new(Cell::new((crate::store::data_gen(), 0i64)));
         gtk4::glib::timeout_add_local(Duration::from_millis(1500), move || {
-            if seen.get() != crate::store::data_gen() {
-                seen.set(crate::store::data_gen());
+            let token = (
+                crate::store::data_gen(),
+                crate::store::read_gen(&state.store),
+            );
+            if seen.get() != token {
+                seen.set(token);
                 let stats = refresh_stats(&state);
                 words_value.set_text(&compact_words(stats.words_spoken));
                 wpm_value.set_text(&format!("{:.0}", stats.words_per_minute));

@@ -10,6 +10,7 @@ pub mod mic;
 pub mod net;
 pub mod overlay;
 pub mod paths;
+pub mod service;
 pub mod settings;
 pub mod store;
 pub mod viz;

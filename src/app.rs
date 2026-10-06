@@ -24,6 +24,9 @@ pub struct AppState {
     pub creds: crate::device::SyncCreds,
     /// Actually-bound sync port (0 = listener off). Set by main after bind.
     pub sync_port: std::cell::Cell<u16>,
+    /// True when the background service holds the engine lock. The
+    /// GUI is always frontend-only; this only drives status display.
+    pub service_alive: std::cell::Cell<bool>,
     /// mDNS-discovered LAN peers, refreshed by the browser thread.
     pub discovered:
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, crate::net::Discovered>>>,
@@ -40,6 +43,7 @@ impl AppState {
             db_path: std::path::PathBuf::from(":memory:"),
             creds: crate::device::DeviceIdentity::ephemeral().creds(),
             sync_port: std::cell::Cell::new(0),
+            service_alive: std::cell::Cell::new(false),
             discovered: Default::default(),
         })
     }
@@ -84,6 +88,7 @@ impl AppState {
             db_path: db_path.to_path_buf(),
             creds,
             sync_port: std::cell::Cell::new(0),
+            service_alive: std::cell::Cell::new(false),
             discovered,
         })
     }

@@ -7,6 +7,7 @@ edition = "2024"
 cpal = "0.18.2"
 ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
 evdev = "0.13.2"
+fs2 = "0.4.3"
 getrandom = "0.4.3"
 gtk4 = { version = "0.11.5", features = ["v4_22"] }
 gtk4-layer-shell = "0.8.1"

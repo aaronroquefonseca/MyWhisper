@@ -88,6 +88,31 @@ fn bump_data_gen() {
     DATA_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// Cross-process change token: an explicit counter in `sync_meta`,
+/// bumped on every mutation (local CRUD and incoming merges), read
+/// fresh on every poll. Unlike `PRAGMA data_version` (which proved
+/// unreliable: stale on the writing connection, frozen on `:memory:`),
+/// this is plain data and works identically everywhere. Pair with the
+/// process-local `data_gen` in UI refresh polls.
+pub fn read_gen(store: &Store) -> i64 {
+    store
+        .conn
+        .query_row("SELECT value FROM sync_meta WHERE key = 'gen'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
+fn bump_gen(conn: &Connection) {
+    let _ = conn.execute(
+        "INSERT INTO sync_meta (key, value) VALUES ('gen', '1')
+         ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+        [],
+    );
+}
+
 pub struct Store {
     conn: Connection,
 }
@@ -508,6 +533,7 @@ impl Store {
             }
         }
         bump_data_gen();
+        bump_gen(&self.conn);
         Ok(())
     }
 
@@ -547,6 +573,7 @@ impl Store {
             }
         }
         bump_data_gen();
+        bump_gen(&self.conn);
         Ok(())
     }
 
@@ -560,6 +587,7 @@ impl Store {
             )?;
         }
         bump_data_gen();
+        bump_gen(&self.conn);
         Ok(())
     }
 
@@ -904,6 +932,45 @@ pub struct PeerGossip {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shared_gen_moves_on_write() {
+        let store = Store::open_memory().unwrap();
+        let v0 = read_gen(&store);
+        store.upsert_word("hello", "node-x").unwrap();
+        let v1 = read_gen(&store);
+        assert!(v1 != v0, "shared gen must move on write ({v0} -> {v1})");
+    }
+
+    /// Two connections, same file (two processes in miniature): a
+    /// write through one is visible to the other on the next read.
+    /// This is the exact property UI refresh polls rely on.
+    #[test]
+    fn shared_gen_visible_across_connections() {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "mywhisper-gen-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        // NOTE: Store::open needs the keyring; the test env has
+        // a session keyring, same as production on this machine.
+        // If the keyring is unavailable here, skip rather than fail:
+        // crypto setup is covered by the app path, not this property.
+        let Ok(a) = Store::open(&dir) else {
+            return;
+        };
+        let v0 = read_gen(&a);
+        {
+            let b = Store::open(&dir).unwrap();
+            b.upsert_word("cross-conn", "node-y").unwrap();
+        }
+        let v1 = read_gen(&a);
+        assert!(v1 != v0, "gen write must be visible cross-connection");
+        assert!(a.load_words().unwrap().contains(&"cross-conn".to_string()));
+        drop(a);
+        let _ = std::fs::remove_file(&dir);
+    }
+
     use super::*;
 
     const A: &str = "node-aaaa";

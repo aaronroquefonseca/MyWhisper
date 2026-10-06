@@ -96,10 +96,14 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     // dictionary page).
     {
         let state = state.clone();
-        let seen = Rc::new(Cell::new(crate::store::data_gen()));
+        let seen = Rc::new(Cell::new((crate::store::data_gen(), 0i64)));
         gtk4::glib::timeout_add_local(Duration::from_millis(1500), move || {
-            if seen.get() != crate::store::data_gen() {
-                seen.set(crate::store::data_gen());
+            let token = (
+                crate::store::data_gen(),
+                crate::store::read_gen(&state.store),
+            );
+            if seen.get() != token {
+                seen.set(token);
                 let history = state.store.load_history(200).unwrap_or_default();
                 fill_history(&list, &state, &history);
             }

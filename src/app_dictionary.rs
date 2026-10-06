@@ -436,10 +436,14 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     // settings save persists the same content.
     {
         let state = state.clone();
-        let seen = Rc::new(Cell::new(crate::store::data_gen()));
+        let seen = Rc::new(Cell::new((crate::store::data_gen(), 0i64)));
         gtk4::glib::timeout_add_local(Duration::from_millis(1000), move || {
-            if seen.get() != crate::store::data_gen() {
-                seen.set(crate::store::data_gen());
+            let token = (
+                crate::store::data_gen(),
+                crate::store::read_gen(&state.store),
+            );
+            if seen.get() != token {
+                seen.set(token);
                 {
                     let mut settings = state.settings.borrow_mut();
                     settings.dictionary.words = state.store.load_words().unwrap_or_default();
