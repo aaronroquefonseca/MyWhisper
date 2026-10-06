@@ -1,0 +1,26 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# env / secrets - never commit
+.env
+.env.*
+secrets/
+
+# logs / tmp
+*.log
+tmp/
+_inbox/
+
+# lang placeholders - trim when stack chosen
+__pycache__/
+.venv/
+node_modules/
+dist/
+target/
