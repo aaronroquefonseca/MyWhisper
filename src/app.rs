@@ -517,5 +517,27 @@ pub fn build_app_window(
         set_active(initial);
     }
 
+    // Escape dismisses the settings modal, restoring the sidebar
+    // highlight to the page underneath.
+    {
+        let show_settings = show_settings.clone();
+        let set_active = set_active.clone();
+        let stack = stack.clone();
+        let escape = gtk4::ShortcutController::new();
+        let trigger = gtk4::ShortcutTrigger::parse_string("Escape")
+            .expect("Escape parses as a shortcut trigger");
+        let dismiss = gtk4::CallbackAction::new(move |_, _| {
+            show_settings(false);
+            let current = stack
+                .visible_child_name()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "home".to_string());
+            set_active(&current);
+            gtk4::glib::Propagation::Stop
+        });
+        escape.add_shortcut(gtk4::Shortcut::new(Some(trigger), Some(dismiss)));
+        window.add_controller(escape);
+    }
+
     window
 }
