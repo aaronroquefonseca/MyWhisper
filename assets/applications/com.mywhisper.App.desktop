@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=MyWhisper
+Comment=Voice dictation with on-device transcription
+Exec=mywhisper-app
+Icon=com.mywhisper.App
+Terminal=false
+Type=Application
+Categories=Utility;Accessibility;
+StartupWMClass=com.mywhisper.App

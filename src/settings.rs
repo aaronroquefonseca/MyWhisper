@@ -17,6 +17,7 @@ pub struct AppSettings {
     pub privacy: PrivacySettings,
     pub system: SystemSettings,
     pub dictionary: Dictionary,
+    pub sync: SyncSettings,
 }
 
 impl Default for AppSettings {
@@ -29,6 +30,31 @@ impl Default for AppSettings {
             privacy: PrivacySettings::default(),
             system: SystemSettings::default(),
             dictionary: Dictionary::default(),
+            sync: SyncSettings::default(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sync (node-based device sync, Syncthing-style trust)
+// ---------------------------------------------------------------------------
+
+/// Default TCP port for incoming sync connections.
+pub const DEFAULT_SYNC_PORT: u16 = 42973;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncSettings {
+    /// This device's display name shown to peers.
+    pub device_name: String,
+    /// TCP port for incoming sync connections (0 = disabled).
+    pub listen_port: u16,
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self {
+            device_name: String::new(),
+            listen_port: DEFAULT_SYNC_PORT,
         }
     }
 }
@@ -298,4 +324,5 @@ pub struct HistoryEntry {
     pub text: String,
     pub date_label: String,
     pub word_count: u32,
+    pub duration_secs: i64,
 }

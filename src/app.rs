@@ -18,6 +18,15 @@ pub struct AppState {
     pub settings: std::cell::RefCell<AppSettings>,
     pub history: Vec<HistoryEntry>,
     pub stats: UsageStats,
+    pub store: Rc<crate::store::Store>,
+    pub node_id: String,
+    pub db_path: std::path::PathBuf,
+    pub creds: crate::device::SyncCreds,
+    /// Actually-bound sync port (0 = listener off). Set by main after bind.
+    pub sync_port: std::cell::Cell<u16>,
+    /// mDNS-discovered LAN peers, refreshed by the browser thread.
+    pub discovered:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, crate::net::Discovered>>>,
 }
 
 impl AppState {
@@ -26,8 +35,82 @@ impl AppState {
             settings: std::cell::RefCell::new(AppSettings::default()),
             history: Vec::new(),
             stats: UsageStats::default(),
+            store: Rc::new(crate::store::Store::open_memory().expect("in-memory store")),
+            node_id: "local".to_string(),
+            db_path: std::path::PathBuf::from(":memory:"),
+            creds: crate::device::DeviceIdentity::ephemeral().creds(),
+            sync_port: std::cell::Cell::new(0),
+            discovered: Default::default(),
         })
     }
+
+    /// Load persisted state; falls back to defaults table-by-table so
+    /// a fresh or partial database still boots. Stats derive from the
+    /// history table.
+    pub fn load(
+        store: &Rc<crate::store::Store>,
+        node_id: &str,
+        db_path: &std::path::Path,
+        creds: crate::device::SyncCreds,
+        discovered: std::sync::Arc<
+            std::sync::Mutex<std::collections::HashMap<String, crate::net::Discovered>>,
+        >,
+    ) -> Rc<Self> {
+        let settings = store.load_settings();
+        let history = store.load_history(200).unwrap_or_default();
+        let words_spoken: u64 = history.iter().map(|e| e.word_count as u64).sum();
+        let secs: u64 = history.iter().map(|e| e.duration_secs.max(0) as u64).sum();
+        let stats = UsageStats {
+            words_spoken,
+            words_per_minute: if secs > 0 {
+                words_spoken as f64 * 60.0 / secs as f64
+            } else {
+                0.0
+            },
+            dictations: history.len() as u64,
+            streak_days: streak(&store.active_days().unwrap_or_default()),
+        };
+        Rc::new(Self {
+            settings: std::cell::RefCell::new(settings),
+            history,
+            stats,
+            store: store.clone(),
+            node_id: node_id.to_string(),
+            db_path: db_path.to_path_buf(),
+            creds,
+            sync_port: std::cell::Cell::new(0),
+            discovered,
+        })
+    }
+}
+
+/// Consecutive active days ending today (or yesterday when today is
+/// still quiet), from descending epoch-day numbers.
+fn streak(days_desc: &[i64]) -> u32 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let today = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64 / 86_400)
+        .unwrap_or(0);
+    let mut expected = today;
+    if !days_desc.contains(&today) {
+        expected = today - 1;
+    }
+    let mut run = 0u32;
+    for d in days_desc {
+        if *d == expected {
+            run += 1;
+            expected -= 1;
+        } else if *d < expected {
+            break;
+        }
+    }
+    run
+}
+
+/// Streak straight from the store (for live insights refreshes).
+pub fn streak_days(store: &crate::store::Store) -> u32 {
+    streak(&store.active_days().unwrap_or_default())
 }
 
 /// Self-owned palette. The app renders identically on every
@@ -42,6 +125,7 @@ const CSS: &str = r#"
 @define-color app_accent #3584e4;
 @define-color app_accent_fg #ffffff;
 @define-color app_entry_bg #ffffff;
+@define-color app_entry_border #d0d0d0;
 window {
     background: @app_bg;
     color: @app_fg;
@@ -88,6 +172,7 @@ window {
     background: @app_card;
     border: 1px solid @app_borders;
     border-radius: 12px;
+    background-clip: padding-box;
     padding: 16px;
 }
 .stat-value {
@@ -116,6 +201,9 @@ window {
 entry, textview {
     background: @app_entry_bg;
     color: @app_fg;
+    border: 1px solid @app_entry_border;
+    border-radius: 8px;
+    padding: 8px;
 }
 button {
     color: @app_fg;
@@ -178,6 +266,7 @@ popover button {
     background: @app_card;
     border: 1px solid @app_borders;
     border-radius: 16px;
+    background-clip: padding-box;
     box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45);
 }
 .modal-header {
@@ -201,7 +290,8 @@ const DARK_CSS: &str = r#"
 @define-color app_sidebar #2a2a2a;
 @define-color app_accent #62a0ea;
 @define-color app_accent_fg #ffffff;
-@define-color app_entry_bg #2e2e2e;
+@define-color app_entry_bg #222222;
+@define-color app_entry_border #4a4a4a;
 "#;
 
 /// Above USER priority on purpose: desktops like Noctalia inject
@@ -328,19 +418,22 @@ fn nav_button(label: &str) -> Button {
 }
 
 /// Centered, width-capped content column: the reference look on wide
-/// windows (title included). Returns the inner column to fill.
+/// windows (title included). An `AdwClamp` caps the width but shrinks
+/// on narrow windows instead of forcing a phantom horizontal
+/// scrollbar. Returns the inner column to fill.
 pub fn centered_column(outer: &GtkBox, width: i32) -> GtkBox {
-    let center = GtkBox::new(Orientation::Horizontal, 0);
-    center.set_halign(gtk4::Align::Center);
-    outer.append(&center);
+    let clamp = libadwaita::Clamp::new();
+    clamp.set_maximum_size(width);
+    clamp.set_hexpand(true);
+    outer.append(&clamp);
     let col = GtkBox::new(Orientation::Vertical, 16);
-    col.set_size_request(width, -1);
-    center.append(&col);
+    col.set_hexpand(true);
+    clamp.set_child(Some(&col));
     col
 }
 
 /// Build the main window. Returns the window (not presented).
-/// `initial_page` deep-links one of home|insights|dictionary|settings,
+/// `initial_page` deep-links one of home|insights|dictionary|sync|settings,
 /// `initial_section` deep-links a settings section.
 pub fn build_app_window(
     app: &Application,
@@ -371,6 +464,7 @@ pub fn build_app_window(
     let home_btn = nav_button("Home");
     let insights_btn = nav_button("Insights");
     let dict_btn = nav_button("Dictionary");
+    let sync_btn = nav_button("Sync");
     sidebar.append(&home_btn);
     sidebar.append(&insights_btn);
     sidebar.append(&dict_btn);
@@ -378,6 +472,8 @@ pub fn build_app_window(
     let spacer = GtkBox::new(Orientation::Vertical, 0);
     spacer.set_vexpand(true);
     sidebar.append(&spacer);
+
+    sidebar.append(&sync_btn);
 
     let settings_btn = nav_button("Settings");
     sidebar.append(&settings_btn);
@@ -399,6 +495,7 @@ pub fn build_app_window(
         Some("dictionary"),
         "Dictionary",
     );
+    let listening_port = state.sync_port.get();
 
     // ---- Settings modal (overlay layer, hidden by default) ----
     let overlay = gtk4::Overlay::new();
@@ -413,52 +510,94 @@ pub fn build_app_window(
     backdrop.set_visible(false);
     overlay.add_overlay(&backdrop);
 
-    // Floating panel: header (title + close) over the settings content.
-    let panel = GtkBox::new(Orientation::Vertical, 0);
-    panel.add_css_class("modal");
-    panel.set_halign(gtk4::Align::Center);
-    panel.set_valign(gtk4::Align::Center);
-    panel.set_size_request(900, 620);
-    panel.set_visible(false);
-    let header = GtkBox::new(Orientation::Horizontal, 8);
-    header.add_css_class("modal-header");
-    let header_title = Label::new(Some("Settings"));
-    header_title.add_css_class("modal-title");
-    header_title.set_xalign(0.0);
-    header_title.set_hexpand(true);
-    let close = Button::with_label("Close");
-    header.append(&header_title);
-    header.append(&close);
-    panel.append(&header);
+    // Floating panels: header (title + close) over each modal's
+    // content. Settings and Sync share one backdrop; showing one
+    // modal always hides the other.
+    fn modal_panel(overlay: &gtk4::Overlay, title: &str) -> (GtkBox, Button) {
+        let panel = GtkBox::new(Orientation::Vertical, 0);
+        panel.add_css_class("modal");
+        panel.set_halign(gtk4::Align::Center);
+        panel.set_valign(gtk4::Align::Center);
+        panel.set_size_request(900, 620);
+        panel.set_visible(false);
+        let header = GtkBox::new(Orientation::Horizontal, 8);
+        header.add_css_class("modal-header");
+        let header_title = Label::new(Some(title));
+        header_title.add_css_class("modal-title");
+        header_title.set_xalign(0.0);
+        header_title.set_hexpand(true);
+        let close = Button::with_label("Close");
+        header.append(&header_title);
+        header.append(&close);
+        panel.append(&header);
+        overlay.add_overlay(&panel);
+        (panel, close)
+    }
+
+    let (settings_panel, settings_close) = modal_panel(&overlay, "Settings");
     let settings_content = crate::app_settings::page(state, initial_section);
     settings_content.set_vexpand(true);
-    panel.append(&settings_content);
-    overlay.add_overlay(&panel);
+    // Inset from the panel edges: full-bleed content would paint over
+    // the panel's rounded corners.
+    settings_content.set_margin_start(12);
+    settings_content.set_margin_end(12);
+    settings_content.set_margin_bottom(12);
+    settings_panel.append(&settings_content);
 
-    let show_settings = Rc::new({
-        let backdrop = backdrop.clone();
-        let panel = panel.clone();
-        move |show: bool| {
-            backdrop.set_visible(show);
-            panel.set_visible(show);
-        }
-    });
+    let (sync_panel, sync_close) = modal_panel(&overlay, "Sync");
+    let sync_content = crate::app_sync::page(state, listening_port);
+    sync_content.set_vexpand(true);
+    sync_content.set_margin_start(12);
+    sync_content.set_margin_end(12);
+    sync_content.set_margin_bottom(12);
+    sync_panel.append(&sync_content);
+
+    /// Show one modal (hiding the other), or hide both with `None`.
+    /// Backdrop follows any visible panel.
+    fn show_modal(
+        which: Option<&str>,
+        backdrop: &Button,
+        settings_panel: &GtkBox,
+        sync_panel: &GtkBox,
+    ) {
+        settings_panel.set_visible(which == Some("settings"));
+        sync_panel.set_visible(which == Some("sync"));
+        backdrop.set_visible(which.is_some());
+    }
+
     {
-        let show_settings = show_settings.clone();
-        backdrop.connect_clicked(move |_| show_settings(false));
+        let backdrop = backdrop.clone();
+        let settings_panel = settings_panel.clone();
+        let sync_panel = sync_panel.clone();
+        let backdrop_conn = backdrop.clone();
+        backdrop_conn
+            .connect_clicked(move |_| show_modal(None, &backdrop, &settings_panel, &sync_panel));
     }
     {
-        let show_settings = show_settings.clone();
-        close.connect_clicked(move |_| show_settings(false));
+        let backdrop = backdrop.clone();
+        let settings_panel = settings_panel.clone();
+        let sync_panel = sync_panel.clone();
+        let settings_close_conn = settings_close.clone();
+        settings_close_conn
+            .connect_clicked(move |_| show_modal(None, &backdrop, &settings_panel, &sync_panel));
+    }
+    {
+        let backdrop = backdrop.clone();
+        let settings_panel = settings_panel.clone();
+        let sync_panel = sync_panel.clone();
+        let sync_close_conn = sync_close.clone();
+        sync_close_conn
+            .connect_clicked(move |_| show_modal(None, &backdrop, &settings_panel, &sync_panel));
     }
 
     let buttons = [
         home_btn.clone(),
         insights_btn.clone(),
         dict_btn.clone(),
+        sync_btn.clone(),
         settings_btn.clone(),
     ];
-    let names = ["home", "insights", "dictionary", "settings"];
+    let names = ["home", "insights", "dictionary", "sync", "settings"];
     let set_active = Rc::new(move |active: &str| {
         for (b, n) in buttons.iter().zip(names.iter()) {
             if *n == active {
@@ -469,7 +608,7 @@ pub fn build_app_window(
         }
     });
 
-    // Main nav switches pages and dismisses the modal.
+    // Main nav switches pages and dismisses any modal.
     for (btn, name) in
         [home_btn, insights_btn, dict_btn]
             .into_iter()
@@ -477,31 +616,38 @@ pub fn build_app_window(
     {
         let stack = stack.clone();
         let set_active = set_active.clone();
-        let show_settings = show_settings.clone();
+        let backdrop = backdrop.clone();
+        let settings_panel = settings_panel.clone();
+        let sync_panel = sync_panel.clone();
         let name = name.to_string();
         btn.connect_clicked(move |_| {
-            show_settings(false);
+            show_modal(None, &backdrop, &settings_panel, &sync_panel);
             stack.set_visible_child_name(&name);
             set_active(&name);
         });
     }
-    // Settings nav toggles the modal instead of switching pages.
-    {
+    // Bottom nav toggles its modal instead of switching pages.
+    for (btn, name, panel) in [
+        (sync_btn, "sync", sync_panel.clone()),
+        (settings_btn, "settings", settings_panel.clone()),
+    ] {
         let set_active = set_active.clone();
-        let show_settings = show_settings.clone();
-        let panel = panel.clone();
+        let backdrop = backdrop.clone();
+        let settings_panel = settings_panel.clone();
+        let sync_panel = sync_panel.clone();
         let stack = stack.clone();
-        settings_btn.connect_clicked(move |_| {
+        let name = name.to_string();
+        btn.connect_clicked(move |_| {
             if panel.is_visible() {
-                show_settings(false);
+                show_modal(None, &backdrop, &settings_panel, &sync_panel);
                 let current = stack
                     .visible_child_name()
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "home".to_string());
                 set_active(&current);
             } else {
-                show_settings(true);
-                set_active("settings");
+                show_modal(Some(&name), &backdrop, &settings_panel, &sync_panel);
+                set_active(&name);
             }
         });
     }
@@ -511,23 +657,28 @@ pub fn build_app_window(
     };
     stack.set_visible_child_name(initial);
     if initial_page == "settings" {
-        show_settings(true);
+        show_modal(Some("settings"), &backdrop, &settings_panel, &sync_panel);
         set_active("settings");
+    } else if initial_page == "sync" {
+        show_modal(Some("sync"), &backdrop, &settings_panel, &sync_panel);
+        set_active("sync");
     } else {
         set_active(initial);
     }
 
-    // Escape dismisses the settings modal, restoring the sidebar
-    // highlight to the page underneath.
+    // Escape dismisses any modal, restoring the sidebar highlight to
+    // the page underneath.
     {
-        let show_settings = show_settings.clone();
         let set_active = set_active.clone();
         let stack = stack.clone();
+        let backdrop = backdrop.clone();
+        let settings_panel = settings_panel.clone();
+        let sync_panel = sync_panel.clone();
         let escape = gtk4::ShortcutController::new();
         let trigger = gtk4::ShortcutTrigger::parse_string("Escape")
             .expect("Escape parses as a shortcut trigger");
         let dismiss = gtk4::CallbackAction::new(move |_, _| {
-            show_settings(false);
+            show_modal(None, &backdrop, &settings_panel, &sync_panel);
             let current = stack
                 .visible_child_name()
                 .map(|s| s.to_string())

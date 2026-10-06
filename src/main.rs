@@ -15,6 +15,9 @@ const APP_ID: &str = "com.mywhisper.Pill";
 ///   --sim lively|quiet|off      (sim auto-burst cadence)
 ///   --say TEXT (show the assistant panel with TEXT)   --hide
 fn main() -> gtk4::glib::ExitCode {
+    let paths = mywhisper::paths::AppPaths::create().expect("create app dirs");
+    let _log_guard = mywhisper::paths::init_file_logging(&paths.state_dir);
+    tracing::info!("mywhisper pill starting");
     let app = Application::builder().application_id(APP_ID).build();
 
     app.connect_activate(|app| {
