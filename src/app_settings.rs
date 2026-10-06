@@ -168,7 +168,22 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
     root.append(&card);
 
     let (card, rows) = group("Sound");
-    switch_row(&rows, "Dictation sounds", p.dictation_sounds);
+    {
+        let (b, _) = row("Dictation sounds");
+        let sw = Switch::new();
+        sw.set_active(p.dictation_sounds);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state.settings.borrow_mut().preferences.dictation_sounds = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
     switch_row(
         &rows,
         "Pause media while dictating",
@@ -593,10 +608,8 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     // enable it: this one is wired.
     if let Some(row_box) = smart_rows.last_child() {
         let mut child = row_box.first_child();
-        let mut found = false;
         while let Some(c) = child {
             if let Ok(spin) = c.clone().downcast::<SpinButton>() {
-                found = true;
                 spin.set_sensitive(true);
                 let state = state.clone();
                 let persist = persist_prefs(state.clone());

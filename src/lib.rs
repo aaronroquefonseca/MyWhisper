@@ -12,5 +12,6 @@ pub mod overlay;
 pub mod paths;
 pub mod service;
 pub mod settings;
+pub mod sound;
 pub mod store;
 pub mod viz;

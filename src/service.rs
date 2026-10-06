@@ -158,7 +158,9 @@ pub fn spawn_hotkey_watcher(db_path: PathBuf, down: DictationHook, up: Dictation
             let Ok(store) = Store::open(&db_path) else {
                 continue;
             };
-            let hotkeys = store.load_settings().hotkeys;
+            let settings = store.load_settings();
+            let hotkeys = settings.hotkeys;
+            crate::sound::set_enabled(settings.preferences.dictation_sounds);
             let current = (
                 hotkeys
                     .effective_hotkeys()

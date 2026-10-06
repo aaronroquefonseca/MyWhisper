@@ -140,8 +140,14 @@ fn run_headless(
             if let Ok(rx) = rx.lock() {
                 while let Ok(cmd) = rx.try_recv() {
                     match cmd {
-                        PillCmd::Show => overlay.show_listening(),
-                        PillCmd::Hide => overlay.hide(),
+                        PillCmd::Show => {
+                            mywhisper::sound::play(mywhisper::sound::UiSound::Start);
+                            overlay.show_listening();
+                        }
+                        PillCmd::Hide => {
+                            mywhisper::sound::play(mywhisper::sound::UiSound::Stop);
+                            overlay.hide();
+                        }
                         PillCmd::Apply(prefs) => overlay.apply_prefs(&prefs),
                     }
                 }
