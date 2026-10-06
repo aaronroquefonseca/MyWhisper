@@ -1,36 +1,34 @@
-# wisprflow-clone-noctalia
+# MyWhisper
 
-Own reimplementation inspired by Wispr Flow. Voice dictation with own ideas. Name mutable.
+Local-first voice dictation: press a key, talk, clean text lands anywhere.
+GTK4 + Rust, Linux/Wayland-first.
 
-Private prototype. Linux-first.
+## Pieces
 
-## Vision
-- Press key → talk → clean text inserted anywhere
-- Fast, local-first where possible
-- Noctalia-style minimal UX
+- **Pill** (`mywhisper` binary): Wayland layer-shell overlay with a live
+  mic-level visualizer and an animated, variable-size assistant panel.
+- **App** (`mywhisper-app` binary): desktop window with sidebar —
+  Home (history), Insights (usage stats + heatmap), Dictionary
+  (words + snippets), Settings and Sync (both modal).
+- **Sync**: serverless device-to-device over encrypted TCP
+  (Noise_XX, ed25519 session proofs), mDNS discovery, LWW merge.
+- **State**: single encrypted `state.db` (`~/.local/share/mywhisper/`),
+  SQLCipher with the key in the OS keychain.
 
-## Planned core
-- [ ] Global hotkey + overlay
-- [ ] STT pipeline (provider TBD, pluggable)
-- [ ] Auto-punctuation / cleanup / commands
-- [ ] Per-app context, history
-- [ ] Settings UI minimal
+## Build
 
-## Non-goals v0
-- Cloud lock-in
-- Heavy DE dependency
-
-## Dev
 ```bash
-# TBD stack
-# v0: docs + spike STT
+cargo fmt && cargo check && cargo build
+cargo test
 ```
 
-## Roadmap
-1. v0.1: mic → text file spike
-2. v0.2: hotkey + active-window insert
-3. v0.3: cleanup pass + history
-4. v0.4: settings + packaging
+## Run
 
-## Rename note
-Repo name temporary. Code name agnostic: `wfnd/` / `wf-clone`.
+```bash
+./target/debug/mywhisper-app            # desktop app
+./target/debug/mywhisper --help         # pill options
+```
+
+## System deps (Arch)
+
+gtk4, gtk4-layer-shell, libadwaita, alsa-lib, pkgconf.
