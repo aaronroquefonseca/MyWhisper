@@ -103,6 +103,17 @@ fn idx_of(options: &[&str], value: &str) -> usize {
 
 // ---------------------------------------------------------------- sections
 
+/// Save settings without touching the hotkey listener (pill and
+/// preference changes propagate to the service through the DB).
+fn persist_prefs(state: Rc<AppState>) -> Rc<dyn Fn()> {
+    Rc::new(move || {
+        let settings = state.settings.borrow();
+        if let Err(e) = state.store.save_settings(&settings) {
+            eprintln!("[app] prefs save failed: {e}");
+        }
+    })
+}
+
 fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBox {
     let root = section_box("Preferences", "General application behavior.");
     let p = state.settings.borrow().preferences.clone();
@@ -154,18 +165,196 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
     );
     root.append(&card);
 
-    let (card, rows) = group("Floating icon");
-    switch_row(&rows, "Auto-hide", p.floating_icon_auto_hide);
-    combo_row(
-        &rows,
-        "Start position",
-        &["Bottom right", "Bottom center", "Bottom left"],
-        match p.floating_icon_position {
-            crate::settings::FloatingPosition::BottomRight => 0,
-            crate::settings::FloatingPosition::BottomCenter => 1,
-            crate::settings::FloatingPosition::BottomLeft => 2,
-        },
-    );
+    let (card, rows) = group("Floating pill");
+    {
+        let (b, _) = row("Start position");
+        let pos = DropDown::new(
+            Some(StringList::new(&[
+                "Bottom center",
+                "Bottom left",
+                "Bottom right",
+            ])),
+            None::<gtk4::Expression>,
+        );
+        pos.set_selected(match p.pill.position {
+            crate::settings::FloatingPosition::BottomCenter => 0,
+            crate::settings::FloatingPosition::BottomLeft => 1,
+            crate::settings::FloatingPosition::BottomRight => 2,
+        });
+        {
+            let state = state.clone();
+            let persist = persist_prefs(state.clone());
+            pos.connect_selected_notify(move |d| {
+                state.settings.borrow_mut().preferences.pill.position = match d.selected() {
+                    1 => crate::settings::FloatingPosition::BottomLeft,
+                    2 => crate::settings::FloatingPosition::BottomRight,
+                    _ => crate::settings::FloatingPosition::BottomCenter,
+                };
+                persist();
+            });
+        }
+        b.append(&pos);
+        rows.append(&b);
+    }
+
+    {
+        let (b, _) = row("Animation");
+        let mode = DropDown::new(
+            Some(StringList::new(&["Tape", "History"])),
+            None::<gtk4::Expression>,
+        );
+        mode.set_selected(match p.pill.viz_mode {
+            crate::viz::VizMode::Tape => 0,
+            crate::viz::VizMode::History => 1,
+        });
+        {
+            let state = state.clone();
+            let persist = persist_prefs(state.clone());
+            mode.connect_selected_notify(move |d| {
+                state.settings.borrow_mut().preferences.pill.viz_mode = match d.selected() {
+                    1 => crate::viz::VizMode::History,
+                    _ => crate::viz::VizMode::Tape,
+                };
+                persist();
+            });
+        }
+        b.append(&mode);
+        rows.append(&b);
+    }
+    {
+        let (b, _) = row("Bars");
+        let bars = DropDown::new(
+            Some(StringList::new(&["7", "11", "15", "21"])),
+            None::<gtk4::Expression>,
+        );
+        bars.set_selected(match p.pill.bars {
+            7 => 0,
+            15 => 2,
+            21 => 3,
+            _ => 1,
+        });
+        {
+            let state = state.clone();
+            let persist = persist_prefs(state.clone());
+            bars.connect_selected_notify(move |d| {
+                state.settings.borrow_mut().preferences.pill.bars = match d.selected() {
+                    0 => 7,
+                    2 => 15,
+                    3 => 21,
+                    _ => 11,
+                };
+                persist();
+            });
+        }
+        b.append(&bars);
+        rows.append(&b);
+    }
+    {
+        let (b, _) = row("Height");
+        let heights = ["12", "14", "16", "18", "20", "24", "28", "32"];
+        let height = DropDown::new(Some(StringList::new(&heights)), None::<gtk4::Expression>);
+        let current = p.pill.lane_max as i32;
+        height.set_selected(
+            heights
+                .iter()
+                .position(|h| h.parse::<i32>().ok() == Some(current))
+                .unwrap_or(3) as u32,
+        );
+        {
+            let state = state.clone();
+            let persist = persist_prefs(state.clone());
+            height.connect_selected_notify(move |d| {
+                let v: f64 = ["12", "14", "16", "18", "20", "24", "28", "32"]
+                    [d.selected().min(7) as usize]
+                    .parse()
+                    .unwrap_or(18.0);
+                state.settings.borrow_mut().preferences.pill.lane_max = v;
+                persist();
+            });
+        }
+        b.append(&height);
+        rows.append(&b);
+    }
+    {
+        let (b, _) = row("Theme");
+        let theme = DropDown::new(
+            Some(StringList::new(&["White", "Grey", "Red"])),
+            None::<gtk4::Expression>,
+        );
+        theme.set_selected(match p.pill.theme {
+            crate::viz::VizTheme::White => 0,
+            crate::viz::VizTheme::Grey => 1,
+            crate::viz::VizTheme::Red => 2,
+        });
+        {
+            let state = state.clone();
+            let persist = persist_prefs(state.clone());
+            theme.connect_selected_notify(move |d| {
+                state.settings.borrow_mut().preferences.pill.theme = match d.selected() {
+                    1 => crate::viz::VizTheme::Grey,
+                    2 => crate::viz::VizTheme::Red,
+                    _ => crate::viz::VizTheme::White,
+                };
+                persist();
+            });
+        }
+        b.append(&theme);
+        rows.append(&b);
+    }
+    {
+        let (b, _) = row("Ornament");
+        let orn = DropDown::new(
+            Some(StringList::new(&["None", "Mark", "Mic", "Dot"])),
+            None::<gtk4::Expression>,
+        );
+        orn.set_selected(match p.pill.ornament {
+            crate::viz::Ornament::None => 0,
+            crate::viz::Ornament::Mark => 1,
+            crate::viz::Ornament::Mic => 2,
+            crate::viz::Ornament::Dot => 3,
+        });
+        {
+            let state = state.clone();
+            let persist = persist_prefs(state.clone());
+            orn.connect_selected_notify(move |d| {
+                state.settings.borrow_mut().preferences.pill.ornament = match d.selected() {
+                    1 => crate::viz::Ornament::Mark,
+                    2 => crate::viz::Ornament::Mic,
+                    3 => crate::viz::Ornament::Dot,
+                    _ => crate::viz::Ornament::None,
+                };
+                persist();
+            });
+        }
+        b.append(&orn);
+        rows.append(&b);
+    }
+    {
+        let (b, _) = row("Idle animation");
+        let idle = DropDown::new(
+            Some(StringList::new(&["Still", "Silhouette", "Calm"])),
+            None::<gtk4::Expression>,
+        );
+        idle.set_selected(match p.pill.idle {
+            crate::viz::IdleStyle::Still => 0,
+            crate::viz::IdleStyle::Silhouette => 1,
+            crate::viz::IdleStyle::Calm => 2,
+        });
+        {
+            let state = state.clone();
+            let persist = persist_prefs(state.clone());
+            idle.connect_selected_notify(move |d| {
+                state.settings.borrow_mut().preferences.pill.idle = match d.selected() {
+                    1 => crate::viz::IdleStyle::Silhouette,
+                    2 => crate::viz::IdleStyle::Calm,
+                    _ => crate::viz::IdleStyle::Still,
+                };
+                persist();
+            });
+        }
+        b.append(&idle);
+        rows.append(&b);
+    }
     root.append(&card);
 
     let (card, rows) = group("Language");

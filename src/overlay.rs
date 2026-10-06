@@ -63,6 +63,7 @@ impl OverlayState {
 
 const NAMESPACE: &str = "mywhisper-pill";
 const BOTTOM_MARGIN: i32 = 24;
+const SIDE_MARGIN: i32 = 24;
 /// Expand/collapse/pop animation length; hide fade is shorter.
 const ANIM_MS: u64 = 220;
 const HIDE_MS: u64 = 120;
@@ -153,6 +154,8 @@ impl VoiceOverlay {
             window.set_anchor(Edge::Right, false);
             window.set_anchor(Edge::Bottom, true);
             window.set_margin(Edge::Bottom, BOTTOM_MARGIN);
+            window.set_margin(Edge::Left, SIDE_MARGIN);
+            window.set_margin(Edge::Right, SIDE_MARGIN);
             // Critical for the focus test: never take keyboard focus.
             window.set_keyboard_mode(KeyboardMode::None);
             // Never reserve desktop/workspace space.
@@ -325,6 +328,37 @@ impl VoiceOverlay {
     /// unavailable (stays on sim).
     pub fn set_viz_mic(&self, real: bool) -> bool {
         self.inner.viz.set_mic_source(real)
+    }
+
+    /// Pin the layer surface to a screen corner/edge. Bottom anchor is
+    /// constant; only the horizontal anchoring moves. No-op on the
+    /// undecorated fallback window.
+    pub fn set_position(&self, pos: crate::settings::FloatingPosition) {
+        use crate::settings::FloatingPosition as P;
+        if !self.inner.layer_shell {
+            return;
+        }
+        let (left, right) = match pos {
+            P::BottomCenter => (false, false),
+            P::BottomLeft => (true, false),
+            P::BottomRight => (false, true),
+        };
+        self.inner.window.set_anchor(Edge::Left, left);
+        self.inner.window.set_anchor(Edge::Right, right);
+        self.inner.window.queue_resize();
+        eprintln!("[poc] overlay position -> {pos:?}");
+    }
+
+    /// Apply a full pill preference snapshot (service watcher path).
+    /// Runs on the GTK thread.
+    pub fn apply_prefs(&self, p: &crate::settings::PillPrefs) {
+        self.set_position(p.position);
+        self.set_viz_mode(p.viz_mode);
+        self.set_viz_bars(p.bars);
+        self.set_viz_height(p.lane_max);
+        self.set_viz_theme(p.theme);
+        self.set_viz_ornament(p.ornament);
+        self.set_viz_idle(p.idle);
     }
 
     /// Re-measure content and resize the toplevel. Needed after any

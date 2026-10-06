@@ -84,6 +84,33 @@ pub enum MicSelection {
     Specific,
 }
 
+/// Pill visualizer preferences. Defaults mirror the service runtime
+/// (tape, 11 bars, 18px lane, no ornament, still idle).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PillPrefs {
+    pub position: FloatingPosition,
+    pub viz_mode: crate::viz::VizMode,
+    pub bars: usize,
+    pub lane_max: f64,
+    pub theme: crate::viz::VizTheme,
+    pub ornament: crate::viz::Ornament,
+    pub idle: crate::viz::IdleStyle,
+}
+
+impl Default for PillPrefs {
+    fn default() -> Self {
+        Self {
+            position: FloatingPosition::BottomCenter,
+            viz_mode: crate::viz::VizMode::Tape,
+            bars: 11,
+            lane_max: 18.0,
+            theme: crate::viz::VizTheme::White,
+            ornament: crate::viz::Ornament::None,
+            idle: crate::viz::IdleStyle::Still,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preferences {
     pub theme: Theme,
@@ -91,8 +118,8 @@ pub struct Preferences {
     pub pause_media_on_dictation: bool,
     pub auto_paste: bool,
     pub keep_transcription_in_clipboard: bool,
-    pub floating_icon_auto_hide: bool,
-    pub floating_icon_position: FloatingPosition,
+    #[serde(default)]
+    pub pill: PillPrefs,
     pub ui_language: String,
     pub transcription_language: String,
     pub launch_at_login: bool,
@@ -111,8 +138,7 @@ impl Default for Preferences {
             pause_media_on_dictation: false,
             auto_paste: true,
             keep_transcription_in_clipboard: false,
-            floating_icon_auto_hide: false,
-            floating_icon_position: FloatingPosition::BottomRight,
+            pill: PillPrefs::default(),
             ui_language: "en".to_string(),
             transcription_language: "auto".to_string(),
             launch_at_login: false,

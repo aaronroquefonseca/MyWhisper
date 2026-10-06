@@ -184,6 +184,38 @@ pub fn spawn_hotkey_watcher(db_path: PathBuf, down: DictationHook, up: Dictation
     });
 }
 
+/// Commands from background threads to the service's GTK thread.
+/// `VoiceOverlay` is `!Send`, so everything pill-related crosses as
+/// a message and applies on the main loop.
+#[derive(Debug, Clone)]
+pub enum PillCmd {
+    Show,
+    Hide,
+    Apply(crate::settings::PillPrefs),
+}
+
+/// Watch the database for pill preference changes (written by any
+/// frontend) and forward snapshots to the GTK thread.
+pub fn spawn_pill_watcher(db_path: PathBuf, tx: std::sync::mpsc::Sender<PillCmd>) {
+    std::thread::spawn(move || {
+        let mut last: Option<crate::settings::PillPrefs> = None;
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            let Ok(store) = Store::open(&db_path) else {
+                continue;
+            };
+            let current = store.load_settings().preferences.pill;
+            if last.as_ref() != Some(&current) {
+                last = Some(current.clone());
+                eprintln!("[service] pill prefs changed: {current:?}");
+                if tx.send(PillCmd::Apply(current)).is_err() {
+                    return;
+                }
+            }
+        }
+    });
+}
+
 // ---------------------------------------------------------------- systemd
 
 const UNIT_NAME: &str = "mywhisper.service";

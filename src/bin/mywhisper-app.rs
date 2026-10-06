@@ -99,11 +99,7 @@ fn run_headless(
     app: gtk4::Application,
     paths: &mywhisper::paths::AppPaths,
 ) -> gtk4::glib::ExitCode {
-    #[derive(Debug)]
-    enum PillCmd {
-        Show,
-        Hide,
-    }
+    use mywhisper::service::PillCmd;
     let (tx, rx) = std::sync::mpsc::channel::<PillCmd>();
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
     let down: mywhisper::hotkey::DictationHook = std::sync::Arc::new({
@@ -130,7 +126,8 @@ fn run_headless(
         down.clone(),
         up.clone(),
     );
-    mywhisper::service::spawn_hotkey_watcher(db_path, down, up);
+    mywhisper::service::spawn_hotkey_watcher(db_path.clone(), down, up);
+    mywhisper::service::spawn_pill_watcher(db_path, tx.clone());
 
     app.connect_activate(move |app| {
         eprintln!("[service] activate, headless engine");
@@ -145,6 +142,7 @@ fn run_headless(
                     match cmd {
                         PillCmd::Show => overlay.show_listening(),
                         PillCmd::Hide => overlay.hide(),
+                        PillCmd::Apply(prefs) => overlay.apply_prefs(&prefs),
                     }
                 }
             }
