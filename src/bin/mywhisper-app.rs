@@ -1,5 +1,6 @@
 use gtk4::prelude::*;
 use mywhisper::app::{AppState, apply_theme, build_app_window, log_theme_state};
+use std::rc::Rc;
 
 const APP_ID: &str = "com.mywhisper.App";
 /// Separate bus name for the headless engine: sharing the GUI's ID
@@ -133,6 +134,9 @@ fn run_headless(
         eprintln!("[service] activate, headless engine");
         let overlay = mywhisper::overlay::VoiceOverlay::new(app);
         overlay.hide();
+        // Players we paused ourselves; resumed on dictation stop.
+        let paused: Rc<std::cell::RefCell<Vec<String>>> =
+            Rc::new(std::cell::RefCell::new(Vec::new()));
         // Drain pill commands on the GTK thread.
         let overlay = overlay.clone();
         let rx = rx.clone();
@@ -142,10 +146,14 @@ fn run_headless(
                     match cmd {
                         PillCmd::Show => {
                             mywhisper::sound::play(mywhisper::sound::UiSound::Start);
+                            *paused.borrow_mut() = mywhisper::media::pause_playing();
                             overlay.show_listening();
                         }
                         PillCmd::Hide => {
                             mywhisper::sound::play(mywhisper::sound::UiSound::Stop);
+                            mywhisper::media::resume(
+                                &paused.borrow_mut().drain(..).collect::<Vec<_>>(),
+                            );
                             overlay.hide();
                         }
                         PillCmd::Apply(prefs) => overlay.apply_prefs(&prefs),

@@ -161,6 +161,7 @@ pub fn spawn_hotkey_watcher(db_path: PathBuf, down: DictationHook, up: Dictation
             let settings = store.load_settings();
             let hotkeys = settings.hotkeys;
             crate::sound::set_enabled(settings.preferences.dictation_sounds);
+            crate::media::set_enabled(settings.preferences.pause_media_on_dictation);
             let current = (
                 hotkeys
                     .effective_hotkeys()

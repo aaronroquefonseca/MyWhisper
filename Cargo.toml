@@ -19,6 +19,8 @@ rusqlite = { version = "0.40.2", features = ["bundled", "bundled-sqlcipher"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 snow = "0.10.0"
+tokio = { version = "1.53.2", features = ["rt"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = "0.3.23"
+zbus = "5.19.0"

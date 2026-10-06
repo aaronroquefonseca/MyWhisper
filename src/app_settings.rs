@@ -184,11 +184,27 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
         b.append(&sw);
         rows.append(&b);
     }
-    switch_row(
-        &rows,
-        "Pause media while dictating",
-        p.pause_media_on_dictation,
-    );
+    // Wired: the service watcher picks the preference up live.
+    {
+        let (b, _) = row("Pause media while dictating");
+        let sw = Switch::new();
+        sw.set_active(p.pause_media_on_dictation);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state
+                    .settings
+                    .borrow_mut()
+                    .preferences
+                    .pause_media_on_dictation = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
     root.append(&card);
 
     let (card, rows) = group("Clipboard");

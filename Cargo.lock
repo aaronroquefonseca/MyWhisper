@@ -1781,9 +1781,11 @@ dependencies = [
  "serde",
  "serde_json",
  "snow",
+ "tokio",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "zbus",
 ]
 
 [[package]]

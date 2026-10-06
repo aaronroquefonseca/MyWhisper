@@ -6,6 +6,7 @@ pub mod app_settings;
 pub mod app_sync;
 pub mod device;
 pub mod hotkey;
+pub mod media;
 pub mod mic;
 pub mod net;
 pub mod overlay;
