@@ -197,6 +197,7 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.micinput" => ("Input", "Entrada"),
         "row.deviceid" => ("Device id", "ID de dispositivo"),
         "row.micwarm" => ("Keep microphone warm", "Mantener el micrófono activo"),
+        "row.micunlisted" => ("Disconnected: ", "Desconectado: "),
         "row.autolearn" => (
             "Learn words from corrections",
             "Aprender palabras de correcciones",

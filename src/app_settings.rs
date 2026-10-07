@@ -486,34 +486,101 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
     root.append(&card);
 
     let (card, rows) = group(tr("group.microphone"));
-    combo_row(
-        &rows,
-        tr("row.micinput"),
-        &[tr("opt.sysdefault"), tr("opt.builtin"), tr("opt.specific")],
-        match p.mic_selection {
+    // One picker: System default / Built-in / each live source by
+    // its server description (Bluetooth included; ALSA plugins and
+    // monitors excluded). Picking a device stores Specific + its
+    // server name. A stored-but-unlisted device (unplugged) still
+    // shows as the current choice.
+    {
+        let sources = crate::mic::input_sources();
+        let mut options: Vec<String> = vec![
+            tr("opt.sysdefault").to_string(),
+            tr("opt.builtin").to_string(),
+        ];
+        options.extend(sources.iter().map(|d| d.description.clone()));
+        if !matches!(
+            p.mic_selection,
+            crate::settings::MicSelection::System | crate::settings::MicSelection::BuiltIn
+        ) && !sources.iter().any(|d| d.name == p.mic_device_id)
+        {
+            options.push(tr("row.micunlisted").to_string() + &p.mic_device_id);
+        }
+        let (b, _) = row(tr("row.micinput"));
+        let input_drop = DropDown::new(
+            Some(StringList::new(
+                &options.iter().map(String::as_str).collect::<Vec<_>>(),
+            )),
+            None::<gtk4::Expression>,
+        );
+        input_drop.set_selected(match p.mic_selection {
             crate::settings::MicSelection::System => 0,
             crate::settings::MicSelection::BuiltIn => 1,
-            crate::settings::MicSelection::Specific => 2,
-        },
-    );
-    entry_row(&rows, tr("row.deviceid"), &p.mic_device_id, false);
-    let hold_opts = [
-        tr("opt.off"),
-        tr("opt.hold10s"),
-        tr("opt.hold60s"),
-        tr("opt.hold15m"),
-    ];
-    combo_row(
-        &rows,
-        tr("row.micwarm"),
-        &hold_opts,
-        match p.mic_warm_hold_secs {
+            crate::settings::MicSelection::Specific => sources
+                .iter()
+                .position(|d| d.name == p.mic_device_id)
+                .map(|i| (i + 2) as u32)
+                .unwrap_or(options.len().saturating_sub(1) as u32),
+        });
+        {
+            let state = state.clone();
+            input_drop.connect_selected_notify(move |d| {
+                {
+                    let mut prefs = state.settings.borrow_mut();
+                    match d.selected() {
+                        0 => {
+                            prefs.preferences.mic_selection = crate::settings::MicSelection::System;
+                        }
+                        1 => {
+                            prefs.preferences.mic_selection =
+                                crate::settings::MicSelection::BuiltIn;
+                        }
+                        n => {
+                            prefs.preferences.mic_selection =
+                                crate::settings::MicSelection::Specific;
+                            if let Some(src) = sources.get((n as usize).saturating_sub(2)) {
+                                prefs.preferences.mic_device_id = src.name.clone();
+                            }
+                        }
+                    }
+                }
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&input_drop);
+        rows.append(&b);
+    }
+    // Warm hold is already wired (persisted; the mic honors it on
+    // every edge). Display-only combo becomes a live picker here.
+    {
+        let hold_opts = [
+            tr("opt.off"),
+            tr("opt.hold10s"),
+            tr("opt.hold60s"),
+            tr("opt.hold15m"),
+        ];
+        let (b, _) = row(tr("row.micwarm"));
+        let warm_drop = DropDown::new(Some(StringList::new(&hold_opts)), None::<gtk4::Expression>);
+        warm_drop.set_selected(match p.mic_warm_hold_secs {
             10 => 1,
             60 => 2,
             900 => 3,
             _ => 0,
-        },
-    );
+        });
+        {
+            let state = state.clone();
+            warm_drop.connect_selected_notify(move |d| {
+                state.settings.borrow_mut().preferences.mic_warm_hold_secs = match d.selected() {
+                    1 => 10,
+                    2 => 60,
+                    3 => 900,
+                    _ => 0,
+                };
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&warm_drop);
+        rows.append(&b);
+    }
     root.append(&card);
 
     let (card, rows) = group(tr("group.dictionary"));
