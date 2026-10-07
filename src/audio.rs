@@ -207,6 +207,47 @@ pub fn apply_vad(samples: &[f32], gate: f32) -> VadResult {
     VadResult::Speech(samples[from..to].to_vec())
 }
 
+/// Audio vault dir (`<data>/audio`). The capture pipeline is
+/// RAM-only, so this stays empty until an audio-storing feature
+/// lands — but retention controls already manage it, which keeps
+/// the privacy story honest instead of stubbed.
+pub fn audio_vault_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.join("audio")
+}
+
+/// Delete every vault file. Returns files removed.
+pub fn clear_audio(data_dir: &std::path::Path) -> usize {
+    let dir = audio_vault_dir(data_dir);
+    let entries = std::fs::read_dir(&dir).map(|r| r.count()).unwrap_or(0);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    entries
+}
+
+/// Delete vault files older than `days`. Tombstone-free zone (audio
+/// rows never sync), so plain deletion is safe. Returns files removed.
+pub fn purge_old_audio(data_dir: &std::path::Path, days: u32) -> usize {
+    let dir = audio_vault_dir(data_dir);
+    let cutoff_secs = days as u64 * 86400;
+    let now = std::time::SystemTime::now();
+    let mut removed = 0;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .map(|d| d.as_secs() > cutoff_secs)
+                .unwrap_or(false);
+            if old && std::fs::remove_file(entry.path()).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    removed
+}
+
 /// Minimal WAV (16-bit PCM mono) builder, in RAM. Never touches disk:
 /// the bytes go straight into HTTP multipart / debug paths.
 pub fn wav_bytes_16k(samples: &[i16]) -> Vec<u8> {
@@ -303,6 +344,21 @@ mod tests {
             VadResult::Speech(whole) => assert_eq!(whole.len(), sig.len()),
             VadResult::Silence => panic!("gate 0 must pass"),
         }
+    }
+
+    #[test]
+    fn audio_vault_clear_and_purge() {
+        let base = std::env::temp_dir().join(format!("mw-vault-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dir = super::audio_vault_dir(&base);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.wav"), [1, 2, 3]).unwrap();
+        std::fs::write(dir.join("b.wav"), [4, 5]).unwrap();
+        // Fresh files survive a 30-day purge, clear removes all.
+        assert_eq!(super::purge_old_audio(&base, 30), 0);
+        assert_eq!(super::clear_audio(&base), 2);
+        assert!(dir.is_dir());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

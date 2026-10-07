@@ -445,8 +445,14 @@ impl Default for LanguageModelSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrivacySettings {
-    /// Audio retention in days; 0 = disabled.
+    /// Audio retention in days (no Never option: clips grow fast).
     pub audio_retention_days: u32,
+    /// Master switch for the audio vault. Default off. Note: the
+    /// capture pipeline is RAM-only, so the vault is empty until an
+    /// audio-storing feature lands; the controls below already manage
+    /// it (greyed while off, purge + clear work on whatever is there).
+    #[serde(default)]
+    pub keep_audio_recordings: bool,
     pub history_enabled: bool,
     /// Transcript auto-delete in days; 0 = keep forever.
     pub transcript_auto_delete_days: u32,
@@ -457,6 +463,7 @@ impl Default for PrivacySettings {
     fn default() -> Self {
         Self {
             audio_retention_days: 30,
+            keep_audio_recordings: false,
             history_enabled: true,
             transcript_auto_delete_days: 0,
             save_discarded_transcriptions: false,

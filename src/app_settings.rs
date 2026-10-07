@@ -123,19 +123,6 @@ fn idx_of(options: &[&str], value: &str) -> usize {
     options.iter().position(|o| *o == value).unwrap_or(0)
 }
 
-/// Translated day-count options, parallel to the hardcoded day arrays.
-fn retention_opts() -> [&'static str; 7] {
-    [
-        tr("opt.disabled"),
-        tr("opt.day1"),
-        tr("opt.day7"),
-        tr("opt.day14"),
-        tr("opt.day30"),
-        tr("opt.day60"),
-        tr("opt.day90"),
-    ]
-}
-
 fn delete_opts() -> [&'static str; 7] {
     [
         tr("opt.never"),
@@ -2387,21 +2374,115 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
     let root = section_box(tr("settings.privacy"), tr("settings.privacy.sub"));
 
     let (card, rows) = group(tr("group.audioret"));
-    const RETENTION_DAYS: &[u32] = &[0, 1, 7, 14, 30, 60, 90];
-    combo_row(
-        &rows,
-        tr("row.keepaudio"),
-        &retention_opts(),
-        RETENTION_DAYS
-            .iter()
-            .position(|d| *d == state.settings.borrow().privacy.audio_retention_days)
-            .unwrap_or(4),
-    );
-    let (b, _) = row(tr("row.storedaudio"));
-    let clear = Button::with_label(tr("action.clearallaudio"));
-    clear.set_sensitive(false); // not wired yet
-    b.append(&clear);
-    rows.append(&b);
+    // No Never here by design (clips grow fast). Default 30 days.
+    const AUDIO_DAYS: &[u32] = &[1, 7, 14, 30, 60, 90];
+    let audio_dd: Rc<RefCell<Option<DropDown>>> = Rc::new(RefCell::new(None));
+    {
+        let (b, _) = row(tr("row.keepaudio"));
+        let sw = Switch::new();
+        sw.set_active(state.settings.borrow().privacy.keep_audio_recordings);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            let audio_dd = audio_dd.clone();
+            sw.connect_state_set(move |_, active| {
+                state
+                    .settings
+                    .borrow_mut()
+                    .privacy
+                    .keep_audio_recordings = active;
+                persist_prefs(state.clone())();
+                // Clear stays enabled: recordings may predate the toggle.
+                if let Some(dd) = audio_dd.borrow().as_ref() {
+                    dd.set_sensitive(active);
+                }
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
+    {
+        let (b, _) = row(tr("row.autodeleteaudio"));
+        let dd = DropDown::new(
+            Some(StringList::new(&[
+                tr("opt.older1"),
+                tr("opt.older7"),
+                tr("opt.older14"),
+                tr("opt.older30"),
+                tr("opt.older60"),
+                tr("opt.older90"),
+            ])),
+            None::<gtk4::Expression>,
+        );
+        dd.set_selected(
+            AUDIO_DAYS
+                .iter()
+                .position(|d| {
+                    *d == state.settings.borrow().privacy.audio_retention_days
+                })
+                .unwrap_or(3) as u32,
+        );
+        dd.set_valign(gtk4::Align::Center);
+        dd.set_sensitive(state.settings.borrow().privacy.keep_audio_recordings);
+        {
+            let state = state.clone();
+            dd.connect_selected_notify(move |d| {
+                state.settings.borrow_mut().privacy.audio_retention_days = AUDIO_DAYS
+                    .get(d.selected() as usize)
+                    .copied()
+                    .unwrap_or(30);
+                persist_prefs(state.clone())();
+            });
+        }
+        {
+            let mut slot = audio_dd.borrow_mut();
+            *slot = Some(dd.clone());
+        }
+        b.append(&dd);
+        rows.append(&b);
+    }
+    {
+        let (b, _) = row(tr("row.storedaudio"));
+        let open = Button::with_label(tr("action.openfolder"));
+        {
+            let state = state.clone();
+            open.connect_clicked(move |_| {
+                let data_dir = state
+                    .db_path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_default();
+                let dir = crate::audio::audio_vault_dir(&data_dir);
+                let _ = std::fs::create_dir_all(&dir);
+                if let Err(e) = std::process::Command::new("xdg-open")
+                    .arg(&dir)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    eprintln!("[privacy] open folder: {e}");
+                }
+            });
+        }
+        b.append(&open);
+        let clear = Button::with_label(tr("action.clearallaudio"));
+        {
+            let state = state.clone();
+            clear.connect_clicked(move |_| {
+                let data_dir = state
+                    .db_path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_default();
+                let n = crate::audio::clear_audio(&data_dir);
+                eprintln!("[privacy] cleared {n} audio files");
+            });
+        }
+        b.append(&clear);
+        rows.append(&b);
+    }
     root.append(&card);
 
     let (card, rows) = group(tr("group.transcripts"));

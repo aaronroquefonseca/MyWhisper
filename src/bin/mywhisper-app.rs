@@ -245,6 +245,7 @@ fn run_headless(
                                         let settings = store.load_settings();
                                         mywhisper::transcribe::begin_utterance(
                                             settings.stt,
+                                            settings.privacy.keep_audio_recordings,
                                             &data_dir,
                                         );
                                     }

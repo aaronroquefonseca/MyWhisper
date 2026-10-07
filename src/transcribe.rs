@@ -1110,6 +1110,9 @@ struct LiveUtterance {
     /// endpointing owns that path).
     vad_enabled: bool,
     vad_gate: f32,
+    /// Privacy snapshot at press: completed utterances persist a
+    /// 16 kHz WAV ({uuid}.wav) into the audio vault when on.
+    keep_audio: bool,
 }
 
 static LIVE: OnceLock<Mutex<Option<LiveUtterance>>> = OnceLock::new();
@@ -1124,7 +1127,11 @@ fn live() -> &'static Mutex<Option<LiveUtterance>> {
 /// brackets the hold. Server warmup happens in the background: the
 /// release worker blocks on it before transcribing, so a cold first
 /// press pastes late but never loses audio.
-pub fn begin_utterance(stt: crate::settings::SttSettings, data_dir: &Path) {
+pub fn begin_utterance(
+    stt: crate::settings::SttSettings,
+    keep_audio: bool,
+    data_dir: &Path,
+) {
     end_stale();
     CANCELLED.store(false, Ordering::Relaxed);
     let plan = match plan_for(&stt, data_dir) {
@@ -1192,6 +1199,7 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, data_dir: &Path) {
         backend,
         vad_enabled: stt.vad_enabled,
         vad_gate: stt.vad_threshold,
+        keep_audio,
     });
 }
 
@@ -1358,7 +1366,7 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
         let out = finish_session(sess);
         BUSY.store(false, Ordering::SeqCst);
         match out {
-            Ok(Some((text, secs))) => deliver(text, secs),
+            Ok(Some((text, secs, wav))) => deliver(text, secs, wav),
             Ok(None) => {}
             Err(e) => eprintln!("[stt] transcription failed: {e}"),
         }
@@ -1382,7 +1390,7 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
 
 /// Blocking finalization for one utterance. `Ok(None)` = nothing to
 /// paste (too short / empty result).
-fn finish_session(sess: LiveUtterance) -> Result<Option<(String, f64)>, String> {
+fn finish_session(sess: LiveUtterance) -> Result<Option<(String, f64, Option<Vec<u8>>)>, String> {
     let secs = sess.started.elapsed().as_secs_f64();
     // Engine warmup finishes here (cold first press waits, later
     // ones sail through an already-running server).
@@ -1392,8 +1400,13 @@ fn finish_session(sess: LiveUtterance) -> Result<Option<(String, f64)>, String> 
     eprintln!("[stt] release: engine ready, transcribing ({secs:.1}s window)");
     if let Some(rx) = sess.result_rx {
         // Streaming: the pump owns the tail; wait for the final.
+        // Audio retention skips streaming utterances (chunks live in
+        // the pump, never materialize here).
+        if sess.keep_audio {
+            eprintln!("[stt] release: audio retention skips streaming utterances");
+        }
         let text = rx.recv().map_err(|_| "online pump died".to_string())??;
-        return Ok(empty_to_none(text).map(|t| (t, secs)));
+        return Ok(empty_to_none(text).map(|t| (t, secs, None)));
     }
     let (pcm, rate) = sess.recorder.lock().unwrap().finish();
     if rate == 0 || pcm.is_empty() {
@@ -1422,8 +1435,14 @@ fn finish_session(sess: LiveUtterance) -> Result<Option<(String, f64)>, String> 
         eprintln!("[stt] release: utterance too short, skipping");
         return Ok(None);
     }
+    let wav = if sess.keep_audio {
+        Some(wav_bytes_16k(&audio::f32_to_i16(&f32s)))
+    } else {
+        None
+    };
     let t0 = Instant::now();
-    let out = transcribe_blocking(&sess.plan, &f32s).map(|r| empty_to_none(r).map(|t| (t, secs)));
+    let out = transcribe_blocking(&sess.plan, &f32s)
+        .map(|r| empty_to_none(r).map(|t| (t, secs, wav)));
     eprintln!(
         "[stt] release: inference took {:.1}s",
         t0.elapsed().as_secs_f64()
@@ -1523,7 +1542,7 @@ fn post_process(raw: &str) -> String {
 /// FINAL transcript via the configured clipboard pipeline.
 /// Retention: history off pastes without storing; auto-delete purges
 /// old rows first (tombstones survive).
-fn deliver(raw: String, secs: f64) {
+fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
     let text = post_process(&raw);
     eprintln!("[stt] final: {text}");
     let paths = match crate::paths::AppPaths::create() {
@@ -1541,6 +1560,17 @@ fn deliver(raw: String, secs: f64) {
         }
     };
     let settings = store.load_settings();
+    if settings.privacy.keep_audio_recordings && settings.privacy.audio_retention_days > 0 {
+        let data_dir = paths
+            .db_file()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
+        let n = crate::audio::purge_old_audio(&data_dir, settings.privacy.audio_retention_days);
+        if n > 0 {
+            eprintln!("[stt] audio auto-delete: {n} files");
+        }
+    }
     if settings.privacy.transcript_auto_delete_days > 0 {
         if let Err(e) = store.purge_old_history(settings.privacy.transcript_auto_delete_days) {
             eprintln!("[stt] auto-delete: {e}");
@@ -1551,8 +1581,24 @@ fn deliver(raw: String, secs: f64) {
         let node = crate::device::DeviceIdentity::load_or_create(&paths.device_key_file())
             .map(|i| i.node_id)
             .unwrap_or_else(|_| "unknown".to_string());
-        if let Err(e) = store.add_history(&raw, &text, words, secs.round() as i64, &node) {
-            eprintln!("[stt] history: {e}");
+        match store.add_history(&raw, &text, words, secs.round() as i64, &node) {
+            Ok(uuid) => {
+                if let Some(wav) = wav {
+                    let data_dir = paths
+                        .db_file()
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_default();
+                    let dir = crate::audio::audio_vault_dir(&data_dir);
+                    match std::fs::create_dir_all(&dir)
+                        .and_then(|_| std::fs::write(dir.join(format!("{uuid}.wav")), wav))
+                    {
+                        Ok(()) => eprintln!("[stt] audio kept: {uuid}.wav"),
+                        Err(e) => eprintln!("[stt] audio vault write: {e}"),
+                    }
+                }
+            }
+            Err(e) => eprintln!("[stt] history: {e}"),
         }
     } else {
         eprintln!("[stt] history disabled: pasting without storing");

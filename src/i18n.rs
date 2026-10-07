@@ -268,6 +268,7 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.storedaudio" => ("Stored audio", "Audio guardado"),
         "row.keephistory" => ("Keep dictation history", "Guardar historial de dictados"),
         "row.autodelete" => ("Auto-delete transcripts", "Borrado automático"),
+        "row.autodeleteaudio" => ("Auto-delete audio", "Borrado de audio"),
         "row.savediscarded" => (
             "Save discarded transcriptions",
             "Guardar transcripciones descartadas",
