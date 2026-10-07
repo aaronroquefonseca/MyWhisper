@@ -2290,6 +2290,82 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     );
     root.append(&card);
 
+    // ---- Speculative streaming (whisper only, opt-in) ----
+    // Background passes + local agreement while held, tail decode on
+    // release. Only the whisper engine consumes this (sherpa-online
+    // streams natively, everything else is after-release).
+    let (card, rows) = group(tr("group.spec"));
+    {
+        let note = Label::new(Some(tr("spec.note")));
+        note.add_css_class("dim");
+        note.set_xalign(0.0);
+        note.set_wrap(true);
+        rows.append(&note);
+    }
+    {
+        let (b, _) = row(tr("row.specenable"));
+        let sw = Switch::new();
+        sw.set_active(state.settings.borrow().stt.spec_enabled);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state.settings.borrow_mut().stt.spec_enabled = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
+    spin_row(
+        &rows,
+        tr("row.specupdate"),
+        state.settings.borrow().stt.spec_update_secs as f64,
+        0.5,
+        5.0,
+        0.5,
+    );
+    spin_row(
+        &rows,
+        tr("row.specoverlap"),
+        state.settings.borrow().stt.spec_overlap_secs as f64,
+        0.0,
+        2.0,
+        0.25,
+    );
+    // spin_row controls are display-only; wire both to settings.
+    // The VAD spin above is already sensitive+wired: skip it.
+    {
+        let mut wired = 0;
+        let mut child = rows.first_child();
+        while let Some(row_box) = child {
+            let mut c = row_box.first_child();
+            while let Some(w) = c {
+                if let Ok(spin) = w.clone().downcast::<SpinButton>() {
+                    if !spin.is_sensitive() {
+                        spin.set_sensitive(true);
+                        let state = state.clone();
+                        let is_update = wired == 0;
+                        spin.connect_value_changed(move |s| {
+                            if is_update {
+                                state.settings.borrow_mut().stt.spec_update_secs = s.value() as f32;
+                            } else {
+                                state.settings.borrow_mut().stt.spec_overlap_secs =
+                                    s.value() as f32;
+                            }
+                            persist_prefs(state.clone())();
+                        });
+                        wired += 1;
+                    }
+                }
+                c = w.next_sibling();
+            }
+            child = row_box.next_sibling();
+        }
+    }
+    root.append(&card);
+
     // ---- Engine-conditional visibility ----
     // GPU packs + model list only make sense for local whisper
     // (parakeet ships its own sherpa binaries); cloud/self-hosted

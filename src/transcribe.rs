@@ -1126,12 +1126,87 @@ pub fn take_cancelled() -> bool {
     CANCELLED.swap(false, Ordering::SeqCst)
 }
 
+/// Speculative-streaming session (whisper only): background passes
+/// while held, internal agreement, tail finalized on release.
+struct SpecHandle {
+    stop: Arc<AtomicBool>,
+    /// Final (committed_text, committed_audio_len, full 16k buffer).
+    done_rx: mpsc::Receiver<(String, usize, Vec<f32>)>,
+}
+
+/// First audio before the first speculative pass (1.5 s @ 16 kHz).
+const SPEC_FIRST_PASS: usize = 24_000;
+/// Trailing audio never committed (2 s): hypotheses need it for context.
+const SPEC_UNSTABLE_AUDIO: usize = 32_000;
+
+/// Background speculative loop. Snapshots (never drains) so the
+/// recorder stays whole for fallback; single inference at a time by
+/// construction (next pass only after the previous lands).
+fn run_spec(
+    rec: Arc<Mutex<Recorder>>,
+    stop: Arc<AtomicBool>,
+    data_dir: PathBuf,
+    update_secs: f32,
+    overlap: usize,
+    tx: mpsc::Sender<(String, usize, Vec<f32>)>,
+) {
+    let words = crate::store::Store::open(&data_dir.join("state.db"))
+        .ok()
+        .map(|store| store.load_words().unwrap_or_default())
+        .unwrap_or_default();
+    let prompt = crate::textnorm::dictionary_prompt(&words, crate::textnorm::WHISPER_PROMPT_CHARS);
+    let mut resampler: Option<(u32, Resampler)> = None;
+    let mut buffer: Vec<f32> = Vec::new();
+    let mut consumed = 0usize;
+    let mut prev_hyp = String::new();
+    let mut committed = (String::new(), 0usize);
+    let tick = Duration::from_secs_f32(update_secs.max(0.5));
+    loop {
+        std::thread::sleep(tick);
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        let snap = rec.lock().map(|r| r.snapshot()).unwrap_or_default();
+        if snap.len() <= consumed {
+            continue;
+        }
+        let rate = rec.lock().map(|r| r.rate()).unwrap_or(0);
+        if resampler.as_ref().map(|(r, _)| *r) != Some(rate) {
+            resampler = Some((rate, Resampler::new(rate.max(1))));
+        }
+        let fresh = resampler.as_mut().unwrap().1.process(&snap[consumed..]);
+        consumed = snap.len();
+        buffer.extend_from_slice(&fresh);
+        if buffer.len() < SPEC_FIRST_PASS {
+            continue;
+        }
+        let window = crate::speculative::unconfirmed_window(&buffer, committed.1, overlap);
+        let wav = wav_bytes_16k(&audio::f32_to_i16(&window));
+        match whisper_transcribe(&wav, prompt.clone()) {
+            Ok(hyp) => {
+                let agreed = crate::speculative::confirm_prefix(&prev_hyp, &hyp);
+                if agreed.split_whitespace().count() > committed.0.split_whitespace().count() {
+                    committed = (
+                        agreed,
+                        buffer.len().saturating_sub(overlap + SPEC_UNSTABLE_AUDIO),
+                    );
+                    eprintln!("[stt] spec committed: {}", committed.0);
+                }
+                prev_hyp = hyp;
+            }
+            Err(e) => eprintln!("[stt] spec pass: {e}"),
+        }
+    }
+    let _ = tx.send((committed.0, committed.1, buffer));
+}
+
 struct LiveUtterance {
     recorder: Arc<Mutex<Recorder>>,
     stop: Arc<AtomicBool>,
     /// Cancel (Escape): pump aborts without finishing (no Done, no
     /// final read); the discard worker below owns the outcome.
     cancel: Arc<AtomicBool>,
+    spec: Option<SpecHandle>,
     /// Streaming engines: pump thread exit + final text channel.
     result_rx: Option<mpsc::Receiver<Result<String, String>>>,
     plan: Plan,
@@ -1147,6 +1222,9 @@ struct LiveUtterance {
     /// Privacy snapshot at press: completed utterances persist a
     /// 16 kHz WAV ({uuid}.wav) into the audio vault when on.
     keep_audio: bool,
+    /// Overlap (16 kHz samples) for the speculative tail window.
+    /// Zero when speculative passes are off.
+    spec_overlap: usize,
 }
 
 static LIVE: OnceLock<Mutex<Option<LiveUtterance>>> = OnceLock::new();
@@ -1193,6 +1271,31 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
     audio::set_recorder(Some(recorder.clone()));
     let stop = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
+    // Speculative passes: whisper plans only, opt-in. Everything else
+    // either streams natively or decodes after release.
+    let spec: Option<SpecHandle> = if matches!(plan, Plan::WhisperHttp { .. }) && stt.spec_enabled {
+        let (tx, rx) = mpsc::channel();
+        let spec_stop = Arc::new(AtomicBool::new(false));
+        let rec = recorder.clone();
+        let data = data_dir.clone();
+        let update = stt.spec_update_secs.clamp(0.5, 10.0);
+        let overlap = (stt.spec_overlap_secs.clamp(0.0, 5.0) * 16_000.0) as usize;
+        let sstop = spec_stop.clone();
+        if let Err(e) = crate::runtime::submit("stt-spec", move || {
+            run_spec(rec, sstop, data, update, overlap, tx);
+        }) {
+            eprintln!("[stt] press: {e}");
+            None
+        } else {
+            eprintln!("[stt] speculative passes on (every {update:.1}s)");
+            Some(SpecHandle {
+                stop: spec_stop,
+                done_rx: rx,
+            })
+        }
+    } else {
+        None
+    };
     let result_rx = if plan.streaming() {
         match OnlineSession::open() {
             Ok(session) => {
@@ -1222,6 +1325,7 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
         recorder,
         stop,
         cancel,
+        spec,
         result_rx,
         plan,
         started: Instant::now(),
@@ -1230,6 +1334,7 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
         vad_enabled: stt.vad_enabled,
         vad_gate: stt.vad_threshold,
         keep_audio,
+        spec_overlap: (stt.spec_overlap_secs.clamp(0.0, 5.0) * 16_000.0) as usize,
     });
 }
 
@@ -1451,6 +1556,38 @@ fn finish_session(
         eprintln!("[stt] release: no audio captured (mic unavailable or sim source)");
         return Ok(None);
     }
+    // Speculative path: the spec thread owns a resampled buffer and
+    // internal agreement; finalize only the unconfirmed tail.
+    if let Some(spec) = sess.spec {
+        spec.stop.store(true, Ordering::Relaxed);
+        let (committed, committed_len, buf) = spec
+            .done_rx
+            .recv()
+            .map_err(|_| "spec thread died".to_string())?;
+        eprintln!(
+            "[stt] release: spec agreed on {} words, tail from {:.1}s",
+            committed.split_whitespace().count(),
+            committed_len as f64 / 16_000.0
+        );
+        let tail = crate::speculative::unconfirmed_window(&buf, committed_len, sess.spec_overlap);
+        if tail.len() < MIN_SAMPLES_16K / 2 {
+            // Nothing (much) left: committed text is the answer.
+            return Ok(empty_to_none(committed).map(|t| (t, secs, wav_of(&buf, sess.keep_audio))));
+        }
+        let t0 = Instant::now();
+        let tail_wav = wav_bytes_16k(&audio::f32_to_i16(&tail));
+        let prompt =
+            crate::textnorm::dictionary_prompt(words, crate::textnorm::WHISPER_PROMPT_CHARS);
+        let out = whisper_transcribe(&tail_wav, prompt).map(|tail_text| {
+            let merged = crate::speculative::merge_tail(&committed, &tail_text);
+            eprintln!(
+                "[stt] release: tail decode took {:.1}s",
+                t0.elapsed().as_secs_f64()
+            );
+            empty_to_none(merged).map(|t| (t, secs, wav_of(&buf, sess.keep_audio)))
+        });
+        return out;
+    }
     eprintln!("[stt] release: {} samples @ {} Hz", pcm.len(), rate);
     let mut f32s = Resampler::resample_all(rate, &pcm);
     if sess.vad_enabled {
@@ -1486,6 +1623,10 @@ fn finish_session(
         t0.elapsed().as_secs_f64()
     );
     out
+}
+
+fn wav_of(buf_16k: &[f32], keep: bool) -> Option<Vec<u8>> {
+    keep.then(|| wav_bytes_16k(&audio::f32_to_i16(buf_16k)))
 }
 
 fn empty_to_none(t: String) -> Option<String> {
@@ -1736,6 +1877,38 @@ mod tests {
         s.local_provider = LocalSttProvider::Whistle;
         let err = plan_for(&s, Path::new("/nonexistent")).unwrap_err();
         assert!(err.contains("whistle"), "{err}");
+    }
+
+    /// Live spec-thread check (needs whisper-server on :8080):
+    /// synthetic audio through the real thread + channel + merge.
+    /// Ignored by default; run explicitly with a server up.
+    #[test]
+    #[ignore]
+    fn spec_thread_roundtrip() {
+        use std::time::Duration;
+        let rec = Arc::new(Mutex::new(Recorder::default()));
+        rec.lock().unwrap().start(44_100);
+        // 4 s of loud-ish tone: decodes (to something), exercises
+        // passes, agreement, and the done channel.
+        let tone: Vec<i16> = (0..44_100 * 4)
+            .map(|i| {
+                (15_000.0
+                    * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 44_100.0).sin())
+                    as i16
+            })
+            .collect();
+        rec.lock().unwrap().push(&tone);
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let r = rec.clone();
+        let s = stop.clone();
+        let data = crate::paths::AppPaths::create().unwrap().data_dir;
+        std::thread::spawn(move || run_spec(r, s, data, 1.0, 16_000, tx));
+        std::thread::sleep(Duration::from_secs(5));
+        stop.store(true, Ordering::Relaxed);
+        let (committed, clen, buf) = rx.recv_timeout(Duration::from_secs(120)).unwrap();
+        eprintln!("spec committed={committed:?} clen={clen} buf={}", buf.len());
+        assert!(buf.len() >= 60_000, "buffer doesn't cover 4 s");
     }
 
     #[test]

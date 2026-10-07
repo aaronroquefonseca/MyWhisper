@@ -16,8 +16,6 @@
 //! - No echo guards (STT parroting the hint list, LLM duplicating
 //!   output). Follow-up if bias loops ever appear.
 
-use std::collections::HashMap;
-
 /// Whisper-family decoder prompt budget (chars). The decoder reads
 /// ~223 tokens and keeps the TAIL: over-budget lists still bias with
 /// their end, never error.
@@ -49,15 +47,6 @@ pub fn dictionary_prompt(words: &[String], max_chars: usize) -> Option<String> {
 
 fn fold_capital_i_dot(s: &str) -> String {
     s.replace('İ', "i")
-}
-
-fn fold_key(s: &str) -> String {
-    fold_capital_i_dot(s).to_lowercase()
-}
-
-/// An uppercase I may mean Turkish ı as well as English i.
-fn dotless_variant(key: &str) -> String {
-    key.replace('I', "ı").to_lowercase()
 }
 
 fn is_word_char(c: char) -> bool {

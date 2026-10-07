@@ -99,6 +99,14 @@ fn default_true() -> bool {
     true
 }
 
+fn default_spec_update() -> f32 {
+    2.0
+}
+
+fn default_spec_overlap() -> f32 {
+    1.0
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PasteBackend {
     Wtype,
@@ -371,6 +379,19 @@ pub struct SttSettings {
     pub language: String,
     pub vad_enabled: bool,
     pub vad_threshold: f32,
+    /// Speculative streaming for non-streaming engines (whisper):
+    /// background passes + local agreement while held, tail decode
+    /// on release. Off by default; opt-in latency trade.
+    #[serde(default)]
+    pub spec_enabled: bool,
+    /// Seconds between speculative passes (adaptive: passes never
+    /// overlap, so slow machines space out by themselves).
+    #[serde(default = "default_spec_update")]
+    pub spec_update_secs: f32,
+    /// Confirmed-audio overlap (seconds) kept for context on every
+    /// pass and the final tail.
+    #[serde(default = "default_spec_overlap")]
+    pub spec_overlap_secs: f32,
     pub live_preview: bool,
     /// Manual GPU backend choice (never auto-switched).
     pub gpu_backend: GpuBackendSetting,
@@ -391,6 +412,9 @@ impl Default for SttSettings {
             language: "auto".to_string(),
             vad_enabled: false,
             vad_threshold: 0.1,
+            spec_enabled: false,
+            spec_update_secs: 2.0,
+            spec_overlap_secs: 1.0,
             live_preview: false,
             gpu_backend: GpuBackendSetting::Cpu,
         }
@@ -614,9 +638,7 @@ pub struct SystemSettings {
 
 impl Default for SystemSettings {
     fn default() -> Self {
-        Self {
-            _reserved: false,
-        }
+        Self { _reserved: false }
     }
 }
 

@@ -45,6 +45,11 @@ impl Recorder {
         out
     }
 
+    /// Non-destructive peek (speculative thread tracks its own offset).
+    pub fn snapshot(&self) -> Vec<i16> {
+        self.samples.clone()
+    }
+
     /// Whole utterance at its capture rate; deactivates.
     pub fn finish(&mut self) -> (Vec<i16>, u32) {
         self.active = false;

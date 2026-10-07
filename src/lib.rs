@@ -22,6 +22,7 @@ pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod service;
 pub mod settings;
 pub mod sound;
+pub mod speculative;
 pub mod store;
 pub mod stt;
 pub mod textnorm;
