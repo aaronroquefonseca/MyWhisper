@@ -1826,10 +1826,18 @@ fn llm_cleanup(
     match entry.kind {
         LlmKind::Local => Err("local engines not implemented".to_string()),
         LlmKind::Ollama => {
+            // Sampling mirrors OpenWhispr's local bridge: pinned
+            // temp 0 plus top_p/top_k/repeat_penalty. The penalty is
+            // the anti-echo lever (temp 0.7 was tried; theirs pins 0).
             let body = serde_json::json!({
                 "model": entry.model,
                 "stream": false,
-                "options": {"temperature": 0.0},
+                "options": {
+                    "temperature": 0.0,
+                    "top_p": 0.9,
+                    "top_k": 40,
+                    "repeat_penalty": 1.1,
+                },
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
