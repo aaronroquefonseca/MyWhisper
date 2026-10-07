@@ -1990,6 +1990,14 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         }
     }
     let list = GtkBox::new(Orientation::Vertical, 8);
+    // Dictionary hinting is a whisper-decoder feature: only the
+    // OpenAI (whisper) models consume the dictionary. Everywhere
+    // else words still store, they just don't steer transcription.
+    let dict_note = Label::new(Some(tr("stt.models.dictnote")));
+    dict_note.add_css_class("dim");
+    dict_note.set_xalign(0.0);
+    dict_note.set_wrap(true);
+    rows.append(&dict_note);
     rows.append(&list);
     root.append(&card);
     fill_stt_models(&list, state);

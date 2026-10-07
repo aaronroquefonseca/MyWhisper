@@ -244,6 +244,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "stt.gpu.cuda" => ("CUDA (NVIDIA)", "CUDA (NVIDIA)"),
         "stt.gpu.vulkan" => ("Vulkan (AMD/Intel)", "Vulkan (AMD/Intel)"),
         "stt.gpu.recommend" => ("Detected hardware", "Hardware detectado"),
+        "stt.models.dictnote" => (
+            "Dictionary hinting only works with OpenAI (whisper) models.",
+            "Las sugerencias del diccionario solo funcionan con modelos OpenAI (whisper).",
+        ),
         "stt.needle.engine" => ("Needle engine", "Motor Needle"),
         "row.resettodefault" => ("Reset to default", "Restablecer valores"),
         "row.mode" => ("Mode", "Modo"),
