@@ -928,11 +928,19 @@ fn whisper_json_text(v: &serde_json::Value) -> String {
         .unwrap_or_default()
 }
 
-pub fn whisper_transcribe(wav: &[u8]) -> Result<String, String> {
+pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>) -> Result<String, String> {
     let boundary = "mywhisperwav";
+    let mut fields = vec![("temperature", "0.0"), ("response_format", "json")];
+    let prompt_owned;
+    if let Some(p) = prompt.as_ref() {
+        if !p.is_empty() {
+            prompt_owned = p.clone();
+            fields.push(("prompt", prompt_owned.as_str()));
+        }
+    }
     let body = multipart_body(
         boundary,
-        &[("temperature", "0.0"), ("response_format", "json")],
+        &fields,
         Some(("file", "audio.wav", "audio/wav", wav)),
     );
     let res = http_client()?
@@ -970,6 +978,7 @@ fn openai_compat_transcribe(
     key: &str,
     model: &str,
     lang: &str,
+    prompt: Option<&str>,
     wav: &[u8],
 ) -> Result<String, String> {
     let base = base.trim_end_matches('/');
@@ -985,6 +994,11 @@ fn openai_compat_transcribe(
     let mut fields = vec![("model", model)];
     if let Some(l) = lang_param(lang) {
         fields.push(("language", l));
+    }
+    if let Some(p) = prompt {
+        if !p.is_empty() {
+            fields.push(("prompt", p));
+        }
     }
     let body = multipart_body(
         boundary,
@@ -1379,7 +1393,12 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
     let on_done = Arc::new(Mutex::new(on_done));
     let od = on_done.clone();
     if let Err(e) = crate::runtime::submit("stt-worker", move || {
-        let out = finish_session(sess);
+        // Dictionary words for STT bias (fresh read; empty disables).
+        let words = crate::store::Store::open(&sess.data_dir.join("state.db"))
+            .ok()
+            .map(|store| store.load_words().unwrap_or_default())
+            .unwrap_or_default();
+        let out = finish_session(sess, &words);
         BUSY.store(false, Ordering::SeqCst);
         match out {
             Ok(Some((text, secs, wav))) => deliver(text, secs, wav),
@@ -1406,7 +1425,10 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
 
 /// Blocking finalization for one utterance. `Ok(None)` = nothing to
 /// paste (too short / empty result).
-fn finish_session(sess: LiveUtterance) -> Result<Option<(String, f64, Option<Vec<u8>>)>, String> {
+fn finish_session(
+    sess: LiveUtterance,
+    words: &[String],
+) -> Result<Option<(String, f64, Option<Vec<u8>>)>, String> {
     let secs = sess.started.elapsed().as_secs_f64();
     // Engine warmup finishes here (cold first press waits, later
     // ones sail through an already-running server).
@@ -1457,8 +1479,8 @@ fn finish_session(sess: LiveUtterance) -> Result<Option<(String, f64, Option<Vec
         None
     };
     let t0 = Instant::now();
-    let out =
-        transcribe_blocking(&sess.plan, &f32s).map(|r| empty_to_none(r).map(|t| (t, secs, wav)));
+    let out = transcribe_blocking(&sess.plan, &f32s, words)
+        .map(|r| empty_to_none(r).map(|t| (t, secs, wav)));
     eprintln!(
         "[stt] release: inference took {:.1}s",
         t0.elapsed().as_secs_f64()
@@ -1476,11 +1498,14 @@ fn empty_to_none(t: String) -> Option<String> {
     }
 }
 
-fn transcribe_blocking(plan: &Plan, f32s: &[f32]) -> Result<String, String> {
+fn transcribe_blocking(plan: &Plan, f32s: &[f32], words: &[String]) -> Result<String, String> {
     match plan {
         Plan::WhisperHttp { .. } => {
             let wav = wav_bytes_16k(&audio::f32_to_i16(f32s));
-            whisper_transcribe(&wav)
+            whisper_transcribe(
+                &wav,
+                crate::textnorm::dictionary_prompt(words, crate::textnorm::WHISPER_PROMPT_CHARS),
+            )
         }
         Plan::SherpaOffline { .. } => sherpa_offline_transcribe(f32s),
         Plan::WhistleCli { engine, model } => whistle_transcribe(engine, model, f32s),
@@ -1499,7 +1524,20 @@ fn transcribe_blocking(plan: &Plan, f32s: &[f32]) -> Result<String, String> {
             lang,
         } => {
             let wav = wav_bytes_16k(&audio::f32_to_i16(f32s));
-            openai_compat_transcribe(base, key, model, lang, &wav)
+            // Groq caps prompts at 890 chars; whisper-family takes
+            // 900; anything else gets no prompt (no channel).
+            let budget = if base.contains("groq.com") {
+                Some(crate::textnorm::GROQ_PROMPT_CHARS)
+            } else if base.contains("openai.com")
+                || base.contains("127.0.0.1")
+                || base.contains("localhost")
+            {
+                Some(crate::textnorm::WHISPER_PROMPT_CHARS)
+            } else {
+                None
+            };
+            let prompt = budget.and_then(|b| crate::textnorm::dictionary_prompt(words, b));
+            openai_compat_transcribe(base, key, model, lang, prompt.as_deref(), &wav)
         }
         Plan::CloudDeepgram {
             base,
@@ -1561,8 +1599,7 @@ fn post_process(raw: &str) -> String {
 /// Retention: history off pastes without storing; auto-delete purges
 /// old rows first (tombstones survive).
 fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
-    let text = post_process(&raw);
-    eprintln!("[stt] final: {text}");
+    eprintln!("[stt] raw: {raw}");
     let paths = match crate::paths::AppPaths::create() {
         Ok(p) => p,
         Err(e) => {
@@ -1578,6 +1615,21 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
         }
     };
     let settings = store.load_settings();
+    // Snippet expansion BEFORE post-processing: deterministic
+    // trigger rewrites on the STT text. Raw stays pure for the raw
+    // view; final carries expansions into the LLM stage later.
+    let snips: Vec<(String, String)> = settings
+        .dictionary
+        .snippets
+        .iter()
+        .map(|s| (s.trigger.clone(), s.replacement.clone()))
+        .collect();
+    let expanded = crate::textnorm::expand_snippets(&raw, &snips);
+    if expanded != raw {
+        eprintln!("[stt] snippets expanded");
+    }
+    let text = post_process(&expanded);
+    eprintln!("[stt] final: {text}");
     if settings.privacy.keep_audio_recordings && settings.privacy.audio_retention_days > 0 {
         let data_dir = paths
             .db_file()
