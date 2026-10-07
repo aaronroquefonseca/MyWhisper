@@ -516,11 +516,6 @@ impl LlmEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LanguageModelSettings {
-    /// Master switch: on = STT output goes through the enabled chain
-    /// top-down (future pipeline); off = raw transcript is final.
-    /// Kinds mix freely in the chain.
-    #[serde(default)]
-    pub enabled: bool,
     #[serde(default)]
     pub entries: Vec<LlmEntry>,
     // Legacy single-option fields (kept for migration; the list is
@@ -539,7 +534,6 @@ pub struct LanguageModelSettings {
 impl Default for LanguageModelSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
             entries: vec![LlmEntry::ollama("http://127.0.0.1:11434", "gemma4:e4b")],
             ollama_url: "http://127.0.0.1:11434".to_string(),
             ollama_model: "gemma4:e4b".to_string(),

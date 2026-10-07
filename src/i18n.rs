@@ -274,11 +274,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.ollamamodel" => ("Ollama model", "Modelo Ollama"),
         "row.localmodel" => ("Local model", "Modelo local"),
         "row.name" => ("Name", "Nombre"),
-        "lm.use" => ("Use LLM post-processing", "Usar postprocesado LLM"),
+        "action.restore" => ("Restore default", "Restaurar original"),
         "row.lmtype" => ("Type", "Tipo"),
         "group.lmadd" => ("Add option", "Añadir opción"),
         "group.lmchain" => ("Configured options", "Opciones configuradas"),
-        "group.lmpost" => ("Post-processing", "Postprocesado"),
         "lm.local.note" => (
             "Local self-managed engines are not implemented yet — use Ollama.",
             "Los motores locales autogestionados aún no están implementados: usa Ollama.",

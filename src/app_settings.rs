@@ -2576,27 +2576,9 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     use crate::settings::{CloudLlm, LlmEntry, LlmKind};
     let root = section_box(tr("settings.lm"), tr("settings.lm.sub"));
 
-    // Master switch, own section: on = STT output goes through the
-    // enabled chain top-down (future pipeline, kinds mix freely);
-    // off = raw transcript is final.
-    let (card, rows) = group(tr("group.lmpost"));
-    {
-        let (b, _) = row(tr("lm.use"));
-        let sw = Switch::new();
-        sw.set_active(state.settings.borrow().language_models.enabled);
-        sw.set_valign(gtk4::Align::Center);
-        {
-            let state = state.clone();
-            sw.connect_state_set(move |_, active| {
-                state.settings.borrow_mut().language_models.enabled = active;
-                persist_prefs(state.clone())();
-                gtk4::glib::Propagation::Proceed
-            });
-        }
-        b.append(&sw);
-        rows.append(&b);
-    }
-    root.append(&card);
+    // Master switch lives on the cleanup toggle below (row.cleanup):
+    // on = STT output goes through the enabled chain top-down, off =
+    // raw transcript is final. Kinds mix freely in the chain.
 
     // Add card: pick a type to configure, fill the form, Add.
     let (card, rows) = group(tr("group.lmadd"));
@@ -2847,16 +2829,67 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
 
     let (card, rows) = group(tr("group.cleanup"));
     {
-        let l = &state.settings.borrow().language_models;
-        switch_row(&rows, tr("row.cleanup"), l.cleanup_enabled);
-        let (b, _) = row(tr("row.customprompt"));
-        let prompt = TextView::new();
-        prompt.set_size_request(-1, 80);
-        prompt.buffer().set_text(&l.cleanup_prompt);
-        prompt.set_sensitive(false); // not wired yet
-        prompt.set_hexpand(true);
-        b.append(&prompt);
+        // Master switch for post-processing (wired): on = chain runs.
+        let (b, _) = row(tr("row.cleanup"));
+        let sw = Switch::new();
+        sw.set_active(state.settings.borrow().language_models.cleanup_enabled);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state.settings.borrow_mut().language_models.cleanup_enabled = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
         rows.append(&b);
+        // Custom prompt: full-width campus, tall, scrolled, prefilled
+        // with the default. Empty stored value = default
+        // (effective_prompt); restore writes the default explicitly.
+        let title = Label::new(Some(tr("row.customprompt")));
+        title.set_xalign(0.0);
+        title.add_css_class("row-label");
+        rows.append(&title);
+        let scroll = gtk4::ScrolledWindow::new();
+        scroll.set_min_content_height(340);
+        scroll.set_hexpand(true);
+        scroll.set_vexpand(false);
+        let prompt = TextView::new();
+        prompt.set_wrap_mode(gtk4::WrapMode::Word);
+        let stored = state
+            .settings
+            .borrow()
+            .language_models
+            .cleanup_prompt
+            .clone();
+        prompt.buffer().set_text(if stored.trim().is_empty() {
+            crate::transcribe::DEFAULT_CLEANUP_PROMPT
+        } else {
+            stored.as_str()
+        });
+        {
+            let state = state.clone();
+            prompt.buffer().connect_changed(move |buf| {
+                let (start, end) = (buf.start_iter(), buf.end_iter());
+                state.settings.borrow_mut().language_models.cleanup_prompt =
+                    buf.text(&start, &end, false).to_string();
+                persist_prefs(state.clone())();
+            });
+        }
+        scroll.set_child(Some(&prompt));
+        rows.append(&scroll);
+        let restore = Button::with_label(tr("action.restore"));
+        restore.set_halign(gtk4::Align::End);
+        {
+            let prompt = prompt.clone();
+            restore.connect_clicked(move |_| {
+                prompt
+                    .buffer()
+                    .set_text(crate::transcribe::DEFAULT_CLEANUP_PROMPT);
+            });
+        }
+        rows.append(&restore);
     }
     root.append(&card);
 
