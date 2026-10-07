@@ -220,6 +220,12 @@ struct VizState {
     /// Processing spinner: replaces bars + ornament while inference
     /// runs (no mic feedback in this mode).
     spinning: bool,
+    /// Morph 0 (bars) -> 1 (spinner), animated in tick so the swap
+    /// reads as one motion instead of a content pop.
+    proc_blend: f32,
+    /// Bar heights frozen at spinner start: the morph shrinks these,
+    /// it doesn't dance live mic behind the spinner.
+    frozen: Vec<f32>,
     sim: SimCadence,
     phase: f32,
     env: f32,
@@ -249,6 +255,8 @@ impl Visualizer {
             bar_count: 11,
             lane_max: DEFAULT_LANE_MAX_PX,
             spinning: false,
+            proc_blend: 0.0,
+            frozen: Vec::new(),
             sim: SimCadence::Lively,
             phase: 0.0,
             env: 0.0,
@@ -370,10 +378,18 @@ impl Visualizer {
 
     /// Processing spinner on/off. Shrinks the requisition so the
     /// pill contracts toward its centre when inference starts.
+    /// Freezes current bar heights: the morph below shrinks them.
+    /// Clearing snaps back instantly: a fresh utterance must open on
+    /// bars, never replay the morph backwards.
     pub fn set_spinning(&self, spinning: bool) {
         let mut st = self.state.borrow_mut();
         if st.spinning != spinning {
             st.spinning = spinning;
+            if spinning {
+                st.frozen = heights(&st);
+            } else {
+                st.proc_blend = 0.0;
+            }
             size_area(&self.area, &st);
             eprintln!("[poc] viz spinning -> {spinning}");
         }
@@ -442,6 +458,18 @@ fn tick(st: &mut VizState) {
     let level = st.mic.sample(dt);
     st.phase += dt * 4.5;
     st.ticks += 1;
+
+    // Morph toward the spinner target in ~200 ms (matches the
+    // overlay contract animation).
+    let target = if st.spinning { 1.0 } else { 0.0 };
+    let step = dt * 5.0;
+    st.proc_blend = if st.proc_blend < target {
+        (st.proc_blend + step).min(target)
+    } else if st.proc_blend > target {
+        (st.proc_blend - step).max(target)
+    } else {
+        st.proc_blend
+    };
 
     // Speech envelope: fast attack, slow release.
     let target = if level > SPEECH_THRESHOLD { level } else { 0.0 };
@@ -513,10 +541,15 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, st: &VizState) {
     cr.set_source_rgba(r, g, b, a);
     cr.set_line_cap(cairo::LineCap::Round);
 
-    // Processing spinner: twin arcs chasing toward the centre, no
-    // bars, no ornament, no mic feedback.
-    if st.spinning {
-        draw_spinner(cr, width, height, st.phase);
+    // Processing morph: frozen bars squeeze toward the centre and
+    // shrink while the spinner fades in over them. One motion, no pop.
+    let blend = st.proc_blend;
+    if blend > 0.0 {
+        if blend < 1.0 {
+            draw_morph(cr, width, height, st, blend);
+            return;
+        }
+        draw_spinner(cr, width, height, st.phase, 1.0);
         return;
     }
 
@@ -562,27 +595,58 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, st: &VizState) {
     }
 }
 
+/// Mid-transition frame: frozen bars dim in place (no lateral
+/// motion) while the spinner blooms from the centre. `blend` in
+/// (0, 1): bars hold position, spinner scales 0.5 -> 1.
+fn draw_morph(cr: &cairo::Context, width: f64, height: f64, st: &VizState, blend: f32) {
+    let (r, g, b, a) = st.theme.rgba(true);
+    cr.set_source_rgba(r, g, b, a * (1.0 - blend as f64));
+    cr.set_line_cap(cairo::LineCap::Round);
+    let n = st.frozen.len().max(1);
+    let pitch = BAR_WIDTH + BAR_GAP;
+    let total = pitch * n as f64 - BAR_GAP;
+    let x0 = (width - total) / 2.0;
+    let mid = height / 2.0;
+    cr.set_line_width(BAR_WIDTH);
+    for (i, h) in st.frozen.iter().enumerate() {
+        // Gentle settle, not a collapse: bars keep their slots.
+        let bar_h = (MIN_BAR_PX + h.clamp(0.0, 1.0) as f64 * (st.lane_max - MIN_BAR_PX))
+            * (1.0 - 0.55 * blend as f64);
+        let bar_h = bar_h.max(1.0);
+        let bx = x0 + i as f64 * pitch + BAR_WIDTH / 2.0;
+        cr.move_to(bx, mid + bar_h / 2.0);
+        cr.line_to(bx, mid - bar_h / 2.0);
+        if cr.stroke().is_err() {
+            return;
+        }
+    }
+    draw_spinner(cr, width, height, st.phase, blend);
+}
+
 /// Twin-arc spinner: a bright head arc with a fading trailer,
-/// rotating around the pill centre.
-fn draw_spinner(cr: &cairo::Context, width: f64, height: f64, phase: f32) {
+/// rotating around the pill centre. `alpha` fades it in on morph;
+/// the ring also blooms from half size so it arrives instead of
+/// popping.
+fn draw_spinner(cr: &cairo::Context, width: f64, height: f64, phase: f32, alpha: f32) {
     use std::f64::consts::PI;
     let cx = width / 2.0;
     let cy = height / 2.0;
-    let rad = (width.min(height) / 2.0 - 4.0).max(4.0);
+    let bloom = 0.5 + 0.5 * alpha as f64;
+    let rad = ((width.min(height) / 2.0 - 4.0).max(4.0)) * bloom;
     let head = (phase as f64 * 2.2) % (2.0 * PI);
     // Trailer: dimmer, lagging a quarter turn.
     cr.set_line_width(2.5);
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.30);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.30 * alpha as f64);
     cr.arc(cx, cy, rad, head - 2.4, head - 0.5);
     let _ = cr.stroke();
     // Head: bright 100° arc.
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.95);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.95 * alpha as f64);
     cr.set_line_width(3.0);
     cr.arc(cx, cy, rad, head, head + 1.75);
     let _ = cr.stroke();
     // Core dot, gently pulsing toward the centre.
     let pulse = 1.6 + (phase as f64 * 2.2).sin() * 0.7;
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.9);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.9 * alpha as f64);
     cr.arc(cx, cy, pulse.max(0.8), 0.0, 2.0 * PI);
     let _ = cr.fill();
 }
