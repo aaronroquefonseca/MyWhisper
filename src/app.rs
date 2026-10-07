@@ -219,6 +219,21 @@ entry, textview {
 button {
     color: @app_fg;
 }
+button:hover {
+    background: @app_borders;
+}
+/* The modal backdrop is a full-window button: it must never show a
+   hover state, or the page behind the modal lights up. */
+.backdrop:hover {
+    background: rgba(0, 0, 0, 0.45);
+}
+/* Dropdown/combobox popup rows are list rows, not buttons. (GTK4
+   DropDown popups are ListViews.) */
+popover listview row:hover,
+popover listbox row:hover {
+    background: @app_borders;
+    border-radius: 6px;
+}
 /* Everything below exists so no surface falls through to the
    desktop theme (which may be dark while we are light). */
 notebook, notebook > stack, scrolledwindow, viewport {
