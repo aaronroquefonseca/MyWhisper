@@ -435,7 +435,7 @@ impl CloudLlm {
             CloudLlm::Groq => "llama-3.3-70b-versatile",
             CloudLlm::OpenRouter => "moonshotai/kimi-k2",
             CloudLlm::OpenAI => "gpt-6-luna",
-            CloudLlm::Claude => "claude-sonnet-5-5",
+            CloudLlm::Claude => "claude-haiku-5-5",
             CloudLlm::Google => "gemini-3.8-flash",
         }
     }
