@@ -1134,7 +1134,7 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
         let out = finish_session(sess);
         BUSY.store(false, Ordering::SeqCst);
         match out {
-            Ok(Some(text)) => deliver(text),
+            Ok(Some((text, secs))) => deliver(text, secs),
             Ok(None) => {}
             Err(e) => eprintln!("[stt] transcription failed: {e}"),
         }
@@ -1158,7 +1158,7 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
 
 /// Blocking finalization for one utterance. `Ok(None)` = nothing to
 /// paste (too short / empty result).
-fn finish_session(sess: LiveUtterance) -> Result<Option<String>, String> {
+fn finish_session(sess: LiveUtterance) -> Result<Option<(String, f64)>, String> {
     let secs = sess.started.elapsed().as_secs_f64();
     // Engine warmup finishes here (cold first press waits, later
     // ones sail through an already-running server).
@@ -1169,7 +1169,7 @@ fn finish_session(sess: LiveUtterance) -> Result<Option<String>, String> {
     if let Some(rx) = sess.result_rx {
         // Streaming: the pump owns the tail; wait for the final.
         let text = rx.recv().map_err(|_| "online pump died".to_string())??;
-        return Ok(empty_to_none(text));
+        return Ok(empty_to_none(text).map(|t| (t, secs)));
     }
     let (pcm, rate) = sess.recorder.lock().unwrap().finish();
     if rate == 0 || pcm.is_empty() {
@@ -1199,7 +1199,7 @@ fn finish_session(sess: LiveUtterance) -> Result<Option<String>, String> {
         return Ok(None);
     }
     let t0 = Instant::now();
-    let out = transcribe_blocking(&sess.plan, &f32s).map(empty_to_none);
+    let out = transcribe_blocking(&sess.plan, &f32s).map(|r| empty_to_none(r).map(|t| (t, secs)));
     eprintln!(
         "[stt] release: inference took {:.1}s",
         t0.elapsed().as_secs_f64()
@@ -1286,7 +1286,7 @@ fn ensure_servers(
 
 /// Store in history (text only, never audio) and paste via the
 /// configured clipboard pipeline.
-fn deliver(text: String) {
+fn deliver(text: String, secs: f64) {
     eprintln!("[stt] final: {text}");
     let paths = match crate::paths::AppPaths::create() {
         Ok(p) => p,
@@ -1302,7 +1302,7 @@ fn deliver(text: String) {
             let node = crate::device::DeviceIdentity::load_or_create(&paths.device_key_file())
                 .map(|i| i.node_id)
                 .unwrap_or_else(|_| "unknown".to_string());
-            if let Err(e) = store.add_history(&text, words, 0, &node) {
+            if let Err(e) = store.add_history(&text, words, secs.round() as i64, &node) {
                 eprintln!("[stt] history: {e}");
             }
             settings.preferences

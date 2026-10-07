@@ -409,6 +409,14 @@ impl Store {
         .collect()
     }
 
+    /// Delete history rows with no duration (pre-fix data that pins
+    /// words-per-minute at 0). Returns rows removed.
+    pub fn delete_zero_duration_history(&self) -> rusqlite::Result<usize> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM history WHERE duration_secs <= 0", [])?)
+    }
+
     /// Distinct UTC days (epoch day numbers) with at least one entry,
     /// newest first. Feeds the streak calculation.
     pub fn active_days(&self) -> rusqlite::Result<Vec<i64>> {
