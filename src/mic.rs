@@ -5,13 +5,14 @@
 //! deterministic [`SimMic`]. Switchable at runtime (`viz mic real|sim`)
 //! so experiments can compare live input against the repeatable fake.
 
+use crate::audio::tap_samples;
 use crate::settings::MicSelection;
 use crate::viz::{LevelSource, SimCadence, SimMic};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// Capture through `parec` (PulseAudio/PipeWire CLI): exact source
@@ -50,7 +51,9 @@ impl ParecMic {
         std::thread::spawn(move || {
             // s16le mono in ~12ms slices: RMS per slice, same x8
             // staging as cpal. Small slices keep pill latency low;
-            // larger ones batch updates into visible steps.
+            // larger ones batch updates into visible steps. Every
+            // full slice is also offered to the capture tap (RAM
+            // dictation buffer; no-op when disarmed).
             let mut buf = [0u8; 1024];
             loop {
                 let mut got = 0;
@@ -61,17 +64,17 @@ impl ParecMic {
                         Err(_) => return,
                     }
                 }
+                let mut pcm = [0i16; 512];
                 let mut sum = 0f64;
-                let mut n = 0;
-                for chunk in buf.chunks_exact(2) {
-                    let v = i16::from_le_bytes([chunk[0], chunk[1]]) as f64 / 32768.0;
-                    sum += v * v;
-                    n += 1;
+                for (i, chunk) in buf.chunks_exact(2).enumerate() {
+                    let v = i16::from_le_bytes([chunk[0], chunk[1]]);
+                    pcm[i] = v;
+                    let f = v as f64 / 32768.0;
+                    sum += f * f;
                 }
-                if n > 0 {
-                    let rms = (sum / n as f64).sqrt() as f32;
-                    bits.store((rms * 8.0).clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
-                }
+                let rms = (sum / 512.0).sqrt() as f32;
+                bits.store((rms * 8.0).clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+                tap_samples(&pcm, 44_100);
             }
         });
         eprintln!("[mic] parec capture active: {source}");
@@ -266,12 +269,21 @@ impl CpalMic {
             .map_err(|e| format!("default input config: {e}"))?;
 
         let level_bits = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+        let rate = cfg.sample_rate();
         let stream = match cfg.sample_format() {
             cpal::SampleFormat::F32 => {
                 let bits = level_bits.clone();
                 device.build_input_stream(
                     cfg.clone().into(),
-                    move |data: &[f32], _| push_rms(data, &bits),
+                    move |data: &[f32], _| {
+                        push_rms(data, &bits);
+                        // f32 [-1,1] -> s16 for the capture tap.
+                        let pcm: Vec<i16> = data
+                            .iter()
+                            .map(|s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
+                            .collect();
+                        tap_samples(&pcm, rate);
+                    },
                     |e| eprintln!("[poc] mic stream error: {e}"),
                     None,
                 )
@@ -280,7 +292,10 @@ impl CpalMic {
                 let bits = level_bits.clone();
                 device.build_input_stream(
                     cfg.clone().into(),
-                    move |data: &[i16], _| push_rms(data, &bits),
+                    move |data: &[i16], _| {
+                        push_rms(data, &bits);
+                        tap_samples(data, rate);
+                    },
                     |e| eprintln!("[poc] mic stream error: {e}"),
                     None,
                 )
@@ -289,7 +304,12 @@ impl CpalMic {
                 let bits = level_bits.clone();
                 device.build_input_stream(
                     cfg.clone().into(),
-                    move |data: &[u16], _| push_rms(data, &bits),
+                    move |data: &[u16], _| {
+                        push_rms(data, &bits);
+                        let pcm: Vec<i16> =
+                            data.iter().map(|s| (*s as i32 - 32768) as i16).collect();
+                        tap_samples(&pcm, rate);
+                    },
                     |e| eprintln!("[poc] mic stream error: {e}"),
                     None,
                 )
@@ -447,7 +467,11 @@ impl MicInput {
     // Introspection for the future settings UI.
     #[allow(dead_code)]
     pub fn source_name(&self) -> &'static str {
-        if self.use_real { "real" } else { "sim" }
+        if self.use_real {
+            "real"
+        } else {
+            "sim"
+        }
     }
 
     pub fn set_sim_cadence(&mut self, cadence: SimCadence) {

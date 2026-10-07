@@ -148,6 +148,36 @@ fn run_headless(
     );
     mywhisper::service::spawn_hotkey_watcher(db_path.clone(), down, up);
     mywhisper::service::spawn_pill_watcher(db_path, tx.clone());
+    // Warm the configured STT engine now (model load takes seconds):
+    // first press then only arms capture instead of cold-starting.
+    {
+        let db_path = paths.db_file();
+        std::thread::spawn(move || {
+            let data_dir = db_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            match mywhisper::store::Store::open(&db_path) {
+                Ok(store) => {
+                    let settings = store.load_settings();
+                    match mywhisper::transcribe::plan_for(&settings.stt, &data_dir) {
+                        Ok(plan) => {
+                            eprintln!("[stt] startup warmup: {}", plan.describe());
+                            if let Err(e) = mywhisper::transcribe::ensure_for_plan(
+                                &plan,
+                                &data_dir,
+                                settings.stt.gpu_backend,
+                            ) {
+                                eprintln!("[stt] startup warmup: {e}");
+                            }
+                        }
+                        Err(e) => eprintln!("[stt] startup warmup: {e}"),
+                    }
+                }
+                Err(e) => eprintln!("[stt] startup warmup store: {e}"),
+            }
+        });
+    }
 
     app.connect_activate(move |app| {
         eprintln!("[service] activate, headless engine");
@@ -167,6 +197,30 @@ fn run_headless(
                             mywhisper::sound::play(mywhisper::sound::UiSound::Start);
                             *paused.borrow_mut() = mywhisper::media::pause_playing();
                             overlay.show_listening();
+                            // Press: arm the RAM capture tap (+ open a
+                            // streaming session when the engine does
+                            // realtime). Prefs read fresh so UI edits
+                            // apply to the very next utterance.
+                            std::thread::spawn(|| {
+                                let paths = match mywhisper::paths::AppPaths::create() {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        eprintln!("[stt] paths: {e}");
+                                        return;
+                                    }
+                                };
+                                let data_dir = paths.data_dir.clone();
+                                match mywhisper::store::Store::open(&paths.db_file()) {
+                                    Ok(store) => {
+                                        let settings = store.load_settings();
+                                        mywhisper::transcribe::begin_utterance(
+                                            settings.stt,
+                                            &data_dir,
+                                        );
+                                    }
+                                    Err(e) => eprintln!("[stt] store: {e}"),
+                                }
+                            });
                         }
                         PillCmd::Hide => {
                             mywhisper::sound::play(mywhisper::sound::UiSound::Stop);
@@ -174,26 +228,9 @@ fn run_headless(
                                 &paused.borrow_mut().drain(..).collect::<Vec<_>>(),
                             );
                             overlay.hide();
-                            // TEMP TEST HOOK: full output pipeline with a
-                            // fixed word until transcription is wired.
-                            std::thread::spawn(|| {
-                                let paths = match mywhisper::paths::AppPaths::create() {
-                                    Ok(p) => p,
-                                    Err(e) => {
-                                        eprintln!("[clipboard] test hook paths: {e}");
-                                        return;
-                                    }
-                                };
-                                let store = match mywhisper::store::Store::open(&paths.db_file()) {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        eprintln!("[clipboard] test hook store: {e}");
-                                        return;
-                                    }
-                                };
-                                let prefs = store.load_settings().preferences;
-                                mywhisper::clipboard::run_pipeline("test", &prefs);
-                            });
+                            // Release: stop capture; transcription (and
+                            // paste + history) finishes in a worker.
+                            mywhisper::transcribe::end_utterance();
                         }
                         PillCmd::Apply(prefs) => overlay.apply_prefs(&prefs),
                     }

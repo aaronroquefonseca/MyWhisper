@@ -371,7 +371,7 @@ pub fn is_installed(data_dir: &Path, entry: &ModelEntry) -> bool {
     }
 }
 
-fn whisper_file_stem(id: &str) -> &str {
+pub fn whisper_file_stem(id: &str) -> &str {
     match id {
         "large" => "large-v3",
         "turbo" => "large-v3-turbo",

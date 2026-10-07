@@ -1383,14 +1383,12 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
                 {
                     let state = state.clone();
                     let id = m.id.to_string();
-                    let is_nvidia = matches!(
-                        state.settings.borrow().stt.local_provider,
-                        LocalSttProvider::Nvidia
-                    );
                     use_btn.connect_clicked(move |_| {
                         {
                             let mut s = state.settings.borrow_mut();
-                            if is_nvidia {
+                            // Provider read at click time: the list
+                            // may have been rebuilt under us.
+                            if matches!(s.stt.local_provider, LocalSttProvider::Nvidia) {
                                 s.stt.parakeet_model = id.clone();
                             } else {
                                 s.stt.whisper_model = id.clone();
@@ -1655,7 +1653,15 @@ fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
         name.add_css_class("row-label");
         name.set_xalign(0.0);
         info.append(&name);
-        let sub = Label::new(Some(&format!("{} · {}", pack.description, pack.size_label)));
+        // Single selection method: the backend dropdown above. Rows
+        // only show install state + Download/Delete.
+        let installed = stt::gpu_installed(&data_dir, pack);
+        let sub = Label::new(Some(&format!(
+            "{} · {}{}",
+            pack.description,
+            pack.size_label,
+            if installed { " · Installed" } else { "" }
+        )));
         sub.add_css_class("dim");
         sub.set_xalign(0.0);
         info.append(&sub);
@@ -1696,33 +1702,7 @@ fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
                 }
             }
             card.append(&col);
-        } else if stt::gpu_installed(&data_dir, pack) {
-            use crate::settings::GpuBackendSetting;
-            let selected = match state.settings.borrow().stt.gpu_backend {
-                GpuBackendSetting::Cpu => pack.backend == stt::GpuBackend::Cpu,
-                GpuBackendSetting::Cuda => pack.backend == stt::GpuBackend::Cuda,
-                GpuBackendSetting::Vulkan => pack.backend == stt::GpuBackend::Vulkan,
-            };
-            if selected {
-                let using = Button::with_label(tr("action.using"));
-                using.set_sensitive(false);
-                card.append(&using);
-            } else {
-                let use_btn = Button::with_label(tr("action.use"));
-                {
-                    let state = state.clone();
-                    let backend = pack.backend;
-                    use_btn.connect_clicked(move |_| {
-                        state.settings.borrow_mut().stt.gpu_backend = match backend {
-                            stt::GpuBackend::Cpu => GpuBackendSetting::Cpu,
-                            stt::GpuBackend::Cuda => GpuBackendSetting::Cuda,
-                            stt::GpuBackend::Vulkan => GpuBackendSetting::Vulkan,
-                        };
-                        persist_prefs(state.clone())();
-                    });
-                }
-                card.append(&use_btn);
-            }
+        } else if installed {
             let del = Button::with_label(tr("action.delete"));
             {
                 let state = state.clone();
@@ -1904,6 +1884,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 {
                     let state = state.clone();
                     let persist = persist_prefs(state.clone());
+                    let refresh_holder = refresh_holder.clone();
                     pill.connect_toggled(move |p| {
                         if !p.is_active() {
                             return;
@@ -1918,6 +1899,12 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                             };
                         }
                         persist();
+                        // Same full refresh as an engine change:
+                        // runtime packs visibility + language list
+                        // must follow the newly selected provider.
+                        if let Some(r) = refresh_holder.borrow().as_ref() {
+                            r();
+                        }
                     });
                 }
                 pill_row.append(&pill);

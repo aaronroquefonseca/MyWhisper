@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+base64 = "0.23.1"
 bzip2 = "0.6.1"
 cpal = "0.18.2"
 ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
@@ -27,5 +28,6 @@ tokio = { version = "1.53.2", features = ["rt"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = "0.3.23"
+tungstenite = "0.30.0"
 zbus = "5.19.0"
 zip = "8.6.0"
