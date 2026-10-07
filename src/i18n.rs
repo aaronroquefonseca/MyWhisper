@@ -363,6 +363,17 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Tu historial aparecerá aquí.\nAtajo por defecto: {hotkey}",
         ),
         "home.entry.meta" => ("{date} · {words} words", "{date} · {words} palabras"),
+        "home.today" => ("Today", "Hoy"),
+        "home.yesterday" => ("Yesterday", "Ayer"),
+        "home.copy" => ("Copy", "Copiar"),
+        "home.delete" => ("Delete", "Eliminar"),
+        "home.viewraw" => ("View raw transcript", "Ver transcripción original"),
+        "home.raw.title" => ("RAW TRANSCRIPT", "TRANSCRIPCIÓN ORIGINAL"),
+        "home.raw.passthrough" => (
+            "No AI processing was applied to this transcription",
+            "No se aplicó procesamiento IA a esta transcripción",
+        ),
+        "home.wpm" => ("{wpm} wpm", "{wpm} ppm"),
         // Insights
         "insights.title" => ("Insights", "Estadísticas"),
         "insights.subtitle" => (

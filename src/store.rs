@@ -51,8 +51,10 @@ CREATE TABLE IF NOT EXISTS snippets (
 CREATE TABLE IF NOT EXISTS history (
     uuid TEXT PRIMARY KEY,
     text TEXT NOT NULL,
+    raw_text TEXT NOT NULL DEFAULT '',
     words INTEGER NOT NULL DEFAULT 0,
     duration_secs INTEGER NOT NULL DEFAULT 0,
+    deleted INTEGER NOT NULL DEFAULT 0,
     recorded_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
 );
 CREATE TABLE IF NOT EXISTS devices (
@@ -243,6 +245,8 @@ impl Store {
             "ALTER TABLE snippets ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE snippets ADD COLUMN replacement TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE history ADD COLUMN duration_secs INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE history ADD COLUMN raw_text TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE history ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE devices ADD COLUMN address TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE devices ADD COLUMN addresses TEXT NOT NULL DEFAULT '[]'",
             "ALTER TABLE devices ADD COLUMN trusted INTEGER NOT NULL DEFAULT 0",
@@ -267,6 +271,12 @@ impl Store {
             "CREATE UNIQUE INDEX IF NOT EXISTS history_uuid ON history (uuid)",
             [],
         )?;
+        // Rows predating raw_text carry the final text as raw (the
+        // pipeline was passthrough then, so this is exact).
+        let _ = conn.execute(
+            "UPDATE history SET raw_text = text WHERE raw_text = ''",
+            [],
+        );
         Ok(Self { conn })
     }
 
@@ -395,18 +405,34 @@ impl Store {
 
     pub fn load_history(&self, limit: usize) -> rusqlite::Result<Vec<HistoryEntry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT text, datetime(recorded_at, 'unixepoch'), words, duration_secs
-             FROM history ORDER BY recorded_at DESC LIMIT ?1",
+            "SELECT uuid, text, raw_text, datetime(recorded_at, 'unixepoch'), words,
+                    duration_secs, recorded_at
+             FROM history WHERE deleted = 0 ORDER BY recorded_at DESC LIMIT ?1",
         )?;
         stmt.query_map([limit as i64], |row| {
             Ok(HistoryEntry {
-                text: row.get(0)?,
-                date_label: row.get(1)?,
-                word_count: row.get(2)?,
-                duration_secs: row.get(3)?,
+                uuid: row.get(0)?,
+                text: row.get(1)?,
+                raw_text: row.get(2)?,
+                date_label: row.get(3)?,
+                word_count: row.get(4)?,
+                duration_secs: row.get(5)?,
+                recorded_at: row.get(6)?,
             })
         })?
         .collect()
+    }
+
+    /// Local delete: tombstone, so the row stays deleted across sync
+    /// (union-by-uuid would otherwise resurrect it from a peer).
+    pub fn delete_history(&self, uuid: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE history SET deleted = 1 WHERE uuid = ?1",
+            [uuid],
+        )?;
+        bump_data_gen();
+        bump_gen(&self.conn);
+        Ok(())
     }
 
     /// Delete history rows with no duration (pre-fix data that pins
@@ -422,7 +448,7 @@ impl Store {
     pub fn active_days(&self) -> rusqlite::Result<Vec<i64>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT DISTINCT recorded_at / 86400 FROM history ORDER BY 1 DESC")?;
+            .prepare("SELECT DISTINCT recorded_at / 86400 FROM history WHERE deleted = 0 ORDER BY 1 DESC")?;
         stmt.query_map([], |row| row.get(0))?.collect()
     }
 
@@ -435,7 +461,7 @@ impl Store {
                     COALESCE(SUM(words), 0),
                     COUNT(*)
              FROM history
-             WHERE recorded_at >= strftime('%s', 'now', ?1)
+             WHERE deleted = 0 AND recorded_at >= strftime('%s', 'now', ?1)
              GROUP BY day
              ORDER BY day",
         )?;
@@ -449,6 +475,7 @@ impl Store {
     /// concurrently recorded entries never collide.
     pub fn add_history(
         &self,
+        raw_text: &str,
         text: &str,
         words: u32,
         duration_secs: i64,
@@ -459,8 +486,10 @@ impl Store {
         self.apply_history(&[HistoryRecord {
             uuid: uuid.clone(),
             text: text.to_string(),
+            raw_text: raw_text.to_string(),
             words,
             duration_secs,
+            deleted: false,
             recorded_at: now_ms() / 1000,
         }])?;
         Ok(uuid)
@@ -500,16 +529,18 @@ impl Store {
     }
 
     pub fn export_history(&self) -> rusqlite::Result<Vec<HistoryRecord>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT uuid, text, words, duration_secs, recorded_at FROM history")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT uuid, text, raw_text, words, duration_secs, deleted, recorded_at FROM history",
+        )?;
         stmt.query_map([], |row| {
             Ok(HistoryRecord {
                 uuid: row.get(0)?,
                 text: row.get(1)?,
-                words: row.get(2)?,
-                duration_secs: row.get(3)?,
-                recorded_at: row.get(4)?,
+                raw_text: row.get(2)?,
+                words: row.get(3)?,
+                duration_secs: row.get(4)?,
+                deleted: row.get(5)?,
+                recorded_at: row.get(6)?,
             })
         })?
         .collect()
@@ -598,9 +629,19 @@ impl Store {
     pub fn apply_history(&self, records: &[HistoryRecord]) -> rusqlite::Result<()> {
         for r in records {
             self.conn.execute(
-                "INSERT INTO history (uuid, text, words, duration_secs, recorded_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (uuid) DO NOTHING",
-                (&r.uuid, &r.text, r.words, r.duration_secs, r.recorded_at),
+                "INSERT INTO history (uuid, text, raw_text, words, duration_secs, deleted, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT (uuid) DO UPDATE SET deleted = excluded.deleted
+                 WHERE excluded.deleted = 1",
+                (
+                    &r.uuid,
+                    &r.text,
+                    &r.raw_text,
+                    r.words,
+                    r.duration_secs,
+                    r.deleted,
+                    r.recorded_at,
+                ),
             )?;
         }
         bump_data_gen();
@@ -639,8 +680,10 @@ pub struct SnippetRecord {
 pub struct HistoryRecord {
     pub uuid: String,
     pub text: String,
+    pub raw_text: String,
     pub words: u32,
     pub duration_secs: i64,
+    pub deleted: bool,
     pub recorded_at: i64,
 }
 
@@ -1109,16 +1152,20 @@ mod tests {
         a.apply_history(&[HistoryRecord {
             uuid: "a-1".to_string(),
             text: "hello from a".to_string(),
+            raw_text: "hello from a".to_string(),
             words: 3,
             duration_secs: 5,
+            deleted: false,
             recorded_at: 2000,
         }])
         .unwrap();
         b.apply_history(&[HistoryRecord {
             uuid: "b-1".to_string(),
             text: "hello from b".to_string(),
+            raw_text: "raw from b".to_string(),
             words: 3,
             duration_secs: 5,
+            deleted: false,
             recorded_at: 3000,
         }])
         .unwrap();
@@ -1135,9 +1182,23 @@ mod tests {
         // ...the newer tombstone deletes everywhere...
         assert!(!words(&a).contains(&"gone".to_string()));
         assert!(!words(&b).contains(&"gone".to_string()));
-        // ...history unions by uuid...
+        // ...history unions by uuid, raw survives the round trip...
         assert_eq!(a.load_history(10).unwrap().len(), 2);
         assert_eq!(b.load_history(10).unwrap().len(), 2);
+        let raws: Vec<String> = a
+            .load_history(10)
+            .unwrap()
+            .iter()
+            .map(|h| h.raw_text.clone())
+            .collect();
+        assert!(raws.contains(&"raw from b".to_string()));
+        // ...a history tombstone deletes everywhere and never
+        // resurrects from the peer that still holds the row...
+        a.delete_history("b-1").unwrap();
+        assert_eq!(a.load_history(10).unwrap().len(), 1);
+        sync(&a, &b);
+        assert_eq!(a.load_history(10).unwrap().len(), 1);
+        assert_eq!(b.load_history(10).unwrap().len(), 1);
 
         // Sync is idempotent: a second round changes nothing.
         let before_a = a.export_snippets().unwrap();

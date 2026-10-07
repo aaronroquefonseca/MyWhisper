@@ -1284,9 +1284,18 @@ fn ensure_servers(
     }
 }
 
-/// Store in history (text only, never audio) and paste via the
-/// configured clipboard pipeline.
-fn deliver(text: String, secs: f64) {
+/// Post-process STT output into the final transcript. Passthrough
+/// today (no processor enabled): final == raw. This is THE seam for
+/// the future pipeline stage — it receives `raw`, returns `final`,
+/// and everything downstream (history, paste) uses `final` only.
+fn post_process(raw: &str) -> String {
+    raw.to_string()
+}
+
+/// Store in history (raw + final text, never audio) and paste the
+/// FINAL transcript via the configured clipboard pipeline.
+fn deliver(raw: String, secs: f64) {
+    let text = post_process(&raw);
     eprintln!("[stt] final: {text}");
     let paths = match crate::paths::AppPaths::create() {
         Ok(p) => p,
@@ -1302,7 +1311,7 @@ fn deliver(text: String, secs: f64) {
             let node = crate::device::DeviceIdentity::load_or_create(&paths.device_key_file())
                 .map(|i| i.node_id)
                 .unwrap_or_else(|_| "unknown".to_string());
-            if let Err(e) = store.add_history(&text, words, secs.round() as i64, &node) {
+            if let Err(e) = store.add_history(&raw, &text, words, secs.round() as i64, &node) {
                 eprintln!("[stt] history: {e}");
             }
             settings.preferences

@@ -510,8 +510,11 @@ pub struct UsageStats {
 
 #[derive(Debug, Clone, Default)]
 pub struct HistoryEntry {
+    pub uuid: String,
     pub text: String,
+    pub raw_text: String,
     pub date_label: String,
     pub word_count: u32,
     pub duration_secs: i64,
+    pub recorded_at: i64,
 }
