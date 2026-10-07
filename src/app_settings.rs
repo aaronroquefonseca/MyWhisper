@@ -138,13 +138,13 @@ fn retention_opts() -> [&'static str; 7] {
 
 fn delete_opts() -> [&'static str; 7] {
     [
-        tr("opt.forever"),
-        tr("opt.day1"),
-        tr("opt.day7"),
-        tr("opt.day14"),
-        tr("opt.day30"),
-        tr("opt.day60"),
-        tr("opt.day90"),
+        tr("opt.never"),
+        tr("opt.older1"),
+        tr("opt.older7"),
+        tr("opt.older14"),
+        tr("opt.older30"),
+        tr("opt.older60"),
+        tr("opt.older90"),
     ]
 }
 
@@ -2405,6 +2405,9 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
     root.append(&card);
 
     let (card, rows) = group(tr("group.transcripts"));
+    // Auto-delete is meaningless without history: greyed out while
+    // the toggle below is off.
+    let autodelete_dd: Rc<RefCell<Option<DropDown>>> = Rc::new(RefCell::new(None));
     // Keep dictation history (wired): when off, dictations still
     // paste, they just aren't stored.
     {
@@ -2414,9 +2417,13 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
         sw.set_valign(gtk4::Align::Center);
         {
             let state = state.clone();
+            let autodelete_dd = autodelete_dd.clone();
             sw.connect_state_set(move |_, active| {
                 state.settings.borrow_mut().privacy.history_enabled = active;
                 persist_prefs(state.clone())();
+                if let Some(dd) = autodelete_dd.borrow().as_ref() {
+                    dd.set_sensitive(active);
+                }
                 gtk4::glib::Propagation::Proceed
             });
         }
@@ -2448,6 +2455,11 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
                         .unwrap_or(0);
                 persist_prefs(state.clone())();
             });
+        }
+        dd.set_sensitive(state.settings.borrow().privacy.history_enabled);
+        {
+            let mut slot = autodelete_dd.borrow_mut();
+            *slot = Some(dd.clone());
         }
         b.append(&dd);
         rows.append(&b);
