@@ -539,6 +539,18 @@ impl Store {
         Ok(uuid)
     }
 
+    /// Reset all user data: history (incl. tombstones), words,
+    /// snippets, stored settings. Devices/sync_meta survive (topology,
+    /// not data). Callers reset in-memory state + persist defaults.
+    pub fn reset_all_data(&self) -> rusqlite::Result<()> {
+        for table in ["history", "words", "snippets", "kv"] {
+            self.conn.execute(&format!("DELETE FROM {table}"), [])?;
+        }
+        bump_data_gen();
+        bump_gen(&self.conn);
+        Ok(())
+    }
+
     /// Delete rows older than `days` (auto-delete transcripts).
     /// Tombstones survive: dropping them would resurrect peers' rows.
     pub fn purge_old_history(&self, days: u32) -> rusqlite::Result<usize> {

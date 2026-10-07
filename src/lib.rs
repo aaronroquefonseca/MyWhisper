@@ -15,6 +15,10 @@ pub mod net;
 pub mod overlay;
 pub mod paths;
 pub mod runtime;
+
+/// Single source for the app version (Cargo.toml package
+/// version): settings UI, `--version`, log lines all use this.
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod service;
 pub mod settings;
 pub mod sound;

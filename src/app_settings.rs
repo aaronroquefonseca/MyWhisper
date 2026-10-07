@@ -2599,26 +2599,76 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
     root
 }
 
-fn system_page(s: &AppSettings) -> GtkBox {
+fn system_page(state: &Rc<AppState>) -> GtkBox {
     let root = section_box(tr("settings.system"), tr("settings.system.sub"));
-    let sys = &s.system;
 
     let (card, rows) = group(tr("group.version"));
     let (b, _) = row(tr("row.appversion"));
-    let v = Label::new(Some(env!("CARGO_PKG_VERSION")));
+    let v = Label::new(Some(crate::APP_VERSION));
     v.add_css_class("dim");
     b.append(&v);
     rows.append(&b);
     root.append(&card);
 
+    // The cache lives here, not configured: models + runtimes under
+    // the data dir. Display + actions only.
+    let data_dir = state
+        .db_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
     let (card, rows) = group(tr("group.modelcache"));
-    entry_row(&rows, tr("row.cachepath"), &sys.model_cache_path, false);
+    {
+        let (b, _) = row(tr("row.cachepath"));
+        let v = Label::new(Some(data_dir.to_string_lossy().as_ref()));
+        v.add_css_class("dim");
+        v.set_xalign(0.0);
+        v.set_wrap(true);
+        v.set_max_width_chars(48);
+        v.set_hexpand(true);
+        b.append(&v);
+        rows.append(&b);
+    }
     let (b, _) = row(tr("row.cacheactions"));
     let open = Button::with_label(tr("action.openfolder"));
-    open.set_sensitive(false); // not wired yet
-    let clear = Button::with_label(tr("action.clearcache"));
-    clear.set_sensitive(false); // not wired yet
+    {
+        let data_dir = data_dir.clone();
+        open.connect_clicked(move |_| {
+            let _ = std::fs::create_dir_all(&data_dir);
+            if let Err(e) = std::process::Command::new("xdg-open")
+                .arg(&data_dir)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                eprintln!("[system] open cache: {e}");
+            }
+        });
+    }
     b.append(&open);
+    let clear = Button::with_label(tr("action.clearcache"));
+    {
+        let state = state.clone();
+        let data_dir = data_dir.clone();
+        clear.connect_clicked(move |_| {
+            // Downloads only (models + runtimes): settings, history
+            // and identity survive. Next dictation reports exactly
+            // what to re-download.
+            let mut gone = 0;
+            for sub in ["models", "bin"] {
+                let dir = data_dir.join(sub);
+                if dir.exists() {
+                    match std::fs::remove_dir_all(&dir).and(std::fs::create_dir_all(&dir)) {
+                        Ok(()) => gone += 1,
+                        Err(e) => eprintln!("[system] clear {sub}: {e}"),
+                    }
+                }
+            }
+            eprintln!("[system] cache cleared ({gone}/2 dirs)");
+            let _ = state;
+        });
+    }
     b.append(&clear);
     rows.append(&b);
     root.append(&card);
@@ -2626,7 +2676,42 @@ fn system_page(s: &AppSettings) -> GtkBox {
     let (card, rows) = group(tr("group.danger"));
     let (b, _) = row(tr("row.resetall"));
     let reset = Button::with_label(tr("action.resetdots"));
-    reset.set_sensitive(false); // not wired yet
+    {
+        let state = state.clone();
+        let data_dir = data_dir.clone();
+        reset.connect_clicked(move |_| {
+            // Wipe user data + downloads. Identity (device key) and
+            // the running service survive: the next dictation
+            // re-reads defaults from the fresh DB and reports missing
+            // models; restart the service for a fully clean slate.
+            if let Err(e) = state.store.reset_all_data() {
+                eprintln!("[system] reset db: {e}");
+                return;
+            }
+            for sub in ["models", "bin", "audio"] {
+                let dir = data_dir.join(sub);
+                if dir.exists() {
+                    if let Err(e) =
+                        std::fs::remove_dir_all(&dir).and(std::fs::create_dir_all(&dir))
+                    {
+                        eprintln!("[system] reset {sub}: {e}");
+                    }
+                }
+            }
+            {
+                let mut settings = state.settings.borrow_mut();
+                *settings = crate::settings::AppSettings::default();
+                drop(settings);
+            }
+            if let Err(e) = state
+                .store
+                .save_settings(&crate::settings::AppSettings::default())
+            {
+                eprintln!("[system] reset persist: {e}");
+            }
+            eprintln!("[system] application data reset");
+        });
+    }
     b.append(&reset);
     rows.append(&b);
     root.append(&card);
@@ -2670,7 +2755,7 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
         ("Speech to Text", stt_page(state)),
         ("Language Models", language_models_page(s)),
         ("Privacy & Data", privacy_page(state)),
-        ("System", system_page(s)),
+        ("System", system_page(state)),
     ];
 
     fn section_label(id: &str) -> &'static str {

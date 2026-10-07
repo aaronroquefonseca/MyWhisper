@@ -29,6 +29,10 @@ fn main() -> gtk4::glib::ExitCode {
     );
 
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("mywhisper {}", mywhisper::APP_VERSION);
+        return gtk4::glib::ExitCode::SUCCESS;
+    }
     let service_mode = args.iter().any(|a| a == "--service");
 
     if service_mode {

@@ -477,13 +477,17 @@ impl Default for PrivacySettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemSettings {
-    pub model_cache_path: String,
+    /// Placeholder for future system knobs. The model cache lives at
+    /// `<data>/models` (+ `<data>/bin` runtimes) and is shown, not
+    /// configured: relocating it would invalidate every download,
+    /// server, and pipeline path.
+    pub _reserved: bool,
 }
 
 impl Default for SystemSettings {
     fn default() -> Self {
         Self {
-            model_cache_path: String::new(),
+            _reserved: false,
         }
     }
 }
