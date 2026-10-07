@@ -450,6 +450,13 @@ fn ensure_whisper(
     let key = format!("{}|{}|{lang}", bin.display(), model.display());
     let model_arg = model.to_string_lossy().to_string();
     let lang_arg = lang.to_string();
+    // CUDA runtimes ship their own .so.12 set (system has .so.13):
+    // <data>/lib, populated from nvidia pip wheels on first need.
+    let cuda_lib = data_dir.join("lib");
+    let ld_path = match std::env::var("LD_LIBRARY_PATH") {
+        Ok(prev) if !prev.is_empty() => format!("{}:{prev}", cuda_lib.display()),
+        _ => cuda_lib.display().to_string(),
+    };
     ensure_server(
         "whisper",
         key,
@@ -472,6 +479,7 @@ fn ensure_whisper(
                 .stdin(Stdio::null())
                 .stdout(out)
                 .stderr(err)
+                .env("LD_LIBRARY_PATH", &ld_path)
                 .spawn()
                 .map_err(|e| format!("spawn whisper-server: {e}"))
         },
@@ -677,6 +685,13 @@ fn probe_sherpa_online() -> Result<(), String> {
 pub struct OnlineSession {
     ws: Option<Ws>,
     last_text: String,
+    read_timeout: Duration,
+}
+
+fn ws_read_timeout(ws: &mut Ws, timeout: Duration) {
+    if let tungstenite::stream::MaybeTlsStream::Plain(s) = ws.get_ref() {
+        let _ = s.set_read_timeout(Some(timeout));
+    }
 }
 
 impl OnlineSession {
@@ -688,14 +703,18 @@ impl OnlineSession {
         Ok(Self {
             ws: Some(ws_connect(port, read_timeout)?),
             last_text: String::new(),
+            read_timeout,
         })
     }
 
     /// One realtime chunk (16 kHz float32). Non-blocking w.r.t.
-    /// decoding: the server answers whenever it has partials.
+    /// decoding: 50 ms partial poll, then back to the pump. (The
+    /// socket default is minutes — without this the pump stalls on
+    /// the first silent chunk waiting for a partial that never comes.)
     pub fn send_chunk(&mut self, samples: &[f32]) -> Result<(), String> {
         let ws = self.ws.as_mut().ok_or("online session closed")?;
         ws_send_binary(ws, &f32le(samples))?;
+        ws_read_timeout(ws, Duration::from_millis(50));
         // Drain pending partials without blocking: anything the
         // server already emitted updates the live text.
         loop {
@@ -733,6 +752,7 @@ impl OnlineSession {
     /// behind realtime; this blocks (worker thread) until it lands.
     pub fn finish(mut self) -> Result<String, String> {
         let mut ws = self.ws.take().ok_or("online session closed")?;
+        ws_read_timeout(&mut ws, self.read_timeout);
         ws.send(tungstenite::Message::text("Done"))
             .map_err(|e| format!("ws done: {e}"))?;
         let mut last = std::mem::take(&mut self.last_text);
@@ -1127,11 +1147,7 @@ fn live() -> &'static Mutex<Option<LiveUtterance>> {
 /// brackets the hold. Server warmup happens in the background: the
 /// release worker blocks on it before transcribing, so a cold first
 /// press pastes late but never loses audio.
-pub fn begin_utterance(
-    stt: crate::settings::SttSettings,
-    keep_audio: bool,
-    data_dir: &Path,
-) {
+pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data_dir: &Path) {
     end_stale();
     CANCELLED.store(false, Ordering::Relaxed);
     let plan = match plan_for(&stt, data_dir) {
@@ -1441,8 +1457,8 @@ fn finish_session(sess: LiveUtterance) -> Result<Option<(String, f64, Option<Vec
         None
     };
     let t0 = Instant::now();
-    let out = transcribe_blocking(&sess.plan, &f32s)
-        .map(|r| empty_to_none(r).map(|t| (t, secs, wav)));
+    let out =
+        transcribe_blocking(&sess.plan, &f32s).map(|r| empty_to_none(r).map(|t| (t, secs, wav)));
     eprintln!(
         "[stt] release: inference took {:.1}s",
         t0.elapsed().as_secs_f64()

@@ -1312,7 +1312,13 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
         card.set_tooltip_text(Some(m.id));
         let info = GtkBox::new(Orientation::Vertical, 2);
         info.set_hexpand(true);
-        let title = format!("{}{}", m.name, if m.recommended { " ★" } else { "" });
+        let live = matches!(m.runtime, Some(stt::ParakeetRuntime::Online));
+        let title = format!(
+            "{}{}{}",
+            m.name,
+            if m.recommended { " ★" } else { "" },
+            if live { " · Live" } else { "" }
+        );
         let name = Label::new(Some(&title));
         name.add_css_class("row-label");
         name.set_xalign(0.0);
