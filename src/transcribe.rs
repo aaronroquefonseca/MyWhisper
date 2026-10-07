@@ -964,6 +964,11 @@ struct LiveUtterance {
     /// Worker-side engine warmup needs these after release.
     data_dir: PathBuf,
     backend: GpuBackendSetting,
+    /// VAD snapshot at press: trim + silence-skip for file-based
+    /// engines. Streaming pumps send everything (server-side
+    /// endpointing owns that path).
+    vad_enabled: bool,
+    vad_gate: f32,
 }
 
 static LIVE: OnceLock<Mutex<Option<LiveUtterance>>> = OnceLock::new();
@@ -1040,6 +1045,8 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, data_dir: &Path) {
         started: Instant::now(),
         data_dir,
         backend,
+        vad_enabled: stt.vad_enabled,
+        vad_gate: stt.vad_threshold,
     });
 }
 
@@ -1170,7 +1177,23 @@ fn finish_session(sess: LiveUtterance) -> Result<Option<String>, String> {
         return Ok(None);
     }
     eprintln!("[stt] release: {} samples @ {} Hz", pcm.len(), rate);
-    let f32s = Resampler::resample_all(rate, &pcm);
+    let mut f32s = Resampler::resample_all(rate, &pcm);
+    if sess.vad_enabled {
+        match audio::apply_vad(&f32s, sess.vad_gate) {
+            audio::VadResult::Silence => {
+                eprintln!("[stt] release: no speech above VAD gate, skipping");
+                return Ok(None);
+            }
+            audio::VadResult::Speech(trimmed) => {
+                eprintln!(
+                    "[stt] release: vad trimmed {:.2}s -> {:.2}s",
+                    f32s.len() as f64 / 16_000.0,
+                    trimmed.len() as f64 / 16_000.0
+                );
+                f32s = trimmed;
+            }
+        }
+    }
     if f32s.len() < MIN_SAMPLES_16K {
         eprintln!("[stt] release: utterance too short, skipping");
         return Ok(None);

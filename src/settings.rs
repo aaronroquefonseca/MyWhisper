@@ -389,7 +389,7 @@ impl Default for SttSettings {
             self_hosted_model: String::new(),
             language: "auto".to_string(),
             vad_enabled: false,
-            vad_threshold: 0.5,
+            vad_threshold: 0.1,
             live_preview: false,
             gpu_backend: GpuBackendSetting::Cpu,
         }

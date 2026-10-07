@@ -165,6 +165,48 @@ pub fn f32_to_i16(samples: &[f32]) -> Vec<i16> {
         .collect()
 }
 
+/// Voice activity: trim leading/trailing silence and detect
+/// all-silence utterances. Frame RMS over 30 ms windows at 16 kHz;
+/// `gate` is the 0..1 amplitude fraction from settings (useful range
+/// ~0.05..0.2 for normal mic levels; 0 disables the gate). Kept
+/// speech is padded 150 ms each side so plosives survive.
+pub const VAD_FRAME: usize = 480;
+pub const VAD_PAD: usize = 2400;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum VadResult {
+    Speech(Vec<f32>),
+    Silence,
+}
+
+pub fn apply_vad(samples: &[f32], gate: f32) -> VadResult {
+    if samples.is_empty() {
+        return VadResult::Silence;
+    }
+    let gate = gate.clamp(0.0, 1.0);
+    if gate <= 0.0 {
+        return VadResult::Speech(samples.to_vec());
+    }
+    let mut first: Option<usize> = None;
+    let mut last = 0usize;
+    for (i, frame) in samples.chunks(VAD_FRAME).enumerate() {
+        let sum: f32 = frame.iter().map(|s| s * s).sum();
+        let rms = (sum / frame.len() as f32).sqrt();
+        if rms >= gate {
+            if first.is_none() {
+                first = Some(i);
+            }
+            last = i;
+        }
+    }
+    let Some(f0) = first else {
+        return VadResult::Silence;
+    };
+    let from = (f0 * VAD_FRAME).saturating_sub(VAD_PAD);
+    let to = ((last + 1) * VAD_FRAME + VAD_PAD).min(samples.len());
+    VadResult::Speech(samples[from..to].to_vec())
+}
+
 /// Minimal WAV (16-bit PCM mono) builder, in RAM. Never touches disk:
 /// the bytes go straight into HTTP multipart / debug paths.
 pub fn wav_bytes_16k(samples: &[i16]) -> Vec<u8> {
@@ -234,6 +276,33 @@ mod tests {
         let out = Resampler::resample_all(16_000, &input);
         assert_eq!(out.len(), 3);
         assert!((out[1] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn vad_trims_silence_and_detects_none() {
+        // 0.5 s silence, 0.5 s tone (RMS ~0.35), 0.5 s silence.
+        let mut sig = vec![0.0f32; 8000];
+        for i in 0..8000 {
+            sig.push((2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16_000.0).sin() * 0.5);
+        }
+        sig.extend(vec![0.0f32; 8000]);
+        match apply_vad(&sig, 0.1) {
+            VadResult::Speech(trimmed) => {
+                // Keeps the burst + 150 ms pads, drops the rest.
+                assert!(trimmed.len() < sig.len());
+                assert!(trimmed.len() >= 8000);
+                // Burst + pads + one frame slack each side.
+                assert!(trimmed.len() <= 8000 + 2 * VAD_PAD + 2 * VAD_FRAME);
+            }
+            VadResult::Silence => panic!("speech missed"),
+        }
+        assert_eq!(apply_vad(&vec![0.0f32; 16_000], 0.1), VadResult::Silence);
+        assert_eq!(apply_vad(&[], 0.1), VadResult::Silence);
+        // Gate 0 passes everything through untouched.
+        match apply_vad(&sig, 0.0) {
+            VadResult::Speech(whole) => assert_eq!(whole.len(), sig.len()),
+            VadResult::Silence => panic!("gate 0 must pass"),
+        }
     }
 
     #[test]
