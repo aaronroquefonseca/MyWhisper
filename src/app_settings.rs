@@ -2383,9 +2383,8 @@ fn language_models_page(s: &AppSettings) -> GtkBox {
     root
 }
 
-fn privacy_page(s: &AppSettings) -> GtkBox {
+fn privacy_page(state: &Rc<AppState>) -> GtkBox {
     let root = section_box(tr("settings.privacy"), tr("settings.privacy.sub"));
-    let p = &s.privacy;
 
     let (card, rows) = group(tr("group.audioret"));
     const RETENTION_DAYS: &[u32] = &[0, 1, 7, 14, 30, 60, 90];
@@ -2395,7 +2394,7 @@ fn privacy_page(s: &AppSettings) -> GtkBox {
         &retention_opts(),
         RETENTION_DAYS
             .iter()
-            .position(|d| *d == p.audio_retention_days)
+            .position(|d| *d == state.settings.borrow().privacy.audio_retention_days)
             .unwrap_or(4),
     );
     let (b, _) = row(tr("row.storedaudio"));
@@ -2406,22 +2405,80 @@ fn privacy_page(s: &AppSettings) -> GtkBox {
     root.append(&card);
 
     let (card, rows) = group(tr("group.transcripts"));
-    switch_row(&rows, tr("row.keephistory"), p.history_enabled);
-
-    combo_row(
-        &rows,
-        tr("row.autodelete"),
-        &delete_opts(),
-        RETENTION_DAYS
-            .iter()
-            .position(|d| *d == p.transcript_auto_delete_days)
-            .unwrap_or(0),
-    );
-    switch_row(
-        &rows,
-        tr("row.savediscarded"),
-        p.save_discarded_transcriptions,
-    );
+    // Keep dictation history (wired): when off, dictations still
+    // paste, they just aren't stored.
+    {
+        let (b, _) = row(tr("row.keephistory"));
+        let sw = Switch::new();
+        sw.set_active(state.settings.borrow().privacy.history_enabled);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state.settings.borrow_mut().privacy.history_enabled = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
+    // Auto-delete transcripts after N days, 0 = keep forever (wired).
+    {
+        const RETENTION_DAYS: &[u32] = &[0, 1, 7, 14, 30, 60, 90];
+        let (b, _) = row(tr("row.autodelete"));
+        let dd = DropDown::new(
+            Some(StringList::new(&delete_opts())),
+            None::<gtk4::Expression>,
+        );
+        dd.set_selected(
+            RETENTION_DAYS
+                .iter()
+                .position(|d| *d == state.settings.borrow().privacy.transcript_auto_delete_days)
+                .unwrap_or(0) as u32,
+        );
+        dd.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            dd.connect_selected_notify(move |d| {
+                state.settings.borrow_mut().privacy.transcript_auto_delete_days =
+                    RETENTION_DAYS
+                        .get(d.selected() as usize)
+                        .copied()
+                        .unwrap_or(0);
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&dd);
+        rows.append(&b);
+    }
+    // Keep midway-cancelled dictations as discarded rows (wired).
+    {
+        let (b, _) = row(tr("row.savediscarded"));
+        let sw = Switch::new();
+        sw.set_active(
+            state
+                .settings
+                .borrow()
+                .privacy
+                .save_discarded_transcriptions,
+        );
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state
+                    .settings
+                    .borrow_mut()
+                    .privacy
+                    .save_discarded_transcriptions = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
     root.append(&card);
 
     root
@@ -2497,7 +2554,7 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
         ("Clipboard", clipboard_page(state)),
         ("Speech to Text", stt_page(state)),
         ("Language Models", language_models_page(s)),
-        ("Privacy & Data", privacy_page(s)),
+        ("Privacy & Data", privacy_page(state)),
         ("System", system_page(s)),
     ];
 

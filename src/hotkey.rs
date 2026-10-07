@@ -51,6 +51,8 @@ pub enum HotkeyStatus {
 pub enum HotkeyEvent {
     Down(HotkeyAction, crate::settings::ActivationMode),
     Up(HotkeyAction, crate::settings::ActivationMode),
+    /// Escape pressed while a dictation is live: cancel midway.
+    Cancel,
 }
 
 pub type HotkeyCallback = Arc<dyn Fn(HotkeyEvent) + Send + Sync + 'static>;
@@ -412,6 +414,12 @@ fn poll_events(
                 _ => continue,
             };
             let pressed = value == 1;
+            // Escape cancels a live utterance (midway cancel). Gated
+            // on live state: idle Escape presses never emit.
+            if pressed && key == KeyCode::KEY_ESC && crate::transcribe::has_live() {
+                eprintln!("[hotkey] escape cancels live utterance");
+                on_event(HotkeyEvent::Cancel);
+            }
             for w in watched.iter_mut() {
                 let c = &w.combo;
                 if let Some(target) = c.target {
@@ -618,6 +626,7 @@ pub fn start_dictation(
     tap_ms: u64,
     down: DictationHook,
     up: DictationHook,
+    cancel: DictationHook,
 ) {
     use crate::settings::ActivationMode;
     let mut map = HashMap::new();
@@ -669,6 +678,9 @@ pub fn start_dictation(
                 }
             }
         }
+        HotkeyEvent::Cancel => {
+            cancel();
+        }
         _ => {}
     });
     let on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static> =
@@ -677,10 +689,11 @@ pub fn start_dictation(
 }
 
 /// Log-only hooks for standalone GUI mode (no pill in this process).
-fn log_hooks() -> (DictationHook, DictationHook) {
+fn log_hooks() -> (DictationHook, DictationHook, DictationHook) {
     (
         Arc::new(|| eprintln!("[hotkey] dictation START (pipeline hook)")),
         Arc::new(|| eprintln!("[hotkey] dictation STOP (pipeline hook)")),
+        Arc::new(|| eprintln!("[hotkey] dictation CANCEL (pipeline hook)")),
     )
 }
 
@@ -689,8 +702,14 @@ fn log_hooks() -> (DictationHook, DictationHook) {
 /// `start_dictation` instead.
 pub fn apply_from_settings(state: &crate::app::AppState) {
     let hotkeys = state.settings.borrow().hotkeys.clone();
-    let (down, up) = log_hooks();
-    start_dictation(hotkeys.dictation_hotkeys, hotkeys.smart_tap_ms, down, up);
+    let (down, up, cancel) = log_hooks();
+    start_dictation(
+        hotkeys.dictation_hotkeys,
+        hotkeys.smart_tap_ms,
+        down,
+        up,
+        cancel,
+    );
 }
 
 #[cfg(test)]

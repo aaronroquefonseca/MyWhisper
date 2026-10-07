@@ -139,6 +139,12 @@ fn run_headless(
             let _ = tx.send(PillCmd::Hide);
         }
     });
+    let cancel: mywhisper::hotkey::DictationHook = std::sync::Arc::new({
+        let tx = tx.clone();
+        move || {
+            let _ = tx.send(PillCmd::Cancel);
+        }
+    });
 
     // Initial bindings now; the watcher restarts the listener with
     // the same hooks whenever the DB changes.
@@ -150,8 +156,9 @@ fn run_headless(
         initial.smart_tap_ms,
         down.clone(),
         up.clone(),
+        cancel.clone(),
     );
-    mywhisper::service::spawn_hotkey_watcher(db_path.clone(), down, up);
+    mywhisper::service::spawn_hotkey_watcher(db_path.clone(), down, up, cancel);
     mywhisper::service::spawn_pill_watcher(db_path, tx.clone());
     // Fixed task runtime first: every background job below flows
     // through it (bounded pool, no panicking spawns). If even this
@@ -248,6 +255,12 @@ fn run_headless(
                             }
                         }
                         PillCmd::Hide => {
+                            // Release after an Escape cancel: the pill
+                            // already hid, no flash, no second cue.
+                            if mywhisper::transcribe::take_cancelled() {
+                                overlay.hide();
+                                return gtk4::glib::ControlFlow::Continue;
+                            }
                             mywhisper::sound::play(mywhisper::sound::UiSound::Stop);
                             mywhisper::media::resume(
                                 &paused.borrow_mut().drain(..).collect::<Vec<_>>(),
@@ -268,6 +281,28 @@ fn run_headless(
                                     return;
                                 }
                                 let _ = tx_done.send(PillCmd::Done(gen_at_release));
+                            });
+                        }
+                        PillCmd::Cancel => {
+                            mywhisper::sound::play(mywhisper::sound::UiSound::Stop);
+                            mywhisper::media::resume(
+                                &paused.borrow_mut().drain(..).collect::<Vec<_>>(),
+                            );
+                            // Midway cancel: hide at once. The discard
+                            // worker lands the row (or not); completion
+                            // re-hides harmlessly.
+                            overlay.hide();
+                            let tx_done = tx_done.clone();
+                            let gen_at_cancel =
+                                gen_hide.load(std::sync::atomic::Ordering::SeqCst);
+                            let gen_hide = gen_hide.clone();
+                            mywhisper::transcribe::cancel_utterance(move || {
+                                if gen_hide.load(std::sync::atomic::Ordering::SeqCst)
+                                    != gen_at_cancel
+                                {
+                                    return;
+                                }
+                                let _ = tx_done.send(PillCmd::Done(gen_at_cancel));
                             });
                         }
                         PillCmd::Done(gen_at_release) => {

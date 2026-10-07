@@ -518,4 +518,5 @@ pub struct HistoryEntry {
     pub word_count: u32,
     pub duration_secs: i64,
     pub recorded_at: i64,
+    pub discarded: bool,
 }

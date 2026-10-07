@@ -152,6 +152,9 @@ fn entry_card(
     entry: &HistoryEntry,
     expanded: &Rc<RefCell<HashSet<String>>>,
 ) -> GtkBox {
+    if entry.discarded {
+        return discarded_card(state, entry);
+    }
     let card = GtkBox::new(Orientation::Vertical, 2);
     card.add_css_class("card");
 
@@ -246,6 +249,42 @@ fn entry_card(
     card
 }
 
+/// Midway-cancelled utterance: timestamp + duration, dimmed, no
+/// text (never transcribed), delete only. Shown iff the discarded
+/// toggle is on.
+fn discarded_card(state: &Rc<AppState>, entry: &HistoryEntry) -> GtkBox {
+    let card = GtkBox::new(Orientation::Vertical, 2);
+    card.add_css_class("card");
+    let head = GtkBox::new(Orientation::Horizontal, 8);
+    let meta = Label::new(Some(
+        format!(
+            "{} · {}s · {}",
+            time_label(entry.recorded_at),
+            entry.duration_secs,
+            tr("home.discarded")
+        )
+        .as_str(),
+    ));
+    meta.set_xalign(0.0);
+    meta.add_css_class("dim");
+    meta.set_hexpand(true);
+    head.append(&meta);
+    let del_btn = Button::with_label(tr("home.delete"));
+    del_btn.add_css_class("destructive-action");
+    {
+        let state = state.clone();
+        let uuid = entry.uuid.clone();
+        del_btn.connect_clicked(move |_| {
+            if let Err(e) = state.store.delete_history(&uuid) {
+                eprintln!("[home] delete: {e}");
+            }
+        });
+    }
+    head.append(&del_btn);
+    card.append(&head);
+    card
+}
+
 pub fn page(state: &Rc<AppState>) -> GtkBox {
     let root = GtkBox::new(Orientation::Vertical, 16);
     root.add_css_class("page");
@@ -262,6 +301,12 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     sub.set_xalign(0.0);
     col.append(&sub);
 
+    // Show-discarded toggle (in-memory, default off like the
+    // reference): discarded rows are midway cancels, not dictations.
+    let show_discarded: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    let toggle = Button::with_label(tr("home.showdiscarded"));
+    toggle.set_halign(gtk4::Align::End);
+    col.append(&toggle);
     let scrolled = gtk4::ScrolledWindow::new();
     scrolled.set_vexpand(true);
     col.append(&scrolled);
@@ -270,12 +315,33 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     // Raw-expander state survives the 1500 ms refills below.
     let expanded: Rc<RefCell<HashSet<String>>> = Rc::new(RefCell::new(HashSet::new()));
     fill_history(&list, state, &state.history, &expanded);
+    {
+        let state = state.clone();
+        let list = list.clone();
+        let expanded = expanded.clone();
+        let show_discarded = show_discarded.clone();
+        toggle.connect_clicked(move |t| {
+            let show = !show_discarded.get();
+            show_discarded.set(show);
+            t.set_label(if show {
+                tr("home.hidediscarded")
+            } else {
+                tr("home.showdiscarded")
+            });
+            let history = state
+                .store
+                .load_history(200, show)
+                .unwrap_or_default();
+            fill_history(&list, &state, &history, &expanded);
+        });
+    }
 
     // Live refresh on synced arrivals (same generation signal as the
-    // dictionary page).
+    // dictionary page). Honors the discarded toggle.
     {
         let state = state.clone();
         let expanded = expanded.clone();
+        let show_discarded = show_discarded.clone();
         let seen = Rc::new(Cell::new((crate::store::data_gen(), 0i64)));
         gtk4::glib::timeout_add_local(Duration::from_millis(1500), move || {
             let token = (
@@ -284,7 +350,10 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
             );
             if seen.get() != token {
                 seen.set(token);
-                let history = state.store.load_history(200).unwrap_or_default();
+                let history = state
+                    .store
+                    .load_history(200, show_discarded.get())
+                    .unwrap_or_default();
                 fill_history(&list, &state, &history, &expanded);
             }
             gtk4::glib::ControlFlow::Continue

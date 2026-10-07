@@ -63,7 +63,7 @@ fn stat_card(label: &str, value: &str, caption: &str) -> (GtkBox, Label, Label) 
 /// Recompute stats straight from the database (same derivation as
 /// `AppState::load`, so live refreshes match startup values).
 fn refresh_stats(state: &Rc<AppState>) -> crate::settings::UsageStats {
-    let history = state.store.load_history(200).unwrap_or_default();
+    let history = state.store.load_history(200, false).unwrap_or_default();
     let words_spoken: u64 = history.iter().map(|e| e.word_count as u64).sum();
     let secs: u64 = history.iter().map(|e| e.duration_secs.max(0) as u64).sum();
     crate::settings::UsageStats {

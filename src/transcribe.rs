@@ -844,7 +844,11 @@ fn whistle_parse_stdout(stdout: &str) -> Option<String> {
             .and_then(|t| t.as_str())
         {
             let t = t.trim();
-            return if t.is_empty() { None } else { Some(t.to_string()) };
+            return if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            };
         }
     }
     Some(stdout.to_string())
@@ -1075,9 +1079,25 @@ fn gemini_transcribe(key: &str, model: &str, lang: &str, wav: &[u8]) -> Result<S
 // ----------------------------------------------------------- orchestration
 
 /// Live utterance: recorder tap + optional streaming pump.
+pub fn has_live() -> bool {
+    live().lock().map(|g| g.is_some()).unwrap_or(false)
+}
+
+/// Release-side cancel consumption: set by `cancel_utterance`, cleared
+/// by the next `begin_utterance`. Lets a release after Escape skip the
+/// Processing flash (and second Stop cue) instead of toggling.
+static CANCELLED: AtomicBool = AtomicBool::new(false);
+
+pub fn take_cancelled() -> bool {
+    CANCELLED.swap(false, Ordering::SeqCst)
+}
+
 struct LiveUtterance {
     recorder: Arc<Mutex<Recorder>>,
     stop: Arc<AtomicBool>,
+    /// Cancel (Escape): pump aborts without finishing (no Done, no
+    /// final read); the discard worker below owns the outcome.
+    cancel: Arc<AtomicBool>,
     /// Streaming engines: pump thread exit + final text channel.
     result_rx: Option<mpsc::Receiver<Result<String, String>>>,
     plan: Plan,
@@ -1106,6 +1126,7 @@ fn live() -> &'static Mutex<Option<LiveUtterance>> {
 /// press pastes late but never loses audio.
 pub fn begin_utterance(stt: crate::settings::SttSettings, data_dir: &Path) {
     end_stale();
+    CANCELLED.store(false, Ordering::Relaxed);
     let plan = match plan_for(&stt, data_dir) {
         Ok(p) => p,
         Err(e) => {
@@ -1134,14 +1155,16 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, data_dir: &Path) {
     recorder.lock().unwrap().start(0); // rate learned from first tap
     audio::set_recorder(Some(recorder.clone()));
     let stop = Arc::new(AtomicBool::new(false));
+    let cancel = Arc::new(AtomicBool::new(false));
     let result_rx = if plan.streaming() {
         match OnlineSession::open() {
             Ok(session) => {
                 let (tx, rx) = mpsc::channel();
                 let rec = recorder.clone();
                 let stop_pump = stop.clone();
+                let cancel_pump = cancel.clone();
                 if let Err(e) = crate::runtime::submit("stt-pump", move || {
-                    pump_online(session, rec, stop_pump, tx);
+                    pump_online(session, rec, stop_pump, cancel_pump, tx);
                 }) {
                     eprintln!("[stt] press: {e}");
                     audio::set_recorder(None);
@@ -1161,6 +1184,7 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, data_dir: &Path) {
     *live().lock().unwrap() = Some(LiveUtterance {
         recorder,
         stop,
+        cancel,
         result_rx,
         plan,
         started: Instant::now(),
@@ -1178,6 +1202,7 @@ fn pump_online(
     mut session: OnlineSession,
     rec: Arc<Mutex<Recorder>>,
     stop: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
     tx: mpsc::Sender<Result<String, String>>,
 ) {
     let mut resampler: Option<(u32, Resampler)> = None;
@@ -1197,7 +1222,7 @@ fn pump_online(
         }
         session.send_chunk(&f32c)
     };
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(200));
         let chunk = rec.lock().map(|mut r| r.drain_new()).unwrap_or_default();
         if let Err(e) = feed(chunk) {
@@ -1205,12 +1230,90 @@ fn pump_online(
             return;
         }
     }
+    if cancel.load(Ordering::Relaxed) {
+        // Cancelled: drop the session without Done/final (unclean
+        // close is routine for these servers; the discard worker
+        // below owns the outcome).
+        let _ = tx.send(Err("cancelled".to_string()));
+        return;
+    }
     let tail = rec.lock().map(|mut r| r.drain_new()).unwrap_or_default();
     if let Err(e) = feed(tail) {
         let _ = tx.send(Err(e));
         return;
     }
     let _ = tx.send(session.finish());
+}
+
+/// Escape midway: drop the audio, never transcribe, never paste,
+/// never touch the clipboard. Optionally keeps a discarded marker
+/// row (setting-gated, see below). The pill hides immediately; the
+/// row lands via the normal home refresh.
+pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
+    let sess = live().lock().unwrap().take();
+    audio::set_recorder(None);
+    let Some(sess) = sess else {
+        on_done();
+        return;
+    };
+    sess.stop.store(true, Ordering::Relaxed);
+    sess.cancel.store(true, Ordering::Relaxed);
+    CANCELLED.store(true, Ordering::Relaxed);
+    let held_secs = sess.started.elapsed().as_secs_f64();
+    drop(sess); // result_rx drop unblocks the aborting pump
+    let on_done = Arc::new(Mutex::new(Some(
+        Box::new(on_done) as Box<dyn FnOnce() + Send>
+    )));
+    let od = on_done.clone();
+    let finish = move || {
+        if let Ok(mut g) = od.lock() {
+            if let Some(done) = g.take() {
+                done();
+            }
+        }
+    };
+    if crate::runtime::submit("stt-cancel", move || {
+        let paths = match crate::paths::AppPaths::create() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[stt] cancel: paths: {e}");
+                finish();
+                return;
+            }
+        };
+        let keep = match crate::store::Store::open(&paths.db_file()) {
+            Ok(store) => {
+                let stt = store.load_settings();
+                let save = stt.privacy.save_discarded_transcriptions
+                    && stt.privacy.history_enabled
+                    && held_secs >= 1.0;
+                if save {
+                    let node =
+                        crate::device::DeviceIdentity::load_or_create(&paths.device_key_file())
+                            .map(|i| i.node_id)
+                            .unwrap_or_else(|_| "unknown".to_string());
+                    match store.add_discarded(held_secs.round() as i64, &node) {
+                        Ok(_) => eprintln!("[stt] cancel: discarded row kept ({held_secs:.1}s)"),
+                        Err(e) => eprintln!("[stt] cancel: discard store: {e}"),
+                    }
+                } else {
+                    eprintln!("[stt] cancel: dropped ({held_secs:.1}s, not kept)");
+                }
+            }
+            Err(e) => eprintln!("[stt] cancel: store: {e}"),
+        };
+        let _ = keep;
+        finish();
+    })
+    .is_err()
+    {
+        eprintln!("[stt] cancel: runtime saturated");
+        if let Ok(mut g) = on_done.lock() {
+            if let Some(done) = g.take() {
+                done();
+            }
+        }
+    }
 }
 
 /// Drop an orphaned live session (new press while one is open).
@@ -1418,6 +1521,8 @@ fn post_process(raw: &str) -> String {
 
 /// Store in history (raw + final text, never audio) and paste the
 /// FINAL transcript via the configured clipboard pipeline.
+/// Retention: history off pastes without storing; auto-delete purges
+/// old rows first (tombstones survive).
 fn deliver(raw: String, secs: f64) {
     let text = post_process(&raw);
     eprintln!("[stt] final: {text}");
@@ -1428,24 +1533,31 @@ fn deliver(raw: String, secs: f64) {
             return;
         }
     };
-    let prefs = match crate::store::Store::open(&paths.db_file()) {
-        Ok(store) => {
-            let settings = store.load_settings();
-            let words = text.split_whitespace().count() as u32;
-            let node = crate::device::DeviceIdentity::load_or_create(&paths.device_key_file())
-                .map(|i| i.node_id)
-                .unwrap_or_else(|_| "unknown".to_string());
-            if let Err(e) = store.add_history(&raw, &text, words, secs.round() as i64, &node) {
-                eprintln!("[stt] history: {e}");
-            }
-            settings.preferences
-        }
+    let store = match crate::store::Store::open(&paths.db_file()) {
+        Ok(s) => s,
         Err(e) => {
             eprintln!("[stt] store: {e}");
             return;
         }
     };
-    crate::clipboard::run_pipeline(&text, &prefs);
+    let settings = store.load_settings();
+    if settings.privacy.transcript_auto_delete_days > 0 {
+        if let Err(e) = store.purge_old_history(settings.privacy.transcript_auto_delete_days) {
+            eprintln!("[stt] auto-delete: {e}");
+        }
+    }
+    if settings.privacy.history_enabled {
+        let words = text.split_whitespace().count() as u32;
+        let node = crate::device::DeviceIdentity::load_or_create(&paths.device_key_file())
+            .map(|i| i.node_id)
+            .unwrap_or_else(|_| "unknown".to_string());
+        if let Err(e) = store.add_history(&raw, &text, words, secs.round() as i64, &node) {
+            eprintln!("[stt] history: {e}");
+        }
+    } else {
+        eprintln!("[stt] history disabled: pasting without storing");
+    }
+    crate::clipboard::run_pipeline(&text, &settings.preferences);
 }
 
 #[cfg(test)]
@@ -1512,7 +1624,10 @@ mod tests {
 
     #[test]
     fn whistle_stdout_shapes() {
-        assert_eq!(whistle_parse_stdout("  hello world \n"), Some("hello world".into()));
+        assert_eq!(
+            whistle_parse_stdout("  hello world \n"),
+            Some("hello world".into())
+        );
         assert_eq!(
             whistle_parse_stdout(r#"{"text":" hi ","tokens_per_second":99}"#),
             Some("hi".into())

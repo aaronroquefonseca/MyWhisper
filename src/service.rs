@@ -149,7 +149,12 @@ pub fn start_sync_engine(
 
 /// Watch the database for hotkey changes (written by any frontend)
 /// and restart the listener with pill hooks when they move.
-pub fn spawn_hotkey_watcher(db_path: PathBuf, down: DictationHook, up: DictationHook) {
+pub fn spawn_hotkey_watcher(
+    db_path: PathBuf,
+    down: DictationHook,
+    up: DictationHook,
+    cancel: DictationHook,
+) {
     std::thread::spawn(move || {
         let mut last: (Vec<(String, crate::settings::ActivationMode)>, u64) = (Vec::new(), 0);
         let mut first = true;
@@ -181,6 +186,7 @@ pub fn spawn_hotkey_watcher(db_path: PathBuf, down: DictationHook, up: Dictation
                     hotkeys.smart_tap_ms,
                     down.clone(),
                     up.clone(),
+                    cancel.clone(),
                 );
             }
         }
@@ -194,6 +200,8 @@ pub fn spawn_hotkey_watcher(db_path: PathBuf, down: DictationHook, up: Dictation
 pub enum PillCmd {
     Show,
     Hide,
+    /// Escape midway: hide at once, discard worker lands the row.
+    Cancel,
     /// Worker finished (success/empty/fail): hide if generation matches.
     Done(u64),
     Apply(crate::settings::PillPrefs),

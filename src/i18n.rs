@@ -375,6 +375,9 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "No se aplicó procesamiento IA a esta transcripción",
         ),
         "home.wpm" => ("{wpm} wpm", "{wpm} ppm"),
+        "home.showdiscarded" => ("Show discarded", "Mostrar descartados"),
+        "home.hidediscarded" => ("Hide discarded", "Ocultar descartados"),
+        "home.discarded" => ("discarded", "descartado"),
         // Insights
         "insights.title" => ("Insights", "Estadísticas"),
         "insights.subtitle" => (

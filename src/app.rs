@@ -67,7 +67,7 @@ impl AppState {
         if settings.hotkeys.migrate_legacy() {
             let _ = store.save_settings(&settings);
         }
-        let history = store.load_history(200).unwrap_or_default();
+        let history = store.load_history(200, false).unwrap_or_default();
         let words_spoken: u64 = history.iter().map(|e| e.word_count as u64).sum();
         let secs: u64 = history.iter().map(|e| e.duration_secs.max(0) as u64).sum();
         let stats = UsageStats {
