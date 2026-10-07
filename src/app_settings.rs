@@ -1284,6 +1284,7 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
         LocalSttProvider::OpenAi => settings.stt.whisper_model.clone(),
         LocalSttProvider::Oruk => "orukeet-v0.1.0".to_string(),
         LocalSttProvider::Cohere => "cohere-transcribe-03-2026".to_string(),
+        LocalSttProvider::Whistle => "whistle-v1".to_string(),
     };
     drop(settings);
     // Owned copy: the poll closure below borrows nothing across ticks.
@@ -1789,6 +1790,7 @@ fn stt_lang_options(state: &Rc<AppState>) -> Vec<String> {
         LocalSttProvider::Nvidia => &s.stt.parakeet_model,
         LocalSttProvider::Oruk => "orukeet-v0.1.0",
         LocalSttProvider::Cohere => "cohere-transcribe-03-2026",
+        LocalSttProvider::Whistle => "whistle-v1",
     };
     if matches!(s.stt.local_provider, LocalSttProvider::Cohere) {
         return stt::model_languages(model_id)
@@ -1862,7 +1864,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         let pill_row = GtkBox::new(Orientation::Horizontal, 8);
         pill_row.set_halign(gtk4::Align::Start);
         rows.append(&pill_row);
-        let vendors = ["Oruk", "OpenAI", "NVIDIA", "Cohere"];
+        let vendors = ["Oruk", "OpenAI", "NVIDIA", "Cohere", "Whistle"];
         {
             use crate::settings::LocalSttProvider;
             let current = state.settings.borrow().stt.local_provider;
@@ -1871,6 +1873,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 LocalSttProvider::OpenAi => 1,
                 LocalSttProvider::Nvidia => 2,
                 LocalSttProvider::Cohere => 3,
+                LocalSttProvider::Whistle => 4,
             };
             let mut first: Option<gtk4::ToggleButton> = None;
             for (i, name) in vendors.iter().enumerate() {
@@ -1895,6 +1898,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                                 0 => LocalSttProvider::Oruk,
                                 2 => LocalSttProvider::Nvidia,
                                 3 => LocalSttProvider::Cohere,
+                                4 => LocalSttProvider::Whistle,
                                 _ => LocalSttProvider::OpenAi,
                             };
                         }
@@ -2211,8 +2215,13 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                     (&s.stt.mode, &s.stt.local_provider),
                     (SttMode::Local, LocalSttProvider::OpenAi)
                 );
+                let sherpa = matches!(
+                    (&s.stt.mode, &s.stt.local_provider),
+                    (SttMode::Local, LocalSttProvider::Nvidia)
+                        | (SttMode::Local, LocalSttProvider::Oruk)
+                );
                 whisper_box.set_visible(whisper);
-                sherpa_box.set_visible(!whisper);
+                sherpa_box.set_visible(sherpa);
             }
             cloud_card.set_visible(cloud);
             selfhosted_card.set_visible(hosted);

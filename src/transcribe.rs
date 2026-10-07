@@ -77,6 +77,10 @@ pub enum Plan {
     SherpaOffline {
         model_dir: PathBuf,
     },
+    WhistleCli {
+        engine: PathBuf,
+        model: PathBuf,
+    },
     CloudOpenAiCompat {
         base: String,
         key: String,
@@ -111,6 +115,9 @@ impl Plan {
             }
             Plan::SherpaOffline { model_dir } => {
                 format!("sherpa-offline ({})", model_dir.display())
+            }
+            Plan::WhistleCli { model, .. } => {
+                format!("whistle ({})", model.display())
             }
             Plan::CloudOpenAiCompat { base, model, .. } => {
                 format!("cloud {base} ({model})")
@@ -231,6 +238,23 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
             let dir = stt::model_dir(data_dir, entry);
             require_transducer_files(&dir, entry.id)?;
             Ok(Plan::SherpaOffline { model_dir: dir })
+        }
+        LocalSttProvider::Whistle => {
+            let entry = stt::find_model("whistle-v1").ok_or_else(|| missing("whistle"))?;
+            let dir = stt::model_dir(data_dir, entry);
+            let model = dir.join("whistle.cact");
+            if !model.exists() {
+                return Err(missing("whistle model (download it in Language Models)"));
+            }
+            // The `needle` engine is user-placed (no verified upstream
+            // binary URL yet): `<data>/bin/needle/needle`, executable.
+            let engine = data_dir.join("bin").join("needle").join("needle");
+            if !engine.exists() {
+                return Err(missing(
+                    "needle engine binary at bin/needle/needle (see Whistle docs)",
+                ));
+            }
+            Ok(Plan::WhistleCli { engine, model })
         }
         LocalSttProvider::Cohere => Err(
             "Cohere Transcribe has no websocket-server flags in sherpa-onnx v1.13.8 \
@@ -729,6 +753,98 @@ impl OnlineSession {
     }
 }
 
+/// Whistle via the `needle` CLI: one process per utterance, no
+/// server. 16 kHz mono, max 30 s per pass — longer utterances are
+/// windowed and concatenated. Language auto-detects (documented);
+/// no CLI language flag is known, so the setting doesn't apply.
+/// Output is transcript text, or JSON carrying `text` — both seen in
+/// the wild, so accept either.
+///
+/// RAM-only except one tmpfs staging file (`/dev/shm`, never
+/// persisted): the CLI takes a path, not stdin. Telemetry is forced
+/// off in the child environment (on-device posture).
+pub fn whistle_transcribe(
+    engine: &Path,
+    model: &Path,
+    samples_16k: &[f32],
+) -> Result<String, String> {
+    const WINDOW: usize = 30 * 16_000;
+    let mut transcripts = Vec::new();
+    // Empty slice still decodes once (keeps behavior uniform).
+    let chunks: Vec<&[f32]> = if samples_16k.is_empty() {
+        vec![&[]]
+    } else {
+        samples_16k.chunks(WINDOW).collect()
+    };
+    for (i, chunk) in chunks.iter().enumerate() {
+        let wav = wav_bytes_16k(&audio::f32_to_i16(chunk));
+        let path = write_tmpfs_wav(&wav, i)?;
+        let text = whistle_pass(engine, model, &path);
+        let _ = std::fs::remove_file(&path);
+        transcripts.push(text?);
+    }
+    Ok(transcripts.join(" ").trim().to_string())
+}
+
+fn write_tmpfs_wav(wav: &[u8], idx: usize) -> Result<PathBuf, String> {
+    let dir = Path::new("/dev/shm");
+    if !dir.is_dir() {
+        return Err("whistle needs /dev/shm (tmpfs) for CLI staging".to_string());
+    }
+    let path = dir.join(format!(
+        "mywhisper-whistle-{}-{idx}.wav",
+        std::process::id()
+    ));
+    std::fs::write(&path, wav).map_err(|e| format!("stage whistle wav: {e}"))?;
+    Ok(path)
+}
+
+fn whistle_pass(engine: &Path, model: &Path, wav: &Path) -> Result<String, String> {
+    let out = Command::new(engine)
+        .args([
+            "--model",
+            &model.to_string_lossy(),
+            "--audio",
+            &wav.to_string_lossy(),
+        ])
+        .env("NEEDLE_TELEMETRY", "0")
+        .env("DO_NOT_TRACK", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("spawn needle: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "needle: exit {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    whistle_parse_stdout(&stdout).ok_or_else(|| "needle: empty output".to_string())
+}
+
+/// Transcript stdout: JSON carrying `text`/`audio_text`, or bare
+/// transcript text. Empty (after trim) means silence -> None.
+fn whistle_parse_stdout(stdout: &str) -> Option<String> {
+    let stdout = stdout.trim();
+    if stdout.is_empty() {
+        return None;
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(stdout) {
+        if let Some(t) = v
+            .get("text")
+            .or_else(|| v.get("audio_text"))
+            .and_then(|t| t.as_str())
+        {
+            let t = t.trim();
+            return if t.is_empty() { None } else { Some(t.to_string()) };
+        }
+    }
+    Some(stdout.to_string())
+}
+
 /// Offline (whole-utterance) transcription over one WS connection.
 pub fn sherpa_offline_transcribe(samples_16k: &[f32]) -> Result<String, String> {
     sherpa_offline_transcribe_inner(samples_16k, INFERENCE_TIMEOUT)
@@ -1224,6 +1340,7 @@ fn transcribe_blocking(plan: &Plan, f32s: &[f32]) -> Result<String, String> {
             whisper_transcribe(&wav)
         }
         Plan::SherpaOffline { .. } => sherpa_offline_transcribe(f32s),
+        Plan::WhistleCli { engine, model } => whistle_transcribe(engine, model, f32s),
         Plan::SherpaOnline { .. } => {
             // Release without a pump (shouldn't happen): one-shot.
             let mut s = OnlineSession::open()?;
@@ -1278,6 +1395,8 @@ fn ensure_servers(
         }
         Plan::SherpaOnline { model_dir } => ensure_sherpa_online(data_dir, model_dir),
         Plan::SherpaOffline { model_dir } => ensure_sherpa_offline(data_dir, model_dir),
+        // CLI per utterance: nothing to keep running.
+        Plan::WhistleCli { .. } => Ok(()),
         Plan::CloudOpenAiCompat { .. } | Plan::CloudDeepgram { .. } | Plan::CloudGemini { .. } => {
             Ok(())
         }
@@ -1376,6 +1495,38 @@ mod tests {
         assert_eq!(lang_param("auto"), None);
         assert_eq!(lang_param(""), None);
         assert_eq!(lang_param("es"), Some("es"));
+    }
+
+    #[test]
+    fn whistle_plan_needs_files() {
+        let mut s = SttSettings::default();
+        s.local_provider = LocalSttProvider::Whistle;
+        let err = plan_for(&s, Path::new("/nonexistent")).unwrap_err();
+        assert!(err.contains("whistle"), "{err}");
+    }
+
+    #[test]
+    fn whistle_stdout_shapes() {
+        assert_eq!(whistle_parse_stdout("  hello world \n"), Some("hello world".into()));
+        assert_eq!(
+            whistle_parse_stdout(r#"{"text":" hi ","tokens_per_second":99}"#),
+            Some("hi".into())
+        );
+        assert_eq!(
+            whistle_parse_stdout(r#"{"audio_text":"lights off"}"#),
+            Some("lights off".into())
+        );
+        assert_eq!(whistle_parse_stdout("   \n  "), None);
+        assert_eq!(whistle_parse_stdout(r#"{"text":"   "}"#), None);
+    }
+
+    #[test]
+    fn whistle_output_text_or_json() {
+        // Bare transcript passes through trimmed.
+        let engine = Path::new("needle");
+        let model = Path::new("whistle.cact");
+        // No engine on disk: error names the failure, no panic.
+        assert!(whistle_pass(engine, model, Path::new("/nonexistent.wav")).is_err());
     }
 
     #[test]

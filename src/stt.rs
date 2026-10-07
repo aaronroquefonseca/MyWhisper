@@ -25,6 +25,7 @@ use std::sync::{
 pub enum ModelKind {
     Whisper,
     Parakeet,
+    Whistle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +155,30 @@ pub const WHISPER_MODELS: &[ModelEntry] = &[
     },
 ];
 
+/// Cactus Whistle (own engine, CLI-driven): 16.9 MB, 7 languages
+/// with auto-detect, up to 30 s per pass. Model URL unconfirmed
+/// (natural HF path from the release post — TO-VERIFY on first
+/// download; the engine resolves `models/whistle/whistle.cact`
+/// whatever the source, so manual placement always works).
+pub const WHISTLE_LANGS: &[&str] = &["en", "de", "fr", "es", "it", "nl", "pl"];
+
+pub const WHISTLE_MODELS: &[ModelEntry] = &[
+    ModelEntry {
+        id: "whistle-v1",
+        kind: ModelKind::Whistle,
+        name: "Whistle v1",
+        description: "16.9 MB STT, 7 languages, own CPU engine",
+        size_label: "17MB",
+        size_mb: 17,
+        expected_bytes: None,
+        download_url: "https://huggingface.co/Cactus-Compute/whistle/resolve/main/whistle.cact",
+        extract_dir: None,
+        required_files: &["whistle.cact"],
+        runtime: None,
+        recommended: true,
+    },
+];
+
 pub const PARAKEET_MODELS: &[ModelEntry] = &[
     ModelEntry {
         id: "parakeet-tdt-0.6b-v3",
@@ -272,6 +297,7 @@ const COHERE_14: &[&str] = &[
 pub fn model_languages(model_id: &str) -> &'static [&'static str] {
     match model_id {
         "parakeet-tdt-0.6b-v3" | "orukeet-v0.1.0" => PARAKEET_25,
+        "whistle-v1" => WHISTLE_LANGS,
         "parakeet-unified-en-0.6b" | "nemotron-speech-streaming-en-0.6b" => &["en"],
         "nemotron-3.5-asr-streaming-0.6b" => NEMOTRON_15,
         "cohere-transcribe-03-2026" => COHERE_14,
@@ -287,6 +313,7 @@ pub fn models_for_vendor(vendor: crate::settings::LocalSttProvider) -> Vec<&'sta
             .iter()
             .filter(|m| m.id == "orukeet-v0.1.0")
             .collect(),
+        V::Whistle => WHISTLE_MODELS.iter().collect(),
         V::OpenAi => WHISPER_MODELS.iter().collect(),
         V::Nvidia => PARAKEET_MODELS
             .iter()
@@ -334,6 +361,7 @@ pub fn find_model(id: &str) -> Option<&'static ModelEntry> {
     WHISPER_MODELS
         .iter()
         .chain(PARAKEET_MODELS.iter())
+        .chain(WHISTLE_MODELS.iter())
         .find(|m| m.id == id)
 }
 
@@ -348,6 +376,7 @@ pub fn model_dir(data_dir: &Path, entry: &ModelEntry) -> PathBuf {
     let sub = match entry.kind {
         ModelKind::Whisper => "whisper",
         ModelKind::Parakeet => "parakeet",
+        ModelKind::Whistle => "whistle",
     };
     models_dir(data_dir).join(sub).join(entry.id)
 }
@@ -367,7 +396,9 @@ pub fn is_installed(data_dir: &Path, entry: &ModelEntry) -> bool {
                 None => meta.len() > 0,
             }
         }
-        ModelKind::Parakeet => entry.required_files.iter().all(|f| dir.join(f).exists()),
+        ModelKind::Parakeet | ModelKind::Whistle => {
+            entry.required_files.iter().all(|f| dir.join(f).exists())
+        }
     }
 }
 
@@ -460,6 +491,14 @@ pub fn download_model(
             let stem = whisper_file_stem(entry.id);
             let dest = dir.join(format!("ggml-{stem}.bin"));
             std::fs::rename(&tmp, &dest).map_err(|e| format!("install: {e}"))?;
+        }
+        ModelKind::Whistle => {
+            // Single-file model: move into place, then verify.
+            let dest = dir.join("whistle.cact");
+            std::fs::rename(&tmp, &dest).map_err(|e| format!("install: {e}"))?;
+            if !dest.exists() || std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0) == 0 {
+                return Err("whistle.cact missing or empty after download".to_string());
+            }
         }
         ModelKind::Parakeet => {
             extract_tar_bz2(&tmp, &dir).map_err(|e| {

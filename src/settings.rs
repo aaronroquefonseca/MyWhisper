@@ -354,6 +354,7 @@ pub enum LocalSttProvider {
     Nvidia,
     Oruk,
     Cohere,
+    Whistle,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
