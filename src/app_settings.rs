@@ -2545,6 +2545,22 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
         b.append(&dd);
         rows.append(&b);
     }
+    // Clear-all (tombstones survive for sync safety).
+    {
+        let (b, _) = row(tr("row.storedtranscripts"));
+        let clear = Button::with_label(tr("action.clearalltranscripts"));
+        {
+            let state = state.clone();
+            clear.connect_clicked(move |_| {
+                match state.store.clear_history() {
+                    Ok(n) => eprintln!("[privacy] cleared {n} transcripts"),
+                    Err(e) => eprintln!("[privacy] clear transcripts: {e}"),
+                }
+            });
+        }
+        b.append(&clear);
+        rows.append(&b);
+    }
     // Keep midway-cancelled dictations as discarded rows (wired).
     {
         let (b, _) = row(tr("row.savediscarded"));

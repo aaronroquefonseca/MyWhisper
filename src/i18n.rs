@@ -266,6 +266,7 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.cleanup" => ("Clean up transcriptions", "Limpiar transcripciones"),
         "row.keepaudio" => ("Keep audio recordings", "Conservar grabaciones de audio"),
         "row.storedaudio" => ("Stored audio", "Audio guardado"),
+        "row.storedtranscripts" => ("Stored transcripts", "Transcripciones guardadas"),
         "row.keephistory" => ("Keep dictation history", "Guardar historial de dictados"),
         "row.autodelete" => ("Auto-delete transcripts", "Borrado automático"),
         "row.autodeleteaudio" => ("Auto-delete audio", "Borrado de audio"),
@@ -417,6 +418,7 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "action.cancel" => ("Cancel", "Cancelar"),
         // Settings actions
         "action.clearallaudio" => ("Clear all audio", "Borrar todo el audio"),
+        "action.clearalltranscripts" => ("Clear all transcripts", "Borrar transcripciones"),
         "action.clearcache" => ("Clear cache", "Limpiar caché"),
         "action.openfolder" => ("Open folder", "Abrir carpeta"),
         "action.resetdots" => ("Reset...", "Restablecer..."),

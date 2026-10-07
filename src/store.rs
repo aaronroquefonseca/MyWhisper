@@ -451,6 +451,18 @@ impl Store {
             .execute("DELETE FROM history WHERE duration_secs <= 0", [])?)
     }
 
+    /// Clear all transcript history (tombstones survive: dropping
+    /// them would resurrect peers' rows on next sync). Returns rows
+    /// removed.
+    pub fn clear_history(&self) -> rusqlite::Result<usize> {
+        let n = self
+            .conn
+            .execute("DELETE FROM history WHERE deleted = 0", [])?;
+        bump_data_gen();
+        bump_gen(&self.conn);
+        Ok(n)
+    }
+
     /// Distinct UTC days (epoch day numbers) with at least one entry,
     /// newest first. Feeds the streak calculation.
     pub fn active_days(&self) -> rusqlite::Result<Vec<i64>> {
