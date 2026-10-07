@@ -637,29 +637,28 @@ pub fn build_app_window(
             set_active(&name);
         });
     }
-    // Bottom nav toggles its modal instead of switching pages.
+    // Bottom nav toggles its modal instead of switching pages. The
+    // sidebar highlight always stays on the page underneath (modals
+    // are overlays, not places).
     for (btn, name, panel) in [
         (sync_btn, "sync", sync_panel.clone()),
         (settings_btn, "settings", settings_panel.clone()),
     ] {
-        let set_active = set_active.clone();
         let backdrop = backdrop.clone();
         let settings_panel = settings_panel.clone();
         let sync_panel = sync_panel.clone();
-        let stack = stack.clone();
         let name = name.to_string();
         btn.connect_clicked(move |_| {
-            if panel.is_visible() {
-                show_modal(None, &backdrop, &settings_panel, &sync_panel);
-                let current = stack
-                    .visible_child_name()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "home".to_string());
-                set_active(&current);
-            } else {
-                show_modal(Some(&name), &backdrop, &settings_panel, &sync_panel);
-                set_active(&name);
-            }
+            show_modal(
+                if panel.is_visible() {
+                    None
+                } else {
+                    Some(&name)
+                },
+                &backdrop,
+                &settings_panel,
+                &sync_panel,
+            );
         });
     }
     let initial = match initial_page {
@@ -669,19 +668,14 @@ pub fn build_app_window(
     stack.set_visible_child_name(initial);
     if initial_page == "settings" {
         show_modal(Some("settings"), &backdrop, &settings_panel, &sync_panel);
-        set_active("settings");
     } else if initial_page == "sync" {
         show_modal(Some("sync"), &backdrop, &settings_panel, &sync_panel);
-        set_active("sync");
-    } else {
-        set_active(initial);
     }
+    set_active(initial);
 
-    // Escape dismisses any modal, restoring the sidebar highlight to
-    // the page underneath.
+    // Escape dismisses any modal. The highlight already sits on
+    // the page underneath, so nothing else changes.
     {
-        let set_active = set_active.clone();
-        let stack = stack.clone();
         let backdrop = backdrop.clone();
         let settings_panel = settings_panel.clone();
         let sync_panel = sync_panel.clone();
@@ -690,11 +684,6 @@ pub fn build_app_window(
             .expect("Escape parses as a shortcut trigger");
         let dismiss = gtk4::CallbackAction::new(move |_, _| {
             show_modal(None, &backdrop, &settings_panel, &sync_panel);
-            let current = stack
-                .visible_child_name()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "home".to_string());
-            set_active(&current);
             gtk4::glib::Propagation::Stop
         });
         escape.add_shortcut(gtk4::Shortcut::new(Some(trigger), Some(dismiss)));
