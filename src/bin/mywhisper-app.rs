@@ -1,5 +1,5 @@
 use gtk4::prelude::*;
-use mywhisper::app::{AppState, apply_theme, build_app_window, log_theme_state};
+use mywhisper::app::{apply_theme, build_app_window, log_theme_state, AppState};
 use std::rc::Rc;
 
 const APP_ID: &str = "com.mywhisper.App";
@@ -62,8 +62,16 @@ fn main() -> gtk4::glib::ExitCode {
 
     {
         let discovered_ui = discovered.clone();
+        // Single window: repeat launches remote-activate this instance;
+        // focus the existing window instead of building another.
+        let window: Rc<std::cell::RefCell<Option<gtk4::ApplicationWindow>>> =
+            Rc::new(std::cell::RefCell::new(None));
         app.connect_activate(move |app| {
             eprintln!("[app] activate (frontend)");
+            if let Some(w) = window.borrow().as_ref() {
+                w.present();
+                return;
+            }
             let args: Vec<String> = std::env::args().collect();
             let page = value_of(&args, "--page").unwrap_or_else(|| "home".to_string());
             let section = value_of(&args, "--section").unwrap_or_else(|| "Preferences".to_string());
@@ -89,8 +97,16 @@ fn main() -> gtk4::glib::ExitCode {
             }
             apply_theme(state.settings.borrow().preferences.theme);
             log_theme_state();
-            let window = build_app_window(app, &state, &page, &section);
-            window.present();
+            let win = build_app_window(app, &state, &page, &section);
+            win.present();
+            {
+                let slot = window.clone();
+                win.connect_close_request(move |_| {
+                    slot.borrow_mut().take();
+                    gtk4::glib::Propagation::Proceed
+                });
+            }
+            *window.borrow_mut() = Some(win);
         });
         app.run_with_args::<&str>(&[])
     }
@@ -158,6 +174,26 @@ fn run_headless(
                                 &paused.borrow_mut().drain(..).collect::<Vec<_>>(),
                             );
                             overlay.hide();
+                            // TEMP TEST HOOK: full output pipeline with a
+                            // fixed word until transcription is wired.
+                            std::thread::spawn(|| {
+                                let paths = match mywhisper::paths::AppPaths::create() {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        eprintln!("[clipboard] test hook paths: {e}");
+                                        return;
+                                    }
+                                };
+                                let store = match mywhisper::store::Store::open(&paths.db_file()) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        eprintln!("[clipboard] test hook store: {e}");
+                                        return;
+                                    }
+                                };
+                                let prefs = store.load_settings().preferences;
+                                mywhisper::clipboard::run_pipeline("test", &prefs);
+                            });
                         }
                         PillCmd::Apply(prefs) => overlay.apply_prefs(&prefs),
                     }

@@ -13,9 +13,10 @@ use gtk4::{
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use super::app::{AppState, apply_theme, log_theme_state};
+use super::app::{apply_theme, log_theme_state, AppState};
+use crate::clipboard::{copy_backend_deps, paste_backend_deps, probe, BackendStatus};
 use crate::i18n::{tr, trf};
-use crate::settings::{AppSettings, Theme};
+use crate::settings::{AppSettings, CopyBackend, PasteBackend, PasteCombo, Theme};
 
 // ---------------------------------------------------------------- helpers
 
@@ -235,11 +236,6 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
         b.append(&sw);
         rows.append(&b);
     }
-    root.append(&card);
-
-    let (card, rows) = group(tr("group.clipboard"));
-    switch_row(&rows, tr("row.autopaste"), p.auto_paste);
-    switch_row(&rows, tr("row.keepclip"), p.keep_transcription_in_clipboard);
     root.append(&card);
 
     let (card, rows) = group(tr("group.floating"));
@@ -583,6 +579,191 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
     root
 }
 
+/// Clipboard section (moved out of Preferences): auto-paste
+/// master switch + whether the transcription stays in the clipboard.
+/// Backend selection (which paste method) comes next; the toggles
+/// below are already model + persistence wired via persist_prefs.
+fn clipboard_page(state: &Rc<AppState>) -> GtkBox {
+    let root = section_box(tr("settings.clipboard"), tr("settings.clipboard.sub"));
+    let p = state.settings.borrow().preferences.clone();
+    let status: BackendStatus = probe();
+
+    // Visible dependency + availability note under a backend row.
+    fn dep_note(text: &str) -> Label {
+        let l = Label::new(Some(text));
+        l.add_css_class("page-subtitle");
+        l.set_xalign(0.0);
+        l.set_wrap(true);
+        l.set_max_width_chars(80);
+        l
+    }
+    fn avail(ok: bool) -> &'static str {
+        if ok {
+            tr("status.available")
+        } else {
+            tr("status.missing")
+        }
+    }
+    fn paste_note_text(backend: PasteBackend, status: &BackendStatus) -> String {
+        match backend {
+            PasteBackend::Wtype => {
+                format!("{} — {}", paste_backend_deps(backend), avail(status.wtype))
+            }
+            PasteBackend::Ydotool => format!(
+                "{} — {}, ydotoold: {}",
+                paste_backend_deps(backend),
+                avail(status.ydotool),
+                avail(status.ydotoold_socket)
+            ),
+        }
+    }
+
+    let (card, rows) = group(tr("group.clipboard"));
+    {
+        let (b, _) = row(tr("row.autopaste"));
+        let sw = Switch::new();
+        sw.set_active(p.auto_paste);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state.settings.borrow_mut().preferences.auto_paste = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
+    {
+        let (b, _) = row(tr("row.keepclip"));
+        let sw = Switch::new();
+        sw.set_active(p.keep_transcription_in_clipboard);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state
+                    .settings
+                    .borrow_mut()
+                    .preferences
+                    .keep_transcription_in_clipboard = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
+    {
+        let (b, _) = row(tr("row.copybackend"));
+        let dd = DropDown::new(
+            Some(StringList::new(&["wl-copy"])),
+            None::<gtk4::Expression>,
+        );
+        dd.set_selected(match p.copy_backend {
+            CopyBackend::WlCopy => 0,
+        });
+        dd.set_valign(gtk4::Align::Center);
+        dd.set_tooltip_text(Some(copy_backend_deps()));
+        {
+            let state = state.clone();
+            dd.connect_selected_notify(move |dd| {
+                state.settings.borrow_mut().preferences.copy_backend = match dd.selected() {
+                    _ => CopyBackend::WlCopy,
+                };
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&dd);
+        rows.append(&b);
+        rows.append(&dep_note(&format!(
+            "{} — {}",
+            copy_backend_deps(),
+            avail(status.wl_copy)
+        )));
+    }
+    {
+        let (b, _) = row(tr("row.hidehistory"));
+        let sw = Switch::new();
+        sw.set_active(p.hide_from_history);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state.settings.borrow_mut().preferences.hide_from_history = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
+    root.append(&card);
+
+    let (card, rows) = group(tr("group.paste"));
+    {
+        let (b, _) = row(tr("row.pastebackend"));
+        let dd = DropDown::new(
+            Some(StringList::new(&["wtype", "ydotool"])),
+            None::<gtk4::Expression>,
+        );
+        dd.set_selected(match p.paste_backend {
+            PasteBackend::Wtype => 0,
+            PasteBackend::Ydotool => 1,
+        });
+        dd.set_valign(gtk4::Align::Center);
+        dd.set_tooltip_text(Some(paste_backend_deps(p.paste_backend)));
+        let paste_note = dep_note(&paste_note_text(p.paste_backend, &status));
+        rows.append(&paste_note);
+        {
+            let state = state.clone();
+            dd.connect_selected_notify(move |dd| {
+                let backend = match dd.selected() {
+                    1 => PasteBackend::Ydotool,
+                    _ => PasteBackend::Wtype,
+                };
+                state.settings.borrow_mut().preferences.paste_backend = backend;
+                dd.set_tooltip_text(Some(paste_backend_deps(backend)));
+                paste_note.set_text(&paste_note_text(backend, &status));
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&dd);
+        rows.append(&b);
+    }
+    {
+        let (b, _) = row(tr("row.pastecombo"));
+        let dd = DropDown::new(
+            Some(StringList::new(&["Ctrl+Shift+V", "Ctrl+V", "Shift+Insert"])),
+            None::<gtk4::Expression>,
+        );
+        dd.set_selected(match p.paste_combo {
+            PasteCombo::CtrlShiftV => 0,
+            PasteCombo::CtrlV => 1,
+            PasteCombo::ShiftInsert => 2,
+        });
+        dd.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            dd.connect_selected_notify(move |dd| {
+                state.settings.borrow_mut().preferences.paste_combo = match dd.selected() {
+                    1 => PasteCombo::CtrlV,
+                    2 => PasteCombo::ShiftInsert,
+                    _ => PasteCombo::CtrlShiftV,
+                };
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&dd);
+        rows.append(&b);
+    }
+    root.append(&card);
+
+    root
+}
+
+/// Hotkeys section.
 fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     let root = section_box(tr("settings.hotkeys"), tr("settings.hotkeys.sub"));
     let persist: Rc<dyn Fn()> = {
@@ -2216,6 +2397,7 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
     let sections = [
         ("Preferences", preferences_page(state, &on_theme)),
         ("Hotkeys", hotkeys_page(state)),
+        ("Clipboard", clipboard_page(state)),
         ("Speech to Text", stt_page(state)),
         ("Language Models", language_models_page(s)),
         ("Privacy & Data", privacy_page(s)),
@@ -2226,6 +2408,7 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
         match id {
             "Preferences" => tr("settings.preferences"),
             "Hotkeys" => tr("settings.hotkeys"),
+            "Clipboard" => tr("settings.clipboard"),
             "Speech to Text" => tr("settings.stt"),
             "Language Models" => tr("settings.lm"),
             "Privacy & Data" => tr("settings.privacy"),
@@ -2267,9 +2450,8 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
         });
     }
     let initial = match initial_section {
-        "Hotkeys" | "Speech to Text" | "Language Models" | "Privacy & Data" | "System" => {
-            initial_section
-        }
+        "Hotkeys" | "Clipboard" | "Speech to Text" | "Language Models" | "Privacy & Data"
+        | "System" => initial_section,
         _ => "Preferences",
     };
     set_active(initial);

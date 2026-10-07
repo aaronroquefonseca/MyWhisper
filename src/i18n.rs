@@ -85,7 +85,11 @@ pub fn tr(tag: &str) -> &'static str {
         eprintln!("[i18n] missing string tag: {tag}");
         return Box::leak(tag.to_string().into_boxed_str());
     };
-    if spanish() { es } else { en }
+    if spanish() {
+        es
+    } else {
+        en
+    }
 }
 
 /// Look up a string with `{placeholder}` substitution.
@@ -139,6 +143,11 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Comportamiento general de la aplicación.",
         ),
         "settings.hotkeys" => ("Hotkeys", "Atajos"),
+        "settings.clipboard" => ("Clipboard", "Portapapeles"),
+        "settings.clipboard.sub" => (
+            "Automatic pasting and clipboard behavior.",
+            "Pegado automático y comportamiento del portapapeles.",
+        ),
         "settings.hotkeys.sub" => (
             "Global shortcuts, read straight from your keyboards.\nHold = talk while held. Toggle = press to start/stop. Smart = quick tap toggles, longer press holds.",
             "Atajos globales, leídos directamente de tus teclados.\nMantener = hablar mientras se pulsa. Alternar = pulsar para empezar/terminar. Smart = toque rápido alterna, pulsación larga mantiene.",
@@ -161,6 +170,7 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "group.appearance" => ("Appearance", "Apariencia"),
         "group.sound" => ("Sound", "Sonido"),
         "group.clipboard" => ("Clipboard", "Portapapeles"),
+        "group.paste" => ("Paste injection", "Inyección de pegado"),
         "group.floating" => ("Floating pill", "Píldora flotante"),
         "group.language" => ("Language", "Idioma"),
         "group.microphone" => ("Microphone", "Micrófono"),
@@ -191,6 +201,15 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Keep transcription in clipboard",
             "Mantener la transcripción en el portapapeles",
         ),
+        "row.copybackend" => ("Copy backend", "Motor de copiado"),
+        "row.hidehistory" => (
+            "Hide transcription from clipboard history",
+            "Ocultar la transcripción del historial del portapapeles",
+        ),
+        "row.pastebackend" => ("Paste backend", "Motor de pegado"),
+        "row.pastecombo" => ("Paste shortcut", "Atajo de pegado"),
+        "status.available" => ("Available", "Disponible"),
+        "status.missing" => ("Not found", "No encontrado"),
         "row.startpos" => ("Start position", "Posición inicial"),
         "row.uilang" => ("Interface language", "Idioma de la interfaz"),
         "row.sttlang" => ("Transcription language", "Idioma de transcripción"),

@@ -84,6 +84,46 @@ pub enum MicSelection {
     Specific,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CopyBackend {
+    WlCopy,
+}
+
+impl Default for CopyBackend {
+    fn default() -> Self {
+        CopyBackend::WlCopy
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PasteBackend {
+    Wtype,
+    Ydotool,
+}
+
+impl Default for PasteBackend {
+    fn default() -> Self {
+        PasteBackend::Wtype
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PasteCombo {
+    CtrlShiftV,
+    CtrlV,
+    ShiftInsert,
+}
+
+impl Default for PasteCombo {
+    fn default() -> Self {
+        PasteCombo::CtrlShiftV
+    }
+}
+
 /// Pill visualizer preferences. Defaults mirror the service runtime
 /// (tape, 11 bars, 18px lane, no ornament, still idle).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -118,6 +158,18 @@ pub struct Preferences {
     pub pause_media_on_dictation: bool,
     pub auto_paste: bool,
     pub keep_transcription_in_clipboard: bool,
+    /// Copy backend. Only wl-copy for now; the enum grows with options.
+    #[serde(default)]
+    pub copy_backend: CopyBackend,
+    /// Hide from clipboard history via wl-copy --sensitive. Default on.
+    #[serde(default = "default_true")]
+    pub hide_from_history: bool,
+    /// Paste backend for auto-paste injection.
+    #[serde(default)]
+    pub paste_backend: PasteBackend,
+    /// Key chord used to paste.
+    #[serde(default)]
+    pub paste_combo: PasteCombo,
     #[serde(default)]
     pub pill: PillPrefs,
     pub ui_language: String,
@@ -135,6 +187,10 @@ impl Default for Preferences {
             pause_media_on_dictation: false,
             auto_paste: true,
             keep_transcription_in_clipboard: false,
+            copy_backend: CopyBackend::WlCopy,
+            hide_from_history: true,
+            paste_backend: PasteBackend::Wtype,
+            paste_combo: PasteCombo::CtrlShiftV,
             pill: PillPrefs::default(),
             ui_language: "system".to_string(),
             mic_selection: MicSelection::System,
