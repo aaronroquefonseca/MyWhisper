@@ -4,6 +4,7 @@
 //! gets its own card. Lists refresh from a generation counter, so
 //! rows arriving from a sync round appear without touching anything.
 
+use crate::i18n::tr;
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Button, Entry, Label, Notebook, Orientation, TextView};
 use std::cell::Cell;
@@ -19,7 +20,7 @@ fn clear_box(container: &GtkBox) {
 }
 
 fn delete_button() -> Button {
-    let b = Button::with_label("Delete");
+    let b = Button::with_label(tr("action.delete"));
     b.set_valign(gtk4::Align::Center);
     b
 }
@@ -35,19 +36,19 @@ fn empty_card(text: &str) -> GtkBox {
 }
 
 fn edit_button() -> Button {
-    let b = Button::with_label("Edit");
+    let b = Button::with_label(tr("action.edit"));
     b.set_valign(gtk4::Align::Center);
     b
 }
 
 fn save_button() -> Button {
-    let b = Button::with_label("Save");
+    let b = Button::with_label(tr("action.save"));
     b.set_valign(gtk4::Align::Center);
     b
 }
 
 fn cancel_button() -> Button {
-    let b = Button::with_label("Cancel");
+    let b = Button::with_label(tr("action.cancel"));
     b.set_valign(gtk4::Align::Center);
     b
 }
@@ -140,9 +141,7 @@ fn fill_words(container: &GtkBox, state: &Rc<AppState>) {
     clear_box(container);
     let words = state.store.load_words().unwrap_or_default();
     if words.is_empty() {
-        container.append(&empty_card(
-            "No words yet. Added words are always recognized.",
-        ));
+        container.append(&empty_card(tr("dict.words.empty")));
         return;
     }
     for w in words {
@@ -158,9 +157,9 @@ fn words_tab(state: &Rc<AppState>) -> (GtkBox, GtkBox) {
 
     let add_row = GtkBox::new(Orientation::Horizontal, 8);
     let entry = Entry::new();
-    entry.set_placeholder_text(Some("Add a word..."));
+    entry.set_placeholder_text(Some(tr("dict.words.add")));
     entry.set_hexpand(true);
-    let add = Button::with_label("Add");
+    let add = Button::with_label(tr("action.add"));
     add_row.append(&entry);
     add_row.append(&add);
     root.append(&add_row);
@@ -336,9 +335,7 @@ fn fill_snippets(container: &GtkBox, state: &Rc<AppState>) {
     clear_box(container);
     let snippets = state.store.load_snippets().unwrap_or_default();
     if snippets.is_empty() {
-        container.append(&empty_card(
-            "No snippets yet. Type a trigger anywhere to expand it.",
-        ));
+        container.append(&empty_card(tr("dict.snippets.empty")));
         return;
     }
     for s in snippets {
@@ -353,7 +350,7 @@ fn snippets_tab(state: &Rc<AppState>) -> (GtkBox, GtkBox) {
     let root = GtkBox::new(Orientation::Vertical, 12);
 
     let trigger = Entry::new();
-    trigger.set_placeholder_text(Some("Trigger, e.g. omw"));
+    trigger.set_placeholder_text(Some(tr("dict.snippets.trigger")));
     trigger.set_hexpand(true);
     root.append(&trigger);
 
@@ -361,7 +358,7 @@ fn snippets_tab(state: &Rc<AppState>) -> (GtkBox, GtkBox) {
     expansion.set_size_request(-1, 80);
     root.append(&expansion);
 
-    let create = Button::with_label("Create snippet");
+    let create = Button::with_label(tr("dict.snippets.create"));
     create.set_halign(gtk4::Align::End);
     root.append(&create);
 
@@ -417,7 +414,7 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
 
     let col = super::app::centered_column(&root, 880);
 
-    let title = Label::new(Some("Dictionary"));
+    let title = Label::new(Some(tr("dict.title")));
     title.add_css_class("page-title");
     title.set_xalign(0.0);
     col.append(&title);
@@ -425,8 +422,11 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     let tabs = Notebook::new();
     let (words_root, words_list) = words_tab(state);
     let (snippets_root, snippets_list) = snippets_tab(state);
-    tabs.append_page(&words_root, Some(&Label::new(Some("Dictionary"))));
-    tabs.append_page(&snippets_root, Some(&Label::new(Some("Snippets"))));
+    tabs.append_page(&words_root, Some(&Label::new(Some(tr("dict.tab.words")))));
+    tabs.append_page(
+        &snippets_root,
+        Some(&Label::new(Some(tr("dict.tab.snippets")))),
+    );
     tabs.set_vexpand(true);
     col.append(&tabs);
 

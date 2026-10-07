@@ -14,6 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::app::{AppState, apply_theme, log_theme_state};
+use crate::i18n::tr;
 use crate::settings::{AppSettings, Theme};
 
 // ---------------------------------------------------------------- helpers
@@ -121,6 +122,31 @@ fn idx_of(options: &[&str], value: &str) -> usize {
     options.iter().position(|o| *o == value).unwrap_or(0)
 }
 
+/// Translated day-count options, parallel to the hardcoded day arrays.
+fn retention_opts() -> [&'static str; 7] {
+    [
+        tr("opt.disabled"),
+        tr("opt.day1"),
+        tr("opt.day7"),
+        tr("opt.day14"),
+        tr("opt.day30"),
+        tr("opt.day60"),
+        tr("opt.day90"),
+    ]
+}
+
+fn delete_opts() -> [&'static str; 7] {
+    [
+        tr("opt.forever"),
+        tr("opt.day1"),
+        tr("opt.day7"),
+        tr("opt.day14"),
+        tr("opt.day30"),
+        tr("opt.day60"),
+        tr("opt.day90"),
+    ]
+}
+
 // ---------------------------------------------------------------- sections
 
 /// Save settings without touching the hotkey listener (pill and
@@ -135,16 +161,20 @@ fn persist_prefs(state: Rc<AppState>) -> Rc<dyn Fn()> {
 }
 
 fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBox {
-    let root = section_box("Preferences", "General application behavior.");
+    let root = section_box(tr("settings.preferences"), tr("settings.preferences.sub"));
     let p = state.settings.borrow().preferences.clone();
 
-    let (card, rows) = group("Appearance");
+    let (card, rows) = group(tr("group.appearance"));
     // The theme picker is wired: it writes the model and applies the
     // variant immediately. All other controls below are display-only
     // until their backends land.
-    let (b, _) = row("Theme");
+    let (b, _) = row(tr("row.theme"));
     let theme_drop = DropDown::new(
-        Some(StringList::new(&["System", "Light", "Dark"])),
+        Some(StringList::new(&[
+            tr("opt.system"),
+            tr("opt.light"),
+            tr("opt.dark"),
+        ])),
         None::<gtk4::Expression>,
     );
     theme_drop.set_selected(match p.theme {
@@ -167,9 +197,9 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
     rows.append(&b);
     root.append(&card);
 
-    let (card, rows) = group("Sound");
+    let (card, rows) = group(tr("group.sound"));
     {
-        let (b, _) = row("Dictation sounds");
+        let (b, _) = row(tr("row.dictsounds"));
         let sw = Switch::new();
         sw.set_active(p.dictation_sounds);
         sw.set_valign(gtk4::Align::Center);
@@ -186,7 +216,7 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
     }
     // Wired: the service watcher picks the preference up live.
     {
-        let (b, _) = row("Pause media while dictating");
+        let (b, _) = row(tr("row.pausemedia"));
         let sw = Switch::new();
         sw.set_active(p.pause_media_on_dictation);
         sw.set_valign(gtk4::Align::Center);
@@ -207,23 +237,19 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
     }
     root.append(&card);
 
-    let (card, rows) = group("Clipboard");
-    switch_row(&rows, "Auto-paste transcription", p.auto_paste);
-    switch_row(
-        &rows,
-        "Keep transcription in clipboard",
-        p.keep_transcription_in_clipboard,
-    );
+    let (card, rows) = group(tr("group.clipboard"));
+    switch_row(&rows, tr("row.autopaste"), p.auto_paste);
+    switch_row(&rows, tr("row.keepclip"), p.keep_transcription_in_clipboard);
     root.append(&card);
 
-    let (card, rows) = group("Floating pill");
+    let (card, rows) = group(tr("group.floating"));
     {
-        let (b, _) = row("Start position");
+        let (b, _) = row(tr("row.startpos"));
         let pos = DropDown::new(
             Some(StringList::new(&[
-                "Bottom center",
-                "Bottom left",
-                "Bottom right",
+                tr("opt.bottomcenter"),
+                tr("opt.bottomleft"),
+                tr("opt.bottomright"),
             ])),
             None::<gtk4::Expression>,
         );
@@ -249,9 +275,9 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
     }
 
     {
-        let (b, _) = row("Animation");
+        let (b, _) = row(tr("row.animation"));
         let mode = DropDown::new(
-            Some(StringList::new(&["Tape", "History"])),
+            Some(StringList::new(&[tr("opt.tape"), tr("opt.history")])),
             None::<gtk4::Expression>,
         );
         mode.set_selected(match p.pill.viz_mode {
@@ -273,7 +299,7 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
         rows.append(&b);
     }
     {
-        let (b, _) = row("Bars");
+        let (b, _) = row(tr("row.bars"));
         let bars = DropDown::new(
             Some(StringList::new(&["7", "11", "15", "21"])),
             None::<gtk4::Expression>,
@@ -301,7 +327,7 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
         rows.append(&b);
     }
     {
-        let (b, _) = row("Height");
+        let (b, _) = row(tr("row.height"));
         let heights = ["12", "14", "16", "18", "20", "24", "28", "32"];
         let height = DropDown::new(Some(StringList::new(&heights)), None::<gtk4::Expression>);
         let current = p.pill.lane_max as i32;
@@ -327,9 +353,13 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
         rows.append(&b);
     }
     {
-        let (b, _) = row("Theme");
+        let (b, _) = row(tr("row.theme"));
         let theme = DropDown::new(
-            Some(StringList::new(&["White", "Grey", "Red"])),
+            Some(StringList::new(&[
+                tr("opt.white"),
+                tr("opt.grey"),
+                tr("opt.red"),
+            ])),
             None::<gtk4::Expression>,
         );
         theme.set_selected(match p.pill.theme {
@@ -353,9 +383,14 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
         rows.append(&b);
     }
     {
-        let (b, _) = row("Ornament");
+        let (b, _) = row(tr("row.ornament"));
         let orn = DropDown::new(
-            Some(StringList::new(&["None", "Mark", "Mic", "Dot"])),
+            Some(StringList::new(&[
+                tr("opt.none"),
+                tr("opt.mark"),
+                tr("opt.mic"),
+                tr("opt.dot"),
+            ])),
             None::<gtk4::Expression>,
         );
         orn.set_selected(match p.pill.ornament {
@@ -381,9 +416,13 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
         rows.append(&b);
     }
     {
-        let (b, _) = row("Idle animation");
+        let (b, _) = row(tr("row.idle"));
         let idle = DropDown::new(
-            Some(StringList::new(&["Still", "Silhouette", "Calm"])),
+            Some(StringList::new(&[
+                tr("opt.still"),
+                tr("opt.silhouette"),
+                tr("opt.calm"),
+            ])),
             None::<gtk4::Expression>,
         );
         idle.set_selected(match p.pill.idle {
@@ -408,40 +447,66 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
     }
     root.append(&card);
 
-    let (card, rows) = group("Language");
-    const LANGS: &[&str] = &["en", "es", "fr", "de", "pt", "it", "ru", "ja", "ar"];
-    combo_row(
-        &rows,
-        "Interface language",
-        LANGS,
-        idx_of(LANGS, &p.ui_language),
-    );
+    let (card, rows) = group(tr("group.language"));
+    {
+        let (b, _) = row(tr("row.uilang"));
+        let lang_drop = DropDown::new(
+            Some(StringList::new(&[tr("opt.system"), "English", "Español"])),
+            None::<gtk4::Expression>,
+        );
+        lang_drop.set_selected(match p.ui_language.as_str() {
+            "en" => 1,
+            "es" => 2,
+            _ => 0,
+        });
+        {
+            let state = state.clone();
+            lang_drop.connect_selected_notify(move |d| {
+                let code = match d.selected() {
+                    1 => "en",
+                    2 => "es",
+                    _ => "system",
+                };
+                state.settings.borrow_mut().preferences.ui_language = code.to_string();
+                persist_prefs(state.clone())();
+                crate::i18n::set_lang(crate::i18n::UiLang::parse(code));
+                crate::i18n::rebuild_ui();
+            });
+        }
+        b.append(&lang_drop);
+        rows.append(&b);
+    }
     const STT_LANGS: &[&str] = &["auto", "en", "es", "fr", "de", "pt", "it", "ru", "ja", "ar"];
     combo_row(
         &rows,
-        "Transcription language",
+        tr("row.sttlang"),
         STT_LANGS,
         idx_of(STT_LANGS, &p.transcription_language),
     );
     root.append(&card);
 
-    let (card, rows) = group("Microphone");
+    let (card, rows) = group(tr("group.microphone"));
     combo_row(
         &rows,
-        "Input",
-        &["System default", "Built-in", "Specific device"],
+        tr("row.micinput"),
+        &[tr("opt.sysdefault"), tr("opt.builtin"), tr("opt.specific")],
         match p.mic_selection {
             crate::settings::MicSelection::System => 0,
             crate::settings::MicSelection::BuiltIn => 1,
             crate::settings::MicSelection::Specific => 2,
         },
     );
-    entry_row(&rows, "Device id", &p.mic_device_id, false);
-    const HOLD: &[&str] = &["Off", "10 seconds", "60 seconds", "15 minutes"];
+    entry_row(&rows, tr("row.deviceid"), &p.mic_device_id, false);
+    let hold_opts = [
+        tr("opt.off"),
+        tr("opt.hold10s"),
+        tr("opt.hold60s"),
+        tr("opt.hold15m"),
+    ];
     combo_row(
         &rows,
-        "Keep microphone warm",
-        HOLD,
+        tr("row.micwarm"),
+        &hold_opts,
         match p.mic_warm_hold_secs {
             10 => 1,
             60 => 2,
@@ -451,24 +516,15 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
     );
     root.append(&card);
 
-    let (card, rows) = group("Dictionary");
-    switch_row(
-        &rows,
-        "Learn words from corrections",
-        p.auto_learn_dictionary,
-    );
+    let (card, rows) = group(tr("group.dictionary"));
+    switch_row(&rows, tr("row.autolearn"), p.auto_learn_dictionary);
     root.append(&card);
 
     root
 }
 
 fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
-    let root = section_box(
-        "Hotkeys",
-        "Global shortcuts, read straight from your keyboards.\n\
-         Hold = talk while held. Toggle = press to start/stop. \
-         Smart = quick tap toggles, longer press holds.",
-    );
+    let root = section_box(tr("settings.hotkeys"), tr("settings.hotkeys.sub"));
     let persist: Rc<dyn Fn()> = {
         let state = state.clone();
         Rc::new(move || {
@@ -480,7 +536,7 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
         })
     };
 
-    let (card, rows) = group("Dictation");
+    let (card, rows) = group(tr("group.dictation"));
     // One row per binding, each with its own Remove. Refill is a
     // plain fn (list + state passed in) so Remove closures recurse
     // without self-referential Rc tricks.
@@ -491,18 +547,22 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     // Add row: text field + per-binding mode + Add/Record. Validated
     // by the same parser the listener uses; invalid combos are
     // refused with a hint.
-    let (add_row, _) = row("Add combo (e.g. F13, Ctrl+Alt+D)");
+    let (add_row, _) = row(tr("row.addcombo"));
     let add_entry = Entry::new();
     add_entry.set_hexpand(true);
     add_entry.set_placeholder_text(Some("F13"));
     add_row.append(&add_entry);
     let add_mode = DropDown::new(
-        Some(StringList::new(&["Hold", "Toggle", "Smart"])),
+        Some(StringList::new(&[
+            tr("opt.hold"),
+            tr("opt.toggle"),
+            tr("opt.smart"),
+        ])),
         None::<gtk4::Expression>,
     );
-    add_mode.set_tooltip_text(Some("Behavior for the new binding"));
+    add_mode.set_tooltip_text(Some(tr("hotkeys.behavior")));
     add_row.append(&add_mode);
-    let add_btn = Button::with_label("Add");
+    let add_btn = Button::with_label(tr("action.add"));
     {
         let state = state.clone();
         let list = list.clone();
@@ -516,7 +576,7 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
             }
             if crate::hotkey::parse_combo(&raw).is_none() {
                 add_entry.set_text("");
-                add_entry.set_placeholder_text(Some("Invalid combo, try F13"));
+                add_entry.set_placeholder_text(Some(tr("hotkeys.invalidcombo")));
                 return;
             }
             let mode = match add_mode.selected() {
@@ -538,13 +598,13 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
         });
     }
     add_row.append(&add_btn);
-    let record_btn = Button::with_label("Record");
-    record_btn.set_tooltip_text(Some("Click, then press the key combo"));
+    let record_btn = Button::with_label(tr("hotkeys.record"));
+    record_btn.set_tooltip_text(Some(tr("hotkeys.recordhint")));
     add_row.append(&record_btn);
     rows.append(&add_row);
 
-    let (b, _) = row("Reset to default");
-    let reset = Button::with_label("Reset");
+    let (b, _) = row(tr("row.resettodefault"));
+    let reset = Button::with_label(tr("action.reset"));
     {
         let state = state.clone();
         let list = list.clone();
@@ -563,10 +623,10 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     rows.append(&b);
     root.append(&card);
 
-    let (smart_card, smart_rows) = group("Smart timing");
+    let (smart_card, smart_rows) = group(tr("group.smart"));
     spin_row(
         &smart_rows,
-        "Tap ceiling (ms): shorter taps toggle, longer holds",
+        tr("smart.label"),
         state.settings.borrow().hotkeys.smart_tap_ms as f64,
         20.0,
         1000.0,
@@ -613,7 +673,11 @@ fn refill_hotkey_list(list: &GtkBox, state: &Rc<AppState>, persist: &Rc<dyn Fn()
     for binding in state.settings.borrow().hotkeys.effective_hotkeys() {
         let (b, _) = row(&binding.combo);
         let mode_drop = DropDown::new(
-            Some(StringList::new(&["Hold", "Toggle", "Smart"])),
+            Some(StringList::new(&[
+                tr("opt.hold"),
+                tr("opt.toggle"),
+                tr("opt.smart"),
+            ])),
             None::<gtk4::Expression>,
         );
         mode_drop.set_selected(match binding.mode {
@@ -645,7 +709,7 @@ fn refill_hotkey_list(list: &GtkBox, state: &Rc<AppState>, persist: &Rc<dyn Fn()
             });
         }
         b.append(&mode_drop);
-        let remove = Button::with_label("Remove");
+        let remove = Button::with_label(tr("action.remove"));
         {
             let state = state.clone();
             let list = list.clone();
@@ -779,7 +843,7 @@ impl Capture {
         self.capturing.set(false);
         self.held.replace([false; 4]);
         self.pressed.replace([false; 4]);
-        self.record_btn.set_label("Record");
+        self.record_btn.set_label(tr("hotkeys.record"));
         self.add_entry.set_sensitive(true);
         self.add_entry.set_placeholder_text(Some("F13"));
     }
@@ -791,20 +855,20 @@ impl Capture {
         self.capturing.set(true);
         self.live_label();
         self.add_entry.set_sensitive(false);
-        self.add_entry.set_placeholder_text(Some("Press keys now…"));
+        self.add_entry
+            .set_placeholder_text(Some(tr("hotkeys.pressnow")));
     }
 
     fn live_label(&self) {
         let held = *self.held.borrow();
         let shown = combo_string(&held, None);
-        self.record_btn.set_label(&format!(
-            "{}… (Esc cancels)",
-            if shown.is_empty() {
-                "Press keys".to_string()
-            } else {
-                shown
-            }
-        ));
+        let keys = if shown.is_empty() {
+            tr("hotkeys.presskeys").to_string()
+        } else {
+            shown
+        };
+        self.record_btn
+            .set_label(crate::i18n::trf("hotkeys.recording", &[("keys", &keys)]).as_str());
     }
 
     fn finish(
@@ -816,7 +880,7 @@ impl Capture {
         persist: &Rc<dyn Fn()>,
     ) {
         if crate::hotkey::parse_combo(&combo).is_none() {
-            self.record_btn.set_label("Invalid, try again");
+            self.record_btn.set_label(tr("hotkeys.invalid"));
             return;
         }
         {
@@ -922,7 +986,7 @@ fn attach_hotkey_capture(
                     cap.finish(combo, mode, &state, &list, &persist);
                 }
                 None => {
-                    cap.record_btn.set_label("Unsupported key, try again");
+                    cap.record_btn.set_label(tr("hotkeys.unsupported"));
                 }
             }
             gtk4::glib::Propagation::Stop
@@ -961,14 +1025,14 @@ fn attach_hotkey_capture(
 }
 
 fn stt_page(s: &AppSettings) -> GtkBox {
-    let root = section_box("Speech to Text", "How your voice is transcribed.");
+    let root = section_box(tr("settings.stt"), tr("settings.stt.sub"));
     let t = &s.stt;
 
-    let (card, rows) = group("Engine");
+    let (card, rows) = group(tr("group.engine"));
     combo_row(
         &rows,
-        "Mode",
-        &["Local (on-device)", "Cloud provider", "Self-hosted"],
+        tr("row.mode"),
+        &[tr("opt.local"), tr("opt.cloud"), tr("opt.selfhosted")],
         match t.mode {
             crate::settings::SttMode::Local => 0,
             crate::settings::SttMode::Cloud => 1,
@@ -977,91 +1041,93 @@ fn stt_page(s: &AppSettings) -> GtkBox {
     );
     combo_row(
         &rows,
-        "Local provider",
+        tr("row.localprovider"),
         &["Whisper", "Parakeet"],
         match t.local_provider {
             crate::settings::LocalSttProvider::Whisper => 0,
             crate::settings::LocalSttProvider::Parakeet => 1,
         },
     );
-    entry_row(&rows, "Whisper model", &t.whisper_model, false);
-    entry_row(&rows, "Parakeet model", &t.parakeet_model, false);
+    entry_row(&rows, tr("row.whispermodel"), &t.whisper_model, false);
+    entry_row(&rows, tr("row.parakeetmodel"), &t.parakeet_model, false);
     root.append(&card);
 
-    let (card, rows) = group("Cloud provider (BYOK)");
+    let (card, rows) = group(tr("group.cloud"));
     const PROVIDERS: &[&str] = &["OpenAI", "Groq", "Mistral", "Gemini", "Deepgram"];
     combo_row(
         &rows,
-        "Provider",
+        tr("row.provider"),
         PROVIDERS,
         idx_of(PROVIDERS, &t.cloud_provider),
     );
-    entry_row(&rows, "Model", &t.cloud_model, false);
-    entry_row(&rows, "API key", &t.cloud_api_key, true);
+    entry_row(&rows, tr("row.model"), &t.cloud_model, false);
+    entry_row(&rows, tr("row.apikey"), &t.cloud_api_key, true);
     root.append(&card);
 
-    let (card, rows) = group("Self-hosted");
-    entry_row(&rows, "Server URL", &t.self_hosted_url, false);
-    entry_row(&rows, "Model", &t.self_hosted_model, false);
+    let (card, rows) = group(tr("group.selfhosted"));
+    entry_row(&rows, tr("row.serverurl"), &t.self_hosted_url, false);
+    entry_row(&rows, tr("row.model"), &t.self_hosted_model, false);
     root.append(&card);
 
-    let (card, rows) = group("Voice activity");
+    let (card, rows) = group(tr("group.vad"));
     const STT_LANGS: &[&str] = &["auto", "en", "es", "fr", "de", "pt", "it", "ru", "ja", "ar"];
-    combo_row(&rows, "Language", STT_LANGS, idx_of(STT_LANGS, &t.language));
-    switch_row(&rows, "Voice activity detection", t.vad_enabled);
+    combo_row(
+        &rows,
+        tr("row.language"),
+        STT_LANGS,
+        idx_of(STT_LANGS, &t.language),
+    );
+    switch_row(&rows, tr("row.vad"), t.vad_enabled);
     spin_row(
         &rows,
-        "VAD threshold",
+        tr("row.vadthreshold"),
         t.vad_threshold as f64,
         0.0,
         1.0,
         0.05,
     );
-    switch_row(&rows, "Live transcription preview", t.live_preview);
+    switch_row(&rows, tr("row.livepreview"), t.live_preview);
     root.append(&card);
 
     root
 }
 
 fn language_models_page(s: &AppSettings) -> GtkBox {
-    let root = section_box(
-        "Language Models",
-        "Cleanup and assistant models. Ollama-first.",
-    );
+    let root = section_box(tr("settings.lm"), tr("settings.lm.sub"));
     let l = &s.language_models;
 
-    let (card, rows) = group("Provider");
+    let (card, rows) = group(tr("group.provider"));
     combo_row(
         &rows,
-        "Mode",
-        &["Ollama", "Local model", "Cloud provider"],
+        tr("row.mode"),
+        &[tr("opt.ollama"), tr("opt.localmodel"), tr("opt.cloud")],
         match l.mode {
             crate::settings::LmMode::Ollama => 0,
             crate::settings::LmMode::Local => 1,
             crate::settings::LmMode::Cloud => 2,
         },
     );
-    entry_row(&rows, "Ollama URL", &l.ollama_url, false);
-    entry_row(&rows, "Ollama model", &l.ollama_model, false);
-    entry_row(&rows, "Local model", &l.local_model, false);
-    switch_row(&rows, "Keep model loaded", l.keep_loaded);
+    entry_row(&rows, tr("row.ollamaurl"), &l.ollama_url, false);
+    entry_row(&rows, tr("row.ollamamodel"), &l.ollama_model, false);
+    entry_row(&rows, tr("row.localmodel"), &l.local_model, false);
+    switch_row(&rows, tr("row.keeploaded"), l.keep_loaded);
     root.append(&card);
 
-    let (card, rows) = group("Cloud fallback (BYOK)");
+    let (card, rows) = group(tr("group.cloudfallback"));
     const PROVIDERS: &[&str] = &["OpenAI", "Anthropic", "Gemini", "Groq", "OpenRouter"];
     combo_row(
         &rows,
-        "Provider",
+        tr("row.provider"),
         PROVIDERS,
         idx_of(PROVIDERS, &l.cloud_provider),
     );
-    entry_row(&rows, "Model", &l.cloud_model, false);
-    entry_row(&rows, "API key", &l.cloud_api_key, true);
+    entry_row(&rows, tr("row.model"), &l.cloud_model, false);
+    entry_row(&rows, tr("row.apikey"), &l.cloud_api_key, true);
     root.append(&card);
 
-    let (card, rows) = group("Dictation cleanup");
-    switch_row(&rows, "Clean up transcriptions", l.cleanup_enabled);
-    let (b, _) = row("Custom prompt");
+    let (card, rows) = group(tr("group.cleanup"));
+    switch_row(&rows, tr("row.cleanup"), l.cleanup_enabled);
+    let (b, _) = row(tr("row.customprompt"));
     let prompt = TextView::new();
     prompt.set_size_request(-1, 80);
     prompt.buffer().set_text(&l.cleanup_prompt);
@@ -1075,39 +1141,34 @@ fn language_models_page(s: &AppSettings) -> GtkBox {
 }
 
 fn privacy_page(s: &AppSettings) -> GtkBox {
-    let root = section_box("Privacy & Data", "Retention and history.");
+    let root = section_box(tr("settings.privacy"), tr("settings.privacy.sub"));
     let p = &s.privacy;
 
-    let (card, rows) = group("Audio retention");
-    const RETENTION: &[&str] = &[
-        "Disabled", "1 day", "7 days", "14 days", "30 days", "60 days", "90 days",
-    ];
+    let (card, rows) = group(tr("group.audioret"));
     const RETENTION_DAYS: &[u32] = &[0, 1, 7, 14, 30, 60, 90];
     combo_row(
         &rows,
-        "Keep audio recordings",
-        RETENTION,
+        tr("row.keepaudio"),
+        &retention_opts(),
         RETENTION_DAYS
             .iter()
             .position(|d| *d == p.audio_retention_days)
             .unwrap_or(4),
     );
-    let (b, _) = row("Stored audio");
-    let clear = Button::with_label("Clear all audio");
+    let (b, _) = row(tr("row.storedaudio"));
+    let clear = Button::with_label(tr("action.clearallaudio"));
     clear.set_sensitive(false); // not wired yet
     b.append(&clear);
     rows.append(&b);
     root.append(&card);
 
-    let (card, rows) = group("Transcripts");
-    switch_row(&rows, "Keep dictation history", p.history_enabled);
-    const DELETE: &[&str] = &[
-        "Forever", "1 day", "7 days", "14 days", "30 days", "60 days", "90 days",
-    ];
+    let (card, rows) = group(tr("group.transcripts"));
+    switch_row(&rows, tr("row.keephistory"), p.history_enabled);
+
     combo_row(
         &rows,
-        "Auto-delete transcripts",
-        DELETE,
+        tr("row.autodelete"),
+        &delete_opts(),
         RETENTION_DAYS
             .iter()
             .position(|d| *d == p.transcript_auto_delete_days)
@@ -1115,7 +1176,7 @@ fn privacy_page(s: &AppSettings) -> GtkBox {
     );
     switch_row(
         &rows,
-        "Save discarded transcriptions",
+        tr("row.savediscarded"),
         p.save_discarded_transcriptions,
     );
     root.append(&card);
@@ -1124,32 +1185,32 @@ fn privacy_page(s: &AppSettings) -> GtkBox {
 }
 
 fn system_page(s: &AppSettings) -> GtkBox {
-    let root = section_box("System", "Version and local data.");
+    let root = section_box(tr("settings.system"), tr("settings.system.sub"));
     let sys = &s.system;
 
-    let (card, rows) = group("Version");
-    let (b, _) = row("Application version");
+    let (card, rows) = group(tr("group.version"));
+    let (b, _) = row(tr("row.appversion"));
     let v = Label::new(Some(env!("CARGO_PKG_VERSION")));
     v.add_css_class("dim");
     b.append(&v);
     rows.append(&b);
     root.append(&card);
 
-    let (card, rows) = group("Model cache");
-    entry_row(&rows, "Cache path", &sys.model_cache_path, false);
-    let (b, _) = row("Cache actions");
-    let open = Button::with_label("Open folder");
+    let (card, rows) = group(tr("group.modelcache"));
+    entry_row(&rows, tr("row.cachepath"), &sys.model_cache_path, false);
+    let (b, _) = row(tr("row.cacheactions"));
+    let open = Button::with_label(tr("action.openfolder"));
     open.set_sensitive(false); // not wired yet
-    let clear = Button::with_label("Clear cache");
+    let clear = Button::with_label(tr("action.clearcache"));
     clear.set_sensitive(false); // not wired yet
     b.append(&open);
     b.append(&clear);
     rows.append(&b);
     root.append(&card);
 
-    let (card, rows) = group("Danger zone");
-    let (b, _) = row("Reset all application data");
-    let reset = Button::with_label("Reset...");
+    let (card, rows) = group(tr("group.danger"));
+    let (b, _) = row(tr("row.resetall"));
+    let reset = Button::with_label(tr("action.resetdots"));
     reset.set_sensitive(false); // not wired yet
     b.append(&reset);
     rows.append(&b);
@@ -1185,6 +1246,8 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
             eprintln!("[app] theme -> {theme:?}");
         }
     });
+    // Internal section IDs stay English (stack names, deep-link
+    // flags); only the nav button labels translate.
     let sections = [
         ("Preferences", preferences_page(state, &on_theme)),
         ("Hotkeys", hotkeys_page(state)),
@@ -1194,23 +1257,35 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
         ("System", system_page(s)),
     ];
 
-    let mut buttons: Vec<Button> = Vec::new();
+    fn section_label(id: &str) -> &'static str {
+        match id {
+            "Preferences" => tr("settings.preferences"),
+            "Hotkeys" => tr("settings.hotkeys"),
+            "Speech to Text" => tr("settings.stt"),
+            "Language Models" => tr("settings.lm"),
+            "Privacy & Data" => tr("settings.privacy"),
+            "System" => tr("settings.system"),
+            _ => Box::leak(id.to_string().into_boxed_str()),
+        }
+    }
+
+    let mut buttons: Vec<(Button, String)> = Vec::new();
     let mut pending: Vec<(Button, String)> = Vec::new();
-    for (name, widget) in sections {
+    for (id, widget) in sections {
         let scrolled = gtk4::ScrolledWindow::new();
         scrolled.set_child(Some(&widget));
         scrolled.set_vexpand(true);
-        stack.add_named(&scrolled, Some(name));
-        let b = Button::with_label(name);
+        stack.add_named(&scrolled, Some(id));
+        let b = Button::with_label(section_label(id));
         b.set_halign(gtk4::Align::Fill);
         nav.append(&b);
-        buttons.push(b.clone());
-        pending.push((b, name.to_string()));
+        buttons.push((b.clone(), id.to_string()));
+        pending.push((b, id.to_string()));
     }
 
     let set_active = Rc::new(move |active: &str| {
-        for b in buttons.iter() {
-            if b.label().as_deref() == Some(active) {
+        for (b, id) in buttons.iter() {
+            if id == active {
                 b.add_css_class("active");
             } else {
                 b.remove_css_class("active");

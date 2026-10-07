@@ -4,6 +4,7 @@
 //! `app_settings`. All widgets initialize from [`AppState`] but nothing
 //! is wired yet: changing a control does not persist or apply.
 
+use crate::i18n::tr;
 use gtk4::prelude::*;
 use gtk4::{Application, ApplicationWindow, Box as GtkBox, Button, Label, Orientation, Stack};
 use std::rc::Rc;
@@ -466,15 +467,15 @@ pub fn build_app_window(
     sidebar.set_size_request(190, -1);
     root.append(&sidebar);
 
-    let title = Label::new(Some("MyWhisper"));
+    let title = Label::new(Some(tr("app.name")));
     title.add_css_class("app-title");
     title.set_xalign(0.0);
     sidebar.append(&title);
 
-    let home_btn = nav_button("Home");
-    let insights_btn = nav_button("Insights");
-    let dict_btn = nav_button("Dictionary");
-    let sync_btn = nav_button("Sync");
+    let home_btn = nav_button(tr("nav.home"));
+    let insights_btn = nav_button(tr("nav.insights"));
+    let dict_btn = nav_button(tr("nav.dictionary"));
+    let sync_btn = nav_button(tr("nav.sync"));
     sidebar.append(&home_btn);
     sidebar.append(&insights_btn);
     sidebar.append(&dict_btn);
@@ -485,7 +486,7 @@ pub fn build_app_window(
 
     sidebar.append(&sync_btn);
 
-    let settings_btn = nav_button("Settings");
+    let settings_btn = nav_button(tr("nav.settings"));
     sidebar.append(&settings_btn);
 
     // ---- Content (main pages only; settings floats above) ----
@@ -536,7 +537,7 @@ pub fn build_app_window(
         header_title.add_css_class("modal-title");
         header_title.set_xalign(0.0);
         header_title.set_hexpand(true);
-        let close = Button::with_label("Close");
+        let close = Button::with_label(crate::i18n::tr("action.close"));
         header.append(&header_title);
         header.append(&close);
         panel.append(&header);
@@ -544,7 +545,7 @@ pub fn build_app_window(
         (panel, close)
     }
 
-    let (settings_panel, settings_close) = modal_panel(&overlay, "Settings");
+    let (settings_panel, settings_close) = modal_panel(&overlay, crate::i18n::tr("nav.settings"));
     let settings_content = crate::app_settings::page(state, initial_section);
     settings_content.set_vexpand(true);
     // Inset from the panel edges: full-bleed content would paint over
@@ -554,7 +555,7 @@ pub fn build_app_window(
     settings_content.set_margin_bottom(12);
     settings_panel.append(&settings_content);
 
-    let (sync_panel, sync_close) = modal_panel(&overlay, "Sync");
+    let (sync_panel, sync_close) = modal_panel(&overlay, crate::i18n::tr("nav.sync"));
     let sync_content = crate::app_sync::page(state, listening_port);
     sync_content.set_vexpand(true);
     sync_content.set_margin_start(12);
@@ -698,6 +699,19 @@ pub fn build_app_window(
         });
         escape.add_shortcut(gtk4::Shortcut::new(Some(trigger), Some(dismiss)));
         window.add_controller(escape);
+    }
+
+    // Language changes rebuild the whole window (labels are baked at
+    // build time); modal state is not preserved across the rebuild.
+    {
+        let app = app.clone();
+        let window = window.clone();
+        let state = state.clone();
+        crate::i18n::set_rebuild_hook(Rc::new(move || {
+            let fresh = build_app_window(&app, &state, "home", "Preferences");
+            fresh.present();
+            window.close();
+        }));
     }
 
     window

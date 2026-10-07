@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::app::AppState;
+use crate::i18n::{tr, trf};
 
 fn short_id(node_id: &str) -> String {
     if node_id.len() > 16 {
@@ -22,7 +23,7 @@ fn short_id(node_id: &str) -> String {
 
 fn ago(epoch_secs: i64) -> String {
     if epoch_secs <= 0 {
-        return "never".to_string();
+        return tr("sync.never").to_string();
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -30,13 +31,13 @@ fn ago(epoch_secs: i64) -> String {
         .unwrap_or(epoch_secs);
     let dt = now - epoch_secs;
     if dt < 60 {
-        "just now".to_string()
+        tr("sync.ago.now").to_string()
     } else if dt < 3600 {
-        format!("{} min ago", dt / 60)
+        trf("sync.ago.min", &[("n", &(dt / 60).to_string())])
     } else if dt < 86_400 {
-        format!("{} h ago", dt / 3600)
+        trf("sync.ago.h", &[("n", &(dt / 3600).to_string())])
     } else {
-        format!("{} d ago", dt / 86_400)
+        trf("sync.ago.d", &[("n", &(dt / 86_400).to_string())])
     }
 }
 
@@ -60,9 +61,7 @@ fn fill_peers(list: &ListBox, state: &Rc<AppState>, status: &Label) {
     clear_list(&list);
     let peers = state.store.list_peers().unwrap_or_default();
     if peers.is_empty() {
-        let l = Label::new(Some(
-            "No devices yet. Add one by node id, or wait for a request.",
-        ));
+        let l = Label::new(Some(tr("sync.devices.empty")));
         l.add_css_class("dim");
         list.append(&l);
         return;
@@ -85,7 +84,7 @@ fn fill_peers(list: &ListBox, state: &Rc<AppState>, status: &Label) {
         let trust = Switch::new();
         trust.set_active(p.trusted);
         trust.set_valign(gtk4::Align::Center);
-        trust.set_tooltip_text(Some("Trusted device"));
+        trust.set_tooltip_text(Some(tr("sync.trusted")));
         {
             let state = state.clone();
             let node_id = p.node_id.clone();
@@ -101,7 +100,7 @@ fn fill_peers(list: &ListBox, state: &Rc<AppState>, status: &Label) {
         }
         top.append(&trust);
 
-        let sync_now = Button::with_label("Sync now");
+        let sync_now = Button::with_label(tr("action.syncnow"));
         {
             let state = state.clone();
             let status = status.clone();
@@ -112,7 +111,7 @@ fn fill_peers(list: &ListBox, state: &Rc<AppState>, status: &Label) {
         }
         top.append(&sync_now);
 
-        let remove = Button::with_label("Remove");
+        let remove = Button::with_label(tr("action.remove"));
         {
             let state = state.clone();
             let list = list_remove.clone();
@@ -129,14 +128,14 @@ fn fill_peers(list: &ListBox, state: &Rc<AppState>, status: &Label) {
 
         let meta = Label::new(Some(
             format!(
-                "{} · {} · last sync {}",
+                "{} · {} · {}",
                 short_id(&p.node_id),
                 if p.address.is_empty() {
-                    "no address".to_string()
+                    tr("sync.noaddr").to_string()
                 } else {
                     p.address.clone()
                 },
-                ago(p.last_sync)
+                trf("sync.lastsync", &[("ago", &ago(p.last_sync))])
             )
             .as_str(),
         ));
@@ -191,7 +190,7 @@ fn fill_nearby(list: &ListBox, state: &Rc<AppState>, status: &Label) {
         .collect();
     found.retain(|d| !known.contains(&d.node_id));
     if found.is_empty() {
-        let l = Label::new(Some("No new devices seen on this network yet."));
+        let l = Label::new(Some(tr("sync.nearby.empty")));
         l.add_css_class("dim");
         list.append(&l);
         return;
@@ -213,17 +212,15 @@ fn fill_nearby(list: &ListBox, state: &Rc<AppState>, status: &Label) {
         l.set_xalign(0.0);
         l.set_hexpand(true);
         row.append(&l);
-        let add = Button::with_label("Add");
+        let add = Button::with_label(tr("action.add"));
         {
             let state = state.clone();
             let status = status.clone();
             add.connect_clicked(move |_| {
                 let _ = state.store.upsert_peer(&d.node_id, &d.name, "", true);
                 let _ = state.store.set_peer_addresses(&d.node_id, &d.addresses);
-                status.set_text(&format!(
-                    "Request recorded for {}. They accept on their side, then sync starts.",
-                    short_id(&d.node_id)
-                ));
+                status
+                    .set_text(trf("sync.request.sent", &[("id", &short_id(&d.node_id))]).as_str());
                 eprintln!(
                     "[app] sync: pairing requested with {}",
                     short_id(&d.node_id)
@@ -242,7 +239,7 @@ fn fill_requests(list: &ListBox, state: &Rc<AppState>, status: &Label) {
     clear_list(&list);
     let pending = state.store.list_pending().unwrap_or_default();
     if pending.is_empty() {
-        let l = Label::new(Some("No pending requests."));
+        let l = Label::new(Some(tr("sync.requests.empty")));
         l.add_css_class("dim");
         list.append(&l);
         return;
@@ -250,46 +247,51 @@ fn fill_requests(list: &ListBox, state: &Rc<AppState>, status: &Label) {
     for p in pending {
         let row = GtkBox::new(Orientation::Horizontal, 8);
         let l = Label::new(Some(
-            format!(
-                "{} · {} · seen {}",
-                if p.name.is_empty() {
-                    short_id(&p.node_id)
-                } else {
-                    p.name.clone()
-                },
-                short_id(&p.node_id),
-                ago(p.last_seen)
+            trf(
+                "sync.requests.row",
+                &[
+                    (
+                        "name",
+                        &if p.name.is_empty() {
+                            short_id(&p.node_id)
+                        } else {
+                            p.name.clone()
+                        },
+                    ),
+                    ("id", &short_id(&p.node_id)),
+                    ("seen", &ago(p.last_seen)),
+                ],
             )
             .as_str(),
         ));
         l.set_xalign(0.0);
         l.set_hexpand(true);
         row.append(&l);
-        let accept = Button::with_label("Accept");
+        let accept = Button::with_label(tr("action.accept"));
         {
             let state = state.clone();
             let status = status.clone();
             let node_id = p.node_id.clone();
             accept.connect_clicked(move |_| {
                 if state.store.decide_request(&node_id, true).is_err() {
-                    status.set_text("Could not accept request.");
+                    status.set_text(tr("sync.err.accept"));
                     return;
                 }
-                status.set_text("Device accepted. Syncing…");
+                status.set_text(tr("sync.accepted"));
                 if let Ok(Some(peer)) = state.store.get_peer(&node_id) {
                     spawn_sync(&state, peer, &status);
                 }
             });
         }
         row.append(&accept);
-        let decline = Button::with_label("Decline");
+        let decline = Button::with_label(tr("action.decline"));
         {
             let state = state.clone();
             let status = status.clone();
             let node_id = p.node_id.clone();
             decline.connect_clicked(move |_| {
                 let _ = state.store.decide_request(&node_id, false);
-                status.set_text("Request declined.");
+                status.set_text(tr("sync.declined"));
             });
         }
         row.append(&decline);
@@ -302,15 +304,15 @@ fn fill_requests(list: &ListBox, state: &Rc<AppState>, status: &Label) {
 /// buttons re-enable even on early exits).
 fn spawn_sync(state: &Rc<AppState>, peer: crate::store::Peer, status: &Label) {
     if !peer.trusted {
-        status.set_text("Device is not trusted.");
+        status.set_text(tr("sync.err.untrusted"));
         return;
     }
     let targets = peer.dial_targets();
     if targets.is_empty() {
-        status.set_text("No known address for this device yet.");
+        status.set_text(tr("sync.err.noaddr"));
         return;
     }
-    status.set_text(&format!("Syncing with {}…", short_id(&peer.node_id)));
+    status.set_text(trf("sync.syncing", &[("id", &short_id(&peer.node_id))]).as_str());
     // Plain data only across the thread boundary (AppState is !Send).
     let db_path = state.db_path.clone();
     let creds = state.creds.clone();
@@ -320,14 +322,16 @@ fn spawn_sync(state: &Rc<AppState>, peer: crate::store::Peer, status: &Label) {
     let result_poll = result_tx.clone();
     std::thread::spawn(move || {
         let msg = match crate::net::sync_now(&targets, &db_path, &creds, &name, &expect) {
-            Ok(r) => format!(
-                "Synced with {}: {} words, {} snippets, {} history in",
-                short_id(&r.peer_node),
-                r.words_in,
-                r.snippets_in,
-                r.history_in
+            Ok(r) => trf(
+                "sync.synced",
+                &[
+                    ("id", &short_id(&r.peer_node)),
+                    ("words", &r.words_in.to_string()),
+                    ("snippets", &r.snippets_in.to_string()),
+                    ("history", &r.history_in.to_string()),
+                ],
             ),
-            Err(e) => format!("Sync failed: {e}"),
+            Err(e) => trf("sync.failed", &[("err", &e.to_string())]),
         };
         *result_tx.lock().unwrap() = Some(msg);
     });
@@ -370,7 +374,7 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     // This card reports its state and starts/stops it on demand.
     let svc_card = GtkBox::new(Orientation::Vertical, 8);
     svc_card.add_css_class("card");
-    let t = Label::new(Some("Background service"));
+    let t = Label::new(Some(tr("sync.svc.title")));
     t.add_css_class("section-title");
     t.set_xalign(0.0);
     svc_card.append(&t);
@@ -397,14 +401,11 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
                 .unwrap_or(false);
             state.service_alive.set(alive);
             if alive {
-                svc_label.set_text("Running: hotkeys, sync and pill are live.");
-                svc_toggle.set_label("Stop");
+                svc_label.set_text(tr("sync.svc.on"));
+                svc_toggle.set_label(tr("action.stop"));
             } else {
-                svc_label.set_text(
-                    "Stopped: hotkeys, sync and the pill are idle. \
-                     Start it to restore full functionality.",
-                );
-                svc_toggle.set_label("Start");
+                svc_label.set_text(tr("sync.svc.off"));
+                svc_toggle.set_label(tr("action.start"));
             }
         }
     });
@@ -429,13 +430,13 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     // ---- This device ----
     let card = GtkBox::new(Orientation::Vertical, 8);
     card.add_css_class("card");
-    let t = Label::new(Some("This device"));
+    let t = Label::new(Some(tr("sync.device.title")));
     t.add_css_class("section-title");
     t.set_xalign(0.0);
     card.append(&t);
 
     let name_row = GtkBox::new(Orientation::Horizontal, 8);
-    let name_label = Label::new(Some("Device name"));
+    let name_label = Label::new(Some(tr("sync.device.name")));
     name_label.add_css_class("row-label");
     name_label.set_xalign(0.0);
     name_label.set_size_request(170, -1);
@@ -448,7 +449,7 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     name_entry.set_placeholder_text(Some(&crate::device::default_device_name(&state.node_id)));
     name_entry.set_hexpand(true);
     name_row.append(&name_entry);
-    let name_save = Button::with_label("Save");
+    let name_save = Button::with_label(tr("action.save"));
     {
         let state = state.clone();
         name_save.connect_clicked(move |_| {
@@ -462,7 +463,7 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     card.append(&name_row);
 
     let id_row = GtkBox::new(Orientation::Horizontal, 8);
-    let id_label = Label::new(Some("Node id"));
+    let id_label = Label::new(Some(tr("sync.device.id")));
     id_label.add_css_class("row-label");
     id_label.set_xalign(0.0);
     id_label.set_size_request(170, -1);
@@ -477,7 +478,7 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     id_value.set_width_chars(42);
     id_value.set_hexpand(true);
     id_row.append(&id_value);
-    let copy = Button::with_label("Copy");
+    let copy = Button::with_label(tr("action.copy"));
     {
         let node_id = state.node_id.clone();
         copy.connect_clicked(move |_| {
@@ -490,8 +491,8 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     card.append(&id_row);
 
     let port_row = GtkBox::new(Orientation::Horizontal, 8);
-    let port_label = Label::new(Some("Listen port"));
-    port_label.set_tooltip_text(Some("0 = off. Restart applies."));
+    let port_label = Label::new(Some(tr("sync.device.port")));
+    port_label.set_tooltip_text(Some(tr("sync.device.porthint")));
     port_label.add_css_class("row-label");
     port_label.set_xalign(0.0);
     port_label.set_size_request(170, -1);
@@ -503,7 +504,7 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     }
     port_entry.set_hexpand(true);
     port_row.append(&port_entry);
-    let port_save = Button::with_label("Save");
+    let port_save = Button::with_label(tr("action.save"));
     {
         let state = state.clone();
         port_save.connect_clicked(move |_| {
@@ -519,9 +520,9 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
 
     let listen = Label::new(Some(
         if listening_port == 0 {
-            "Sync listener is off.".to_string()
+            tr("sync.listener.off").to_string()
         } else {
-            format!("Listening for sync on port {listening_port}.")
+            trf("sync.listener.on", &[("port", &listening_port.to_string())])
         }
         .as_str(),
     ));
@@ -533,18 +534,18 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     // the firewall query can pop a polkit auth dialog, so it only
     // runs when the user asks.
     let reach_row = GtkBox::new(Orientation::Horizontal, 8);
-    let reach = Label::new(Some("Reachability unknown."));
+    let reach = Label::new(Some(tr("sync.reach.unknown")));
     reach.add_css_class("dim");
     reach.set_xalign(0.0);
     reach.set_wrap(true);
     reach.set_hexpand(true);
     reach_row.append(&reach);
-    let check = Button::with_label("Check");
+    let check = Button::with_label(tr("action.check"));
     reach_row.append(&check);
     card.append(&reach_row);
     {
         check.connect_clicked(move |_| {
-            reach.set_text("Checking…");
+            reach.set_text(tr("sync.reach.checking"));
             let result: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
             let result_tx = result.clone();
             std::thread::spawn(move || {
@@ -553,21 +554,17 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
                 // report it and the firewall state as separate facts.
                 let up = crate::net::self_reachable(listening_port).is_some();
                 let msg = match (up, crate::net::firewall_state(listening_port)) {
-                    (false, _) => {
-                        format!("Sync listener is not answering on port {listening_port}.")
-                    }
+                    (false, _) => trf("sync.reach.down", &[("port", &listening_port.to_string())]),
                     (true, Some((true, _))) => {
-                        format!("Listener up, firewall open for {listening_port}/tcp.")
+                        trf("sync.reach.open", &[("port", &listening_port.to_string())])
                     }
-                    (true, Some((false, _))) => format!(
-                        "Listener is up, but the firewall blocks port \
-                         {listening_port}/tcp, so peers cannot reach you. Run: \
-                         sudo firewall-cmd --permanent \
-                         --add-port={listening_port}/tcp && sudo firewall-cmd --reload"
+                    (true, Some((false, _))) => trf(
+                        "sync.reach.blocked",
+                        &[("port", &listening_port.to_string())],
                     ),
-                    (true, None) => format!(
-                        "Listener is up on port {listening_port} \
-                         (firewall state unknown)."
+                    (true, None) => trf(
+                        "sync.reach.unknownfw",
+                        &[("port", &listening_port.to_string())],
                     ),
                 };
                 *result_tx.lock().unwrap() = Some(msg);
@@ -589,23 +586,18 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     // ---- Add device (node id only; addresses discovered) ----
     let card = GtkBox::new(Orientation::Vertical, 8);
     card.add_css_class("card");
-    let t = Label::new(Some("Add device"));
+    let t = Label::new(Some(tr("sync.add.title")));
     t.add_css_class("section-title");
     t.set_xalign(0.0);
     card.append(&t);
-    let hint = Label::new(Some(
-        "Paste the peer's node id. Addresses are discovered automatically on \
-         the local network; the field below is only needed for devices that \
-         cannot be discovered (VPN hosts, manual IPs). Verify the id with \
-         them out-of-band, then they accept your request on their side.",
-    ));
+    let hint = Label::new(Some(tr("sync.add.hint")));
     hint.add_css_class("dim");
     hint.set_xalign(0.0);
     hint.set_wrap(true);
     card.append(&hint);
 
     let id_entry = Entry::new();
-    id_entry.set_placeholder_text(Some("Peer node id (64 hex chars)"));
+    id_entry.set_placeholder_text(Some(tr("sync.add.idhint")));
     // Fixed small minimum: the 64-char id scrolls inside instead of
     // forcing a horizontal scrollbar on the whole page.
     id_entry.set_width_chars(32);
@@ -614,14 +606,14 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
 
     let addr_row = GtkBox::new(Orientation::Horizontal, 8);
     let addr_entry = Entry::new();
-    addr_entry.set_placeholder_text(Some("Address override, e.g. 192.168.1.31:42973 (optional)"));
+    addr_entry.set_placeholder_text(Some(tr("sync.add.addrhint")));
     addr_entry.set_hexpand(true);
     addr_row.append(&addr_entry);
     let name_entry = Entry::new();
-    name_entry.set_placeholder_text(Some("Name (optional)"));
+    name_entry.set_placeholder_text(Some(tr("sync.add.namehint")));
     name_entry.set_max_width_chars(16);
     addr_row.append(&name_entry);
-    let add = Button::with_label("Send request");
+    let add = Button::with_label(tr("action.sendrequest"));
     addr_row.append(&add);
     card.append(&addr_row);
     col.append(&card);
@@ -629,7 +621,7 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     // ---- Nearby (mDNS, same LAN, no configuration) ----
     let nearby_card = GtkBox::new(Orientation::Vertical, 8);
     nearby_card.add_css_class("card");
-    let t = Label::new(Some("Nearby"));
+    let t = Label::new(Some(tr("sync.nearby.title")));
     t.add_css_class("section-title");
     t.set_xalign(0.0);
     nearby_card.append(&t);
@@ -640,7 +632,7 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     // ---- Requests (incoming pairing asks) ----
     let req_card = GtkBox::new(Orientation::Vertical, 8);
     req_card.add_css_class("card");
-    let t = Label::new(Some("Requests"));
+    let t = Label::new(Some(tr("sync.requests.title")));
     t.add_css_class("section-title");
     t.set_xalign(0.0);
     req_card.append(&t);
@@ -651,7 +643,7 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     // ---- Devices ----
     let card = GtkBox::new(Orientation::Vertical, 8);
     card.add_css_class("card");
-    let t = Label::new(Some("Devices"));
+    let t = Label::new(Some(tr("sync.devices.title")));
     t.add_css_class("section-title");
     t.set_xalign(0.0);
     card.append(&t);
@@ -699,7 +691,7 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
             let address = addr_entry.text().trim().to_string();
             let name = name_entry.text().trim().to_string();
             if node_id.len() != 64 {
-                status.set_text("Need the peer's 64-char node id.");
+                status.set_text(tr("sync.err.badid"));
                 return;
             }
             if state
@@ -707,7 +699,7 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
                 .upsert_peer(&node_id, &name, &address, true)
                 .is_err()
             {
-                status.set_text("Could not save peer.");
+                status.set_text(tr("sync.err.save"));
                 return;
             }
             if !address.is_empty() {
@@ -728,15 +720,12 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
                 .map(|p| p.dial_targets())
                 .unwrap_or_default();
             if targets.is_empty() {
-                status.set_text(&format!(
-                    "Request recorded for {}. No address yet: they appear under Nearby on the same network, or add an address.",
-                    short_id(&node_id)
-                ));
+                status
+                    .set_text(trf("sync.request.noaddr", &[("id", &short_id(&node_id))]).as_str());
             } else {
-                status.set_text(&format!(
-                    "Reaching {}…",
-                    short_id(&node_id)
-                ));
+                status.set_text(
+                    trf("sync.request.reaching", &[("id", &short_id(&node_id))]).as_str(),
+                );
                 let db_path = state.db_path.clone();
                 let creds = state.creds.clone();
                 let name = device_name(&state);
@@ -744,17 +733,11 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
                 let result: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
                 let result_tx = result.clone();
                 std::thread::spawn(move || {
-                    let msg = match crate::net::sync_now(
-                        &targets, &db_path, &creds, &name, &expect,
-                    ) {
-                        Ok(_) => "Delivered and synced.".to_string(),
-                        Err(e) if e.contains("not trusted") => {
-                            "Request delivered. They accept on their side, then sync starts."
-                                .to_string()
-                        }
-                        Err(e) => {
-                            format!("Unreachable right now ({e}). Kept; retry from Devices.")
-                        }
+                    let msg = match crate::net::sync_now(&targets, &db_path, &creds, &name, &expect)
+                    {
+                        Ok(_) => tr("sync.request.delivered").to_string(),
+                        Err(e) if e.contains("not trusted") => tr("sync.request.sent").to_string(),
+                        Err(e) => trf("sync.request.unreachable", &[("err", &e.to_string())]),
                     };
                     *result_tx.lock().unwrap() = Some(msg);
                 });

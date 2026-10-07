@@ -75,6 +75,9 @@ fn main() -> gtk4::glib::ExitCode {
                 discovered_ui.clone(),
             );
             state.service_alive.set(service_alive);
+            mywhisper::i18n::set_lang(mywhisper::i18n::UiLang::parse(
+                &state.settings.borrow().preferences.ui_language,
+            ));
             if let Some(theme) = value_of(&args, "--theme") {
                 use mywhisper::settings::Theme;
                 let theme = match theme.as_str() {

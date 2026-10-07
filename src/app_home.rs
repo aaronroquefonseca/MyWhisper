@@ -10,6 +10,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use super::app::{AppState, centered_column};
+use crate::i18n::{tr, trf};
 use crate::settings::HistoryEntry;
 
 fn clear_box(container: &GtkBox) {
@@ -26,22 +27,19 @@ fn fill_history(container: &GtkBox, state: &Rc<AppState>, history: &[HistoryEntr
         empty.set_halign(gtk4::Align::Center);
         empty.set_valign(gtk4::Align::Center);
         empty.set_vexpand(true);
-        let t = Label::new(Some("No dictations yet"));
+        let t = Label::new(Some(tr("home.empty.title")));
         t.add_css_class("section-title");
+        let hotkeys = state
+            .settings
+            .borrow()
+            .hotkeys
+            .effective_hotkeys()
+            .iter()
+            .map(|b| b.combo.clone())
+            .collect::<Vec<_>>()
+            .join(" / ");
         let h = Label::new(Some(
-            format!(
-                "Your history will appear here.\nDefault hotkey: {}",
-                state
-                    .settings
-                    .borrow()
-                    .hotkeys
-                    .effective_hotkeys()
-                    .iter()
-                    .map(|b| b.combo.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" / ")
-            )
-            .as_str(),
+            trf("home.empty.hint", &[("hotkey", &hotkeys)]).as_str(),
         ));
         h.add_css_class("dim");
         h.set_justify(gtk4::Justification::Center);
@@ -73,14 +71,12 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
 
     let col = centered_column(&root, 880);
 
-    let greeting = Label::new(Some("Welcome back"));
+    let greeting = Label::new(Some(tr("home.greeting")));
     greeting.add_css_class("page-title");
     greeting.set_xalign(0.0);
     col.append(&greeting);
 
-    let sub = Label::new(Some(
-        "Press your dictation hotkey anywhere to start writing with your voice.",
-    ));
+    let sub = Label::new(Some(tr("home.subtitle")));
     sub.add_css_class("page-subtitle");
     sub.set_xalign(0.0);
     col.append(&sub);

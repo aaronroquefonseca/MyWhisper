@@ -10,11 +10,31 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::app::AppState;
+use crate::i18n::{tr, trf};
 
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
-const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const WEEKDAYS_EN: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const WEEKDAYS_ES: [&str; 7] = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
+
+fn month_names() -> [&'static str; 12] {
+    if crate::i18n::lang() == crate::i18n::UiLang::Es {
+        [
+            "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic",
+        ]
+    } else {
+        MONTHS
+    }
+}
+
+fn weekday_names() -> [&'static str; 7] {
+    if crate::i18n::lang() == crate::i18n::UiLang::Es {
+        WEEKDAYS_ES
+    } else {
+        WEEKDAYS_EN
+    }
+}
 const WEEKS: i32 = 24;
 const CELL: i32 = 20;
 const PITCH: i32 = CELL + 5;
@@ -143,7 +163,7 @@ fn fill_heat(heat_col: &GtkBox, state: &Rc<AppState>) {
     for week in 0..WEEKS {
         let month = cell_date(week, 0).1;
         if week == 0 || month != prev_month {
-            let m = Label::new(Some(MONTHS[(month - 1) as usize]));
+            let m = Label::new(Some(month_names()[(month - 1) as usize]));
             m.add_css_class("dim");
             m.set_halign(gtk4::Align::Start);
             months.put(&m, (MONTH_X0 + week * PITCH) as f64, 0.0);
@@ -159,7 +179,7 @@ fn fill_heat(heat_col: &GtkBox, state: &Rc<AppState>) {
     for week in 0..WEEKS {
         for day in 0..7 {
             if week == 0 {
-                let w = Label::new(Some(WEEKDAYS[day as usize]));
+                let w = Label::new(Some(weekday_names()[day as usize]));
                 w.add_css_class("dim");
                 w.set_size_request(DAY_COL_W, -1);
                 w.set_halign(gtk4::Align::Start);
@@ -175,10 +195,23 @@ fn fill_heat(heat_col: &GtkBox, state: &Rc<AppState>) {
             if level > 0 {
                 cell.add_css_class(&format!("heat-{level}"));
             }
-            cell.set_tooltip_text(Some(&format!(
-                "{y:04}-{mo:02}-{d:02}: {words} word{}",
-                if words == 1 { "" } else { "s" }
-            )));
+            let date = format!("{y:04}-{mo:02}-{d:02}");
+            let unit = tr(if words == 1 {
+                "insights.word.one"
+            } else {
+                "insights.word.many"
+            });
+            cell.set_tooltip_text(Some(
+                trf(
+                    "insights.heat.tooltip",
+                    &[
+                        ("date", &date),
+                        ("words", &words.to_string()),
+                        ("unit", unit),
+                    ],
+                )
+                .as_str(),
+            ));
             grid.attach(&cell, week + 1, day, 1, 1);
         }
     }
@@ -192,55 +225,54 @@ pub fn page(state: &Rc<AppState>) -> ScrolledWindow {
     // Centered, width-capped column (title included).
     let col = super::app::centered_column(&outer, 880);
 
-    let title = Label::new(Some("Insights"));
+    let title = Label::new(Some(tr("insights.title")));
     title.add_css_class("page-title");
     title.set_xalign(0.0);
     col.append(&title);
 
-    let sub = Label::new(Some("Your usage, computed on-device."));
+    let sub = Label::new(Some(tr("insights.subtitle")));
     sub.add_css_class("page-subtitle");
     sub.set_xalign(0.0);
     col.append(&sub);
 
     fn streak_text(streak: u32) -> (String, String) {
+        let days = streak.to_string();
+        let plural = if streak == 1 { "" } else { "s" };
         (
-            format!("{streak} day{}", if streak == 1 { "" } else { "s" }),
-            format!(
-                "Longest: {streak} day{}",
-                if streak == 1 { "" } else { "s" }
-            ),
+            trf("insights.streak.value", &[("n", &days), ("s", plural)]),
+            trf("insights.streak.caption", &[("n", &days), ("s", plural)]),
         )
     }
     let row = GtkBox::new(Orientation::Horizontal, 12);
     let (words_card, words_value, _) = stat_card(
-        "Words spoken",
+        tr("insights.words"),
         &compact_words(state.stats.words_spoken),
-        "All time",
+        tr("insights.alltime"),
     );
     row.append(&words_card);
     let (wpm_card, wpm_value, _) = stat_card(
-        "Words per minute",
+        tr("insights.wpm"),
         &format!("{:.0}", state.stats.words_per_minute),
-        "Based on 100% of measured words",
+        tr("insights.wpm.caption"),
     );
     row.append(&wpm_card);
     let (dict_card, dict_value, _) = stat_card(
-        "Dictations",
+        tr("insights.dictations"),
         &state.stats.dictations.to_string(),
-        "All time",
+        tr("insights.alltime"),
     );
     row.append(&dict_card);
     let streak = state.stats.streak_days;
     let (streak_value, streak_caption) = streak_text(streak);
     let (streak_card, streak_value_label, streak_caption_label) =
-        stat_card("Current streak", &streak_value, &streak_caption);
+        stat_card(tr("insights.streak"), &streak_value, &streak_caption);
     row.append(&streak_card);
     col.append(&row);
 
     // Heatmap card.
     let card = GtkBox::new(Orientation::Vertical, 8);
     card.add_css_class("card");
-    let ht = Label::new(Some("Speaking activity"));
+    let ht = Label::new(Some(tr("insights.activity")));
     ht.add_css_class("section-title");
     ht.set_xalign(0.0);
     card.append(&ht);
@@ -263,7 +295,7 @@ pub fn page(state: &Rc<AppState>) -> ScrolledWindow {
 
     // Legend: Less [swatches] More.
     let legend = GtkBox::new(Orientation::Horizontal, 4);
-    let less = Label::new(Some("Less"));
+    let less = Label::new(Some(tr("insights.less")));
     less.add_css_class("dim");
     legend.append(&less);
     for level in 0..4 {
@@ -275,7 +307,7 @@ pub fn page(state: &Rc<AppState>) -> ScrolledWindow {
         }
         legend.append(&sw);
     }
-    let more = Label::new(Some("More"));
+    let more = Label::new(Some(tr("insights.more")));
     more.add_css_class("dim");
     legend.append(&more);
     card.append(&legend);

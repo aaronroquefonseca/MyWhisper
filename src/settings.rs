@@ -137,7 +137,7 @@ impl Default for Preferences {
             auto_paste: true,
             keep_transcription_in_clipboard: false,
             pill: PillPrefs::default(),
-            ui_language: "en".to_string(),
+            ui_language: "system".to_string(),
             transcription_language: "auto".to_string(),
             mic_selection: MicSelection::System,
             mic_device_id: String::new(),
