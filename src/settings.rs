@@ -121,7 +121,6 @@ pub struct Preferences {
     #[serde(default)]
     pub pill: PillPrefs,
     pub ui_language: String,
-    pub transcription_language: String,
     pub mic_selection: MicSelection,
     pub mic_device_id: String,
     pub mic_warm_hold_secs: u32,
@@ -138,7 +137,6 @@ impl Default for Preferences {
             keep_transcription_in_clipboard: false,
             pill: PillPrefs::default(),
             ui_language: "system".to_string(),
-            transcription_language: "auto".to_string(),
             mic_selection: MicSelection::System,
             mic_device_id: String::new(),
             mic_warm_hold_secs: 0,
@@ -276,16 +274,30 @@ impl HotkeySettings {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GpuBackendSetting {
+    Cpu,
+    Cuda,
+    Vulkan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SttMode {
     Local,
     Cloud,
     SelfHosted,
 }
 
+/// Local vendor tabs, mirroring OpenWhispr: Oruk and Cohere ship
+/// exactly one model each; OpenAI is the whisper.cpp family, NVIDIA
+/// the sherpa parakeet/nemotron family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalSttProvider {
-    Whisper,
-    Parakeet,
+    #[serde(alias = "Whisper")]
+    OpenAi,
+    #[serde(alias = "Parakeet")]
+    Nvidia,
+    Oruk,
+    Cohere,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -303,13 +315,15 @@ pub struct SttSettings {
     pub vad_enabled: bool,
     pub vad_threshold: f32,
     pub live_preview: bool,
+    /// Manual GPU backend choice (never auto-switched).
+    pub gpu_backend: GpuBackendSetting,
 }
 
 impl Default for SttSettings {
     fn default() -> Self {
         Self {
             mode: SttMode::Local,
-            local_provider: LocalSttProvider::Whisper,
+            local_provider: LocalSttProvider::OpenAi,
             whisper_model: "base".to_string(),
             parakeet_model: "parakeet-tdt-0.6b-v3".to_string(),
             cloud_provider: "OpenAI".to_string(),
@@ -318,9 +332,10 @@ impl Default for SttSettings {
             self_hosted_url: "http://localhost:8000".to_string(),
             self_hosted_model: String::new(),
             language: "auto".to_string(),
-            vad_enabled: true,
+            vad_enabled: false,
             vad_threshold: 0.5,
             live_preview: false,
+            gpu_backend: GpuBackendSetting::Cpu,
         }
     }
 }

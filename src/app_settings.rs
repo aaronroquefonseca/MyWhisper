@@ -14,7 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::app::{AppState, apply_theme, log_theme_state};
-use crate::i18n::tr;
+use crate::i18n::{tr, trf};
 use crate::settings::{AppSettings, Theme};
 
 // ---------------------------------------------------------------- helpers
@@ -476,13 +476,6 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
         b.append(&lang_drop);
         rows.append(&b);
     }
-    const STT_LANGS: &[&str] = &["auto", "en", "es", "fr", "de", "pt", "it", "ru", "ja", "ar"];
-    combo_row(
-        &rows,
-        tr("row.sttlang"),
-        STT_LANGS,
-        idx_of(STT_LANGS, &p.transcription_language),
-    );
     root.append(&card);
 
     let (card, rows) = group(tr("group.microphone"));
@@ -1091,70 +1084,975 @@ fn attach_hotkey_capture(
     root.add_controller(ctl);
 }
 
-fn stt_page(s: &AppSettings) -> GtkBox {
+/// Registry model list for the active local engine: name, size,
+/// install state, download/delete/select actions. Rebuilt when the
+/// signature (selection, install set, download phases) moves;
+/// progress bars update in place every tick via tooltip-keyed rows.
+fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
+    use crate::settings::LocalSttProvider;
+    use crate::stt;
+    let settings = state.settings.borrow();
+    // Vendor-filtered list; single-model vendors (Oruk, Cohere) show
+    // just their model with no Use choice.
+    let vendor_entries: Vec<&stt::ModelEntry> = stt::models_for_vendor(settings.stt.local_provider);
+    let Some(data_dir) = state.db_path.parent().map(|p| p.to_path_buf()) else {
+        return;
+    };
+    let selected = match settings.stt.local_provider {
+        LocalSttProvider::Nvidia => settings.stt.parakeet_model.clone(),
+        LocalSttProvider::OpenAi => settings.stt.whisper_model.clone(),
+        LocalSttProvider::Oruk => "orukeet-v0.1.0".to_string(),
+        LocalSttProvider::Cohere => "cohere-transcribe-03-2026".to_string(),
+    };
+    drop(settings);
+    // Owned copy: the poll closure below borrows nothing across ticks.
+    let entries: Vec<stt::ModelEntry> = vendor_entries.into_iter().cloned().collect();
+
+    let mut sig = format!("sel={selected}|");
+    for m in &entries {
+        let phase = match stt::download_state(m.id) {
+            Some(d) => format!("{:?}", d.phase),
+            None => "-".to_string(),
+        };
+        sig.push_str(&format!(
+            "{}:{}:{};",
+            m.id,
+            stt::is_installed(&data_dir, m),
+            phase
+        ));
+    }
+    let current_sig = container
+        .first_child()
+        .and_then(|c| c.tooltip_text().map(|t| t.to_string()));
+    if current_sig.as_deref() == Some(sig.as_str()) {
+        update_stt_progress(container);
+        return;
+    }
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
+    let marker = GtkBox::new(Orientation::Horizontal, 0);
+    marker.set_tooltip_text(Some(&sig));
+    marker.set_visible(false);
+    container.append(&marker);
+
+    for m in &entries {
+        let card = GtkBox::new(Orientation::Horizontal, 12);
+        card.add_css_class("card");
+        // Tooltip keys the row to its model id for progress updates.
+        card.set_tooltip_text(Some(m.id));
+        let info = GtkBox::new(Orientation::Vertical, 2);
+        info.set_hexpand(true);
+        let title = format!("{}{}", m.name, if m.recommended { " ★" } else { "" });
+        let name = Label::new(Some(&title));
+        name.add_css_class("row-label");
+        name.set_xalign(0.0);
+        info.append(&name);
+        let sub = Label::new(Some(&format!("{} · {}", m.description, m.size_label)));
+        sub.add_css_class("dim");
+        sub.set_xalign(0.0);
+        info.append(&sub);
+        card.append(&info);
+
+        if let Some(dl) = stt::download_state(m.id) {
+            let col = GtkBox::new(Orientation::Vertical, 4);
+            match &dl.phase {
+                stt::DlPhase::Failed(e) => {
+                    let l = Label::new(Some(&trf("stt.dl.failed", &[("err", e)])));
+                    l.add_css_class("dim");
+                    col.append(&l);
+                    let retry = Button::with_label(tr("action.retry"));
+                    {
+                        let state = state.clone();
+                        let id = m.id;
+                        retry.connect_clicked(move |_| {
+                            let data_dir = state
+                                .db_path
+                                .parent()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_default();
+                            stt::start_download(data_dir, id);
+                        });
+                    }
+                    col.append(&retry);
+                }
+                _ => {
+                    let bar = gtk4::ProgressBar::new();
+                    set_bar_state(&bar, &dl);
+                    col.append(&bar);
+                    let cancel = Button::with_label(tr("action.cancel"));
+                    {
+                        let id = m.id;
+                        cancel.connect_clicked(move |_| stt::cancel_download(id));
+                    }
+                    col.append(&cancel);
+                }
+            }
+            card.append(&col);
+        } else if stt::is_installed(&data_dir, m) {
+            // Singletons (Oruk/Cohere tabs) have nothing to choose:
+            // installed means active.
+            let singleton = entries.len() == 1;
+            if singleton || selected == m.id {
+                let using = Button::with_label(tr("action.using"));
+                using.set_sensitive(false);
+                card.append(&using);
+            } else {
+                let use_btn = Button::with_label(tr("action.use"));
+                {
+                    let state = state.clone();
+                    let id = m.id.to_string();
+                    let is_nvidia = matches!(
+                        state.settings.borrow().stt.local_provider,
+                        LocalSttProvider::Nvidia
+                    );
+                    use_btn.connect_clicked(move |_| {
+                        {
+                            let mut s = state.settings.borrow_mut();
+                            if is_nvidia {
+                                s.stt.parakeet_model = id.clone();
+                            } else {
+                                s.stt.whisper_model = id.clone();
+                            }
+                        }
+                        persist_prefs(state.clone())();
+                    });
+                }
+                card.append(&use_btn);
+            }
+            let del = Button::with_label(tr("action.delete"));
+            {
+                let state = state.clone();
+                let id = m.id;
+                del.connect_clicked(move |_| {
+                    if let Some(data_dir) = state.db_path.parent() {
+                        if let Some(entry) = stt::find_model(id) {
+                            let _ = stt::delete_model(data_dir, entry);
+                        }
+                    }
+                });
+            }
+            card.append(&del);
+        } else {
+            let dl_btn = Button::with_label(tr("action.download"));
+            {
+                let state = state.clone();
+                let id = m.id;
+                dl_btn.connect_clicked(move |_| {
+                    let data_dir = state
+                        .db_path
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_default();
+                    stt::start_download(data_dir, id);
+                });
+            }
+            card.append(&dl_btn);
+        }
+        container.append(&card);
+    }
+}
+
+fn set_bar_state(bar: &gtk4::ProgressBar, dl: &crate::stt::DlSnapshot) {
+    use crate::stt::DlPhase;
+    let frac = dl
+        .total
+        .filter(|t| *t > 0)
+        .map(|t| (dl.received as f64 / t as f64).min(1.0))
+        .unwrap_or(0.0);
+    bar.set_fraction(frac);
+    bar.set_show_text(true);
+    let label = match dl.phase {
+        DlPhase::Installing => tr("action.installing").to_string(),
+        _ => match dl.total {
+            Some(t) => format!("{} / {} MB", dl.received / 1_000_000, t / 1_000_000),
+            None => format!("{} MB", dl.received / 1_000_000),
+        },
+    };
+    bar.set_text(Some(&label));
+}
+
+/// Refresh visible progress bars from live download states.
+fn update_stt_progress(container: &GtkBox) {
+    use crate::stt;
+    let mut child = container.first_child();
+    while let Some(c) = child {
+        child = c.next_sibling();
+        let Ok(card) = c.downcast::<GtkBox>() else {
+            continue;
+        };
+        let Some(id) = card.tooltip_text().map(|t| t.to_string()) else {
+            continue;
+        };
+        let Some(dl) = stt::download_state(&id) else {
+            continue;
+        };
+        let mut inner = card.first_child();
+        while let Some(w) = inner {
+            inner = w.next_sibling();
+            if let Ok(col) = w.clone().downcast::<GtkBox>() {
+                let mut leaf = col.first_child();
+                while let Some(l) = leaf {
+                    leaf = l.next_sibling();
+                    if let Ok(bar) = l.downcast::<gtk4::ProgressBar>() {
+                        set_bar_state(&bar, &dl);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// GPU pack list: backend binaries with download/progress/delete.
+/// Manual management only: detection merely recommends.
+/// Sherpa server pack list (parakeet/orukeet/cohere vendors).
+/// No backend choice: offline vs online server is picked by the model
+/// runtime automatically. Otherwise same machinery as whisper packs.
+fn fill_sherpa_packs(container: &GtkBox, state: &Rc<AppState>) {
+    use crate::stt;
+    let Some(data_dir) = state.db_path.parent().map(|p| p.to_path_buf()) else {
+        return;
+    };
+    let mut sig = String::new();
+    for pack in stt::SHERPA_PACKS {
+        let phase = match stt::download_state(pack.id) {
+            Some(d) => format!("{:?}", d.phase),
+            None => "-".to_string(),
+        };
+        sig.push_str(&format!(
+            "{}:{}:{};",
+            pack.id,
+            stt::sherpa_installed(&data_dir, pack),
+            phase
+        ));
+    }
+    let current_sig = container
+        .first_child()
+        .and_then(|c| c.tooltip_text().map(|t| t.to_string()));
+    if current_sig.as_deref() == Some(sig.as_str()) {
+        update_gpu_progress(container);
+        return;
+    }
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
+    let marker = GtkBox::new(Orientation::Horizontal, 0);
+    marker.set_tooltip_text(Some(&sig));
+    marker.set_visible(false);
+    container.append(&marker);
+
+    for pack in stt::SHERPA_PACKS {
+        let card = GtkBox::new(Orientation::Horizontal, 12);
+        card.add_css_class("card");
+        card.set_tooltip_text(Some(pack.id));
+        let info = GtkBox::new(Orientation::Vertical, 2);
+        info.set_hexpand(true);
+        let name = Label::new(Some(pack.name));
+        name.add_css_class("row-label");
+        name.set_xalign(0.0);
+        info.append(&name);
+        let sub = Label::new(Some(&format!("{} · {}", pack.description, pack.size_label)));
+        sub.add_css_class("dim");
+        sub.set_xalign(0.0);
+        info.append(&sub);
+        card.append(&info);
+
+        if let Some(dl) = stt::download_state(pack.id) {
+            let col = GtkBox::new(Orientation::Vertical, 4);
+            match &dl.phase {
+                stt::DlPhase::Failed(e) => {
+                    let l = Label::new(Some(&trf("stt.dl.failed", &[("err", e)])));
+                    l.add_css_class("dim");
+                    col.append(&l);
+                    let retry = Button::with_label(tr("action.retry"));
+                    {
+                        let state = state.clone();
+                        let id = pack.id;
+                        retry.connect_clicked(move |_| {
+                            let data_dir = state
+                                .db_path
+                                .parent()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_default();
+                            stt::start_sherpa_download(data_dir, id);
+                        });
+                    }
+                    col.append(&retry);
+                }
+                _ => {
+                    let bar = gtk4::ProgressBar::new();
+                    set_bar_state(&bar, &dl);
+                    col.append(&bar);
+                    let cancel = Button::with_label(tr("action.cancel"));
+                    {
+                        let id = pack.id;
+                        cancel.connect_clicked(move |_| stt::cancel_download(id));
+                    }
+                    col.append(&cancel);
+                }
+            }
+            card.append(&col);
+        } else if stt::sherpa_installed(&data_dir, pack) {
+            let installed = Label::new(Some(tr("stt.sherpa.installed")));
+            installed.add_css_class("dim");
+            installed.set_valign(gtk4::Align::Center);
+            card.append(&installed);
+            let del = Button::with_label(tr("action.delete"));
+            {
+                let state = state.clone();
+                let id = pack.id;
+                del.connect_clicked(move |_| {
+                    if let Some(data_dir) = state.db_path.parent() {
+                        if let Some(pack) = stt::SHERPA_PACKS.iter().find(|p| p.id == id) {
+                            let _ = stt::delete_sherpa_pack(data_dir, pack);
+                        }
+                    }
+                });
+            }
+            card.append(&del);
+        } else {
+            let dl_btn = Button::with_label(tr("action.download"));
+            {
+                let state = state.clone();
+                let id = pack.id;
+                dl_btn.connect_clicked(move |_| {
+                    let data_dir = state
+                        .db_path
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_default();
+                    stt::start_sherpa_download(data_dir, id);
+                });
+            }
+            card.append(&dl_btn);
+        }
+        container.append(&card);
+    }
+}
+
+fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
+    use crate::stt;
+    let Some(data_dir) = state.db_path.parent().map(|p| p.to_path_buf()) else {
+        return;
+    };
+    // Rebuild signature: installed set + download phases.
+    let mut sig = String::new();
+    for pack in stt::GPU_PACKS {
+        let phase = match stt::download_state(pack.id) {
+            Some(d) => format!("{:?}", d.phase),
+            None => "-".to_string(),
+        };
+        sig.push_str(&format!(
+            "{}:{}:{};",
+            pack.id,
+            stt::gpu_installed(&data_dir, pack),
+            phase
+        ));
+    }
+    let current_sig = container
+        .first_child()
+        .and_then(|c| c.tooltip_text().map(|t| t.to_string()));
+    if current_sig.as_deref() == Some(sig.as_str()) {
+        update_gpu_progress(container);
+        return;
+    }
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
+    let marker = GtkBox::new(Orientation::Horizontal, 0);
+    marker.set_tooltip_text(Some(&sig));
+    marker.set_visible(false);
+    container.append(&marker);
+
+    for pack in stt::GPU_PACKS {
+        let card = GtkBox::new(Orientation::Horizontal, 12);
+        card.add_css_class("card");
+        card.set_tooltip_text(Some(pack.id));
+        let info = GtkBox::new(Orientation::Vertical, 2);
+        info.set_hexpand(true);
+        let name = Label::new(Some(pack.name));
+        name.add_css_class("row-label");
+        name.set_xalign(0.0);
+        info.append(&name);
+        let sub = Label::new(Some(&format!("{} · {}", pack.description, pack.size_label)));
+        sub.add_css_class("dim");
+        sub.set_xalign(0.0);
+        info.append(&sub);
+        card.append(&info);
+
+        if let Some(dl) = stt::download_state(pack.id) {
+            let col = GtkBox::new(Orientation::Vertical, 4);
+            match &dl.phase {
+                stt::DlPhase::Failed(e) => {
+                    let l = Label::new(Some(&trf("stt.dl.failed", &[("err", e)])));
+                    l.add_css_class("dim");
+                    col.append(&l);
+                    let retry = Button::with_label(tr("action.retry"));
+                    {
+                        let state = state.clone();
+                        let id = pack.id;
+                        retry.connect_clicked(move |_| {
+                            let data_dir = state
+                                .db_path
+                                .parent()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_default();
+                            stt::start_gpu_download(data_dir, id);
+                        });
+                    }
+                    col.append(&retry);
+                }
+                _ => {
+                    let bar = gtk4::ProgressBar::new();
+                    set_bar_state(&bar, &dl);
+                    col.append(&bar);
+                    let cancel = Button::with_label(tr("action.cancel"));
+                    {
+                        let id = pack.id;
+                        cancel.connect_clicked(move |_| stt::cancel_download(id));
+                    }
+                    col.append(&cancel);
+                }
+            }
+            card.append(&col);
+        } else if stt::gpu_installed(&data_dir, pack) {
+            use crate::settings::GpuBackendSetting;
+            let selected = match state.settings.borrow().stt.gpu_backend {
+                GpuBackendSetting::Cpu => pack.backend == stt::GpuBackend::Cpu,
+                GpuBackendSetting::Cuda => pack.backend == stt::GpuBackend::Cuda,
+                GpuBackendSetting::Vulkan => pack.backend == stt::GpuBackend::Vulkan,
+            };
+            if selected {
+                let using = Button::with_label(tr("action.using"));
+                using.set_sensitive(false);
+                card.append(&using);
+            } else {
+                let use_btn = Button::with_label(tr("action.use"));
+                {
+                    let state = state.clone();
+                    let backend = pack.backend;
+                    use_btn.connect_clicked(move |_| {
+                        state.settings.borrow_mut().stt.gpu_backend = match backend {
+                            stt::GpuBackend::Cpu => GpuBackendSetting::Cpu,
+                            stt::GpuBackend::Cuda => GpuBackendSetting::Cuda,
+                            stt::GpuBackend::Vulkan => GpuBackendSetting::Vulkan,
+                        };
+                        persist_prefs(state.clone())();
+                    });
+                }
+                card.append(&use_btn);
+            }
+            let del = Button::with_label(tr("action.delete"));
+            {
+                let state = state.clone();
+                let id = pack.id;
+                del.connect_clicked(move |_| {
+                    if let Some(data_dir) = state.db_path.parent() {
+                        if let Some(pack) = stt::GPU_PACKS.iter().find(|p| p.id == id) {
+                            let _ = stt::delete_gpu_pack(data_dir, pack);
+                        }
+                    }
+                });
+            }
+            card.append(&del);
+        } else {
+            let dl_btn = Button::with_label(tr("action.download"));
+            {
+                let state = state.clone();
+                let id = pack.id;
+                dl_btn.connect_clicked(move |_| {
+                    let data_dir = state
+                        .db_path
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_default();
+                    stt::start_gpu_download(data_dir, id);
+                });
+            }
+            card.append(&dl_btn);
+        }
+        container.append(&card);
+    }
+}
+
+/// Refresh visible GPU progress bars from live download states.
+fn update_gpu_progress(container: &GtkBox) {
+    use crate::stt;
+    let mut child = container.first_child();
+    while let Some(c) = child {
+        child = c.next_sibling();
+        let Ok(card) = c.downcast::<GtkBox>() else {
+            continue;
+        };
+        let Some(id) = card.tooltip_text().map(|t| t.to_string()) else {
+            continue;
+        };
+        let Some(dl) = stt::download_state(&id) else {
+            continue;
+        };
+        let mut inner = card.first_child();
+        while let Some(w) = inner {
+            inner = w.next_sibling();
+            if let Ok(col) = w.clone().downcast::<GtkBox>() {
+                let mut leaf = col.first_child();
+                while let Some(l) = leaf {
+                    leaf = l.next_sibling();
+                    if let Ok(bar) = l.downcast::<gtk4::ProgressBar>() {
+                        set_bar_state(&bar, &dl);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Transcription language options for the currently selected
+/// model: "auto" + family list (whisper: full upstream list;
+/// parakeet: per-model list), except Cohere which has no
+/// auto-detect and offers its 14 codes only.
+fn stt_lang_options(state: &Rc<AppState>) -> Vec<String> {
+    use crate::settings::{LocalSttProvider, SttMode};
+    use crate::stt;
+    let s = state.settings.borrow();
+    if !matches!(s.stt.mode, SttMode::Local) {
+        return vec!["auto".to_string()];
+    }
+    let model_id: &str = match s.stt.local_provider {
+        LocalSttProvider::OpenAi => {
+            return {
+                let mut v = vec!["auto".to_string()];
+                v.extend(stt::WHISPER_LANGS.iter().map(|l| l.to_string()));
+                v
+            };
+        }
+        LocalSttProvider::Nvidia => &s.stt.parakeet_model,
+        LocalSttProvider::Oruk => "orukeet-v0.1.0",
+        LocalSttProvider::Cohere => "cohere-transcribe-03-2026",
+    };
+    if matches!(s.stt.local_provider, LocalSttProvider::Cohere) {
+        return stt::model_languages(model_id)
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+    }
+    let mut v = vec!["auto".to_string()];
+    v.extend(stt::model_languages(model_id).iter().map(|l| l.to_string()));
+    v
+}
+
+fn stt_page(state: &Rc<AppState>) -> GtkBox {
     let root = section_box(tr("settings.stt"), tr("settings.stt.sub"));
-    let t = &s.stt;
 
+    // ---- Engine: whisper / parakeet / cloud / self-hosted ----
+    // Section visibility refreshes on engine change; the holder is
+    // filled after all cards exist (handler below runs later).
+    let refresh_holder: Rc<std::cell::RefCell<Option<Rc<dyn Fn()>>>> =
+        Rc::new(std::cell::RefCell::new(None));
     let (card, rows) = group(tr("group.engine"));
-    combo_row(
-        &rows,
-        tr("row.mode"),
-        &[tr("opt.local"), tr("opt.cloud"), tr("opt.selfhosted")],
-        match t.mode {
-            crate::settings::SttMode::Local => 0,
-            crate::settings::SttMode::Cloud => 1,
-            crate::settings::SttMode::SelfHosted => 2,
-        },
-    );
-    combo_row(
-        &rows,
-        tr("row.localprovider"),
-        &["Whisper", "Parakeet"],
-        match t.local_provider {
-            crate::settings::LocalSttProvider::Whisper => 0,
-            crate::settings::LocalSttProvider::Parakeet => 1,
-        },
-    );
-    entry_row(&rows, tr("row.whispermodel"), &t.whisper_model, false);
-    entry_row(&rows, tr("row.parakeetmodel"), &t.parakeet_model, false);
+    {
+        let (b, _) = row(tr("row.engine"));
+        let engine = DropDown::new(
+            Some(StringList::new(&[
+                tr("opt.local"),
+                tr("opt.cloud"),
+                tr("opt.selfhostedserver"),
+            ])),
+            None::<gtk4::Expression>,
+        );
+        {
+            use crate::settings::SttMode;
+            let s = state.settings.borrow();
+            engine.set_selected(match s.stt.mode {
+                SttMode::Cloud => 1,
+                SttMode::SelfHosted => 2,
+                _ => 0,
+            });
+        }
+        {
+            let state = state.clone();
+            let persist = persist_prefs(state.clone());
+            let refresh_holder = refresh_holder.clone();
+            engine.connect_selected_notify(move |d| {
+                use crate::settings::SttMode;
+                {
+                    let mut s = state.settings.borrow_mut();
+                    s.stt.mode = match d.selected() {
+                        1 => SttMode::Cloud,
+                        2 => SttMode::SelfHosted,
+                        _ => SttMode::Local,
+                    };
+                }
+                persist();
+                if let Some(r) = refresh_holder.borrow().as_ref() {
+                    r();
+                }
+            });
+        }
+        b.append(&engine);
+        rows.append(&b);
+    }
     root.append(&card);
 
+    // ---- Registry model list with download/delete/select ----
+    // Vendor pill tabs on top (Oruk / OpenAI / NVIDIA / Cohere),
+    // mirroring OpenWhispr's local provider picker.
+    let (card, rows) = group(tr("stt.models.title"));
+    {
+        let pill_row = GtkBox::new(Orientation::Horizontal, 8);
+        pill_row.set_halign(gtk4::Align::Start);
+        rows.append(&pill_row);
+        let vendors = ["Oruk", "OpenAI", "NVIDIA", "Cohere"];
+        {
+            use crate::settings::LocalSttProvider;
+            let current = state.settings.borrow().stt.local_provider;
+            let current_idx = match current {
+                LocalSttProvider::Oruk => 0,
+                LocalSttProvider::OpenAi => 1,
+                LocalSttProvider::Nvidia => 2,
+                LocalSttProvider::Cohere => 3,
+            };
+            let mut first: Option<gtk4::ToggleButton> = None;
+            for (i, name) in vendors.iter().enumerate() {
+                let pill = gtk4::ToggleButton::with_label(name);
+                if let Some(ref f) = first {
+                    pill.set_group(Some(f));
+                } else {
+                    first = Some(pill.clone());
+                }
+                pill.set_active(i == current_idx);
+                {
+                    let state = state.clone();
+                    let persist = persist_prefs(state.clone());
+                    pill.connect_toggled(move |p| {
+                        if !p.is_active() {
+                            return;
+                        }
+                        {
+                            let mut s = state.settings.borrow_mut();
+                            s.stt.local_provider = match i {
+                                0 => LocalSttProvider::Oruk,
+                                2 => LocalSttProvider::Nvidia,
+                                3 => LocalSttProvider::Cohere,
+                                _ => LocalSttProvider::OpenAi,
+                            };
+                        }
+                        persist();
+                    });
+                }
+                pill_row.append(&pill);
+            }
+        }
+    }
+    let list = GtkBox::new(Orientation::Vertical, 8);
+    rows.append(&list);
+    root.append(&card);
+    fill_stt_models(&list, state);
+    {
+        let state = state.clone();
+        let list = list.clone();
+        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+            fill_stt_models(&list, &state);
+            gtk4::glib::ControlFlow::Continue
+        });
+    }
+    let models_card = card.clone();
+
+    // ---- Runtimes: whisper packs (+ backend picker) for the OpenAI
+    // vendor, sherpa packs for Oruk / NVIDIA / Cohere. Toggled per
+    // vendor in the refresh closure below.
+    let (card, _rows) = group(tr("stt.gpu.title"));
+    let whisper_box = GtkBox::new(Orientation::Vertical, 8);
+    _rows.append(&whisper_box);
+    let sherpa_box = GtkBox::new(Orientation::Vertical, 8);
+    _rows.append(&sherpa_box);
+    let rows = whisper_box.clone();
+    {
+        let (b, _) = row(tr("stt.gpu.backend"));
+        let backend = DropDown::new(
+            Some(StringList::new(&[
+                tr("stt.gpu.cpu"),
+                tr("stt.gpu.cuda"),
+                tr("stt.gpu.vulkan"),
+            ])),
+            None::<gtk4::Expression>,
+        );
+        {
+            use crate::settings::GpuBackendSetting;
+            let sel = match state.settings.borrow().stt.gpu_backend {
+                GpuBackendSetting::Cpu => 0,
+                GpuBackendSetting::Cuda => 1,
+                GpuBackendSetting::Vulkan => 2,
+            };
+            backend.set_selected(sel);
+        }
+        {
+            let state = state.clone();
+            backend.connect_selected_notify(move |d| {
+                use crate::settings::GpuBackendSetting;
+                {
+                    let mut s = state.settings.borrow_mut();
+                    s.stt.gpu_backend = match d.selected() {
+                        1 => GpuBackendSetting::Cuda,
+                        2 => GpuBackendSetting::Vulkan,
+                        _ => GpuBackendSetting::Cpu,
+                    };
+                }
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&backend);
+        rows.append(&b);
+    }
+    {
+        let (b, _) = row(tr("stt.gpu.recommend"));
+        let det = crate::stt::detect_gpu();
+        let detail = match &det.nvidia_gpu {
+            Some(gpu) => format!("NVIDIA: {gpu}"),
+            None => "NVIDIA: none".to_string(),
+        };
+        let detail = format!(
+            "{detail} · Vulkan tools: {}",
+            if det.vulkan_tools { "yes" } else { "no" }
+        );
+        let l = Label::new(Some(
+            format!("{}\n{detail}", crate::stt::gpu_recommendation(&det)).as_str(),
+        ));
+        l.add_css_class("dim");
+        l.set_xalign(0.0);
+        l.set_wrap(true);
+        b.append(&l);
+        rows.append(&b);
+    }
+    let gpu_list = GtkBox::new(Orientation::Vertical, 8);
+    rows.append(&gpu_list);
+    let sherpa_list = GtkBox::new(Orientation::Vertical, 8);
+    sherpa_box.append(&sherpa_list);
+    root.append(&card);
+    let gpu_card = card.clone();
+    fill_gpu_packs(&gpu_list, state);
+    {
+        let state = state.clone();
+        let gpu_list = gpu_list.clone();
+        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+            fill_gpu_packs(&gpu_list, &state);
+            gtk4::glib::ControlFlow::Continue
+        });
+    }
+    fill_sherpa_packs(&sherpa_list, state);
+    {
+        let state = state.clone();
+        let sherpa_list = sherpa_list.clone();
+        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+            fill_sherpa_packs(&sherpa_list, &state);
+            gtk4::glib::ControlFlow::Continue
+        });
+    }
+    // ---- Cloud provider (display-only for now; shown in Cloud mode) ----
     let (card, rows) = group(tr("group.cloud"));
-    const PROVIDERS: &[&str] = &["OpenAI", "Groq", "Mistral", "Gemini", "Deepgram"];
-    combo_row(
-        &rows,
-        tr("row.provider"),
-        PROVIDERS,
-        idx_of(PROVIDERS, &t.cloud_provider),
-    );
-    entry_row(&rows, tr("row.model"), &t.cloud_model, false);
-    entry_row(&rows, tr("row.apikey"), &t.cloud_api_key, true);
+    {
+        let settings = state.settings.borrow();
+        let t = &settings.stt;
+        const PROVIDERS: &[&str] = &["OpenAI", "Groq", "Mistral", "Gemini", "Deepgram"];
+        combo_row(
+            &rows,
+            tr("row.provider"),
+            PROVIDERS,
+            idx_of(PROVIDERS, &t.cloud_provider),
+        );
+        entry_row(&rows, tr("row.model"), &t.cloud_model, false);
+        entry_row(&rows, tr("row.apikey"), &t.cloud_api_key, true);
+    }
     root.append(&card);
+    let cloud_card = card.clone();
 
+    // ---- Self-hosted server (wired URL + model) ----
     let (card, rows) = group(tr("group.selfhosted"));
-    entry_row(&rows, tr("row.serverurl"), &t.self_hosted_url, false);
-    entry_row(&rows, tr("row.model"), &t.self_hosted_model, false);
+    {
+        let (b, _) = row(tr("row.serverurl"));
+        let url_entry = Entry::new();
+        url_entry.set_text(&state.settings.borrow().stt.self_hosted_url);
+        url_entry.set_hexpand(true);
+        {
+            let state = state.clone();
+            let url_entry_conn = url_entry.clone();
+            let commit = Rc::new(move || {
+                let url_entry = url_entry_conn.clone();
+                state.settings.borrow_mut().stt.self_hosted_url =
+                    url_entry.text().trim().to_string();
+                persist_prefs(state.clone())();
+            });
+            let commit_activate = commit.clone();
+            let commit_focus = commit.clone();
+            url_entry.connect_activate(move |_| commit_activate());
+            let focus = gtk4::EventControllerFocus::new();
+            focus.connect_leave(move |_| commit_focus());
+            url_entry.add_controller(focus);
+        }
+        b.append(&url_entry);
+        rows.append(&b);
+    }
+    {
+        let (b, _) = row(tr("row.model"));
+        let model_entry = Entry::new();
+        model_entry.set_text(&state.settings.borrow().stt.self_hosted_model);
+        model_entry.set_hexpand(true);
+        {
+            let state = state.clone();
+            let model_entry_conn = model_entry.clone();
+            let commit = Rc::new(move || {
+                let model_entry = model_entry_conn.clone();
+                state.settings.borrow_mut().stt.self_hosted_model =
+                    model_entry.text().trim().to_string();
+                persist_prefs(state.clone())();
+            });
+            let commit_activate = commit.clone();
+            let commit_focus = commit.clone();
+            model_entry.connect_activate(move |_| commit_activate());
+            let focus = gtk4::EventControllerFocus::new();
+            focus.connect_leave(move |_| commit_focus());
+            model_entry.add_controller(focus);
+        }
+        b.append(&model_entry);
+        rows.append(&b);
+    }
     root.append(&card);
+    let selfhosted_card = card.clone();
 
+    // ---- Voice activity (wired except live preview) ----
     let (card, rows) = group(tr("group.vad"));
-    const STT_LANGS: &[&str] = &["auto", "en", "es", "fr", "de", "pt", "it", "ru", "ja", "ar"];
-    combo_row(
-        &rows,
-        tr("row.language"),
-        STT_LANGS,
-        idx_of(STT_LANGS, &t.language),
-    );
-    switch_row(&rows, tr("row.vad"), t.vad_enabled);
+    // Language options follow the selected model: whisper reads the
+    // full upstream list, sherpa models their own list, Cohere has
+    // no auto-detect so it offers its 14 codes only. Rebuilt on every
+    // visibility refresh (selection changes swap the list).
+    let lang_slot = GtkBox::new(Orientation::Horizontal, 8);
+    rows.append(&lang_slot);
+    let refresh_lang: Rc<dyn Fn()> = Rc::new({
+        let state = state.clone();
+        let lang_slot = lang_slot.clone();
+        move || {
+            while let Some(child) = lang_slot.first_child() {
+                lang_slot.remove(&child);
+            }
+            let opts = stt_lang_options(&state);
+            let (b, _) = row(tr("row.language"));
+            let lang_drop = DropDown::new(
+                Some(StringList::new(
+                    &opts.iter().map(String::as_str).collect::<Vec<_>>(),
+                )),
+                None::<gtk4::Expression>,
+            );
+            // STT codes stay untranslated (server contract). A stored
+            // code outside the new list falls back to the first entry.
+            lang_drop.set_selected(idx_of(
+                &opts.iter().map(String::as_str).collect::<Vec<_>>(),
+                &state.settings.borrow().stt.language,
+            ) as u32);
+            {
+                let state = state.clone();
+                lang_drop.connect_selected_notify(move |d| {
+                    let opts = stt_lang_options(&state);
+                    let code = opts
+                        .get(d.selected().min(opts.len() as u32 - 1) as usize)
+                        .cloned()
+                        .unwrap_or_else(|| "auto".to_string());
+                    state.settings.borrow_mut().stt.language = code;
+                    persist_prefs(state.clone())();
+                });
+            }
+            b.append(&lang_drop);
+            lang_slot.append(&b);
+        }
+    });
+    refresh_lang();
+    {
+        let (b, _) = row(tr("row.vad"));
+        let sw = Switch::new();
+        sw.set_active(state.settings.borrow().stt.vad_enabled);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state.settings.borrow_mut().stt.vad_enabled = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
     spin_row(
         &rows,
         tr("row.vadthreshold"),
-        t.vad_threshold as f64,
+        state.settings.borrow().stt.vad_threshold as f64,
         0.0,
         1.0,
         0.05,
     );
-    switch_row(&rows, tr("row.livepreview"), t.live_preview);
+    // spin_row leaves the control insensitive (display-only helper);
+    // enable it: this one is wired.
+    if let Some(row_box) = rows.last_child() {
+        let mut child = row_box.first_child();
+        while let Some(c) = child {
+            if let Ok(spin) = c.clone().downcast::<SpinButton>() {
+                spin.set_sensitive(true);
+                let state = state.clone();
+                spin.connect_value_changed(move |s| {
+                    state.settings.borrow_mut().stt.vad_threshold = s.value() as f32;
+                    persist_prefs(state.clone())();
+                });
+            }
+            child = c.next_sibling();
+        }
+    }
+    switch_row(
+        &rows,
+        tr("row.livepreview"),
+        state.settings.borrow().stt.live_preview,
+    );
     root.append(&card);
+
+    // ---- Engine-conditional visibility ----
+    // GPU packs + model list only make sense for local whisper
+    // (parakeet ships its own sherpa binaries); cloud/self-hosted
+    // show their own sections. VAD always shows: it gates capture
+    // before anything leaves the machine.
+    let refresh: Rc<dyn Fn()> = Rc::new({
+        let state = state.clone();
+        let gpu_card = gpu_card.clone();
+        let models_card = models_card.clone();
+        let cloud_card = cloud_card.clone();
+        let selfhosted_card = selfhosted_card.clone();
+        let whisper_box = whisper_box.clone();
+        let sherpa_box = sherpa_box.clone();
+        move || {
+            use crate::settings::SttMode;
+            let s = state.settings.borrow();
+            let (gpu, models, cloud, hosted) = match (&s.stt.mode, &s.stt.local_provider) {
+                // Runtimes card shows for every local vendor; its
+                // content switches (whisper packs vs sherpa packs).
+                (SttMode::Local, _) => (true, true, false, false),
+                (SttMode::Cloud, _) => (false, false, true, false),
+                (SttMode::SelfHosted, _) => (false, false, false, true),
+            };
+            gpu_card.set_visible(gpu);
+            models_card.set_visible(models);
+            {
+                use crate::settings::{LocalSttProvider, SttMode};
+                let s = state.settings.borrow();
+                let whisper = matches!(
+                    (&s.stt.mode, &s.stt.local_provider),
+                    (SttMode::Local, LocalSttProvider::OpenAi)
+                );
+                whisper_box.set_visible(whisper);
+                sherpa_box.set_visible(!whisper);
+            }
+            cloud_card.set_visible(cloud);
+            selfhosted_card.set_visible(hosted);
+            refresh_lang();
+        }
+    });
+    refresh();
+    refresh_holder.borrow_mut().replace(refresh);
 
     root
 }
@@ -1318,7 +2216,7 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
     let sections = [
         ("Preferences", preferences_page(state, &on_theme)),
         ("Hotkeys", hotkeys_page(state)),
-        ("Speech to Text", stt_page(s)),
+        ("Speech to Text", stt_page(state)),
         ("Language Models", language_models_page(s)),
         ("Privacy & Data", privacy_page(s)),
         ("System", system_page(s)),

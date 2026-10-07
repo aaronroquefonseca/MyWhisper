@@ -16,4 +16,5 @@ pub mod service;
 pub mod settings;
 pub mod sound;
 pub mod store;
+pub mod stt;
 pub mod viz;

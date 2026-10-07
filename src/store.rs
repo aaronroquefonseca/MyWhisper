@@ -293,6 +293,15 @@ impl Store {
         // Typed tables are authoritative for dictionary content.
         settings.dictionary.words = self.load_words().unwrap_or_default();
         settings.dictionary.snippets = self.load_snippets().unwrap_or_default();
+        // Pre-per-vendor databases stored Parakeet for everything
+        // sherpa; Cohere gets its own vendor now.
+        if matches!(
+            settings.stt.local_provider,
+            crate::settings::LocalSttProvider::Nvidia
+        ) && settings.stt.parakeet_model == "cohere-transcribe-03-2026"
+        {
+            settings.stt.local_provider = crate::settings::LocalSttProvider::Cohere;
+        }
         settings
     }
 
@@ -932,6 +941,28 @@ pub struct PeerGossip {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn settings_engine_switch_roundtrip() {
+        use crate::settings::{LocalSttProvider, SttMode};
+        let store = Store::open_memory().unwrap();
+        let mut s = store.load_settings();
+        // Simulate the engine dropdown handler: scoped mutation,
+        // then a separate persist read (never nested borrows).
+        {
+            s.stt.mode = SttMode::Local;
+            s.stt.local_provider = LocalSttProvider::Nvidia;
+        }
+        store.save_settings(&s).unwrap();
+        let reloaded = store.load_settings();
+        assert_eq!(reloaded.stt.mode, SttMode::Local);
+        assert_eq!(reloaded.stt.local_provider, LocalSttProvider::Nvidia);
+        {
+            s.stt.mode = SttMode::SelfHosted;
+        }
+        store.save_settings(&s).unwrap();
+        assert_eq!(store.load_settings().stt.mode, SttMode::SelfHosted);
+    }
+
     #[test]
     fn shared_gen_moves_on_write() {
         let store = Store::open_memory().unwrap();
