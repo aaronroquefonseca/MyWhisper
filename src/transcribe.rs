@@ -26,7 +26,12 @@
 //!   if upstream drifts, the server error surfaces in the log.)
 //! - Cloud Deepgram → `POST {base}/v1/listen` (pre-recorded REST).
 //! - Cloud Gemini → `generateContent` with inline WAV (REST).
-//! - Self-hosted → `{url}/v1/audio/transcriptions`, OpenAI-compatible.
+//! Language: whisper-server gets `-l` at spawn; OpenAI-compatible
+//! endpoints get the `language` field, Deepgram a `&language=`
+//! query, Gemini a prompt hint ("auto" omits everywhere). The
+//! sherpa-side models in the registry are English-only, so the
+//! option doesn't apply there (nothing to pass: the servers expose
+//! no language flag in v1.13.8).
 //!
 //! Wire references: sherpa online/offline python websocket clients
 //! (binary float32-LE chunks; online ends with text `"Done"` and
@@ -76,15 +81,18 @@ pub enum Plan {
         base: String,
         key: String,
         model: String,
+        lang: String,
     },
     CloudDeepgram {
         base: String,
         key: String,
         model: String,
+        lang: String,
     },
     CloudGemini {
         key: String,
         model: String,
+        lang: String,
     },
 }
 
@@ -131,6 +139,7 @@ pub fn plan_for(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
                 base: url,
                 key: String::new(),
                 model: s.self_hosted_model.clone(),
+                lang: s.language.clone(),
             })
         }
         SttMode::Cloud => cloud_plan(s),
@@ -153,22 +162,30 @@ fn cloud_plan(s: &SttSettings) -> Result<Plan, String> {
             base: "https://api.deepgram.com".to_string(),
             key,
             model,
+            lang: s.language.clone(),
         }),
-        "Gemini" => Ok(Plan::CloudGemini { key, model }),
+        "Gemini" => Ok(Plan::CloudGemini {
+            key,
+            model,
+            lang: s.language.clone(),
+        }),
         "OpenAI" => Ok(Plan::CloudOpenAiCompat {
             base: "https://api.openai.com/v1".to_string(),
             key,
             model,
+            lang: s.language.clone(),
         }),
         "Groq" => Ok(Plan::CloudOpenAiCompat {
             base: "https://api.groq.com/openai/v1".to_string(),
             key,
             model,
+            lang: s.language.clone(),
         }),
         "Mistral" => Ok(Plan::CloudOpenAiCompat {
             base: "https://api.mistral.ai/v1".to_string(),
             key,
             model,
+            lang: s.language.clone(),
         }),
         other => Err(format!("cloud provider {other:?} is not supported yet")),
     }
@@ -793,10 +810,21 @@ pub fn whisper_transcribe(wav: &[u8]) -> Result<String, String> {
 
 // ----------------------------------------------------------------- cloud
 
+/// API language selector: "auto" (and empty) means omit and let
+/// the provider detect; anything else is sent as-is (ISO codes).
+fn lang_param(lang: &str) -> Option<&str> {
+    if lang == "auto" || lang.is_empty() {
+        None
+    } else {
+        Some(lang)
+    }
+}
+
 fn openai_compat_transcribe(
     base: &str,
     key: &str,
     model: &str,
+    lang: &str,
     wav: &[u8],
 ) -> Result<String, String> {
     let base = base.trim_end_matches('/');
@@ -808,9 +836,14 @@ fn openai_compat_transcribe(
     // Some OpenAI-compatible servers live under /v1 already.
     let url = url.replace("/v1/v1/", "/v1/");
     let boundary = "mywhispercloud";
+    // "auto" = omit: the API auto-detects when no language is sent.
+    let mut fields = vec![("model", model)];
+    if let Some(l) = lang_param(lang) {
+        fields.push(("language", l));
+    }
     let body = multipart_body(
         boundary,
-        &[("model", model)],
+        &fields,
         Some(("file", "audio.wav", "audio/wav", wav)),
     );
     let mut req = http_client()?
@@ -836,12 +869,21 @@ fn openai_compat_transcribe(
         .ok_or_else(|| "cloud reply has no text".to_string())
 }
 
-fn deepgram_transcribe(base: &str, key: &str, model: &str, wav: &[u8]) -> Result<String, String> {
-    let url = format!(
+fn deepgram_transcribe(
+    base: &str,
+    key: &str,
+    model: &str,
+    lang: &str,
+    wav: &[u8],
+) -> Result<String, String> {
+    let mut url = format!(
         "{}/v1/listen?model={}&smart_format=true",
         base.trim_end_matches('/'),
         model
     );
+    if let Some(l) = lang_param(lang) {
+        url.push_str(&format!("&language={l}"));
+    }
     let res = http_client()?
         .post(&url)
         .header("Authorization", format!("Token {key}"))
@@ -861,14 +903,19 @@ fn deepgram_transcribe(base: &str, key: &str, model: &str, wav: &[u8]) -> Result
         .ok_or_else(|| "deepgram reply has no transcript".to_string())
 }
 
-fn gemini_transcribe(key: &str, model: &str, wav: &[u8]) -> Result<String, String> {
+fn gemini_transcribe(key: &str, model: &str, lang: &str, wav: &[u8]) -> Result<String, String> {
     use base64::Engine as _;
     let url =
         format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
+    let prompt = if let Some(l) = lang_param(lang) {
+        format!("Transcribe this {l} audio exactly. Return only the transcription, no commentary.")
+    } else {
+        "Transcribe this audio exactly. Return only the transcription, no commentary.".to_string()
+    };
     let body = serde_json::json!({
         "contents": [{
             "parts": [
-                {"text": "Transcribe this audio exactly. Return only the transcription, no commentary."},
+                {"text": prompt},
                 {"inline_data": {
                     "mime_type": "audio/wav",
                     "data": base64::engine::general_purpose::STANDARD.encode(wav),
@@ -1162,17 +1209,27 @@ fn transcribe_blocking(plan: &Plan, f32s: &[f32]) -> Result<String, String> {
             }
             s.finish()
         }
-        Plan::CloudOpenAiCompat { base, key, model } => {
+        Plan::CloudOpenAiCompat {
+            base,
+            key,
+            model,
+            lang,
+        } => {
             let wav = wav_bytes_16k(&audio::f32_to_i16(f32s));
-            openai_compat_transcribe(base, key, model, &wav)
+            openai_compat_transcribe(base, key, model, lang, &wav)
         }
-        Plan::CloudDeepgram { base, key, model } => {
+        Plan::CloudDeepgram {
+            base,
+            key,
+            model,
+            lang,
+        } => {
             let wav = wav_bytes_16k(&audio::f32_to_i16(f32s));
-            deepgram_transcribe(base, key, model, &wav)
+            deepgram_transcribe(base, key, model, lang, &wav)
         }
-        Plan::CloudGemini { key, model } => {
+        Plan::CloudGemini { key, model, lang } => {
             let wav = wav_bytes_16k(&audio::f32_to_i16(f32s));
-            gemini_transcribe(key, model, &wav)
+            gemini_transcribe(key, model, lang, &wav)
         }
     }
 }
@@ -1280,6 +1337,13 @@ mod tests {
         let url = format!("{}/v1/audio/transcriptions", base.trim_end_matches('/'))
             .replace("/v1/v1/", "/v1/");
         assert_eq!(url, "http://localhost:8000/v1/audio/transcriptions");
+    }
+
+    #[test]
+    fn lang_param_auto_omits() {
+        assert_eq!(lang_param("auto"), None);
+        assert_eq!(lang_param(""), None);
+        assert_eq!(lang_param("es"), Some("es"));
     }
 
     #[test]
