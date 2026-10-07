@@ -170,7 +170,7 @@ pub const WHISTLE_MODELS: &[ModelEntry] = &[
         description: "16.9 MB STT, 7 languages, own CPU engine",
         size_label: "17MB",
         size_mb: 17,
-        expected_bytes: None,
+        expected_bytes: Some(16_919_407),
         download_url: "https://huggingface.co/Cactus-Compute/whistle/resolve/main/whistle.cact",
         extract_dir: None,
         required_files: &["whistle.cact"],
@@ -1232,6 +1232,203 @@ pub fn delete_sherpa_pack(data_dir: &Path, pack: &SherpaPack) -> std::io::Result
         std::fs::remove_dir_all(&dir)?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------- needle engine
+//
+// Whistle's `needle` binary: one file per arch, no archive. Hashes
+// are the upstream Xet ETags (verified 2026-10-07).
+
+pub const NEEDLE_ENGINE_ID: &str = "needle-engine";
+
+struct NeedleAsset {
+    folder: &'static str,
+    sha256: &'static str,
+    size_bytes: u64,
+}
+
+fn needle_asset() -> Result<NeedleAsset, String> {
+    match std::env::consts::ARCH {
+        "x86_64" => Ok(NeedleAsset {
+            folder: "linux-x86_64",
+            sha256: "f38dc4b0345d66b4e385734ad0f12af43ac6e2cfa1752d0795af5c137200c8e4",
+            size_bytes: 1_541_680,
+        }),
+        "aarch64" => Ok(NeedleAsset {
+            folder: "linux-arm64",
+            sha256: "6fc25a97def475e1c7d1933a4a219d4e37076be77974e76dd331d9e0cd97f3cb",
+            size_bytes: 1_431_816,
+        }),
+        other => Err(format!("needle engine has no build for {other}")),
+    }
+}
+
+fn needle_url(folder: &str) -> String {
+    format!("https://huggingface.co/Cactus-Compute/needle3/resolve/main/{folder}/needle")
+}
+
+pub fn needle_bin_dir(data_dir: &Path) -> PathBuf {
+    models_dir(data_dir)
+        .parent()
+        .unwrap_or(data_dir)
+        .join("bin")
+        .join("needle")
+}
+
+/// Installed = engine binary present (executable bit set on install).
+pub fn needle_installed(data_dir: &Path) -> bool {
+    needle_bin_dir(data_dir).join("needle").exists()
+}
+
+/// Download + sha256-verify a needle engine binary. Blocking; run on
+/// a worker thread. Single file, no extraction; chmod +x on install.
+pub fn download_needle_pack(
+    data_dir: &Path,
+    cancel: &AtomicBool,
+    on_event: &DownloadCallback,
+) -> Result<(), String> {
+    use sha2::Digest;
+    let asset = needle_asset()?;
+    let dir = needle_bin_dir(data_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
+    let tmp = dir.join(".needle.part");
+    let _ = std::fs::remove_file(&tmp);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(None)
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    let mut resp = client
+        .get(needle_url(asset.folder))
+        .send()
+        .map_err(|e| format!("request: {e}"))?;
+    if !resp.status().is_success() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("http status: {}", resp.status()));
+    }
+    let total = resp.content_length();
+    let file = std::fs::File::create(&tmp).map_err(|e| format!("create: {e}"))?;
+    let mut hasher = sha2::Sha256::new();
+    let mut writer = HashWriter {
+        file,
+        hasher: &mut hasher,
+    };
+    let mut received = 0u64;
+    let mut buf = [0u8; 65536];
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err("cancelled".to_string());
+        }
+        let n = resp.read(&mut buf).map_err(|e| format!("read: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        writer
+            .write_all(&buf[..n])
+            .map_err(|e| format!("write: {e}"))?;
+        received += n as u64;
+        on_event(DownloadEvent::Progress { received, total });
+    }
+    drop(writer);
+    let digest: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if digest != asset.sha256 {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!(
+            "sha256 mismatch (got {digest}, expected {})",
+            asset.sha256
+        ));
+    }
+
+    on_event(DownloadEvent::Installing);
+    let dest = dir.join("needle");
+    std::fs::rename(&tmp, &dest).map_err(|e| format!("install: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("chmod: {e}"))?;
+    }
+    on_event(DownloadEvent::Done);
+    Ok(())
+}
+
+pub fn delete_needle_pack(data_dir: &Path) -> std::io::Result<()> {
+    let dir = needle_bin_dir(data_dir);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)?;
+    }
+    Ok(())
+}
+
+/// Start a needle engine download on the task runtime. No-op if
+/// running or when this arch has no build.
+pub fn start_needle_download(data_dir: PathBuf) {
+    {
+        let map = downloads().lock().unwrap();
+        if let Some((snap, _)) = map.get(NEEDLE_ENGINE_ID) {
+            if matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing) {
+                return;
+            }
+        }
+    }
+    let size = needle_asset().map(|a| a.size_bytes).unwrap_or(0);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_worker = cancel.clone();
+    downloads().lock().unwrap().insert(
+        NEEDLE_ENGINE_ID.to_string(),
+        (
+            DlSnapshot {
+                received: 0,
+                total: Some(size),
+                phase: DlPhase::Downloading,
+            },
+            cancel,
+        ),
+    );
+    let id = NEEDLE_ENGINE_ID;
+    if crate::runtime::submit("dl-needle", move || {
+        let cb: DownloadCallback = Arc::new(move |ev| {
+            if let Ok(mut map) = downloads().lock() {
+                if let Some((snap, _)) = map.get_mut(id) {
+                    match ev {
+                        DownloadEvent::Progress { received, total } => {
+                            snap.received = received;
+                            snap.total = total;
+                            snap.phase = DlPhase::Downloading;
+                        }
+                        DownloadEvent::Installing => snap.phase = DlPhase::Installing,
+                        DownloadEvent::Done => {}
+                    }
+                }
+            }
+        });
+        let result = download_needle_pack(&data_dir, &cancel_worker, &cb);
+        if let Ok(mut map) = downloads().lock() {
+            match result {
+                Ok(()) => {
+                    map.remove(id);
+                }
+                Err(e) => {
+                    if let Some((snap, _)) = map.get_mut(id) {
+                        snap.phase = DlPhase::Failed(e);
+                    }
+                }
+            }
+        }
+    })
+    .is_err()
+    {
+        if let Ok(mut map) = downloads().lock() {
+            if let Some((snap, _)) = map.get_mut(id) {
+                snap.phase = DlPhase::Failed("task runtime saturated".to_string());
+            }
+        }
+    }
 }
 
 /// Start a sherpa pack download on a worker thread. No-op if running.

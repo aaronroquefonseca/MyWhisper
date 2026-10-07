@@ -244,6 +244,7 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "stt.gpu.cuda" => ("CUDA (NVIDIA)", "CUDA (NVIDIA)"),
         "stt.gpu.vulkan" => ("Vulkan (AMD/Intel)", "Vulkan (AMD/Intel)"),
         "stt.gpu.recommend" => ("Detected hardware", "Hardware detectado"),
+        "stt.needle.engine" => ("Needle engine", "Motor Needle"),
         "row.resettodefault" => ("Reset to default", "Restablecer valores"),
         "row.mode" => ("Mode", "Modo"),
         "row.localprovider" => ("Local provider", "Proveedor local"),

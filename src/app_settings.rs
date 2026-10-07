@@ -1737,6 +1737,80 @@ fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
     }
 }
 
+/// Needle engine action cell: progress while downloading, Delete
+/// when installed, Download otherwise. Rebuilt on the same 500 ms
+/// cadence as the pack lists so progress just appears.
+fn refresh_needle_action(container: &GtkBox, state: &Rc<AppState>) {
+    use crate::stt;
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
+    let data_dir = state
+        .db_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    if let Some(dl) = stt::download_state(stt::NEEDLE_ENGINE_ID) {
+        let col = GtkBox::new(Orientation::Vertical, 4);
+        match &dl.phase {
+            stt::DlPhase::Failed(e) => {
+                let l = Label::new(Some(&trf("stt.dl.failed", &[("err", e)])));
+                l.add_css_class("dim");
+                col.append(&l);
+                let retry = Button::with_label(tr("action.retry"));
+                {
+                    let state = state.clone();
+                    retry.connect_clicked(move |_| {
+                        let data_dir = state
+                            .db_path
+                            .parent()
+                            .map(|p| p.to_path_buf())
+                            .unwrap_or_default();
+                        stt::start_needle_download(data_dir);
+                    });
+                }
+                col.append(&retry);
+            }
+            _ => {
+                let bar = gtk4::ProgressBar::new();
+                set_bar_state(&bar, &dl);
+                col.append(&bar);
+                let cancel = Button::with_label(tr("action.cancel"));
+                cancel.connect_clicked(move |_| {
+                    stt::cancel_download(stt::NEEDLE_ENGINE_ID)
+                });
+                col.append(&cancel);
+            }
+        }
+        container.append(&col);
+    } else if stt::needle_installed(&data_dir) {
+        let del = Button::with_label(tr("action.delete"));
+        {
+            let state = state.clone();
+            del.connect_clicked(move |_| {
+                if let Some(data_dir) = state.db_path.parent() {
+                    let _ = stt::delete_needle_pack(data_dir);
+                }
+            });
+        }
+        container.append(&del);
+    } else {
+        let dl_btn = Button::with_label(tr("action.download"));
+        {
+            let state = state.clone();
+            dl_btn.connect_clicked(move |_| {
+                let data_dir = state
+                    .db_path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_default();
+                stt::start_needle_download(data_dir);
+            });
+        }
+        container.append(&dl_btn);
+    }
+}
+
 /// Refresh visible GPU progress bars from live download states.
 fn update_gpu_progress(container: &GtkBox) {
     use crate::stt;
@@ -1937,6 +2011,17 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     _rows.append(&whisper_box);
     let sherpa_box = GtkBox::new(Orientation::Vertical, 8);
     _rows.append(&sherpa_box);
+    // Whistle brings its own engine: one binary, downloaded like a
+    // pack (sha-verified), not a server runtime.
+    let needle_box = GtkBox::new(Orientation::Vertical, 8);
+    _rows.append(&needle_box);
+    let needle_action = GtkBox::new(Orientation::Horizontal, 12);
+    {
+        let (b, _) = row(tr("stt.needle.engine"));
+        b.append(&needle_action);
+        needle_box.append(&b);
+    }
+    refresh_needle_action(&needle_action, state);
     let rows = whisper_box.clone();
     {
         let (b, _) = row(tr("stt.gpu.backend"));
@@ -2016,6 +2101,14 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         let sherpa_list = sherpa_list.clone();
         gtk4::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
             fill_sherpa_packs(&sherpa_list, &state);
+            gtk4::glib::ControlFlow::Continue
+        });
+    }
+    {
+        let state = state.clone();
+        let needle_action = needle_action.clone();
+        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+            refresh_needle_action(&needle_action, &state);
             gtk4::glib::ControlFlow::Continue
         });
     }
@@ -2196,6 +2289,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         let selfhosted_card = selfhosted_card.clone();
         let whisper_box = whisper_box.clone();
         let sherpa_box = sherpa_box.clone();
+        let needle_box = needle_box.clone();
         move || {
             use crate::settings::SttMode;
             let s = state.settings.borrow();
@@ -2206,7 +2300,6 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 (SttMode::Cloud, _) => (false, false, true, false),
                 (SttMode::SelfHosted, _) => (false, false, false, true),
             };
-            gpu_card.set_visible(gpu);
             models_card.set_visible(models);
             {
                 use crate::settings::{LocalSttProvider, SttMode};
@@ -2220,8 +2313,16 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                     (SttMode::Local, LocalSttProvider::Nvidia)
                         | (SttMode::Local, LocalSttProvider::Oruk)
                 );
+                let whistle = matches!(
+                    (&s.stt.mode, &s.stt.local_provider),
+                    (SttMode::Local, LocalSttProvider::Whistle)
+                );
                 whisper_box.set_visible(whisper);
                 sherpa_box.set_visible(sherpa);
+                needle_box.set_visible(whistle);
+                // No empty cards: runtimes show only when one of the
+                // engine boxes applies.
+                gpu_card.set_visible(gpu && (whisper || sherpa || whistle));
             }
             cloud_card.set_visible(cloud);
             selfhosted_card.set_visible(hosted);

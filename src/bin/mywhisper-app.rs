@@ -54,6 +54,11 @@ fn main() -> gtk4::glib::ExitCode {
     // status banner), never taken.
     let service_alive = mywhisper::service::engine_running(&paths);
     eprintln!("[app] background service alive: {service_alive}");
+    // Task runtime for this process too: downloads (and future jobs)
+    // submit to the pool, which doesn't exist unless initialized.
+    if let Err(e) = mywhisper::runtime::init() {
+        eprintln!("[app] task runtime unavailable: {e}");
+    }
     let discovered: std::sync::Arc<
         std::sync::Mutex<std::collections::HashMap<String, mywhisper::net::Discovered>>,
     > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));

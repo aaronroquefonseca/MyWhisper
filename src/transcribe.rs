@@ -248,7 +248,7 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
             }
             // The `needle` engine is user-placed (no verified upstream
             // binary URL yet): `<data>/bin/needle/needle`, executable.
-            let engine = data_dir.join("bin").join("needle").join("needle");
+            let engine = needle_engine_path(data_dir);
             if !engine.exists() {
                 return Err(missing(
                     "needle engine binary at bin/needle/needle (see Whistle docs)",
@@ -433,6 +433,11 @@ fn sherpa_binary(data_dir: &Path, which: &str) -> Result<PathBuf, String> {
     } else {
         Err(missing("sherpa-cpu runtime pack"))
     }
+}
+
+/// User-placed Whistle engine binary (`<data>/bin/needle/needle`).
+pub fn needle_engine_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("bin").join("needle").join("needle")
 }
 
 fn ensure_whisper(
