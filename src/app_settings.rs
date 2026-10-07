@@ -1320,6 +1320,7 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
         let sub = Label::new(Some(&format!("{} · {}", m.description, m.size_label)));
         sub.add_css_class("dim");
         sub.set_xalign(0.0);
+        sub.set_wrap(true);
         info.append(&sub);
         card.append(&info);
 
@@ -1329,6 +1330,8 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
                 stt::DlPhase::Failed(e) => {
                     let l = Label::new(Some(&trf("stt.dl.failed", &[("err", e)])));
                     l.add_css_class("dim");
+                    l.set_wrap(true);
+                    l.set_max_width_chars(60);
                     col.append(&l);
                     let retry = Button::with_label(tr("action.retry"));
                     {
@@ -1521,6 +1524,7 @@ fn fill_sherpa_packs(container: &GtkBox, state: &Rc<AppState>) {
         let sub = Label::new(Some(&format!("{} · {}", pack.description, pack.size_label)));
         sub.add_css_class("dim");
         sub.set_xalign(0.0);
+        sub.set_wrap(true);
         info.append(&sub);
         card.append(&info);
 
@@ -1530,6 +1534,8 @@ fn fill_sherpa_packs(container: &GtkBox, state: &Rc<AppState>) {
                 stt::DlPhase::Failed(e) => {
                     let l = Label::new(Some(&trf("stt.dl.failed", &[("err", e)])));
                     l.add_css_class("dim");
+                    l.set_wrap(true);
+                    l.set_max_width_chars(60);
                     col.append(&l);
                     let retry = Button::with_label(tr("action.retry"));
                     {
@@ -1652,6 +1658,7 @@ fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
         )));
         sub.add_css_class("dim");
         sub.set_xalign(0.0);
+        sub.set_wrap(true);
         info.append(&sub);
         card.append(&info);
 
@@ -1661,6 +1668,8 @@ fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
                 stt::DlPhase::Failed(e) => {
                     let l = Label::new(Some(&trf("stt.dl.failed", &[("err", e)])));
                     l.add_css_class("dim");
+                    l.set_wrap(true);
+                    l.set_max_width_chars(60);
                     col.append(&l);
                     let retry = Button::with_label(tr("action.retry"));
                     {
@@ -1743,6 +1752,8 @@ fn refresh_needle_action(container: &GtkBox, state: &Rc<AppState>) {
             stt::DlPhase::Failed(e) => {
                 let l = Label::new(Some(&trf("stt.dl.failed", &[("err", e)])));
                 l.add_css_class("dim");
+                l.set_wrap(true);
+                l.set_max_width_chars(60);
                 col.append(&l);
                 let retry = Button::with_label(tr("action.retry"));
                 {
@@ -1763,9 +1774,7 @@ fn refresh_needle_action(container: &GtkBox, state: &Rc<AppState>) {
                 set_bar_state(&bar, &dl);
                 col.append(&bar);
                 let cancel = Button::with_label(tr("action.cancel"));
-                cancel.connect_clicked(move |_| {
-                    stt::cancel_download(stt::NEEDLE_ENGINE_ID)
-                });
+                cancel.connect_clicked(move |_| stt::cancel_download(stt::NEEDLE_ENGINE_ID));
                 col.append(&cancel);
             }
         }
@@ -1922,8 +1931,12 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     // mirroring OpenWhispr's local provider picker.
     let (card, rows) = group(tr("stt.models.title"));
     {
-        let pill_row = GtkBox::new(Orientation::Horizontal, 8);
+        let pill_row = gtk4::FlowBox::new();
+        pill_row.set_max_children_per_line(5);
+        pill_row.set_selection_mode(gtk4::SelectionMode::None);
         pill_row.set_halign(gtk4::Align::Start);
+        pill_row.set_column_spacing(8);
+        pill_row.set_row_spacing(8);
         rows.append(&pill_row);
         let vendors = ["Oruk", "OpenAI", "NVIDIA", "Cohere", "Whistle"];
         {
@@ -1972,7 +1985,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                         }
                     });
                 }
-                pill_row.append(&pill);
+                pill_row.insert(&pill, -1);
             }
         }
     }
@@ -2386,11 +2399,7 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
             let state = state.clone();
             let audio_dd = audio_dd.clone();
             sw.connect_state_set(move |_, active| {
-                state
-                    .settings
-                    .borrow_mut()
-                    .privacy
-                    .keep_audio_recordings = active;
+                state.settings.borrow_mut().privacy.keep_audio_recordings = active;
                 persist_prefs(state.clone())();
                 // Clear stays enabled: recordings may predate the toggle.
                 if let Some(dd) = audio_dd.borrow().as_ref() {
@@ -2418,9 +2427,7 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
         dd.set_selected(
             AUDIO_DAYS
                 .iter()
-                .position(|d| {
-                    *d == state.settings.borrow().privacy.audio_retention_days
-                })
+                .position(|d| *d == state.settings.borrow().privacy.audio_retention_days)
                 .unwrap_or(3) as u32,
         );
         dd.set_valign(gtk4::Align::Center);
@@ -2428,10 +2435,8 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
         {
             let state = state.clone();
             dd.connect_selected_notify(move |d| {
-                state.settings.borrow_mut().privacy.audio_retention_days = AUDIO_DAYS
-                    .get(d.selected() as usize)
-                    .copied()
-                    .unwrap_or(30);
+                state.settings.borrow_mut().privacy.audio_retention_days =
+                    AUDIO_DAYS.get(d.selected() as usize).copied().unwrap_or(30);
                 persist_prefs(state.clone())();
             });
         }
@@ -2529,11 +2534,14 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
         {
             let state = state.clone();
             dd.connect_selected_notify(move |d| {
-                state.settings.borrow_mut().privacy.transcript_auto_delete_days =
-                    RETENTION_DAYS
-                        .get(d.selected() as usize)
-                        .copied()
-                        .unwrap_or(0);
+                state
+                    .settings
+                    .borrow_mut()
+                    .privacy
+                    .transcript_auto_delete_days = RETENTION_DAYS
+                    .get(d.selected() as usize)
+                    .copied()
+                    .unwrap_or(0);
                 persist_prefs(state.clone())();
             });
         }
@@ -2551,11 +2559,9 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
         let clear = Button::with_label(tr("action.clearalltranscripts"));
         {
             let state = state.clone();
-            clear.connect_clicked(move |_| {
-                match state.store.clear_history() {
-                    Ok(n) => eprintln!("[privacy] cleared {n} transcripts"),
-                    Err(e) => eprintln!("[privacy] clear transcripts: {e}"),
-                }
+            clear.connect_clicked(move |_| match state.store.clear_history() {
+                Ok(n) => eprintln!("[privacy] cleared {n} transcripts"),
+                Err(e) => eprintln!("[privacy] clear transcripts: {e}"),
             });
         }
         b.append(&clear);
