@@ -1531,9 +1531,11 @@ fn ensure_servers(
 }
 
 /// Post-process STT output into the final transcript. Passthrough
-/// today (no processor enabled): final == raw. This is THE seam for
-/// the future pipeline stage — it receives `raw`, returns `final`,
-/// and everything downstream (history, paste) uses `final` only.
+/// today (processing not implemented): final == raw regardless of the
+/// LLM toggle. This is THE seam for the future pipeline stage — it
+/// receives `raw`, runs the enabled chain top-down when
+/// `language_models.enabled`, returns `final`, and everything
+/// downstream (history, paste) uses `final` only.
 fn post_process(raw: &str) -> String {
     raw.to_string()
 }

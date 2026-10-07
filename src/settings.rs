@@ -402,15 +402,105 @@ impl Default for SttSettings {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LmMode {
+pub enum LlmKind {
     Ollama,
     Local,
     Cloud,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CloudLlm {
+    /// Renamed from Grok (serde alias keeps old configs loading).
+    #[serde(alias = "Grok")]
+    Groq,
+    OpenRouter,
+    OpenAI,
+    Claude,
+    Google,
+}
+
+impl CloudLlm {
+    pub fn base_url(&self) -> &'static str {
+        match self {
+            CloudLlm::Groq => "https://api.groq.com/openai/v1",
+            CloudLlm::OpenRouter => "https://openrouter.ai/api/v1",
+            CloudLlm::OpenAI => "https://api.openai.com/v1",
+            CloudLlm::Claude => "https://api.anthropic.com/v1",
+            CloudLlm::Google => "https://generativelanguage.googleapis.com/v1beta",
+        }
+    }
+
+    pub fn default_model(&self) -> &'static str {
+        match self {
+            CloudLlm::Groq => "llama-3.3-70b-versatile",
+            CloudLlm::OpenRouter => "moonshotai/kimi-k2",
+            CloudLlm::OpenAI => "gpt-6-luna",
+            CloudLlm::Claude => "claude-sonnet-5-5",
+            CloudLlm::Google => "gemini-3.8-flash",
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            CloudLlm::Groq => "Groq",
+            CloudLlm::OpenRouter => "OpenRouter",
+            CloudLlm::OpenAI => "OpenAI",
+            CloudLlm::Claude => "Claude",
+            CloudLlm::Google => "Google",
+        }
+    }
+}
+
+/// One configured LLM option. Ordered in the list: the future
+/// pipeline tries enabled entries top-down until one answers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmEntry {
+    pub id: String,
+    pub name: String,
+    pub kind: LlmKind,
+    pub enabled: bool,
+    /// Ollama: server URL + model. Local: model path/name.
+    pub url: String,
+    pub model: String,
+    /// Cloud only.
+    pub provider: CloudLlm,
+    pub api_key: String,
+}
+
+impl LlmEntry {
+    pub fn ollama(url: &str, model: &str) -> Self {
+        Self {
+            id: String::new(),
+            name: format!("Ollama ({model})"),
+            kind: LlmKind::Ollama,
+            enabled: true,
+            url: url.to_string(),
+            model: model.to_string(),
+            provider: CloudLlm::OpenAI,
+            api_key: String::new(),
+        }
+    }
+
+    pub fn summary(&self) -> String {
+        match self.kind {
+            LlmKind::Ollama => format!("{} · {}", self.url, self.model),
+            LlmKind::Local => self.model.clone(),
+            LlmKind::Cloud => format!("{} · {}", self.provider.name(), self.model),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LanguageModelSettings {
-    pub mode: LmMode,
+    /// Master switch: on = STT output goes through the enabled chain
+    /// top-down (future pipeline); off = raw transcript is final.
+    /// Kinds mix freely in the chain.
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub entries: Vec<LlmEntry>,
+    // Legacy single-option fields (kept for migration; the list is
+    // authoritative once non-empty).
     pub ollama_url: String,
     pub ollama_model: String,
     pub local_model: String,
@@ -425,9 +515,10 @@ pub struct LanguageModelSettings {
 impl Default for LanguageModelSettings {
     fn default() -> Self {
         Self {
-            mode: LmMode::Ollama,
-            ollama_url: "http://localhost:11434".to_string(),
-            ollama_model: "llama3.1".to_string(),
+            enabled: true,
+            entries: vec![LlmEntry::ollama("http://127.0.0.1:11434", "gemma4:e4b")],
+            ollama_url: "http://127.0.0.1:11434".to_string(),
+            ollama_model: "gemma4:e4b".to_string(),
             local_model: String::new(),
             keep_loaded: true,
             cloud_provider: "OpenAI".to_string(),
@@ -436,6 +527,43 @@ impl Default for LanguageModelSettings {
             cleanup_enabled: true,
             cleanup_prompt: String::new(),
         }
+    }
+}
+
+impl LanguageModelSettings {
+    /// One-time seed for pre-list configs: convert legacy fields, or
+    /// fall back to the default Ollama entry. Idempotent.
+    pub fn ensure_seed(&mut self) {
+        if !self.entries.is_empty() {
+            return;
+        }
+        if !self.ollama_url.is_empty() || !self.ollama_model.is_empty() {
+            let url = if self.ollama_url.is_empty() {
+                "http://127.0.0.1:11434".to_string()
+            } else {
+                self.ollama_url.clone()
+            };
+            let model = if self.ollama_model.is_empty() {
+                "gemma4:e4b".to_string()
+            } else {
+                self.ollama_model.clone()
+            };
+            self.entries.push(LlmEntry::ollama(&url, &model));
+        } else {
+            self.entries
+                .push(LlmEntry::ollama("http://127.0.0.1:11434", "gemma4:e4b"));
+        }
+        // Legacy localhost form canonicalized to 127.0.0.1.
+        for e in &mut self.entries {
+            if e.url == "http://localhost:11434" {
+                e.url = "http://127.0.0.1:11434".to_string();
+            }
+        }
+    }
+
+    /// Enabled entries top-down: the order the future pipeline tries.
+    pub fn chain(&self) -> Vec<&LlmEntry> {
+        self.entries.iter().filter(|e| e.enabled).collect()
     }
 }
 
@@ -530,4 +658,57 @@ pub struct HistoryEntry {
     pub duration_secs: i64,
     pub recorded_at: i64,
     pub discarded: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chain_respects_order_and_enabled() {
+        let mut lm = LanguageModelSettings::default();
+        assert_eq!(lm.chain().len(), 1); // seeded ollama
+        lm.entries[0].enabled = false;
+        assert!(lm.chain().is_empty());
+        let mut second = LlmEntry::ollama("http://192.168.1.10:11434", "llama3.1");
+        second.id = "lm-2".to_string();
+        lm.entries.push(second);
+        let chain = lm.chain();
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0].url, "http://192.168.1.10:11434");
+    }
+
+    #[test]
+    fn ensure_seed_migrates_legacy() {
+        let mut lm = LanguageModelSettings {
+            entries: vec![],
+            ..LanguageModelSettings::default()
+        };
+        lm.ollama_url = "http://localhost:11434".to_string();
+        lm.ollama_model = "llama3.1".to_string();
+        lm.ensure_seed();
+        assert_eq!(lm.entries.len(), 1);
+        // Canonicalized to 127.0.0.1.
+        assert_eq!(lm.entries[0].url, "http://127.0.0.1:11434");
+        // Idempotent.
+        lm.ensure_seed();
+        assert_eq!(lm.entries.len(), 1);
+    }
+
+    #[test]
+    fn cloud_defaults_sane() {
+        assert!(CloudLlm::Groq.base_url().contains("groq.com"));
+        assert!(CloudLlm::OpenRouter.base_url().contains("openrouter"));
+        assert!(CloudLlm::Claude.base_url().contains("anthropic"));
+        assert!(CloudLlm::Google.base_url().contains("googleapis"));
+        for p in [
+            CloudLlm::Groq,
+            CloudLlm::OpenRouter,
+            CloudLlm::OpenAI,
+            CloudLlm::Claude,
+            CloudLlm::Google,
+        ] {
+            assert!(!p.default_model().is_empty());
+        }
+    }
 }

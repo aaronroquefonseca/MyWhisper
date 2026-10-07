@@ -16,7 +16,7 @@ use std::rc::Rc;
 use super::app::{apply_theme, log_theme_state, AppState};
 use crate::clipboard::{copy_backend_deps, paste_backend_deps, probe, BackendStatus};
 use crate::i18n::{tr, trf};
-use crate::settings::{AppSettings, CopyBackend, PasteBackend, PasteCombo, Theme};
+use crate::settings::{CopyBackend, PasteBackend, PasteCombo, Theme};
 
 // ---------------------------------------------------------------- helpers
 
@@ -2335,49 +2335,439 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     root
 }
 
-fn language_models_page(s: &AppSettings) -> GtkBox {
+/// Shared handles of the add/edit form, so list rows can refill it.
+#[derive(Clone)]
+struct LmForm {
+    name_e: Entry,
+    url_e: Entry,
+    ollama_model_e: Entry,
+    cloud_model_e: Entry,
+    key_e: Entry,
+    provider_dd: DropDown,
+    kind_dd: DropDown,
+    add_btn: Button,
+    cancel_btn: Button,
+    editing: Rc<RefCell<Option<String>>>,
+}
+
+/// Configured LLM chain list. Rebuilt after every mutation (add /
+/// save / remove / move / toggle); order = priority top-down.
+fn fill_lm_chain(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    let entries = state.settings.borrow().language_models.entries.clone();
+    if entries.is_empty() {
+        let l = Label::new(Some(tr("lm.list.empty")));
+        l.add_css_class("dim");
+        l.set_xalign(0.0);
+        l.set_wrap(true);
+        list.append(&l);
+        return;
+    }
+    for (pos, entry) in entries.iter().enumerate() {
+        let card = GtkBox::new(Orientation::Horizontal, 8);
+        card.add_css_class("card");
+        let info = GtkBox::new(Orientation::Vertical, 2);
+        info.set_hexpand(true);
+        let name = Label::new(Some(&entry.name));
+        name.add_css_class("row-label");
+        name.set_xalign(0.0);
+        info.append(&name);
+        let sub = Label::new(Some(&entry.summary()));
+        sub.add_css_class("dim");
+        sub.set_xalign(0.0);
+        sub.set_wrap(true);
+        info.append(&sub);
+        card.append(&info);
+        // Enabled toggle.
+        let sw = Switch::new();
+        sw.set_active(entry.enabled);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            let id = entry.id.clone();
+            sw.connect_state_set(move |_, active| {
+                if let Some(e) = state
+                    .settings
+                    .borrow_mut()
+                    .language_models
+                    .entries
+                    .iter_mut()
+                    .find(|e| e.id == id)
+                {
+                    e.enabled = active;
+                }
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        card.append(&sw);
+        // Move up / down (priority order).
+        for (label, delta) in [("↑", -1isize), ("↓", 1isize)] {
+            let btn = Button::with_label(label);
+            btn.set_valign(gtk4::Align::Center);
+            {
+                let state = state.clone();
+                let list = list.clone();
+                let form = form.clone();
+                btn.connect_clicked(move |_| {
+                    let mut lm = state.settings.borrow_mut();
+                    let entries = &mut lm.language_models.entries;
+                    let other = pos as isize + delta;
+                    if other >= 0 && (other as usize) < entries.len() && (other as usize) != pos {
+                        entries.swap(pos, other as usize);
+                    }
+                    drop(lm);
+                    persist_prefs(state.clone())();
+                    fill_lm_chain(&list, &state, &form);
+                });
+            }
+            card.append(&btn);
+        }
+        // (refills below use the outer form handle)
+        let edit = Button::with_label(tr("action.edit"));
+        edit.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            let form = form.clone();
+            let id = entry.id.clone();
+            edit.connect_clicked(move |_| {
+                let lm = state.settings.borrow();
+                let Some(e) = lm.language_models.entries.iter().find(|e| e.id == id) else {
+                    return;
+                };
+                form.name_e.set_text(&e.name);
+                form.url_e.set_text(&e.url);
+                form.ollama_model_e.set_text(&e.model);
+                form.cloud_model_e.set_text(&e.model);
+                form.key_e.set_text(&e.api_key);
+                form.provider_dd.set_selected(match e.provider {
+                    crate::settings::CloudLlm::Groq => 0,
+                    crate::settings::CloudLlm::OpenRouter => 1,
+                    crate::settings::CloudLlm::Claude => 3,
+                    crate::settings::CloudLlm::Google => 4,
+                    _ => 2,
+                });
+                form.kind_dd.set_selected(match e.kind {
+                    crate::settings::LlmKind::Local => 1,
+                    crate::settings::LlmKind::Cloud => 2,
+                    _ => 0,
+                });
+                form.add_btn.set_label(tr("action.save"));
+                form.cancel_btn.set_visible(true);
+                *form.editing.borrow_mut() = Some(id.clone());
+            });
+        }
+        card.append(&edit);
+        // Remove.
+        let del = Button::with_label(tr("action.remove"));
+        del.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            let list = list.clone();
+            let form = form.clone();
+            let id = entry.id.clone();
+            del.connect_clicked(move |_| {
+                {
+                    let mut lm = state.settings.borrow_mut();
+                    lm.language_models.entries.retain(|e| e.id != id);
+                }
+                persist_prefs(state.clone())();
+                fill_lm_chain(&list, &state, &form);
+            });
+        }
+        card.append(&del);
+        list.append(&card);
+    }
+}
+
+fn language_models_page(state: &Rc<AppState>) -> GtkBox {
+    use crate::settings::{CloudLlm, LlmEntry, LlmKind};
     let root = section_box(tr("settings.lm"), tr("settings.lm.sub"));
-    let l = &s.language_models;
 
-    let (card, rows) = group(tr("group.provider"));
-    combo_row(
-        &rows,
-        tr("row.mode"),
-        &[tr("opt.ollama"), tr("opt.localmodel"), tr("opt.cloud")],
-        match l.mode {
-            crate::settings::LmMode::Ollama => 0,
-            crate::settings::LmMode::Local => 1,
-            crate::settings::LmMode::Cloud => 2,
-        },
-    );
-    entry_row(&rows, tr("row.ollamaurl"), &l.ollama_url, false);
-    entry_row(&rows, tr("row.ollamamodel"), &l.ollama_model, false);
-    entry_row(&rows, tr("row.localmodel"), &l.local_model, false);
-    switch_row(&rows, tr("row.keeploaded"), l.keep_loaded);
+    // Master switch, own section: on = STT output goes through the
+    // enabled chain top-down (future pipeline, kinds mix freely);
+    // off = raw transcript is final.
+    let (card, rows) = group(tr("group.lmpost"));
+    {
+        let (b, _) = row(tr("lm.use"));
+        let sw = Switch::new();
+        sw.set_active(state.settings.borrow().language_models.enabled);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state.settings.borrow_mut().language_models.enabled = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
     root.append(&card);
 
-    let (card, rows) = group(tr("group.cloudfallback"));
-    const PROVIDERS: &[&str] = &["OpenAI", "Anthropic", "Gemini", "Groq", "OpenRouter"];
-    combo_row(
-        &rows,
-        tr("row.provider"),
-        PROVIDERS,
-        idx_of(PROVIDERS, &l.cloud_provider),
+    // Add card: pick a type to configure, fill the form, Add.
+    let (card, rows) = group(tr("group.lmadd"));
+    let kind_dd = DropDown::new(
+        Some(StringList::new(&[
+            tr("opt.ollama"),
+            tr("opt.localmodel"),
+            tr("opt.cloud"),
+        ])),
+        None::<gtk4::Expression>,
     );
-    entry_row(&rows, tr("row.model"), &l.cloud_model, false);
-    entry_row(&rows, tr("row.apikey"), &l.cloud_api_key, true);
+    kind_dd.set_valign(gtk4::Align::Center);
+    {
+        let (b, _) = row(tr("row.lmtype"));
+        b.append(&kind_dd);
+        rows.append(&b);
+    }
+    // Shared form handles (single-parent rule: name/model rows live
+    // in `rows`, kind extras in their boxes).
+    let name_e = Entry::new();
+    let ollama_model_e = Entry::new();
+    let cloud_model_e = Entry::new();
+    let url_e = Entry::new();
+    let key_e = Entry::new();
+    let provider_dd = DropDown::new(
+        Some(StringList::new(&[
+            "Groq",
+            "OpenRouter",
+            "OpenAI",
+            "Claude",
+            "Google",
+        ])),
+        None::<gtk4::Expression>,
+    );
+    for e in [&name_e, &ollama_model_e, &cloud_model_e, &url_e, &key_e] {
+        e.set_hexpand(true);
+    }
+    key_e.set_visibility(false);
+    url_e.set_text("http://127.0.0.1:11434");
+    ollama_model_e.set_text("gemma4:e4b");
+    cloud_model_e.set_text(CloudLlm::OpenAI.default_model());
+    {
+        let (b, _) = row(tr("row.name"));
+        b.append(&name_e);
+        rows.append(&b);
+    }
+    // Form boxes per kind, only one visible.
+    let ollama_box = GtkBox::new(Orientation::Vertical, 8);
+    let cloud_box = GtkBox::new(Orientation::Vertical, 8);
+    let local_box = GtkBox::new(Orientation::Vertical, 8);
+    {
+        let (b, _) = row(tr("row.ollamaurl"));
+        b.append(&url_e);
+        ollama_box.append(&b);
+        let (b, _) = row(tr("row.ollamamodel"));
+        b.append(&ollama_model_e);
+        ollama_box.append(&b);
+    }
+    {
+        let (b, _) = row(tr("row.provider"));
+        b.append(&provider_dd);
+        cloud_box.append(&b);
+        let (b, _) = row(tr("row.apikey"));
+        b.append(&key_e);
+        cloud_box.append(&b);
+    }
+    {
+        // Local has no fields: self-managed engines aren't
+        // implemented yet. Text only, Add stays greyed.
+        let note = Label::new(Some(tr("lm.local.note")));
+        note.add_css_class("dim");
+        note.set_xalign(0.0);
+        note.set_wrap(true);
+        local_box.append(&note);
+    }
+    {
+        let (b, _) = row(tr("row.model"));
+        b.append(&cloud_model_e);
+        cloud_box.append(&b);
+    }
+    rows.append(&ollama_box);
+    rows.append(&cloud_box);
+    rows.append(&local_box);
+    cloud_box.set_visible(false);
+    local_box.set_visible(false);
+    // Show the form for the picked kind.
+    let add_btn = Button::with_label(tr("action.add"));
+    let cancel_btn = Button::with_label(tr("action.cancel"));
+    cancel_btn.set_visible(false); // only while editing
+    {
+        let brow = GtkBox::new(Orientation::Horizontal, 8);
+        brow.set_halign(gtk4::Align::End);
+        brow.append(&cancel_btn);
+        brow.append(&add_btn);
+        rows.append(&brow);
+    }
     root.append(&card);
+    {
+        let ollama_box = ollama_box.clone();
+        let cloud_box = cloud_box.clone();
+        let local_box = local_box.clone();
+        let add_btn = add_btn.clone();
+        kind_dd.connect_selected_notify(move |d| {
+            ollama_box.set_visible(d.selected() == 0);
+            cloud_box.set_visible(d.selected() == 2);
+            local_box.set_visible(d.selected() == 1);
+            // Local can't be added yet: text only.
+            add_btn.set_sensitive(d.selected() != 1);
+        });
+    }
+    {
+        let me = cloud_model_e.clone();
+        provider_dd.connect_selected_notify(move |d| {
+            let provider = match d.selected() {
+                0 => CloudLlm::Groq,
+                1 => CloudLlm::OpenRouter,
+                3 => CloudLlm::Claude,
+                4 => CloudLlm::Google,
+                _ => CloudLlm::OpenAI,
+            };
+            me.set_text(provider.default_model());
+        });
+        provider_dd.set_selected(2); // OpenAI default
+        cloud_model_e.set_text(CloudLlm::OpenAI.default_model());
+    }
+    // Chain card: ordered configured options.
+    let (card, chain_rows) = group(tr("group.lmchain"));
+    let list = GtkBox::new(Orientation::Vertical, 8);
+    chain_rows.append(&list);
+    root.append(&card);
+
+    // Form bundle shared with the list rows (Edit refills it).
+    let form = LmForm {
+        name_e: name_e.clone(),
+        url_e: url_e.clone(),
+        ollama_model_e: ollama_model_e.clone(),
+        cloud_model_e: cloud_model_e.clone(),
+        key_e: key_e.clone(),
+        provider_dd: provider_dd.clone(),
+        kind_dd: kind_dd.clone(),
+        add_btn: add_btn.clone(),
+        cancel_btn: cancel_btn.clone(),
+        editing: Rc::new(RefCell::new(None)),
+    };
+    fill_lm_chain(&list, state, &form);
+    // Cancel: drop the edit, reset the form to add-mode defaults.
+    {
+        let form = form.clone();
+        let cb = form.cancel_btn.clone();
+        cb.connect_clicked(move |_| {
+            *form.editing.borrow_mut() = None;
+            form.add_btn.set_label(tr("action.add"));
+            form.cancel_btn.set_visible(false);
+            form.name_e.set_text("");
+            form.key_e.set_text("");
+            form.url_e.set_text("http://127.0.0.1:11434");
+            form.ollama_model_e.set_text("gemma4:e4b");
+            form.provider_dd.set_selected(2);
+            form.cloud_model_e
+                .set_text(CloudLlm::OpenAI.default_model());
+            form.kind_dd.set_selected(0);
+        });
+    }
+    {
+        let state = state.clone();
+        let list = list.clone();
+        let kind_dd = form.kind_dd.clone();
+        let provider_dd = form.provider_dd.clone();
+        let ollama_model_e = form.ollama_model_e.clone();
+        let cloud_model_e = form.cloud_model_e.clone();
+        let name_e = form.name_e.clone();
+        let url_e = form.url_e.clone();
+        let key_e = form.key_e.clone();
+        let add_btn = form.add_btn.clone();
+        let editing = form.editing.clone();
+        let ab = add_btn.clone();
+        let cb = form.cancel_btn.clone();
+        add_btn.connect_clicked(move |_| {
+            let kind = match kind_dd.selected() {
+                1 => LlmKind::Local,
+                2 => LlmKind::Cloud,
+                _ => LlmKind::Ollama,
+            };
+            let provider = match provider_dd.selected() {
+                0 => CloudLlm::Groq,
+                1 => CloudLlm::OpenRouter,
+                3 => CloudLlm::Claude,
+                4 => CloudLlm::Google,
+                _ => CloudLlm::OpenAI,
+            };
+            let model = if kind == LlmKind::Local {
+                // No fields for local yet: nothing to configure.
+                String::new()
+            } else if kind == LlmKind::Cloud {
+                cloud_model_e.text().to_string()
+            } else {
+                ollama_model_e.text().to_string()
+            };
+            let mut entry = LlmEntry {
+                id: String::new(),
+                name: name_e.text().to_string(),
+                kind,
+                enabled: true,
+                url: url_e.text().to_string(),
+                model,
+                provider,
+                api_key: key_e.text().to_string(),
+            };
+            if entry.name.trim().is_empty() {
+                entry.name = match kind {
+                    LlmKind::Ollama => format!("Ollama ({})", entry.model),
+                    LlmKind::Local => "Local engine".to_string(),
+                    LlmKind::Cloud => {
+                        format!("{} ({})", entry.provider.name(), entry.model)
+                    }
+                };
+            }
+            {
+                let mut lm = state.settings.borrow_mut();
+                if let Some(id) = editing.borrow().as_ref() {
+                    // Save: keep id/enabled/position.
+                    if let Some(e) = lm.language_models.entries.iter_mut().find(|e| &e.id == id) {
+                        entry.id = e.id.clone();
+                        entry.enabled = e.enabled;
+                        *e = entry;
+                    }
+                } else {
+                    entry.id = format!(
+                        "lm-{}-{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0),
+                        lm.language_models.entries.len()
+                    );
+                    lm.language_models.entries.push(entry);
+                }
+            }
+            *editing.borrow_mut() = None;
+            ab.set_label(tr("action.add"));
+            cb.set_visible(false);
+            name_e.set_text("");
+            key_e.set_text("");
+            persist_prefs(state.clone())();
+            fill_lm_chain(&list, &state, &form);
+        });
+    }
 
     let (card, rows) = group(tr("group.cleanup"));
-    switch_row(&rows, tr("row.cleanup"), l.cleanup_enabled);
-    let (b, _) = row(tr("row.customprompt"));
-    let prompt = TextView::new();
-    prompt.set_size_request(-1, 80);
-    prompt.buffer().set_text(&l.cleanup_prompt);
-    prompt.set_sensitive(false); // not wired yet
-    prompt.set_hexpand(true);
-    b.append(&prompt);
-    rows.append(&b);
+    {
+        let l = &state.settings.borrow().language_models;
+        switch_row(&rows, tr("row.cleanup"), l.cleanup_enabled);
+        let (b, _) = row(tr("row.customprompt"));
+        let prompt = TextView::new();
+        prompt.set_size_request(-1, 80);
+        prompt.buffer().set_text(&l.cleanup_prompt);
+        prompt.set_sensitive(false); // not wired yet
+        prompt.set_hexpand(true);
+        b.append(&prompt);
+        rows.append(&b);
+    }
     root.append(&card);
 
     root
@@ -2691,8 +3081,7 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
             for sub in ["models", "bin", "audio"] {
                 let dir = data_dir.join(sub);
                 if dir.exists() {
-                    if let Err(e) =
-                        std::fs::remove_dir_all(&dir).and(std::fs::create_dir_all(&dir))
+                    if let Err(e) = std::fs::remove_dir_all(&dir).and(std::fs::create_dir_all(&dir))
                     {
                         eprintln!("[system] reset {sub}: {e}");
                     }
@@ -2734,8 +3123,6 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
     stack.set_vexpand(true);
     root.append(&stack);
 
-    let borrowed = state.settings.borrow();
-    let s: &AppSettings = &borrowed;
     // Theme writes straight into the model and applies live.
     let on_theme: Rc<dyn Fn(Theme)> = Rc::new({
         let state = state.clone();
@@ -2753,7 +3140,7 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
         ("Hotkeys", hotkeys_page(state)),
         ("Clipboard", clipboard_page(state)),
         ("Speech to Text", stt_page(state)),
-        ("Language Models", language_models_page(s)),
+        ("Language Models", language_models_page(state)),
         ("Privacy & Data", privacy_page(state)),
         ("System", system_page(state)),
     ];

@@ -302,6 +302,8 @@ impl Store {
         let mut settings: AppSettings = json
             .and_then(|j| serde_json::from_str(&j).ok())
             .unwrap_or_default();
+        // Pre-list configs seed one entry from legacy fields.
+        settings.language_models.ensure_seed();
         // Typed tables are authoritative for dictionary content.
         settings.dictionary.words = self.load_words().unwrap_or_default();
         settings.dictionary.snippets = self.load_snippets().unwrap_or_default();
