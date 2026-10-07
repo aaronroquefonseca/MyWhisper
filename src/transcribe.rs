@@ -943,14 +943,18 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, data_dir: &Path) {
     let data_dir = data_dir.to_path_buf();
     let backend = stt.gpu_backend;
     // Background warmup; the release worker re-ensures anyway.
+    // Pool-submitted: a saturated system skips warmup instead of
+    // dying (the worker will still try when the utterance ends).
     {
         let plan = plan.clone();
         let data_dir = data_dir.clone();
-        std::thread::spawn(move || {
+        if let Err(e) = crate::runtime::submit("stt-warmup", move || {
             if let Err(e) = ensure_servers(&plan, &data_dir, backend) {
                 eprintln!("[stt] warmup: {e}");
             }
-        });
+        }) {
+            eprintln!("[stt] press: {e}");
+        }
     }
     eprintln!("[stt] press: armed ({})", plan.describe());
     let recorder = Arc::new(Mutex::new(Recorder::default()));
@@ -963,9 +967,13 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, data_dir: &Path) {
                 let (tx, rx) = mpsc::channel();
                 let rec = recorder.clone();
                 let stop_pump = stop.clone();
-                std::thread::spawn(move || {
+                if let Err(e) = crate::runtime::submit("stt-pump", move || {
                     pump_online(session, rec, stop_pump, tx);
-                });
+                }) {
+                    eprintln!("[stt] press: {e}");
+                    audio::set_recorder(None);
+                    return;
+                }
                 Some(rx)
             }
             Err(e) => {
@@ -1034,30 +1042,41 @@ fn pump_online(
 fn end_stale() {
     if live().lock().unwrap().is_some() {
         eprintln!("[stt] previous utterance never ended; closing it");
-        end_utterance_inner(true);
+        end_utterance_inner(true, None);
     }
 }
 
 /// Hotkey release: stop capture, transcribe in a worker (engines may
 /// lag behind realtime), then paste + history. Never blocks the GTK
-/// thread: returns immediately.
-pub fn end_utterance() {
-    end_utterance_inner(false);
+/// thread: returns immediately. `on_done` fires on the worker when the
+/// pill may hide (success, empty, or failure alike).
+pub fn end_utterance(on_done: impl FnOnce() + Send + 'static) {
+    end_utterance_inner(false, Some(Box::new(on_done)));
 }
 
-fn end_utterance_inner(stale: bool) {
+fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
     let sess = live().lock().unwrap().take();
     audio::set_recorder(None);
-    let Some(sess) = sess else { return };
+    let Some(sess) = sess else {
+        if let Some(done) = on_done {
+            done();
+        }
+        return;
+    };
     sess.stop.store(true, Ordering::Relaxed);
     if stale {
         return; // replaced, not transcribed
     }
     if BUSY.swap(true, Ordering::SeqCst) {
         eprintln!("[stt] worker busy; dropping overlapping utterance");
+        if let Some(done) = on_done {
+            done();
+        }
         return;
     }
-    std::thread::spawn(move || {
+    let on_done = Arc::new(Mutex::new(on_done));
+    let od = on_done.clone();
+    if let Err(e) = crate::runtime::submit("stt-worker", move || {
         let out = finish_session(sess);
         BUSY.store(false, Ordering::SeqCst);
         match out {
@@ -1065,7 +1084,22 @@ fn end_utterance_inner(stale: bool) {
             Ok(None) => {}
             Err(e) => eprintln!("[stt] transcription failed: {e}"),
         }
-    });
+        if let Ok(mut g) = od.lock() {
+            if let Some(done) = g.take() {
+                done();
+            }
+        }
+    }) {
+        // Saturated: release the guard and hide the pill now; the
+        // utterance is dropped, but the app survives to dictate again.
+        BUSY.store(false, Ordering::SeqCst);
+        eprintln!("[stt] release: {e}");
+        if let Ok(mut g) = on_done.lock() {
+            if let Some(done) = g.take() {
+                done();
+            }
+        }
+    }
 }
 
 /// Blocking finalization for one utterance. `Ok(None)` = nothing to

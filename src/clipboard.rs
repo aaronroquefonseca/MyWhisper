@@ -144,9 +144,10 @@ pub fn restore_clipboard(saved: &SavedClipboard) -> Result<(), String> {
                 .ok_or_else(|| "wl-copy stdin unavailable".to_string())?
                 .write_all(bytes)
                 .map_err(|e| format!("write clipboard: {e}"))?;
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
+            // wl-copy forks a server to hold the clipboard; the
+            // direct child exits fast. Reap without a dedicated
+            // thread per dictation (see `reap`).
+            reap(child);
             Ok(())
         }
     }
@@ -189,13 +190,29 @@ fn copy_with(backend: CopyBackend, text: &str, hide: bool) -> Result<(), String>
                 .write_all(text.as_bytes())
                 .map_err(|e| format!("write clipboard: {e}"))?;
             // wl-copy forks a server to hold the clipboard; the
-            // direct child exits fast. Reap it on a throwaway thread
-            // so each dictation doesn't leak a zombie.
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
+            // direct child exits fast. Reap without a dedicated
+            // thread per dictation (see `reap`).
+            reap(child);
             Ok(())
         }
+    }
+}
+
+/// Reap a short-lived child. Pooled normally; a saturated system
+/// leaks one zombie (logged) instead of panicking.
+fn reap(child: std::process::Child) {
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
+    let s = slot.clone();
+    if crate::runtime::submit("reap", move || {
+        if let Ok(mut g) = s.lock() {
+            if let Some(mut c) = g.take() {
+                let _ = c.wait();
+            }
+        }
+    })
+    .is_err()
+    {
+        eprintln!("[clipboard] saturated; leaking one wl-copy zombie");
     }
 }
 

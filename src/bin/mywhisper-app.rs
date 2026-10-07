@@ -148,11 +148,18 @@ fn run_headless(
     );
     mywhisper::service::spawn_hotkey_watcher(db_path.clone(), down, up);
     mywhisper::service::spawn_pill_watcher(db_path, tx.clone());
+    // Fixed task runtime first: every background job below flows
+    // through it (bounded pool, no panicking spawns). If even this
+    // fails the box cannot run threads at all: fail loud, not limp.
+    if let Err(e) = mywhisper::runtime::init() {
+        eprintln!("[service] FATAL: {e}");
+        return gtk4::glib::ExitCode::FAILURE;
+    }
     // Warm the configured STT engine now (model load takes seconds):
     // first press then only arms capture instead of cold-starting.
     {
         let db_path = paths.db_file();
-        std::thread::spawn(move || {
+        if let Err(e) = mywhisper::runtime::submit("startup-warmup", move || {
             let data_dir = db_path
                 .parent()
                 .map(|p| p.to_path_buf())
@@ -176,7 +183,9 @@ fn run_headless(
                 }
                 Err(e) => eprintln!("[stt] startup warmup store: {e}"),
             }
-        });
+        }) {
+            eprintln!("[stt] {e}");
+        }
     }
 
     app.connect_activate(move |app| {
@@ -189,19 +198,28 @@ fn run_headless(
         // Drain pill commands on the GTK thread.
         let overlay = overlay.clone();
         let rx = rx.clone();
+        // Utterance generation: a stale worker completion must not
+        // hide a newer utterance's pill.
+        let ugen: std::sync::Arc<std::sync::atomic::AtomicU64> =
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let gen_show = ugen.clone();
+        let gen_hide = ugen.clone();
+        let tx_done = tx.clone();
         gtk4::glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
             if let Ok(rx) = rx.lock() {
                 while let Ok(cmd) = rx.try_recv() {
                     match cmd {
                         PillCmd::Show => {
+                            gen_show.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             mywhisper::sound::play(mywhisper::sound::UiSound::Start);
                             *paused.borrow_mut() = mywhisper::media::pause_playing();
                             overlay.show_listening();
                             // Press: arm the RAM capture tap (+ open a
                             // streaming session when the engine does
                             // realtime). Prefs read fresh so UI edits
-                            // apply to the very next utterance.
-                            std::thread::spawn(|| {
+                            // apply to the very next utterance. Pooled:
+                            // saturation drops the press, never the app.
+                            if let Err(e) = mywhisper::runtime::submit("press-arm", || {
                                 let paths = match mywhisper::paths::AppPaths::create() {
                                     Ok(p) => p,
                                     Err(e) => {
@@ -220,17 +238,41 @@ fn run_headless(
                                     }
                                     Err(e) => eprintln!("[stt] store: {e}"),
                                 }
-                            });
+                            }) {
+                                eprintln!("[stt] press: {e}");
+                            }
                         }
                         PillCmd::Hide => {
                             mywhisper::sound::play(mywhisper::sound::UiSound::Stop);
                             mywhisper::media::resume(
                                 &paused.borrow_mut().drain(..).collect::<Vec<_>>(),
                             );
+                            // Release: contract into the spinner while
+                            // the worker transcribes; the worker sends
+                            // the real Hide when it may disappear.
+                            overlay.show_processing();
+                            let tx_done = tx_done.clone();
+                            let gen_at_release = gen_hide.load(std::sync::atomic::Ordering::SeqCst);
+                            let gen_hide = gen_hide.clone();
+                            mywhisper::transcribe::end_utterance(move || {
+                                // Stale completion (new press meanwhile):
+                                // leave the newer pill alone.
+                                if gen_hide.load(std::sync::atomic::Ordering::SeqCst)
+                                    != gen_at_release
+                                {
+                                    return;
+                                }
+                                let _ = tx_done.send(PillCmd::Done(gen_at_release));
+                            });
+                        }
+                        PillCmd::Done(gen_at_release) => {
+                            // Completion race (Show arrived after send):
+                            // only hide our own generation.
+                            if gen_hide.load(std::sync::atomic::Ordering::SeqCst) != gen_at_release
+                            {
+                                return gtk4::glib::ControlFlow::Continue;
+                            }
                             overlay.hide();
-                            // Release: stop capture; transcription (and
-                            // paste + history) finishes in a worker.
-                            mywhisper::transcribe::end_utterance();
                         }
                         PillCmd::Apply(prefs) => overlay.apply_prefs(&prefs),
                     }

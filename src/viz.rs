@@ -23,10 +23,10 @@
 //! (e.g. cpal) can replace [`SimMic`] without touching the widget.
 
 use crate::mic::MicInput;
-use gtk4::DrawingArea;
 use gtk4::cairo;
 use gtk4::glib;
 use gtk4::prelude::*;
+use gtk4::DrawingArea;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -42,6 +42,9 @@ const LANE_MIN_PX: f64 = 8.0;
 const LANE_MAX_LIMIT_PX: f64 = 32.0;
 const LANE_PADDING_PX: i32 = 8; // vertical chrome around the lane
 const ORNAMENT_W: f64 = 22.0;
+/// Spinner requisition: small enough that the pill visibly contracts
+/// when inference starts.
+const SPINNER_PX: i32 = 30;
 const MARK_PX: i32 = 18;
 const SPEECH_THRESHOLD: f32 = 0.12;
 const QUIET_ENV: f32 = 0.03;
@@ -214,6 +217,9 @@ struct VizState {
     bar_count: usize,
     /// Lane height: max bar excursion in px (live-adjustable).
     lane_max: f64,
+    /// Processing spinner: replaces bars + ornament while inference
+    /// runs (no mic feedback in this mode).
+    spinning: bool,
     sim: SimCadence,
     phase: f32,
     env: f32,
@@ -242,6 +248,7 @@ impl Visualizer {
             idle: IdleStyle::Still,
             bar_count: 11,
             lane_max: DEFAULT_LANE_MAX_PX,
+            spinning: false,
             sim: SimCadence::Lively,
             phase: 0.0,
             env: 0.0,
@@ -361,6 +368,17 @@ impl Visualizer {
         eprintln!("[poc] viz burst triggered");
     }
 
+    /// Processing spinner on/off. Shrinks the requisition so the
+    /// pill contracts toward its centre when inference starts.
+    pub fn set_spinning(&self, spinning: bool) {
+        let mut st = self.state.borrow_mut();
+        if st.spinning != spinning {
+            st.spinning = spinning;
+            size_area(&self.area, &st);
+            eprintln!("[poc] viz spinning -> {spinning}");
+        }
+    }
+
     /// Dictation gate: open capture while the pill is visible, drop
     /// it the moment it hides.
     pub fn set_mic_active(&self, active: bool) {
@@ -380,6 +398,9 @@ fn ornament_width(o: Ornament) -> f64 {
 }
 
 fn area_width(st: &VizState) -> i32 {
+    if st.spinning {
+        return SPINNER_PX;
+    }
     let gap = if st.ornament == Ornament::None {
         0.0
     } else {
@@ -492,6 +513,13 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, st: &VizState) {
     cr.set_source_rgba(r, g, b, a);
     cr.set_line_cap(cairo::LineCap::Round);
 
+    // Processing spinner: twin arcs chasing toward the centre, no
+    // bars, no ornament, no mic feedback.
+    if st.spinning {
+        draw_spinner(cr, width, height, st.phase);
+        return;
+    }
+
     let mut x = 0.0;
     match st.ornament {
         Ornament::None => {}
@@ -515,7 +543,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, st: &VizState) {
     let total = pitch * hs.len() as f64 - BAR_GAP;
     let free = width - x - total;
     let x0 = x + free / 2.0; // keep bars centered in remaining space
-    // Bars grow symmetrically from the vertical center.
+                             // Bars grow symmetrically from the vertical center.
     let mid = height / 2.0;
 
     // NOTE: ornament painting above may replace the cairo source
@@ -532,6 +560,31 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, st: &VizState) {
             return;
         }
     }
+}
+
+/// Twin-arc spinner: a bright head arc with a fading trailer,
+/// rotating around the pill centre.
+fn draw_spinner(cr: &cairo::Context, width: f64, height: f64, phase: f32) {
+    use std::f64::consts::PI;
+    let cx = width / 2.0;
+    let cy = height / 2.0;
+    let rad = (width.min(height) / 2.0 - 4.0).max(4.0);
+    let head = (phase as f64 * 2.2) % (2.0 * PI);
+    // Trailer: dimmer, lagging a quarter turn.
+    cr.set_line_width(2.5);
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.30);
+    cr.arc(cx, cy, rad, head - 2.4, head - 0.5);
+    let _ = cr.stroke();
+    // Head: bright 100° arc.
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.95);
+    cr.set_line_width(3.0);
+    cr.arc(cx, cy, rad, head, head + 1.75);
+    let _ = cr.stroke();
+    // Core dot, gently pulsing toward the centre.
+    let pulse = 1.6 + (phase as f64 * 2.2).sin() * 0.7;
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.9);
+    cr.arc(cx, cy, pulse.max(0.8), 0.0, 2.0 * PI);
+    let _ = cr.fill();
 }
 
 /// Our monochrome symbolic mark, painted from the rasterized SVG;

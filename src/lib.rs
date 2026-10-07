@@ -14,6 +14,7 @@ pub mod mic;
 pub mod net;
 pub mod overlay;
 pub mod paths;
+pub mod runtime;
 pub mod service;
 pub mod settings;
 pub mod sound;

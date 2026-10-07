@@ -562,7 +562,13 @@ pub fn start(
         eprintln!("[hotkey] no valid bindings, listener idle");
         return;
     }
-    std::thread::spawn(move || run_loop(generation, watched, on_event, on_status));
+    // Dedicated loop: Builder-based so saturation logs instead of
+    // panicking the caller (which may be the GTK-adjacent watcher).
+    if let Err(e) = crate::runtime::spawn_dedicated("hotkey-loop", move || {
+        run_loop(generation, watched, on_event, on_status)
+    }) {
+        eprintln!("[hotkey] FATAL: {e} (hotkeys dead)");
+    }
 }
 
 /// Stop all listeners.

@@ -48,7 +48,9 @@ impl ParecMic {
             .ok_or_else(|| "parec stdout unavailable".to_string())?;
         let level_bits = Arc::new(AtomicU32::new(0.0f32.to_bits()));
         let bits = level_bits.clone();
-        std::thread::spawn(move || {
+        // Dedicated reader (long-lived): Builder-based, so a saturated
+        // system fails the mic open instead of panicking the service.
+        crate::runtime::spawn_dedicated("parec-reader", move || {
             // s16le mono in ~12ms slices: RMS per slice, same x8
             // staging as cpal. Small slices keep pill latency low;
             // larger ones batch updates into visible steps. Every
@@ -76,7 +78,7 @@ impl ParecMic {
                 bits.store((rms * 8.0).clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
                 tap_samples(&pcm, 44_100);
             }
-        });
+        })?;
         eprintln!("[mic] parec capture active: {source}");
         Ok(Self {
             level_bits,

@@ -39,16 +39,19 @@ pub fn set_enabled(on: bool) {
 }
 
 /// Play asynchronously. Never blocks the caller; failures only log
-/// (a missing audio device must not break dictation).
+/// (a missing audio device must not break dictation). Pooled: a
+/// saturated system skips the cue instead of panicking on spawn.
 pub fn play(sound: UiSound) {
     if !ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
         return;
     }
-    std::thread::spawn(move || {
+    if let Err(e) = crate::runtime::submit("cue", move || {
         if let Err(e) = play_once(sound) {
             eprintln!("[sound] {e:?}");
         }
-    });
+    }) {
+        eprintln!("[sound] {e}");
+    }
 }
 
 /// Render one note with linear attack + exponential decay, appended

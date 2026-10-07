@@ -4,8 +4,8 @@ use gtk4::{Application, Box as GtkBox, Button, Label, Orientation, Window};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Overlay lifecycle states. Only `Listening` and `Assistant` have
@@ -273,6 +273,12 @@ impl VoiceOverlay {
     /// Show the compact Listening pill.
     pub fn show_listening(&self) {
         self.set_state(OverlayState::Listening);
+    }
+
+    /// Inference is running: contract toward the centre into the
+    /// spinner (no mic feedback in this state).
+    pub fn show_processing(&self) {
+        self.set_state(OverlayState::Processing);
     }
 
     /// Show the expanded Assistant panel.
@@ -576,7 +582,12 @@ impl VoiceOverlay {
                 );
             }
             OverlayState::Listening | OverlayState::Processing | OverlayState::Error => {
-                if next != OverlayState::Listening {
+                // Spinner replaces the mic bars while inferring; the
+                // size change drives the contract animation below.
+                self.inner
+                    .viz
+                    .set_spinning(next == OverlayState::Processing);
+                if next == OverlayState::Error {
                     eprintln!(
                         "[poc] state {next} has no dedicated UI in POC; showing compact pill"
                     );

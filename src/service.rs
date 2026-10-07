@@ -194,6 +194,8 @@ pub fn spawn_hotkey_watcher(db_path: PathBuf, down: DictationHook, up: Dictation
 pub enum PillCmd {
     Show,
     Hide,
+    /// Worker finished (success/empty/fail): hide if generation matches.
+    Done(u64),
     Apply(crate::settings::PillPrefs),
 }
 
