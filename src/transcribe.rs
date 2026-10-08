@@ -702,8 +702,16 @@ fn ensure_sherpa_offline(
         || {
             let f = |n: &str| dir_s.join(n).to_string_lossy().to_string();
             let (out, err) = server_logs("sherpa-offline-server");
+            // The binary defaults to CPU inference even from the CUDA
+            // pack: the provider flag is what actually engages the GPU.
+            let provider_flag = match backend {
+                SherpaBackendSetting::Cuda => "--provider=cuda",
+                SherpaBackendSetting::Cpu => "--provider=cpu",
+            }
+            .to_string();
             let mut args = vec![
                 format!("--port={SHERPA_OFFLINE_PORT}"),
+                provider_flag,
                 format!("--tokens={}", f("tokens.txt")),
                 format!("--encoder={}", f("encoder.int8.onnx")),
                 format!("--decoder={}", f("decoder.int8.onnx")),
@@ -749,8 +757,15 @@ fn ensure_sherpa_online(
         || {
             let f = |n: &str| dir_s.join(n).to_string_lossy().to_string();
             let (out, err) = server_logs("sherpa-online-server");
+            // See offline: the pack binary alone doesn't engage CUDA.
+            let provider_flag = match backend {
+                SherpaBackendSetting::Cuda => "--provider=cuda",
+                SherpaBackendSetting::Cpu => "--provider=cpu",
+            }
+            .to_string();
             let mut args = vec![
                 format!("--port={SHERPA_ONLINE_PORT}"),
+                provider_flag,
                 format!("--tokens={}", f("tokens.txt")),
                 format!("--encoder={}", f("encoder.int8.onnx")),
                 format!("--decoder={}", f("decoder.int8.onnx")),
