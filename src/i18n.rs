@@ -244,10 +244,17 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "stt.sherpa.cuda" => ("CUDA", "CUDA"),
         "group.sttchain" => ("Speech engines", "Motores de voz"),
         "stt.local.add" => ("Add local option", "Añadir opción local"),
-        "stt.models.dictnote" => (
-            "Dictionary hinting only works with OpenAI (whisper) models.",
-            "Las sugerencias del diccionario solo funcionan con modelos OpenAI (whisper).",
+        "stt.models.compatnote" => (
+            "Not all models support dictionary hinting and live streaming (lower latency).",
+            "No todos los modelos admiten sugerencias del diccionario ni streaming en directo (menor latencia).",
         ),
+        "stt.models.full" => ("Fully supported", "Totalmente compatible"),
+        "stt.models.nostream" => ("No live streaming", "Sin streaming en directo"),
+        "stt.models.neither" => (
+            "No live streaming nor dictionary hinting",
+            "Ni streaming en directo ni sugerencias del diccionario",
+        ),
+        "stt.models.nodict" => ("No dictionary hinting", "Sin sugerencias del diccionario"),
         "stt.needle.engine" => ("Needle engine", "Motor Needle"),
         "row.resettodefault" => ("Reset to default", "Restablecer valores"),
         "row.mode" => ("Mode", "Modo"),

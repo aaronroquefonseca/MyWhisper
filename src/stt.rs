@@ -357,6 +357,21 @@ mod lang_tests {
     }
 }
 
+/// Capability matrix: (live streaming, dictionary bias).
+/// Whisper prompts natively; sherpa transducers take hotwords files;
+/// whistle takes keyword files; orukeet/cohere expose neither path.
+pub fn capabilities(entry: &ModelEntry) -> (bool, bool) {
+    match entry.kind {
+        ModelKind::Whisper => (false, true),
+        ModelKind::Whistle => (true, true),
+        ModelKind::Parakeet => match entry.id {
+            "orukeet-v0.1.0" => (false, false),
+            _ if entry.runtime == Some(ParakeetRuntime::Online) => (true, true),
+            _ => (false, true),
+        },
+    }
+}
+
 pub fn find_model(id: &str) -> Option<&'static ModelEntry> {
     WHISPER_MODELS
         .iter()
@@ -653,6 +668,22 @@ pub fn cancel_download(id: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn capability_matrix() {
+        let w = find_model("tiny").unwrap();
+        assert_eq!(capabilities(w), (false, true));
+        let o = find_model("orukeet-v0.1.0").unwrap();
+        assert_eq!(capabilities(o), (false, false));
+        let t = find_model("parakeet-tdt-0.6b-v3").unwrap();
+        assert_eq!(capabilities(t), (false, true));
+        let n = find_model("nemotron-speech-streaming-en-0.6b").unwrap();
+        assert_eq!(capabilities(n), (true, true));
+        let wh = find_model("whistle-v1").unwrap();
+        assert_eq!(capabilities(wh), (true, true));
+    }
+
     use super::*;
 
     #[test]

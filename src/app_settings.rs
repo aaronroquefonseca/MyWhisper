@@ -1287,13 +1287,7 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
         card.set_tooltip_text(Some(m.id));
         let info = GtkBox::new(Orientation::Vertical, 2);
         info.set_hexpand(true);
-        let live = matches!(m.runtime, Some(stt::ParakeetRuntime::Online));
-        let title = format!(
-            "{}{}{}",
-            m.name,
-            if m.recommended { " ★" } else { "" },
-            if live { " · Live" } else { "" }
-        );
+        let title = format!("{}{}", m.name, if m.recommended { " ★" } else { "" });
         let name = Label::new(Some(&title));
         name.add_css_class("row-label");
         name.set_xalign(0.0);
@@ -1303,6 +1297,19 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
         sub.set_xalign(0.0);
         sub.set_wrap(true);
         info.append(&sub);
+        // Capability badge: green when fully supported, red naming
+        // exactly what's missing.
+        let (streaming, dict) = stt::capabilities(m);
+        let (badge, ok) = match (streaming, dict) {
+            (true, true) => (tr("stt.models.full"), true),
+            (true, false) => (tr("stt.models.nodict"), false),
+            (false, true) => (tr("stt.models.nostream"), false),
+            (false, false) => (tr("stt.models.neither"), false),
+        };
+        let cap = Label::new(Some(badge));
+        cap.add_css_class(if ok { "cap-ok" } else { "cap-no" });
+        cap.set_xalign(0.0);
+        info.append(&cap);
         card.append(&info);
 
         if let Some(dl) = stt::download_state(m.id) {
@@ -2294,10 +2301,8 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         }
     }
     let list = GtkBox::new(Orientation::Vertical, 8);
-    // Dictionary hinting is a whisper-decoder feature: only the
-    // OpenAI (whisper) models consume the dictionary. Everywhere
-    // else words still store, they just don't steer transcription.
-    let dict_note = Label::new(Some(tr("stt.models.dictnote")));
+    // Capability overview; per-model badges below name the gaps.
+    let dict_note = Label::new(Some(tr("stt.models.compatnote")));
     dict_note.add_css_class("dim");
     dict_note.set_xalign(0.0);
     dict_note.set_wrap(true);

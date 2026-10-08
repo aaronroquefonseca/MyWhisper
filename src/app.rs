@@ -209,6 +209,14 @@ window {
     color: @app_fg;
     opacity: 0.65;
 }
+.cap-ok {
+    color: #2fa866;
+    font-weight: 500;
+}
+.cap-no {
+    color: #e05252;
+    font-weight: 500;
+}
 entry, textview {
     background: @app_entry_bg;
     color: @app_fg;

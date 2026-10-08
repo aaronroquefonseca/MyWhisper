@@ -80,6 +80,7 @@ pub enum Plan {
     WhistleCli {
         engine: PathBuf,
         model: PathBuf,
+        lang: String,
     },
     CloudOpenAiCompat {
         base: String,
@@ -288,7 +289,11 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
                     "needle engine binary at bin/needle/needle (see Whistle docs)",
                 ));
             }
-            Ok(Plan::WhistleCli { engine, model })
+            Ok(Plan::WhistleCli {
+                engine,
+                model,
+                lang: s.language.clone(),
+            })
         }
         LocalSttProvider::Cohere => Err(
             "Cohere Transcribe has no websocket-server flags in sherpa-onnx v1.13.8 \
@@ -619,13 +624,76 @@ fn whisper_load(model: &Path) -> Result<(), String> {
     }
 }
 
+/// Dictionary hotwords for a sherpa model dir. Only when the dir
+/// carries bpe.vocab (BPE modeling unit): raw words, one per line —
+/// the server encodes them (verified: zymurgy fixed, no crash).
+/// Returns (hotwords-file, extra server args).
+fn sherpa_hotwords(
+    data_dir: &Path,
+    model_dir: &Path,
+    words: &[String],
+) -> (Option<PathBuf>, Vec<String>) {
+    let vocab = model_dir.join("bpe.vocab");
+    if !vocab.exists() {
+        return (None, Vec::new());
+    }
+    let clean: Vec<&str> = words
+        .iter()
+        .map(|w| w.trim())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if clean.is_empty() {
+        return (None, Vec::new());
+    }
+    let name = model_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "model".to_string());
+    let path = data_dir.join("hotwords").join(format!("{name}.txt"));
+    let content = clean.join("\n");
+    let rewrite = std::fs::read_to_string(&path).unwrap_or_default() != content;
+    if rewrite {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::write(&path, &content).is_err() {
+            return (None, Vec::new());
+        }
+    }
+    let args = vec![
+        "--decoding-method=modified_beam_search".to_string(),
+        format!("--hotwords-file={}", path.display()),
+        "--hotwords-score=2.0".to_string(),
+        "--modeling-unit=bpe".to_string(),
+        format!("--bpe-vocab={}", vocab.display()),
+    ];
+    (Some(path), args)
+}
+
+/// Fresh dictionary words for server-side bias (best effort).
+fn load_hint_words(data_dir: &Path) -> Vec<String> {
+    crate::store::Store::open(&data_dir.join("state.db"))
+        .ok()
+        .map(|store| store.load_words().unwrap_or_default())
+        .unwrap_or_default()
+}
+
 fn ensure_sherpa_offline(
     data_dir: &Path,
     backend: SherpaBackendSetting,
     model_dir: &Path,
 ) -> Result<(), String> {
     let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-offline-websocket-server")?;
-    let key = format!("{}|{}", bin.display(), model_dir.display());
+    let words = load_hint_words(data_dir);
+    let (_hw_file, hw_args) = sherpa_hotwords(data_dir, model_dir, &words);
+    let hw_hash = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        hw_args.join("\n").hash(&mut h);
+        format!("{:x}", h.finish())
+    };
+    let key = format!("{}|{}|{hw_hash}", bin.display(), model_dir.display());
     let (bin_s, dir_s) = (bin.clone(), model_dir.to_path_buf());
     ensure_server(
         "sherpa-offline",
@@ -634,16 +702,18 @@ fn ensure_sherpa_offline(
         || {
             let f = |n: &str| dir_s.join(n).to_string_lossy().to_string();
             let (out, err) = server_logs("sherpa-offline-server");
+            let mut args = vec![
+                format!("--port={SHERPA_OFFLINE_PORT}"),
+                format!("--tokens={}", f("tokens.txt")),
+                format!("--encoder={}", f("encoder.int8.onnx")),
+                format!("--decoder={}", f("decoder.int8.onnx")),
+                format!("--joiner={}", f("joiner.int8.onnx")),
+                format!("--num-threads={}", threads_arg()),
+                "--log-file=/tmp/mywhisper-sherpa-offline.log".to_string(),
+            ];
+            args.extend(hw_args);
             Command::new(&bin_s)
-                .args([
-                    format!("--port={SHERPA_OFFLINE_PORT}"),
-                    format!("--tokens={}", f("tokens.txt")),
-                    format!("--encoder={}", f("encoder.int8.onnx")),
-                    format!("--decoder={}", f("decoder.int8.onnx")),
-                    format!("--joiner={}", f("joiner.int8.onnx")),
-                    format!("--num-threads={}", threads_arg()),
-                    "--log-file=/tmp/mywhisper-sherpa-offline.log".to_string(),
-                ])
+                .args(args)
                 .stdin(Stdio::null())
                 .stdout(out)
                 .stderr(err)
@@ -661,7 +731,16 @@ fn ensure_sherpa_online(
     model_dir: &Path,
 ) -> Result<(), String> {
     let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-online-websocket-server")?;
-    let key = format!("{}|{}", bin.display(), model_dir.display());
+    let words = load_hint_words(data_dir);
+    let (_hw_file, hw_args) = sherpa_hotwords(data_dir, model_dir, &words);
+    let hw_hash = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        hw_args.join("\n").hash(&mut h);
+        format!("{:x}", h.finish())
+    };
+    let key = format!("{}|{}|{hw_hash}", bin.display(), model_dir.display());
     let (bin_s, dir_s) = (bin.clone(), model_dir.to_path_buf());
     ensure_server(
         "sherpa-online",
@@ -670,16 +749,18 @@ fn ensure_sherpa_online(
         || {
             let f = |n: &str| dir_s.join(n).to_string_lossy().to_string();
             let (out, err) = server_logs("sherpa-online-server");
+            let mut args = vec![
+                format!("--port={SHERPA_ONLINE_PORT}"),
+                format!("--tokens={}", f("tokens.txt")),
+                format!("--encoder={}", f("encoder.int8.onnx")),
+                format!("--decoder={}", f("decoder.int8.onnx")),
+                format!("--joiner={}", f("joiner.int8.onnx")),
+                format!("--num-threads={}", threads_arg()),
+                "--log-file=/tmp/mywhisper-sherpa-online.log".to_string(),
+            ];
+            args.extend(hw_args);
             Command::new(&bin_s)
-                .args([
-                    format!("--port={SHERPA_ONLINE_PORT}"),
-                    format!("--tokens={}", f("tokens.txt")),
-                    format!("--encoder={}", f("encoder.int8.onnx")),
-                    format!("--decoder={}", f("decoder.int8.onnx")),
-                    format!("--joiner={}", f("joiner.int8.onnx")),
-                    format!("--num-threads={}", threads_arg()),
-                    "--log-file=/tmp/mywhisper-sherpa-online.log".to_string(),
-                ])
+                .args(args)
                 .stdin(Stdio::null())
                 .stdout(out)
                 .stderr(err)
@@ -858,12 +939,41 @@ impl OnlineSession {
 /// RAM-only except one tmpfs staging file (`/dev/shm`, never
 /// persisted): the CLI takes a path, not stdin. Telemetry is forced
 /// off in the child environment (on-device posture).
+/// Dictionary keywords file for needle (`--audio-keywords`, plain
+/// words one per line). /dev/shm: RAM, removed after the utterance.
+fn write_keywords_file(words: &[String]) -> Option<PathBuf> {
+    if !words.iter().any(|w| !w.trim().is_empty()) {
+        return None;
+    }
+    let path = PathBuf::from(format!(
+        "/dev/shm/mywhisper-whistle-kw-{}",
+        std::process::id()
+    ));
+    let content = words
+        .iter()
+        .map(|w| w.trim())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    match std::fs::write(&path, content) {
+        Ok(()) => Some(path),
+        Err(e) => {
+            eprintln!("[stt] whistle keywords: {e}");
+            None
+        }
+    }
+}
+
 pub fn whistle_transcribe(
     engine: &Path,
     model: &Path,
     samples_16k: &[f32],
+    words: &[String],
+    lang: &str,
 ) -> Result<String, String> {
     const WINDOW: usize = 30 * 16_000;
+    // Keywords file once per utterance (dictionary bias).
+    let kw_path = write_keywords_file(words);
     let mut transcripts = Vec::new();
     // Empty slice still decodes once (keeps behavior uniform).
     let chunks: Vec<&[f32]> = if samples_16k.is_empty() {
@@ -874,9 +984,12 @@ pub fn whistle_transcribe(
     for (i, chunk) in chunks.iter().enumerate() {
         let wav = wav_bytes_16k(&audio::f32_to_i16(chunk));
         let path = write_tmpfs_wav(&wav, i)?;
-        let text = whistle_pass(engine, model, &path);
+        let text = whistle_pass(engine, model, &path, kw_path.as_deref(), lang);
         let _ = std::fs::remove_file(&path);
         transcripts.push(text?);
+    }
+    if let Some(kw) = kw_path {
+        let _ = std::fs::remove_file(kw);
     }
     Ok(transcripts.join(" ").trim().to_string())
 }
@@ -894,14 +1007,28 @@ fn write_tmpfs_wav(wav: &[u8], idx: usize) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn whistle_pass(engine: &Path, model: &Path, wav: &Path) -> Result<String, String> {
-    let out = Command::new(engine)
-        .args([
-            "--model",
-            &model.to_string_lossy(),
-            "--audio",
-            &wav.to_string_lossy(),
-        ])
+fn whistle_pass(
+    engine: &Path,
+    model: &Path,
+    wav: &Path,
+    keywords: Option<&Path>,
+    lang: &str,
+) -> Result<String, String> {
+    let mut cmd = Command::new(engine);
+    cmd.args([
+        "--model",
+        &model.to_string_lossy(),
+        "--audio",
+        &wav.to_string_lossy(),
+    ]);
+    if let Some(kw) = keywords {
+        // Decoder-level keyword biasing, plain words one per line.
+        cmd.args(["--audio-keywords", &kw.to_string_lossy()]);
+    }
+    if lang != "auto" && !lang.is_empty() {
+        cmd.args(["--audio-language", lang]);
+    }
+    let out = cmd
         .env("NEEDLE_TELEMETRY", "0")
         .env("DO_NOT_TRACK", "1")
         .stdin(Stdio::null())
@@ -942,6 +1069,246 @@ fn whistle_parse_stdout(stdout: &str) -> Option<String> {
         }
     }
     Some(stdout.to_string())
+}
+
+/// Whistle live session over a FIFO: needle `--audio-stream`
+/// decodes while the hold feeds PCM, committing pieces as they land
+/// (verified: NDJSON `{"text","words","pending"}` per chunk). The
+/// FIFO + /dev/shm staging never touch disk. On any setup failure
+/// the caller falls back to single-file decode.
+pub struct WhistleStream {
+    child: std::process::Child,
+    fifo: PathBuf,
+    writer: Option<std::fs::File>,
+    header_sent: bool,
+    rate: u32,
+    committed: Arc<Mutex<String>>,
+}
+
+impl WhistleStream {
+    pub fn open(
+        engine: &Path,
+        model: &Path,
+        keywords: Option<&Path>,
+        lang: &str,
+    ) -> Result<Self, String> {
+        let fifo = PathBuf::from(format!(
+            "/dev/shm/mywhisper-whistle-{}-{}.wav",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        ));
+        let status = Command::new("mkfifo")
+            .arg(&fifo)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| format!("mkfifo: {e}"))?;
+        if !status.success() {
+            return Err("mkfifo failed".to_string());
+        }
+        let mut cmd = Command::new(engine);
+        cmd.args([
+            "--model",
+            &model.to_string_lossy(),
+            "--audio",
+            &fifo.to_string_lossy(),
+            "--audio-stream",
+            "--audio-chunk",
+            "1",
+        ]);
+        if let Some(kw) = keywords {
+            cmd.args(["--audio-keywords", &kw.to_string_lossy()]);
+        }
+        if lang != "auto" && !lang.is_empty() {
+            cmd.args(["--audio-language", lang]);
+        }
+        let mut child = cmd
+            .env("NEEDLE_TELEMETRY", "0")
+            .env("DO_NOT_TRACK", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("spawn needle stream: {e}"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "needle stdout unavailable".to_string())?;
+        let committed = Arc::new(Mutex::new(String::new()));
+        // Reader: last committed text wins; NDJSON lines.
+        let committed_r = committed.clone();
+        if crate::runtime::submit("whistle-read", move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                    if let Some(t) = v.get("text").and_then(|t| t.as_str()) {
+                        let t = t.trim();
+                        if !t.is_empty() {
+                            if let Ok(mut c) = committed_r.lock() {
+                                *c = t.to_string();
+                            }
+                        }
+                    }
+                }
+            }
+        })
+        .is_err()
+        {
+            let _ = child.kill();
+            let _ = std::fs::remove_file(&fifo);
+            return Err("whistle stream: runtime saturated".to_string());
+        }
+        Ok(Self {
+            child,
+            fifo,
+            writer: None,
+            header_sent: false,
+            rate: 0,
+            committed,
+        })
+    }
+
+    /// Feed source-rate s16 mono. Opens the FIFO on first call (the
+    /// reader side is already waiting); unknown-length WAV header
+    /// convention (0xFFFFFFFF), verified against the binary.
+    pub fn feed(&mut self, pcm: &[i16], rate: u32) -> Result<(), String> {
+        if pcm.is_empty() {
+            return Ok(());
+        }
+        if self.writer.is_none() {
+            // Child must be alive, else open() blocks forever.
+            match self.child.try_wait() {
+                Ok(None) => {}
+                _ => return Err("needle stream died at open".to_string()),
+            }
+            let w = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&self.fifo)
+                .map_err(|e| format!("fifo open: {e}"))?;
+            self.writer = Some(w);
+            self.rate = rate;
+        }
+        use std::io::Write;
+        let w = self.writer.as_mut().unwrap();
+        if !self.header_sent {
+            // RIFF/WAVE, 16-bit mono; lengths unknown (stream).
+            let mut hdr = [0u8; 44];
+            hdr[0..4].copy_from_slice(b"RIFF");
+            hdr[4..8].copy_from_slice(&0xFFFFFFFFu32.to_le_bytes());
+            hdr[8..12].copy_from_slice(b"WAVE");
+            hdr[12..16].copy_from_slice(b"fmt ");
+            hdr[16..20].copy_from_slice(&16u32.to_le_bytes());
+            hdr[20..22].copy_from_slice(&1u16.to_le_bytes());
+            hdr[22..24].copy_from_slice(&1u16.to_le_bytes());
+            hdr[24..28].copy_from_slice(&self.rate.to_le_bytes());
+            hdr[28..32].copy_from_slice(&(self.rate * 2).to_le_bytes());
+            hdr[32..34].copy_from_slice(&2u16.to_le_bytes());
+            hdr[34..36].copy_from_slice(&16u16.to_le_bytes());
+            hdr[36..40].copy_from_slice(b"data");
+            hdr[40..44].copy_from_slice(&0xFFFFFF00u32.to_le_bytes());
+            w.write_all(&hdr).map_err(|e| format!("fifo header: {e}"))?;
+            self.header_sent = true;
+        }
+        let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+        w.write_all(&bytes)
+            .map_err(|e| format!("fifo write: {e}"))?;
+        Ok(())
+    }
+
+    /// End the stream: close the FIFO (EOF), wait for the decoder
+    /// (bounded), return the last committed text.
+    pub fn finish(mut self) -> Result<String, String> {
+        drop(self.writer.take());
+        // Bounded wait: the tail is short, the decoder streams.
+        let mut waited = 0;
+        let status = loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) => {
+                    waited += 1;
+                    if waited >= 300 {
+                        break None;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => return Err(format!("needle wait: {e}")),
+            }
+        };
+        match status {
+            None => {
+                let _ = self.child.kill();
+                eprintln!("[stt] needle stream hung; killed, using committed text");
+            }
+            Some(status) if !status.success() => {
+                eprintln!("[stt] needle stream exit: {status}");
+            }
+            _ => {}
+        }
+        let _ = std::fs::remove_file(&self.fifo);
+        let text = self.committed.lock().map(|c| c.clone()).unwrap_or_default();
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return Err("whistle stream produced nothing".to_string());
+        }
+        Ok(text)
+    }
+}
+
+impl Drop for WhistleStream {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = std::fs::remove_file(&self.fifo);
+    }
+}
+
+/// Whistle FIFO pump: source-rate PCM straight to the live decoder
+/// (no resample — needle takes any rate). Snapshot feeding keeps the
+/// recorder whole for the file fallback.
+fn pump_whistle(
+    mut stream: WhistleStream,
+    rec: Arc<Mutex<Recorder>>,
+    stop: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+    tx: mpsc::Sender<Result<String, String>>,
+) {
+    let mut consumed = 0usize;
+    while !stop.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(200));
+        // Snapshot, not drain: a failed stream falls back to file
+        // engines with the whole utterance intact.
+        let (snap_len, chunk, rate) = rec
+            .lock()
+            .map(|r| {
+                let snap = r.snapshot();
+                let chunk = if snap.len() > consumed {
+                    snap[consumed..].to_vec()
+                } else {
+                    Vec::new()
+                };
+                (snap.len(), chunk, r.rate())
+            })
+            .unwrap_or_default();
+        if chunk.is_empty() || rate == 0 {
+            // Nothing new, or tap hasn't reported a rate yet: keep
+            // the backlog for the next tick.
+            continue;
+        }
+        consumed = snap_len;
+        if let Err(e) = stream.feed(&chunk, rate) {
+            let _ = tx.send(Err(e));
+            return;
+        }
+    }
+    if cancel.load(Ordering::Relaxed) {
+        let _ = tx.send(Err("cancelled".to_string()));
+        return; // stream dropped: child killed, fifo removed
+    }
+    let _ = tx.send(stream.finish());
 }
 
 /// Offline (whole-utterance) transcription over one WS connection.
@@ -1279,6 +1646,8 @@ struct LiveUtterance {
     spec: Option<SpecHandle>,
     /// Streaming engines: pump thread exit + final text channel.
     result_rx: Option<mpsc::Receiver<Result<String, String>>>,
+    /// Whistle live stream: pump-owned finish, same channel shape.
+    whistle_rx: Option<mpsc::Receiver<Result<String, String>>>,
     /// Primary plan (drives session setup) + named fallbacks, in
     /// chain order. The worker tries each until one answers.
     plan: Plan,
@@ -1409,12 +1778,52 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
     } else {
         None
     };
+    // Whistle live stream (FIFO + --audio-stream): decode overlaps the
+    // hold; the pump below feeds source-rate PCM as tapped. Setup
+    // failure falls back to single-file decode in the worker.
+    let whistle_rx = match &plan {
+        Plan::WhistleCli {
+            engine,
+            model,
+            lang,
+        } => {
+            let words = load_hint_words(&data_dir);
+            let kw = write_keywords_file(&words);
+            let kw_cleanup = kw.clone();
+            match WhistleStream::open(engine, model, kw.as_deref(), lang) {
+                Ok(stream) => {
+                    let (tx, rx) = mpsc::channel();
+                    let rec = recorder.clone();
+                    let stop_pump = stop.clone();
+                    let cancel_pump = cancel.clone();
+                    if let Err(e) = crate::runtime::submit("whistle-pump", move || {
+                        pump_whistle(stream, rec, stop_pump, cancel_pump, tx);
+                        if let Some(kw) = kw_cleanup {
+                            let _ = std::fs::remove_file(kw);
+                        }
+                    }) {
+                        eprintln!("[stt] press: {e}");
+                    }
+                    Some(rx)
+                }
+                Err(e) => {
+                    eprintln!("[stt] whistle stream unavailable ({e}); file fallback");
+                    if let Some(kw) = kw {
+                        let _ = std::fs::remove_file(kw);
+                    }
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
     *live().lock().unwrap() = Some(LiveUtterance {
         recorder,
         stop,
         cancel,
         spec,
         result_rx,
+        whistle_rx,
         plan,
         fallbacks,
         started: Instant::now(),
@@ -1686,6 +2095,17 @@ fn finish_session(
             }
         }
     }
+    if let Some(rx) = sess.whistle_rx {
+        // Live needle stream: committed text arrives as audio flows;
+        // failure falls back to single-file decode below.
+        match rx.recv().map_err(|_| "whistle pump died".to_string())? {
+            Ok(text) => return Ok(empty_to_none(text).map(|t| (t, secs, None))),
+            Err(e) if e == "cancelled" => return Ok(None),
+            Err(e) => {
+                eprintln!("[stt] whistle stream failed ({e}); file fallback");
+            }
+        }
+    }
     let (pcm, rate) = sess.recorder.lock().unwrap().finish();
     if rate == 0 || pcm.is_empty() {
         eprintln!("[stt] release: no audio captured (mic unavailable or sim source)");
@@ -1796,7 +2216,11 @@ fn transcribe_blocking(plan: &Plan, f32s: &[f32], words: &[String]) -> Result<St
             )
         }
         Plan::SherpaOffline { .. } => sherpa_offline_transcribe(f32s),
-        Plan::WhistleCli { engine, model } => whistle_transcribe(engine, model, f32s),
+        Plan::WhistleCli {
+            engine,
+            model,
+            lang,
+        } => whistle_transcribe(engine, model, f32s, words, lang),
         Plan::SherpaOnline { .. } => {
             // Release without a pump (shouldn't happen): one-shot.
             let mut s = OnlineSession::open()?;
@@ -2337,7 +2761,7 @@ mod tests {
         let engine = Path::new("needle");
         let model = Path::new("whistle.cact");
         // No engine on disk: error names the failure, no panic.
-        assert!(whistle_pass(engine, model, Path::new("/nonexistent.wav")).is_err());
+        assert!(whistle_pass(engine, model, Path::new("/nonexistent.wav"), None, "auto").is_err());
     }
 
     #[test]
@@ -2431,6 +2855,40 @@ mod tests {
         let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].0, "ok-cloud");
+    }
+
+    /// Live whistle FIFO check (needs needle + model on disk):
+    /// synthetic PCM through the real streaming session.
+    /// Ignored by default; run explicitly with files present.
+    #[test]
+    #[ignore]
+    fn whistle_stream_roundtrip() {
+        let _ = crate::runtime::init();
+        let home = std::env::var("HOME").unwrap();
+        let data = PathBuf::from(format!("{home}/.local/share/mywhisper"));
+        let engine = data.join("bin/needle/needle");
+        let model = data.join("models/whistle/whistle-v1/whistle.cact");
+        if !engine.exists() || !model.exists() {
+            eprintln!("SKIP: needle/model missing");
+            return;
+        }
+        // espeak speech at 16 kHz (built by the shell harness
+        // into /tmp/wtest16k.wav);decodes to real words.
+        let pcm: Vec<i16> = {
+            let raw = std::fs::read("/tmp/wtest16k.wav").expect("harness wav");
+            assert!(raw.len() > 44);
+            raw[44..]
+                .chunks_exact(2)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                .collect()
+        };
+        let mut stream = WhistleStream::open(&engine, &model, None, "auto").expect("open");
+        for chunk in pcm.chunks(8000) {
+            stream.feed(chunk, 16_000).expect("feed");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let text = stream.finish().expect("finish");
+        eprintln!("whistle stream text: {text:?}");
     }
 
     /// Live engine check (needs sherpa-cpu pack + orukeet on disk):
