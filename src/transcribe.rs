@@ -1498,10 +1498,19 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
     let on_done = Arc::new(Mutex::new(on_done));
     let od = on_done.clone();
     if let Err(e) = crate::runtime::submit("stt-worker", move || {
-        // Dictionary words for STT bias (fresh read; empty disables).
+        // Dictionary hints for STT bias (fresh read; empty disables):
+        // words plus every snippet trigger, like the reference.
         let words = crate::store::Store::open(&sess.data_dir.join("state.db"))
             .ok()
-            .map(|store| store.load_words().unwrap_or_default())
+            .map(|store| {
+                let mut hints = store.load_words().unwrap_or_default();
+                if let Ok(snips) = store.load_snippets() {
+                    for sn in snips {
+                        hints.extend(sn.triggers());
+                    }
+                }
+                hints
+            })
             .unwrap_or_default();
         let out = finish_session(sess, &words);
         BUSY.store(false, Ordering::SeqCst);
@@ -1991,7 +2000,11 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
         .dictionary
         .snippets
         .iter()
-        .map(|s| (s.trigger.clone(), s.replacement.clone()))
+        .flat_map(|s| {
+            s.triggers()
+                .into_iter()
+                .map(|t| (t, s.replacement.clone()))
+        })
         .collect();
     let expanded = crate::textnorm::expand_snippets(&raw, &snips);
     if expanded != raw {

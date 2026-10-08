@@ -642,8 +642,22 @@ impl Default for SystemSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snippet {
+    /// Comma-separated trigger list ("ask, aks, axe"). Identity for
+    /// delete/update is the whole field; matching uses [`Snippet::triggers`].
     pub trigger: String,
     pub replacement: String,
+}
+
+impl Snippet {
+    /// Individual triggers: comma-split, trimmed, empties dropped.
+    /// Commas can't appear inside a trigger by construction.
+    pub fn triggers(&self) -> Vec<String> {
+        self.trigger
+            .split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -726,5 +740,24 @@ mod tests {
         ] {
             assert!(!p.default_model().is_empty());
         }
+    }
+}
+
+#[cfg(test)]
+mod snippet_tests {
+    use super::*;
+
+    #[test]
+    fn triggers_split_commas() {
+        let s = Snippet {
+            trigger: " omw, on my way ,,  ".to_string(),
+            replacement: "On my way!".to_string(),
+        };
+        assert_eq!(s.triggers(), vec!["omw".to_string(), "on my way".to_string()]);
+        let single = Snippet {
+            trigger: "brb".to_string(),
+            replacement: "x".to_string(),
+        };
+        assert_eq!(single.triggers(), vec!["brb".to_string()]);
     }
 }

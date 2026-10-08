@@ -595,7 +595,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "No snippets yet. Type a trigger anywhere to expand it.",
             "Aún no hay fragmentos. Escribe un disparador en cualquier lugar para expandirlo.",
         ),
-        "dict.snippets.trigger" => ("Trigger, e.g. omw", "Disparador, p. ej. omw"),
+        "dict.snippets.trigger" => (
+            "Triggers, comma-separated, e.g. omw, on my way",
+            "Disparadores separados por comas, p. ej. omw, on my way",
+        ),
         "dict.snippets.create" => ("Create snippet", "Crear fragmento"),
         _ => return None,
     })
