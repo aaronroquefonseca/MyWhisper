@@ -1931,7 +1931,9 @@ fn llm_cleanup(
             // Sampling mirrors OpenWhispr's local bridge: pinned
             // temp 0 plus top_p/top_k/repeat_penalty. The penalty is
             // the anti-echo lever (temp 0.7 was tried; theirs pins 0).
-            let body = serde_json::json!({
+            // keep_alive rides along unless the entry leaves it blank
+            // (Ollama server default).
+            let mut body = serde_json::json!({
                 "model": entry.model,
                 "stream": false,
                 "options": {
@@ -1945,6 +1947,9 @@ fn llm_cleanup(
                     {"role": "user", "content": user},
                 ],
             });
+            if !entry.keep_alive.trim().is_empty() {
+                body["keep_alive"] = serde_json::Value::String(entry.keep_alive.trim().to_string());
+            }
             let url = format!("{}/api/chat", entry.url.trim_end_matches('/'));
             let text = http_post_json(&url, &[], &body)?;
             let v: serde_json::Value =

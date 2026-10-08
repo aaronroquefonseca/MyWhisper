@@ -2627,6 +2627,20 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     root
 }
 
+/// Ollama keep-alive options, parallel to KEEP_ALIVE_VALUES.
+const KEEP_ALIVE_LABELS: &[&str] = &[
+    "Default (Ollama default)",
+    "Until server reboot (-1)",
+    "Unload immediately (0)",
+    "5m",
+    "15m",
+    "30m",
+    "2h",
+    "5h",
+    "24h",
+];
+const KEEP_ALIVE_VALUES: &[&str] = &["", "-1", "0", "5m", "15m", "30m", "2h", "5h", "24h"];
+
 /// Shared handles of the add/edit form, so list rows can refill it.
 #[derive(Clone)]
 struct LmForm {
@@ -2637,6 +2651,7 @@ struct LmForm {
     key_e: Entry,
     provider_dd: DropDown,
     kind_dd: DropDown,
+    keepalive_dd: DropDown,
     add_btn: Button,
     cancel_btn: Button,
     editing: Rc<RefCell<Option<String>>>,
@@ -2734,6 +2749,12 @@ fn fill_lm_chain(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
                 form.ollama_model_e.set_text(&e.model);
                 form.cloud_model_e.set_text(&e.model);
                 form.key_e.set_text(&e.api_key);
+                form.keepalive_dd.set_selected(
+                    KEEP_ALIVE_VALUES
+                        .iter()
+                        .position(|v| *v == e.keep_alive.trim())
+                        .unwrap_or(0) as u32,
+                );
                 form.provider_dd.set_selected(match e.provider {
                     crate::settings::CloudLlm::Groq => 0,
                     crate::settings::CloudLlm::OpenRouter => 1,
@@ -2831,6 +2852,11 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     let ollama_box = GtkBox::new(Orientation::Vertical, 8);
     let cloud_box = GtkBox::new(Orientation::Vertical, 8);
     let local_box = GtkBox::new(Orientation::Vertical, 8);
+    let keepalive_dd = DropDown::new(
+        Some(StringList::new(KEEP_ALIVE_LABELS)),
+        None::<gtk4::Expression>,
+    );
+    keepalive_dd.set_valign(gtk4::Align::Center);
     {
         let (b, _) = row(tr("row.ollamaurl"));
         b.append(&url_e);
@@ -2838,6 +2864,65 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         let (b, _) = row(tr("row.ollamamodel"));
         b.append(&ollama_model_e);
         ollama_box.append(&b);
+        let (b, _) = row(tr("row.keepalive"));
+        b.append(&keepalive_dd);
+        ollama_box.append(&b);
+        let update_btn = Button::with_label(tr("action.updatenow"));
+        update_btn.set_halign(gtk4::Align::End);
+        {
+            let url_e = url_e.clone();
+            let ollama_model_e = ollama_model_e.clone();
+            let keepalive_dd = keepalive_dd.clone();
+            update_btn.connect_clicked(move |_| {
+                let url = url_e.text().trim().to_string();
+                let model = ollama_model_e.text().trim().to_string();
+                if url.is_empty() || model.is_empty() {
+                    eprintln!("[lm] update now: url/model empty");
+                    return;
+                }
+                let keep = KEEP_ALIVE_VALUES
+                    .get(keepalive_dd.selected() as usize)
+                    .copied()
+                    .unwrap_or("");
+                let body = serde_json::json!({
+                    "model": model,
+                    "stream": false,
+                    "messages": [{"role": "user", "content": "hi"}],
+                });
+                // Send the selected keep-alive with a minimal ping;
+                // output ignored. Best effort, logged.
+                let url_done = url.clone();
+                if let Err(e) = crate::runtime::submit("ollama-ping", move || {
+                    let mut body = body.clone();
+                    if !keep.is_empty() {
+                        body["keep_alive"] = serde_json::Value::String(keep.to_string());
+                    }
+                    let endpoint = format!("{}/api/chat", url_done.trim_end_matches('/'));
+                    let client = match reqwest::blocking::Client::builder()
+                        .timeout(std::time::Duration::from_secs(60))
+                        .build()
+                    {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("[lm] update now: {e}");
+                            return;
+                        }
+                    };
+                    match client
+                        .post(&endpoint)
+                        .header("Content-Type", "application/json")
+                        .body(body.to_string())
+                        .send()
+                    {
+                        Ok(res) => eprintln!("[lm] update now: http {}", res.status()),
+                        Err(e) => eprintln!("[lm] update now: {e}"),
+                    }
+                }) {
+                    eprintln!("[lm] update now: {e}");
+                }
+            });
+        }
+        ollama_box.append(&update_btn);
     }
     {
         let (b, _) = row(tr("row.provider"));
@@ -2921,6 +3006,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         key_e: key_e.clone(),
         provider_dd: provider_dd.clone(),
         kind_dd: kind_dd.clone(),
+        keepalive_dd: keepalive_dd.clone(),
         add_btn: add_btn.clone(),
         cancel_btn: cancel_btn.clone(),
         editing: Rc::new(RefCell::new(None)),
@@ -2938,6 +3024,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
             form.key_e.set_text("");
             form.url_e.set_text("http://127.0.0.1:11434");
             form.ollama_model_e.set_text("gemma4:e4b");
+            form.keepalive_dd.set_selected(0);
             form.provider_dd.set_selected(2);
             form.cloud_model_e
                 .set_text(CloudLlm::OpenAI.default_model());
@@ -2979,6 +3066,11 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
             } else {
                 ollama_model_e.text().to_string()
             };
+            let keep_alive = KEEP_ALIVE_VALUES
+                .get(form.keepalive_dd.selected() as usize)
+                .copied()
+                .unwrap_or("")
+                .to_string();
             let mut entry = LlmEntry {
                 id: String::new(),
                 name: name_e.text().to_string(),
@@ -2988,6 +3080,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
                 model,
                 provider,
                 api_key: key_e.text().to_string(),
+                keep_alive,
             };
             if entry.name.trim().is_empty() {
                 entry.name = match kind {

@@ -539,6 +539,10 @@ pub struct LlmEntry {
     /// Cloud only.
     pub provider: CloudLlm,
     pub api_key: String,
+    /// Ollama only: keep-alive («» = server default, else -1, 0,
+    /// 5m, 15m, 30m, 2h, 5h, 24h). Sent on every request.
+    #[serde(default)]
+    pub keep_alive: String,
 }
 
 impl LlmEntry {
@@ -552,12 +556,20 @@ impl LlmEntry {
             model: model.to_string(),
             provider: CloudLlm::OpenAI,
             api_key: String::new(),
+            keep_alive: String::new(),
         }
     }
 
     pub fn summary(&self) -> String {
         match self.kind {
-            LlmKind::Ollama => format!("{} · {}", self.url, self.model),
+            LlmKind::Ollama => {
+                let base = format!("{} · {}", self.url, self.model);
+                if self.keep_alive.trim().is_empty() {
+                    base
+                } else {
+                    format!("{} · keep {}", base, self.keep_alive.trim())
+                }
+            }
             LlmKind::Local => self.model.clone(),
             LlmKind::Cloud => format!("{} · {}", self.provider.name(), self.model),
         }

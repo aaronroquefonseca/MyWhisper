@@ -271,6 +271,8 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.ollamamodel" => ("Ollama model", "Modelo Ollama"),
         "row.localmodel" => ("Local model", "Modelo local"),
         "row.name" => ("Name", "Nombre"),
+        "row.keepalive" => ("Keep alive", "Mantener activo"),
+        "action.updatenow" => ("Update now", "Actualizar ahora"),
         "action.restore" => ("Restore default", "Restaurar original"),
         "row.lmtype" => ("Type", "Tipo"),
         "group.lmadd" => ("Add option", "Añadir opción"),
