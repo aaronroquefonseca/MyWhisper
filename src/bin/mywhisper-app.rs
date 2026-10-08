@@ -163,7 +163,7 @@ fn run_headless(
         cancel.clone(),
     );
     mywhisper::service::spawn_hotkey_watcher(db_path.clone(), down, up, cancel);
-    mywhisper::service::spawn_pill_watcher(db_path, tx.clone());
+    mywhisper::service::spawn_pill_watcher(db_path.clone(), tx.clone());
     // Fixed task runtime first: every background job below flows
     // through it (bounded pool, no panicking spawns). If even this
     // fails the box cannot run threads at all: fail loud, not limp.
@@ -223,6 +223,13 @@ fn run_headless(
         let gen_hide = ugen.clone();
         let tx_done = tx.clone();
         gtk4::glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+            // Live preview drain: pump-published partials reach the
+            // pill here (option-gated at the pumps; silent otherwise).
+            if let Some(text) = mywhisper::transcribe::take_live_text() {
+                if !text.trim().is_empty() {
+                    overlay.set_live_text(&text);
+                }
+            }
             if let Ok(rx) = rx.lock() {
                 while let Ok(cmd) = rx.try_recv() {
                     match cmd {

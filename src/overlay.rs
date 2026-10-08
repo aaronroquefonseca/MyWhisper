@@ -112,6 +112,8 @@ struct Inner {
     body: Label,
     viz: Visualizer,
     state: Cell<OverlayState>,
+    /// First-words reconfigure done for this utterance.
+    live_configured: Cell<bool>,
     /// Lock-free mirror of `state` for threads that may not touch GTK
     /// (e.g. a future hotkey listener).
     mirror: Arc<AtomicU8>,
@@ -223,6 +225,7 @@ impl VoiceOverlay {
                 body,
                 viz,
                 state: Cell::new(OverlayState::Hidden),
+                live_configured: Cell::new(false),
                 mirror: Arc::new(AtomicU8::new(OverlayState::Hidden.code())),
                 anim_gen: Cell::new(0),
                 last_compact: Cell::new((0, 0)),
@@ -272,7 +275,37 @@ impl VoiceOverlay {
 
     /// Show the compact Listening pill.
     pub fn show_listening(&self) {
+        self.clear_live_text();
         self.set_state(OverlayState::Listening);
+    }
+
+    /// Live transcription preview (streaming models, option-gated).
+    /// The surface never grows taller after first configure on this
+    /// stack, so the first words re-present it once at tall size
+    /// (one flicker-free reconfigure: same content, new size).
+    /// Width follows text live through content sizing.
+    pub fn set_live_text(&self, text: &str) {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let tail = if words.len() > 12 {
+            words[words.len() - 12..].join(" ")
+        } else {
+            words.join(" ")
+        };
+        let first = !self.inner.live_configured.get();
+        self.inner.viz.set_live_text(Some(tail));
+        if first {
+            self.inner.live_configured.set(true);
+            // Fresh configure at tall size: hide + present re-runs
+            // first-configure with the text row included.
+            self.inner.window.set_visible(false);
+            self.inner.window.present();
+        }
+    }
+
+    /// Clear live words (release/hide retire the flag too).
+    fn clear_live_text(&self) {
+        self.inner.viz.set_live_text(None);
+        self.inner.live_configured.set(false);
     }
 
     /// Inference is running: contract toward the centre into the
@@ -563,6 +596,11 @@ impl VoiceOverlay {
         // Capture follows visibility exactly: open on any shown
         // state, drop on hide. No idle-open mic, ever.
         self.inner.viz.set_mic_active(next != OverlayState::Hidden);
+        // Live words belong to Listening only: release (Processing)
+        // and hide retire them with the state.
+        if next != OverlayState::Listening {
+            self.clear_live_text();
+        }
         eprintln!("[poc] overlay state: {prev} -> {next}");
 
         match next {

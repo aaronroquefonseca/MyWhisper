@@ -220,6 +220,8 @@ struct VizState {
     /// Processing spinner: replaces bars + ornament while inference
     /// runs (no mic feedback in this mode).
     spinning: bool,
+    /// Live preview text (None = none shown).
+    live_text: Option<String>,
     /// Morph 0 (bars) -> 1 (spinner), animated in tick so the swap
     /// reads as one motion instead of a content pop.
     proc_blend: f32,
@@ -247,6 +249,10 @@ pub struct Visualizer {
 impl Visualizer {
     pub fn new() -> Self {
         let area = DrawingArea::new();
+        // Fill the box when it grows (live preview); identical when
+        // the window matches content, as usual.
+        area.set_hexpand(true);
+        area.set_vexpand(true);
         let state = Rc::new(RefCell::new(VizState {
             mode: VizMode::Tape,
             theme: VizTheme::White,
@@ -255,6 +261,7 @@ impl Visualizer {
             bar_count: 11,
             lane_max: DEFAULT_LANE_MAX_PX,
             spinning: false,
+            live_text: None,
             proc_blend: 0.0,
             frozen: Vec::new(),
             sim: SimCadence::Lively,
@@ -376,6 +383,16 @@ impl Visualizer {
         eprintln!("[poc] viz burst triggered");
     }
 
+    /// Live preview text (None clears). Sizing follows it live;
+    /// height changes materialize through the overlay's re-present.
+    pub fn set_live_text(&self, text: Option<String>) {
+        let mut st = self.state.borrow_mut();
+        if st.live_text != text {
+            st.live_text = text;
+            size_area(&self.area, &st);
+        }
+    }
+
     /// Processing spinner on/off. Shrinks the requisition so the
     /// pill contracts toward its centre when inference starts.
     /// Freezes current bar heights: the morph below shrinks them.
@@ -425,8 +442,34 @@ fn area_width(st: &VizState) -> i32 {
     (ornament_width(st.ornament) + gap + bars_width(st.bar_count)).ceil() as i32
 }
 
+/// Preview row height: text line + breathing room.
+const LIVE_TEXT_HEIGHT: i32 = 22;
+
+/// Rough text width (7px/char at 13pt Sans): lets the area request
+/// — and the content-sized surface — follow longer partials.
+fn live_text_width(st: &VizState) -> i32 {
+    let Some(text) = st.live_text.as_ref() else {
+        return 0;
+    };
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let tail = if words.len() > 12 {
+        words[words.len() - 12..].join(" ")
+    } else {
+        words.join(" ")
+    };
+    tail.chars().count() as i32 * 7 + 16
+}
+
 fn size_area(area: &DrawingArea, st: &VizState) {
-    area.set_size_request(area_width(st), st.lane_max.ceil() as i32 + LANE_PADDING_PX);
+    let extra = if st.live_text.is_some() {
+        LIVE_TEXT_HEIGHT
+    } else {
+        0
+    };
+    area.set_size_request(
+        area_width(st).max(live_text_width(st)),
+        st.lane_max.ceil() as i32 + LANE_PADDING_PX + extra,
+    );
     area.queue_resize();
 }
 
@@ -541,15 +584,45 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, st: &VizState) {
     cr.set_source_rgba(r, g, b, a);
     cr.set_line_cap(cairo::LineCap::Round);
 
+    // Preview row on top; the scene below shifts down to match
+    // size_area exactly.
+    let live_h = if st.live_text.is_some() {
+        if let Some(text) = st.live_text.as_ref() {
+            let words: Vec<&str> = text.split_whitespace().collect();
+            let tail = if words.len() > 12 {
+                words[words.len() - 12..].join(" ")
+            } else {
+                words.join(" ")
+            };
+            if !tail.is_empty() {
+                cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+                cr.set_font_size(13.0);
+                if let Ok(ext) = cr.text_extents(&tail) {
+                    let tx = (width - ext.width()) / 2.0 - ext.x_bearing();
+                    cr.move_to(tx, 15.0);
+                    let _ = cr.show_text(&tail);
+                }
+            }
+        }
+        LIVE_TEXT_HEIGHT as f64
+    } else {
+        0.0
+    };
+    let _ = cr.save();
+    cr.translate(0.0, live_h);
+    let height = height - live_h;
+
     // Processing morph: frozen bars squeeze toward the centre and
     // shrink while the spinner fades in over them. One motion, no pop.
     let blend = st.proc_blend;
     if blend > 0.0 {
         if blend < 1.0 {
             draw_morph(cr, width, height, st, blend);
+            let _ = cr.restore();
             return;
         }
         draw_spinner(cr, width, height, st.phase, 1.0);
+        let _ = cr.restore();
         return;
     }
 

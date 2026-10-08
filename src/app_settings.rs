@@ -58,15 +58,6 @@ fn row(label: &str) -> (GtkBox, Label) {
     (b, l)
 }
 
-fn switch_row(parent: &GtkBox, label: &str, active: bool) {
-    let (b, _) = row(label);
-    let sw = Switch::new();
-    sw.set_active(active);
-    sw.set_sensitive(false); // not wired yet
-    sw.set_valign(gtk4::Align::Center);
-    b.append(&sw);
-    parent.append(&b);
-}
 
 fn spin_row(parent: &GtkBox, label: &str, value: f64, min: f64, max: f64, step: f64) {
     let (b, _) = row(label);
@@ -2546,11 +2537,30 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
             child = c.next_sibling();
         }
     }
-    switch_row(
-        &rows,
-        tr("row.livepreview"),
-        state.settings.borrow().stt.live_preview,
-    );
+    {
+        let (b, _) = row(tr("row.livepreview"));
+        let sw = Switch::new();
+        sw.set_active(state.settings.borrow().stt.live_preview);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state.settings.borrow_mut().stt.live_preview = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
+    // Streaming-only: file-based engines have nothing to preview.
+    {
+        let note = Label::new(Some(tr("stt.live.note")));
+        note.add_css_class("dim");
+        note.set_xalign(0.0);
+        note.set_wrap(true);
+        rows.append(&note);
+    }
     root.append(&card);
 
     // ---- Speculative streaming (whisper only, opt-in) ----

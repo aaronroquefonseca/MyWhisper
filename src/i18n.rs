@@ -277,6 +277,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.specupdate" => ("Update every (s)", "Actualizar cada (s)"),
         "row.specoverlap" => ("Overlap (s)", "Solapamiento (s)"),
         "row.livepreview" => ("Live transcription preview", "Vista previa en vivo"),
+        "stt.live.note" => (
+            "Only streaming models preview live (lower latency as you speak).",
+            "Solo los modelos con streaming muestran vista previa en vivo (menor latencia al hablar).",
+        ),
         "row.ollamaurl" => ("Ollama URL", "URL de Ollama"),
         "row.ollamamodel" => ("Ollama model", "Modelo Ollama"),
         "row.localmodel" => ("Local model", "Modelo local"),

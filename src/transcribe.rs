@@ -867,6 +867,8 @@ pub struct OnlineSession {
     /// Current (unfinished) segment text.
     current: String,
     read_timeout: Duration,
+    /// Live pill preview: publish transcript() on change.
+    pub preview: bool,
 }
 
 fn ws_read_timeout(ws: &mut Ws, timeout: Duration) {
@@ -886,6 +888,7 @@ impl OnlineSession {
             segments: Vec::new(),
             current: String::new(),
             read_timeout,
+            preview: false,
         })
     }
 
@@ -953,6 +956,12 @@ impl OnlineSession {
                             }
                         }
                         Err(e) => eprintln!("[stt] {e}"),
+                    }
+                    if self.preview {
+                        let full = self.transcript();
+                        if !full.trim().is_empty() {
+                            set_live_text(full);
+                        }
                     }
                     continue;
                 }
@@ -1339,6 +1348,7 @@ fn pump_whistle(
     rec: Arc<Mutex<Recorder>>,
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
+    preview: bool,
     tx: mpsc::Sender<Result<String, String>>,
 ) {
     let mut consumed = 0usize;
@@ -1367,6 +1377,13 @@ fn pump_whistle(
         if let Err(e) = stream.feed(&chunk, rate) {
             let _ = tx.send(Err(e));
             return;
+        }
+        if preview {
+            if let Ok(c) = stream.committed.lock() {
+                if !c.trim().is_empty() {
+                    set_live_text(c.clone());
+                }
+            }
         }
     }
     if cancel.load(Ordering::Relaxed) {
@@ -1738,6 +1755,29 @@ struct LiveUtterance {
 static LIVE: OnceLock<Mutex<Option<LiveUtterance>>> = OnceLock::new();
 static BUSY: AtomicBool = AtomicBool::new(false);
 
+/// Latest live-preview text for the pill drain loop. Pumps overwrite
+/// on change; the drain takes (clears). Empty = nothing new.
+static LIVE_TEXT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn live_slot() -> &'static Mutex<Option<String>> {
+    LIVE_TEXT.get_or_init(|| Mutex::new(None))
+}
+
+/// Publish a preview update (streaming pumps, option-gated by them).
+pub fn set_live_text(text: String) {
+    if let Ok(mut slot) = live_slot().lock() {
+        if slot.as_ref() != Some(&text) {
+            *slot = Some(text);
+        }
+    }
+}
+
+/// Drain one pending preview update for the pill. Returns None when
+/// quiet (or disarmed).
+pub fn take_live_text() -> Option<String> {
+    live_slot().lock().ok().and_then(|mut s| s.take())
+}
+
 fn live() -> &'static Mutex<Option<LiveUtterance>> {
     LIVE.get_or_init(|| Mutex::new(None))
 }
@@ -1819,7 +1859,10 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
         None
     };
     let result_rx = if plan.streaming() {
-        match OnlineSession::open() {
+        match OnlineSession::open().map(|mut session| {
+            session.preview = stt.live_preview;
+            session
+        }) {
             Ok(session) => {
                 let (tx, rx) = mpsc::channel();
                 let rec = recorder.clone();
@@ -1861,8 +1904,9 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
                     let rec = recorder.clone();
                     let stop_pump = stop.clone();
                     let cancel_pump = cancel.clone();
+                    let preview = stt.live_preview;
                     if let Err(e) = crate::runtime::submit("whistle-pump", move || {
-                        pump_whistle(stream, rec, stop_pump, cancel_pump, tx);
+                        pump_whistle(stream, rec, stop_pump, cancel_pump, preview, tx);
                         if let Some(kw) = kw_cleanup {
                             let _ = std::fs::remove_file(kw);
                         }
@@ -2754,6 +2798,7 @@ mod tests {
         // Two endpointed segments + trailing partial: the 2-minute
         // bug was keeping only the last message.
         let mut sess = OnlineSession {
+            preview: false,
             ws: None,
             segments: Vec::new(),
             current: String::new(),
