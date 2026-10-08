@@ -556,6 +556,16 @@ pub struct LlmEntry {
     /// 5m, 15m, 30m, 2h, 5h, 24h). Sent on every request.
     #[serde(default)]
     pub keep_alive: String,
+    /// Ollama context window (tokens). None = server default;
+    /// smaller reserves less memory (cleanup prompts are small).
+    #[serde(default)]
+    pub num_ctx: Option<u32>,
+    /// Reasoning preference: None = model default (param omitted),
+    /// Some(true/false) = forced. Ollama `think`, Claude extended
+    /// thinking (10k budget), Gemini dynamic budget (-1) / off (0);
+    /// other providers ignore it. Old stored bools read as forced.
+    #[serde(default)]
+    pub thinking: Option<bool>,
 }
 
 impl LlmEntry {
@@ -570,6 +580,8 @@ impl LlmEntry {
             provider: CloudLlm::OpenAI,
             api_key: String::new(),
             keep_alive: String::new(),
+            num_ctx: None,
+            thinking: None,
         }
     }
 

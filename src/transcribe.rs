@@ -2487,6 +2487,13 @@ fn llm_cleanup(
                     {"role": "user", "content": user},
                 ],
             });
+            // Tri-state: omit = model default; force either way.
+            if let Some(think) = entry.thinking {
+                body["think"] = serde_json::Value::Bool(think);
+            }
+            if let Some(nctx) = entry.num_ctx {
+                body["options"]["num_ctx"] = serde_json::Value::from(nctx);
+            }
             if !entry.keep_alive.trim().is_empty() {
                 body["keep_alive"] = serde_json::Value::String(entry.keep_alive.trim().to_string());
             }
@@ -2509,7 +2516,7 @@ fn llm_cleanup(
         }
         LlmKind::Cloud => match entry.provider {
             CloudLlm::Google => {
-                let body = serde_json::json!({
+                let mut body = serde_json::json!({
                     "contents": [{
                         "parts": [
                             {"text": system},
@@ -2518,6 +2525,13 @@ fn llm_cleanup(
                     }],
                     "generationConfig": {"temperature": 0.0},
                 });
+                // None omits the block (server default); Some(true)
+                // = dynamic budget, Some(false) = off.
+                if let Some(think) = entry.thinking {
+                    body["generationConfig"]["thinkingConfig"] = serde_json::json!({
+                        "thinkingBudget": if think { -1 } else { 0 }
+                    });
+                }
                 let url = format!(
                     "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
                     entry.model
@@ -2538,12 +2552,18 @@ fn llm_cleanup(
                     .unwrap_or_default())
             }
             CloudLlm::Claude => {
-                let body = serde_json::json!({
+                let mut body = serde_json::json!({
                     "model": entry.model,
                     "max_tokens": 1024,
                     "system": system,
                     "messages": [{"role": "user", "content": user}],
                 });
+                // Extended thinking is opt-in with a fixed budget;
+                // None/False omit it (API default off).
+                if entry.thinking == Some(true) {
+                    body["thinking"] =
+                        serde_json::json!({"type": "enabled", "budget_tokens": 10000});
+                }
                 let text = http_post_json(
                     "https://api.anthropic.com/v1/messages",
                     &[

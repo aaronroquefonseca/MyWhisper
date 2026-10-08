@@ -2677,6 +2677,17 @@ const KEEP_ALIVE_LABELS: &[&str] = &[
     "24h",
 ];
 const KEEP_ALIVE_VALUES: &[&str] = &["", "-1", "0", "5m", "15m", "30m", "2h", "5h", "24h"];
+/// Ollama context window options, parallel to NUM_CTX_VALUES.
+/// Small prompts need little context; lower reserves less memory.
+const NUM_CTX_LABELS: &[&str] = &["Default", "512", "1024", "2048", "4096", "8192"];
+const NUM_CTX_VALUES: &[Option<u32>] = &[
+    None,
+    Some(512),
+    Some(1024),
+    Some(2048),
+    Some(4096),
+    Some(8192),
+];
 
 /// Shared handles of the add/edit form, so list rows can refill it.
 #[derive(Clone)]
@@ -2690,6 +2701,9 @@ struct LmForm {
     provider_dd: DropDown,
     kind_dd: DropDown,
     keepalive_dd: DropDown,
+    thinking_dd: DropDown,
+    cloud_thinking_dd: DropDown,
+    numctx_dd: DropDown,
     add_btn: Button,
     cancel_btn: Button,
     editing: Rc<RefCell<Option<String>>>,
@@ -2787,6 +2801,20 @@ fn fill_lm_chain(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
                 form.ollama_model_e.set_text(&e.model);
                 form.cloud_model_e.set_text(&e.model);
                 form.key_e.set_text(&e.api_key);
+                form.cloud_key_e.set_text(&e.api_key);
+                let tsel = match e.thinking {
+                    Some(true) => 1,
+                    Some(false) => 2,
+                    None => 0,
+                };
+                form.thinking_dd.set_selected(tsel);
+                form.cloud_thinking_dd.set_selected(tsel);
+                form.numctx_dd.set_selected(
+                    NUM_CTX_VALUES
+                        .iter()
+                        .position(|v| *v == e.num_ctx)
+                        .unwrap_or(0) as u32,
+                );
                 form.keepalive_dd.set_selected(
                     KEEP_ALIVE_VALUES
                         .iter()
@@ -2904,6 +2932,26 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         None::<gtk4::Expression>,
     );
     keepalive_dd.set_valign(gtk4::Align::Center);
+    // Tri-state: Default (omit, model decides) / On / Off.
+    let thinking_opts = || {
+        let dd = DropDown::new(
+            Some(StringList::new(&[
+                tr("opt.thinkingdefault"),
+                tr("opt.thinkingon"),
+                tr("opt.thinkingoff"),
+            ])),
+            None::<gtk4::Expression>,
+        );
+        dd.set_valign(gtk4::Align::Center);
+        dd
+    };
+    let thinking_dd = thinking_opts();
+    let cloud_thinking_dd = thinking_opts();
+    let numctx_dd = DropDown::new(
+        Some(StringList::new(NUM_CTX_LABELS)),
+        None::<gtk4::Expression>,
+    );
+    numctx_dd.set_valign(gtk4::Align::Center);
     {
         let (b, _) = row(tr("row.ollamaurl"));
         b.append(&url_e);
@@ -2926,11 +2974,28 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         let (b, _) = row(tr("row.apikey"));
         b.append(&cloud_key_e);
         cloud_box.append(&b);
+        // Thinking (Claude extended thinking, Gemini dynamic
+        // budget, Ollama think; other providers ignore it).
+        {
+            let (b, _) = row(tr("row.thinking"));
+            b.append(&cloud_thinking_dd);
+            cloud_box.append(&b);
+        }
     }
     {
         let (b, _) = row(tr("row.keepalive"));
         b.append(&keepalive_dd);
         ollama_box.append(&b);
+        {
+            let (b, _) = row(tr("row.thinking"));
+            b.append(&thinking_dd);
+            ollama_box.append(&b);
+        }
+        {
+            let (b, _) = row(tr("row.numctx"));
+            b.append(&numctx_dd);
+            ollama_box.append(&b);
+        }
         let update_btn = Button::with_label(tr("action.updatenow"));
         update_btn.set_halign(gtk4::Align::End);
         {
@@ -3073,6 +3138,9 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         provider_dd: provider_dd.clone(),
         kind_dd: kind_dd.clone(),
         keepalive_dd: keepalive_dd.clone(),
+        thinking_dd: thinking_dd.clone(),
+        cloud_thinking_dd: cloud_thinking_dd.clone(),
+        numctx_dd: numctx_dd.clone(),
         add_btn: add_btn.clone(),
         cancel_btn: cancel_btn.clone(),
         editing: Rc::new(RefCell::new(None)),
@@ -3089,6 +3157,9 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
             form.name_e.set_text("");
             form.key_e.set_text("");
             form.cloud_key_e.set_text("");
+            form.thinking_dd.set_selected(0);
+            form.cloud_thinking_dd.set_selected(0);
+            form.numctx_dd.set_selected(0);
             form.url_e.set_text("http://127.0.0.1:11434");
             form.ollama_model_e.set_text("gemma4:e4b");
             form.keepalive_dd.set_selected(0);
@@ -3109,6 +3180,9 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         let url_e = form.url_e.clone();
         let key_e = form.key_e.clone();
         let cloud_key_e = form.cloud_key_e.clone();
+        let thinking_dd = form.thinking_dd.clone();
+        let cloud_thinking_dd = form.cloud_thinking_dd.clone();
+        let numctx_dd = form.numctx_dd.clone();
         let add_btn = form.add_btn.clone();
         let editing = form.editing.clone();
         let ab = add_btn.clone();
@@ -3154,6 +3228,19 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
                     key_e.text().to_string()
                 },
                 keep_alive,
+                num_ctx: NUM_CTX_VALUES
+                    .get(numctx_dd.selected() as usize)
+                    .copied()
+                    .flatten(),
+                thinking: match if kind == LlmKind::Cloud {
+                    cloud_thinking_dd.selected()
+                } else {
+                    thinking_dd.selected()
+                } {
+                    1 => Some(true),
+                    2 => Some(false),
+                    _ => None,
+                },
             };
             if entry.name.trim().is_empty() {
                 entry.name = match kind {
