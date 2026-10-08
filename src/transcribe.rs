@@ -2500,7 +2500,13 @@ fn llm_cleanup(
                 body["options"]["num_ctx"] = serde_json::Value::from(nctx);
             }
             if !entry.keep_alive.trim().is_empty() {
-                body["keep_alive"] = serde_json::Value::String(entry.keep_alive.trim().to_string());
+                // Ollama 0.40 rejects unit-less strings ("-1"): -1/0
+                // go as JSON numbers, the rest as duration strings.
+                body["keep_alive"] = match entry.keep_alive.trim() {
+                    "-1" => serde_json::Value::from(-1),
+                    "0" => serde_json::Value::from(0),
+                    ka => serde_json::Value::String(ka.to_string()),
+                };
             }
             // Optional bearer token (reverse-proxy setups, empty = none).
             let bearer;

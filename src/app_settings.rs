@@ -3026,7 +3026,11 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
                 if let Err(e) = crate::runtime::submit("ollama-ping", move || {
                     let mut body = body.clone();
                     if !keep.is_empty() {
-                        body["keep_alive"] = serde_json::Value::String(keep.to_string());
+                        body["keep_alive"] = match keep {
+                            "-1" => serde_json::Value::from(-1),
+                            "0" => serde_json::Value::from(0),
+                            _ => serde_json::Value::String(keep.to_string()),
+                        };
                     }
                     let endpoint = format!("{}/api/chat", url_done.trim_end_matches('/'));
                     let client = match reqwest::blocking::Client::builder()
