@@ -239,6 +239,9 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "stt.gpu.cuda" => ("CUDA (NVIDIA)", "CUDA (NVIDIA)"),
         "stt.gpu.vulkan" => ("Vulkan (AMD/Intel)", "Vulkan (AMD/Intel)"),
         "stt.gpu.recommend" => ("Detected hardware", "Hardware detectado"),
+        "stt.sherpa.backend" => ("Sherpa backend", "Motor Sherpa"),
+        "stt.sherpa.cpu" => ("CPU", "CPU"),
+        "stt.sherpa.cuda" => ("CUDA", "CUDA"),
         "group.sttchain" => ("Speech engines", "Motores de voz"),
         "stt.local.add" => ("Add local option", "Añadir opción local"),
         "stt.models.dictnote" => (

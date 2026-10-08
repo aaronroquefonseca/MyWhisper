@@ -190,6 +190,7 @@ fn run_headless(
                                 &plan,
                                 &data_dir,
                                 settings.stt.gpu_backend,
+                                settings.stt.sherpa_backend,
                             ) {
                                 eprintln!("[stt] startup warmup: {e}");
                             }
@@ -298,8 +299,7 @@ fn run_headless(
                             // re-hides harmlessly.
                             overlay.hide();
                             let tx_done = tx_done.clone();
-                            let gen_at_cancel =
-                                gen_hide.load(std::sync::atomic::Ordering::SeqCst);
+                            let gen_at_cancel = gen_hide.load(std::sync::atomic::Ordering::SeqCst);
                             let gen_hide = gen_hide.clone();
                             mywhisper::transcribe::cancel_utterance(move || {
                                 if gen_hide.load(std::sync::atomic::Ordering::SeqCst)

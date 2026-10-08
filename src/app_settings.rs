@@ -2393,6 +2393,38 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     }
     let gpu_list = GtkBox::new(Orientation::Vertical, 8);
     rows.append(&gpu_list);
+    {
+        // Sherpa runtime backend: CPU everywhere, CUDA where the box
+        // has it. Manual choice, never auto-switched.
+        let (b, _) = row(tr("stt.sherpa.backend"));
+        let backend = DropDown::new(
+            Some(StringList::new(&[
+                tr("stt.sherpa.cpu"),
+                tr("stt.sherpa.cuda"),
+            ])),
+            None::<gtk4::Expression>,
+        );
+        {
+            use crate::settings::SherpaBackendSetting;
+            backend.set_selected(match state.settings.borrow().stt.sherpa_backend {
+                SherpaBackendSetting::Cpu => 0,
+                SherpaBackendSetting::Cuda => 1,
+            });
+        }
+        {
+            let state = state.clone();
+            backend.connect_selected_notify(move |d| {
+                use crate::settings::SherpaBackendSetting;
+                state.settings.borrow_mut().stt.sherpa_backend = match d.selected() {
+                    1 => SherpaBackendSetting::Cuda,
+                    _ => SherpaBackendSetting::Cpu,
+                };
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&backend);
+        sherpa_box.append(&b);
+    }
     let sherpa_list = GtkBox::new(Orientation::Vertical, 8);
     sherpa_box.append(&sherpa_list);
     root.append(&card);

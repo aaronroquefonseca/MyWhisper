@@ -51,7 +51,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use crate::audio::{self, wav_bytes_16k, Recorder, Resampler, ENGINE_RATE, MIN_SAMPLES_16K};
-use crate::settings::{GpuBackendSetting, LocalSttProvider, SttSettings};
+use crate::settings::{GpuBackendSetting, LocalSttProvider, SherpaBackendSetting, SttSettings};
 use crate::stt;
 
 // ---------------------------------------------------------------- ports
@@ -454,8 +454,19 @@ fn whisper_binary(data_dir: &Path, backend: GpuBackendSetting) -> Result<PathBuf
     }
 }
 
-fn sherpa_binary(data_dir: &Path, which: &str) -> Result<PathBuf, String> {
-    let pack = &stt::SHERPA_PACKS[0];
+fn sherpa_binary(
+    data_dir: &Path,
+    backend: SherpaBackendSetting,
+    which: &str,
+) -> Result<PathBuf, String> {
+    let want = match backend {
+        SherpaBackendSetting::Cuda => "sherpa-cuda",
+        SherpaBackendSetting::Cpu => "sherpa-cpu",
+    };
+    let pack = stt::SHERPA_PACKS
+        .iter()
+        .find(|p| p.id == want)
+        .ok_or_else(|| format!("unknown sherpa pack {want}"))?;
     let rel = pack
         .binaries
         .iter()
@@ -465,7 +476,28 @@ fn sherpa_binary(data_dir: &Path, which: &str) -> Result<PathBuf, String> {
     if bin.exists() {
         Ok(bin)
     } else {
-        Err(missing("sherpa-cpu runtime pack"))
+        Err(missing(&format!("{want} runtime pack")))
+    }
+}
+
+/// Loader path for server children: our CUDA .so set, the binary's
+/// sibling lib dir (pack onnxruntime), and the system CUDA dir when
+/// present.
+fn server_ld_path(data_dir: &Path, bin: &Path) -> String {
+    let mut parts = vec![data_dir.join("lib").display().to_string()];
+    if let Some(lib) = bin.parent().map(|b| b.join("..").join("lib")) {
+        parts.push(lib.display().to_string());
+    }
+    let opt_cuda = Path::new("/opt/cuda/lib64");
+    if opt_cuda.is_dir() {
+        parts.push(opt_cuda.display().to_string());
+    }
+    match std::env::var("LD_LIBRARY_PATH") {
+        Ok(prev) if !prev.is_empty() => {
+            parts.push(prev);
+            parts.join(":")
+        }
+        _ => parts.join(":"),
     }
 }
 
@@ -484,13 +516,7 @@ fn ensure_whisper(
     let key = format!("{}|{}|{lang}", bin.display(), model.display());
     let model_arg = model.to_string_lossy().to_string();
     let lang_arg = lang.to_string();
-    // CUDA runtimes ship their own .so.12 set (system has .so.13):
-    // <data>/lib, populated from nvidia pip wheels on first need.
-    let cuda_lib = data_dir.join("lib");
-    let ld_path = match std::env::var("LD_LIBRARY_PATH") {
-        Ok(prev) if !prev.is_empty() => format!("{}:{prev}", cuda_lib.display()),
-        _ => cuda_lib.display().to_string(),
-    };
+    let ld_path = server_ld_path(data_dir, &bin);
     ensure_server(
         "whisper",
         key,
@@ -593,8 +619,12 @@ fn whisper_load(model: &Path) -> Result<(), String> {
     }
 }
 
-fn ensure_sherpa_offline(data_dir: &Path, model_dir: &Path) -> Result<(), String> {
-    let bin = sherpa_binary(data_dir, "sherpa-onnx-offline-websocket-server")?;
+fn ensure_sherpa_offline(
+    data_dir: &Path,
+    backend: SherpaBackendSetting,
+    model_dir: &Path,
+) -> Result<(), String> {
+    let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-offline-websocket-server")?;
     let key = format!("{}|{}", bin.display(), model_dir.display());
     let (bin_s, dir_s) = (bin.clone(), model_dir.to_path_buf());
     ensure_server(
@@ -617,6 +647,7 @@ fn ensure_sherpa_offline(data_dir: &Path, model_dir: &Path) -> Result<(), String
                 .stdin(Stdio::null())
                 .stdout(out)
                 .stderr(err)
+                .env("LD_LIBRARY_PATH", server_ld_path(data_dir, &bin_s))
                 .spawn()
                 .map_err(|e| format!("spawn sherpa offline server: {e}"))
         },
@@ -624,8 +655,12 @@ fn ensure_sherpa_offline(data_dir: &Path, model_dir: &Path) -> Result<(), String
     )
 }
 
-fn ensure_sherpa_online(data_dir: &Path, model_dir: &Path) -> Result<(), String> {
-    let bin = sherpa_binary(data_dir, "sherpa-onnx-online-websocket-server")?;
+fn ensure_sherpa_online(
+    data_dir: &Path,
+    backend: SherpaBackendSetting,
+    model_dir: &Path,
+) -> Result<(), String> {
+    let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-online-websocket-server")?;
     let key = format!("{}|{}", bin.display(), model_dir.display());
     let (bin_s, dir_s) = (bin.clone(), model_dir.to_path_buf());
     ensure_server(
@@ -648,6 +683,7 @@ fn ensure_sherpa_online(data_dir: &Path, model_dir: &Path) -> Result<(), String>
                 .stdin(Stdio::null())
                 .stdout(out)
                 .stderr(err)
+                .env("LD_LIBRARY_PATH", server_ld_path(data_dir, &bin_s))
                 .spawn()
                 .map_err(|e| format!("spawn sherpa online server: {e}"))
         },
@@ -1251,6 +1287,7 @@ struct LiveUtterance {
     /// Worker-side engine warmup needs these after release.
     data_dir: PathBuf,
     backend: GpuBackendSetting,
+    sherpa_backend: SherpaBackendSetting,
     /// VAD snapshot at press: trim + silence-skip for file-based
     /// engines. Streaming pumps send everything (server-side
     /// endpointing owns that path).
@@ -1301,6 +1338,7 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
     let _ = first_name;
     let data_dir = data_dir.to_path_buf();
     let backend = stt.gpu_backend;
+    let sherpa_backend = stt.sherpa_backend;
     // Background warmup; the release worker re-ensures anyway.
     // Pool-submitted: a saturated system skips warmup instead of
     // dying (the worker will still try when the utterance ends).
@@ -1308,7 +1346,7 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
         let plan = plan.clone();
         let data_dir = data_dir.clone();
         if let Err(e) = crate::runtime::submit("stt-warmup", move || {
-            if let Err(e) = ensure_servers(&plan, &data_dir, backend) {
+            if let Err(e) = ensure_servers(&plan, &data_dir, backend, sherpa_backend) {
                 eprintln!("[stt] warmup: {e}");
             }
         }) {
@@ -1382,6 +1420,7 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
         started: Instant::now(),
         data_dir,
         backend,
+        sherpa_backend,
         vad_enabled: stt.vad_enabled,
         vad_gate: stt.vad_threshold,
         keep_audio,
@@ -1617,9 +1656,15 @@ fn finish_session(
     // Engine warmup finishes here (cold first press waits, later
     // ones sail through an already-running server). Cloud plans are
     // no-ops here; failures are per-plan below, not fatal.
-    ensure_servers(&sess.plan, &sess.data_dir, sess.backend).ok();
+    ensure_servers(
+        &sess.plan,
+        &sess.data_dir,
+        sess.backend,
+        sess.sherpa_backend,
+    )
+    .ok();
     for (name, plan) in &sess.fallbacks {
-        if let Err(e) = ensure_servers(plan, &sess.data_dir, sess.backend) {
+        if let Err(e) = ensure_servers(plan, &sess.data_dir, sess.backend, sess.sherpa_backend) {
             eprintln!("[stt] fallback {name} not ready: {e}");
         }
     }
@@ -1804,21 +1849,27 @@ pub fn ensure_for_plan(
     plan: &Plan,
     data_dir: &Path,
     gpu_backend: GpuBackendSetting,
+    sherpa_backend: SherpaBackendSetting,
 ) -> Result<(), String> {
-    ensure_servers(plan, data_dir, gpu_backend)
+    ensure_servers(plan, data_dir, gpu_backend, sherpa_backend)
 }
 
 fn ensure_servers(
     plan: &Plan,
     data_dir: &Path,
     gpu_backend: GpuBackendSetting,
+    sherpa_backend: SherpaBackendSetting,
 ) -> Result<(), String> {
     match plan {
         Plan::WhisperHttp { model_bin, lang } => {
             ensure_whisper(data_dir, gpu_backend, model_bin, lang)
         }
-        Plan::SherpaOnline { model_dir } => ensure_sherpa_online(data_dir, model_dir),
-        Plan::SherpaOffline { model_dir } => ensure_sherpa_offline(data_dir, model_dir),
+        Plan::SherpaOnline { model_dir } => {
+            ensure_sherpa_online(data_dir, sherpa_backend, model_dir)
+        }
+        Plan::SherpaOffline { model_dir } => {
+            ensure_sherpa_offline(data_dir, sherpa_backend, model_dir)
+        }
         // CLI per utterance: nothing to keep running.
         Plan::WhistleCli { .. } => Ok(()),
         Plan::CloudOpenAiCompat { .. } | Plan::CloudDeepgram { .. } | Plan::CloudGemini { .. } => {
@@ -2388,7 +2439,8 @@ mod tests {
             eprintln!("SKIP: orukeet not on disk");
             return;
         }
-        ensure_sherpa_offline(&data_dir, &dir).expect("spawn+probe");
+        ensure_sherpa_offline(&data_dir, crate::settings::SherpaBackendSetting::Cpu, &dir)
+            .expect("spawn+probe");
         let text = sherpa_offline_transcribe(&vec![0.0f32; 16_000]).expect("decode");
         assert!(text.trim().is_empty(), "silence gave {text:?}");
     }

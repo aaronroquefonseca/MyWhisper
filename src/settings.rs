@@ -344,6 +344,15 @@ pub enum GpuBackendSetting {
     Vulkan,
 }
 
+/// Sherpa runtime backend. CPU everywhere; CUDA where onnxruntime
+/// has an EP (no Vulkan EP exists upstream).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SherpaBackendSetting {
+    #[default]
+    Cpu,
+    Cuda,
+}
+
 /// Local vendor tabs, mirroring OpenWhispr: Oruk and Cohere ship
 /// exactly one model each; OpenAI is the whisper.cpp family, NVIDIA
 /// the sherpa parakeet/nemotron family.
@@ -435,6 +444,9 @@ pub struct SttSettings {
     pub live_preview: bool,
     /// Manual GPU backend choice (never auto-switched).
     pub gpu_backend: GpuBackendSetting,
+    /// Manual sherpa backend choice (never auto-switched).
+    #[serde(default)]
+    pub sherpa_backend: SherpaBackendSetting,
 }
 
 impl Default for SttSettings {
@@ -467,6 +479,7 @@ impl Default for SttSettings {
             spec_overlap_secs: 1.0,
             live_preview: false,
             gpu_backend: GpuBackendSetting::Cpu,
+            sherpa_backend: SherpaBackendSetting::Cpu,
         }
     }
 }

@@ -1083,6 +1083,20 @@ pub struct SherpaPack {
 }
 
 pub const SHERPA_PACKS: &[SherpaPack] = &[SherpaPack {
+    id: "sherpa-cuda",
+    name: "Sherpa CUDA server",
+    description: "Offline + online websocket servers, CUDA 13 (needs system CUDA libs)",
+    size_label: "255MB",
+    size_bytes: 254_858_007,
+    asset: "sherpa-onnx-v1.13.8-cuda-13.x-cudnn-9.x-onnxruntime1.28.2-linux-x64-gpu.tar.bz2",
+    sha256: "7eddaee14a42d143ec995ed68e9ec3623dd6ca9d22076139d4c0879c3121c819",
+    subdir: "sherpa-cuda",
+    binaries: &[
+        "bin/sherpa-onnx-offline-websocket-server",
+        "bin/sherpa-onnx-online-websocket-server",
+        "lib/libonnxruntime.so",
+    ],
+}, SherpaPack {
     id: "sherpa-cpu",
     name: "Sherpa CPU server",
     description: "Offline + online websocket servers, onnxruntime included",
