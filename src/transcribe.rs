@@ -2001,8 +2001,16 @@ fn llm_cleanup(
             if !entry.keep_alive.trim().is_empty() {
                 body["keep_alive"] = serde_json::Value::String(entry.keep_alive.trim().to_string());
             }
+            // Optional bearer token (reverse-proxy setups, empty = none).
+            let bearer;
+            let headers: &[(&str, &str)] = if entry.api_key.trim().is_empty() {
+                &[]
+            } else {
+                bearer = ("authorization-bearer", entry.api_key.trim());
+                std::slice::from_ref(&bearer)
+            };
             let url = format!("{}/api/chat", entry.url.trim_end_matches('/'));
-            let text = http_post_json(&url, &[], &body)?;
+            let text = http_post_json(&url, headers, &body)?;
             let v: serde_json::Value =
                 serde_json::from_str(&text).map_err(|e| format!("ollama json: {e}"))?;
             v.pointer("/message/content")

@@ -2681,6 +2681,7 @@ struct LmForm {
     ollama_model_e: Entry,
     cloud_model_e: Entry,
     key_e: Entry,
+    cloud_key_e: Entry,
     provider_dd: DropDown,
     kind_dd: DropDown,
     keepalive_dd: DropDown,
@@ -2858,6 +2859,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     let cloud_model_e = Entry::new();
     let url_e = Entry::new();
     let key_e = Entry::new();
+    let cloud_key_e = Entry::new();
     let provider_dd = DropDown::new(
         Some(StringList::new(&[
             "Groq",
@@ -2868,10 +2870,18 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         ])),
         None::<gtk4::Expression>,
     );
-    for e in [&name_e, &ollama_model_e, &cloud_model_e, &url_e, &key_e] {
+    for e in [
+        &name_e,
+        &ollama_model_e,
+        &cloud_model_e,
+        &url_e,
+        &key_e,
+        &cloud_key_e,
+    ] {
         e.set_hexpand(true);
     }
     key_e.set_visibility(false);
+    cloud_key_e.set_visibility(false);
     url_e.set_text("http://127.0.0.1:11434");
     ollama_model_e.set_text("gemma4:e4b");
     cloud_model_e.set_text(CloudLlm::OpenAI.default_model());
@@ -2896,6 +2906,23 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         let (b, _) = row(tr("row.ollamamodel"));
         b.append(&ollama_model_e);
         ollama_box.append(&b);
+        // Optional bearer token (reverse-proxy setups); reuses the
+        // entry's api_key field, empty = none.
+        let (b, _) = row(tr("row.apikey"));
+        b.append(&key_e);
+        ollama_box.append(&b);
+        let note = Label::new(Some(tr("lm.apikey.note")));
+        note.add_css_class("dim");
+        note.set_xalign(0.0);
+        note.set_wrap(true);
+        ollama_box.append(&note);
+    }
+    {
+        let (b, _) = row(tr("row.apikey"));
+        b.append(&cloud_key_e);
+        cloud_box.append(&b);
+    }
+    {
         let (b, _) = row(tr("row.keepalive"));
         b.append(&keepalive_dd);
         ollama_box.append(&b);
@@ -2905,9 +2932,11 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
             let url_e = url_e.clone();
             let ollama_model_e = ollama_model_e.clone();
             let keepalive_dd = keepalive_dd.clone();
+            let key_e = key_e.clone();
             update_btn.connect_clicked(move |_| {
                 let url = url_e.text().trim().to_string();
                 let model = ollama_model_e.text().trim().to_string();
+                let token = key_e.text().trim().to_string();
                 if url.is_empty() || model.is_empty() {
                     eprintln!("[lm] update now: url/model empty");
                     return;
@@ -2940,12 +2969,14 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
                             return;
                         }
                     };
-                    match client
+                    let mut post = client
                         .post(&endpoint)
                         .header("Content-Type", "application/json")
-                        .body(body.to_string())
-                        .send()
-                    {
+                        .body(body.to_string());
+                    if !token.is_empty() {
+                        post = post.bearer_auth(token);
+                    }
+                    match post.send() {
                         Ok(res) => eprintln!("[lm] update now: http {}", res.status()),
                         Err(e) => eprintln!("[lm] update now: {e}"),
                     }
@@ -2959,9 +2990,6 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     {
         let (b, _) = row(tr("row.provider"));
         b.append(&provider_dd);
-        cloud_box.append(&b);
-        let (b, _) = row(tr("row.apikey"));
-        b.append(&key_e);
         cloud_box.append(&b);
     }
     {
@@ -3036,6 +3064,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         ollama_model_e: ollama_model_e.clone(),
         cloud_model_e: cloud_model_e.clone(),
         key_e: key_e.clone(),
+        cloud_key_e: cloud_key_e.clone(),
         provider_dd: provider_dd.clone(),
         kind_dd: kind_dd.clone(),
         keepalive_dd: keepalive_dd.clone(),
@@ -3054,6 +3083,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
             form.cancel_btn.set_visible(false);
             form.name_e.set_text("");
             form.key_e.set_text("");
+            form.cloud_key_e.set_text("");
             form.url_e.set_text("http://127.0.0.1:11434");
             form.ollama_model_e.set_text("gemma4:e4b");
             form.keepalive_dd.set_selected(0);
@@ -3073,6 +3103,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         let name_e = form.name_e.clone();
         let url_e = form.url_e.clone();
         let key_e = form.key_e.clone();
+        let cloud_key_e = form.cloud_key_e.clone();
         let add_btn = form.add_btn.clone();
         let editing = form.editing.clone();
         let ab = add_btn.clone();
@@ -3111,7 +3142,12 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
                 url: url_e.text().to_string(),
                 model,
                 provider,
-                api_key: key_e.text().to_string(),
+                api_key: if kind == LlmKind::Cloud {
+                    cloud_key_e.text().to_string()
+                } else {
+                    // Ollama bearer token (optional, empty = none).
+                    key_e.text().to_string()
+                },
                 keep_alive,
             };
             if entry.name.trim().is_empty() {

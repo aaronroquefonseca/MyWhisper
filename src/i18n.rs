@@ -280,6 +280,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.lmtype" => ("Type", "Tipo"),
         "group.lmadd" => ("Add option", "Añadir opción"),
         "group.lmchain" => ("Configured options", "Opciones configuradas"),
+        "lm.apikey.note" => (
+            "Sent as a Bearer token (reverse-proxy setups). Empty means no token.",
+            "Se envía como token Bearer (proxies inversos). Vacío significa sin token.",
+        ),
         "lm.local.note" => (
             "Local self-managed engines are not implemented yet — use Ollama.",
             "Los motores locales autogestionados aún no están implementados: usa Ollama.",
