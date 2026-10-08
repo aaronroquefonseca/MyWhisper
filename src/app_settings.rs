@@ -2985,6 +2985,9 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     {
         let (b, _) = row(tr("row.keepalive"));
         b.append(&keepalive_dd);
+        let update_btn = Button::with_label(tr("action.updatenow"));
+        update_btn.set_valign(gtk4::Align::Center);
+        b.append(&update_btn);
         ollama_box.append(&b);
         {
             let (b, _) = row(tr("row.thinking"));
@@ -2996,8 +2999,6 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
             b.append(&numctx_dd);
             ollama_box.append(&b);
         }
-        let update_btn = Button::with_label(tr("action.updatenow"));
-        update_btn.set_halign(gtk4::Align::End);
         {
             let url_e = url_e.clone();
             let ollama_model_e = ollama_model_e.clone();
@@ -3059,7 +3060,6 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
                 }
             });
         }
-        ollama_box.append(&update_btn);
     }
     {
         let (b, _) = row(tr("row.provider"));
