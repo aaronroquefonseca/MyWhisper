@@ -15,8 +15,8 @@ use evdev::{Device, EventSummary, EventType, KeyCode};
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::FileTypeExt;
 use std::sync::{
-    Arc,
     atomic::{AtomicU64, Ordering},
+    Arc,
 };
 use std::time::{Duration, Instant};
 
@@ -380,7 +380,9 @@ struct Watched {
 
 /// Push holds wedged active longer than this are force-released.
 /// Tap bindings are exempt (toggled-on is a legitimate long state).
-const MAX_PUSH_SECS: u64 = 60;
+/// 15 minutes: long-form dictation holds for many minutes, and the
+/// 60 s we had before amputated exactly those sessions (log-proven).
+const MAX_PUSH_SECS: u64 = 900;
 
 fn poll_events(
     devices: &mut Vec<(std::path::PathBuf, Device)>,

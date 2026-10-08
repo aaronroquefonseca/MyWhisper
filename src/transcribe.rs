@@ -800,15 +800,25 @@ fn f32le(samples: &[f32]) -> Vec<u8> {
     out
 }
 
-/// Pull "text" out of a sherpa JSON reply (online partials and the
-/// offline single reply share the field; everything else ignored).
-fn sherpa_text(msg: &str) -> Result<String, String> {
+/// Pull (text, is_final) out of a sherpa JSON reply. Online
+/// partials and the offline single reply share the text field; online
+/// endpoint boundaries arrive as is_final (the server resets its
+/// stream there, so each message only covers its own segment).
+fn sherpa_message(msg: &str) -> Result<(String, bool), String> {
     let v: serde_json::Value =
         serde_json::from_str(msg).map_err(|e| format!("sherpa json: {e}"))?;
-    v.get("text")
+    let text = v
+        .get("text")
         .and_then(|t| t.as_str())
         .map(|t| t.to_string())
-        .ok_or_else(|| format!("sherpa reply has no text: {msg}"))
+        .ok_or_else(|| format!("sherpa reply has no text: {msg}"))?;
+    let is_final = v.get("is_final").and_then(|f| f.as_bool()).unwrap_or(false);
+    Ok((text, is_final))
+}
+
+/// Legacy text-only view (offline single reply).
+fn sherpa_text(msg: &str) -> Result<String, String> {
+    sherpa_message(msg).map(|(t, _)| t)
 }
 
 /// Tiny-decode readiness probes: 0.5 s of silence must come back
@@ -832,10 +842,15 @@ fn probe_sherpa_online() -> Result<(), String> {
 }
 
 /// Online (streaming) session: chunks go out during the hold, the
-/// final is read after `finish` sends `"Done"`.
+/// final is read after `finish` sends `"Done"`. Segmented output is
+/// accumulated: the server resets its stream on endpoint (is_final),
+/// so each message only covers its own segment.
 pub struct OnlineSession {
     ws: Option<Ws>,
-    last_text: String,
+    /// Finished segments, in order.
+    segments: Vec<String>,
+    /// Current (unfinished) segment text.
+    current: String,
     read_timeout: Duration,
 }
 
@@ -853,9 +868,39 @@ impl OnlineSession {
     pub fn open_with(port: u16, read_timeout: Duration) -> Result<Self, String> {
         Ok(Self {
             ws: Some(ws_connect(port, read_timeout)?),
-            last_text: String::new(),
+            segments: Vec::new(),
+            current: String::new(),
             read_timeout,
         })
+    }
+
+    /// Fold one server message into the accumulation. Returns true
+    /// when it completed a segment (worth logging).
+    fn ingest(&mut self, msg: &str) -> bool {
+        let Ok((text, is_final)) = sherpa_message(msg) else {
+            eprintln!("[stt] bad online message");
+            return false;
+        };
+        if text != self.current {
+            self.current = text;
+        }
+        if is_final && !self.current.trim().is_empty() {
+            self.segments.push(std::mem::take(&mut self.current));
+            return true;
+        }
+        false
+    }
+
+    /// Full transcript so far: finished segments + current tail.
+    fn transcript(&self) -> String {
+        let mut out = self.segments.join(" ");
+        if !self.current.trim().is_empty() {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(self.current.trim());
+        }
+        out
     }
 
     /// One realtime chunk (16 kHz float32). Non-blocking w.r.t.
@@ -863,23 +908,33 @@ impl OnlineSession {
     /// socket default is minutes — without this the pump stalls on
     /// the first silent chunk waiting for a partial that never comes.)
     pub fn send_chunk(&mut self, samples: &[f32]) -> Result<(), String> {
-        let ws = self.ws.as_mut().ok_or("online session closed")?;
-        ws_send_binary(ws, &f32le(samples))?;
-        ws_read_timeout(ws, Duration::from_millis(50));
+        {
+            let ws = self.ws.as_mut().ok_or("online session closed")?;
+            ws_send_binary(ws, &f32le(samples))?;
+            ws_read_timeout(ws, Duration::from_millis(50));
+        }
         // Drain pending partials without blocking: anything the
         // server already emitted updates the live text.
         loop {
-            match ws.read() {
+            let msg = {
+                let ws = self.ws.as_mut().ok_or("online session closed")?;
+                ws.read()
+            };
+            match msg {
                 Ok(tungstenite::Message::Text(t)) => {
                     let s: &str = &t;
                     if s == "Done!" {
                         break;
                     }
-                    match sherpa_text(s) {
-                        Ok(text) => {
-                            if text != self.last_text {
-                                self.last_text = text.clone();
-                                eprintln!("[stt] partial: {text}");
+                    match sherpa_message(s) {
+                        Ok(_) => {
+                            let before = self.current.clone();
+                            if self.ingest(s) {
+                                if let Some(seg) = self.segments.last() {
+                                    eprintln!("[stt] segment: {seg}");
+                                }
+                            } else if self.current != before && !self.current.is_empty() {
+                                eprintln!("[stt] partial: {}", self.current);
                             }
                         }
                         Err(e) => eprintln!("[stt] {e}"),
@@ -906,7 +961,6 @@ impl OnlineSession {
         ws_read_timeout(&mut ws, self.read_timeout);
         ws.send(tungstenite::Message::text("Done"))
             .map_err(|e| format!("ws done: {e}"))?;
-        let mut last = std::mem::take(&mut self.last_text);
         loop {
             match ws.read().map_err(|e| format!("ws read: {e}"))? {
                 tungstenite::Message::Text(t) => {
@@ -914,18 +968,14 @@ impl OnlineSession {
                     if s == "Done!" {
                         break;
                     }
-                    if let Ok(text) = sherpa_text(s) {
-                        if !text.is_empty() {
-                            last = text;
-                        }
-                    }
+                    self.ingest(s);
                 }
                 tungstenite::Message::Close(_) => break,
                 _ => {}
             }
         }
         let _ = ws.close(None);
-        Ok(last.trim().to_string())
+        Ok(self.transcript())
     }
 }
 
@@ -2651,6 +2701,25 @@ mod tests {
         assert!(s.contains("filename=\"audio.wav\""));
         assert!(s.contains("Content-Type: audio/wav"));
         assert!(s.ends_with("--b--\r\n"));
+    }
+
+    #[test]
+    fn online_segments_accumulate() {
+        // Two endpointed segments + trailing partial: the 2-minute
+        // bug was keeping only the last message.
+        let mut sess = OnlineSession {
+            ws: None,
+            segments: Vec::new(),
+            current: String::new(),
+            read_timeout: std::time::Duration::from_secs(1),
+        };
+        assert!(!sess.ingest(r#"{"text":"hello"}"#));
+        assert!(!sess.ingest(r#"{"text":"hello world"}"#));
+        assert!(sess.ingest(r#"{"text":"hello world","is_final":true}"#));
+        assert!(!sess.ingest(r#"{"text":"second part"}"#));
+        assert_eq!(sess.transcript(), "hello world second part");
+        assert!(sess.ingest(r#"{"text":"second part here","is_final":true}"#));
+        assert_eq!(sess.transcript(), "hello world second part here");
     }
 
     #[test]
