@@ -344,13 +344,6 @@ pub enum GpuBackendSetting {
     Vulkan,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SttMode {
-    Local,
-    Cloud,
-    SelfHosted,
-}
-
 /// Local vendor tabs, mirroring OpenWhispr: Oruk and Cohere ship
 /// exactly one model each; OpenAI is the whisper.cpp family, NVIDIA
 /// the sherpa parakeet/nemotron family.
@@ -365,8 +358,55 @@ pub enum LocalSttProvider {
     Whistle,
 }
 
+/// Pre-chain engine selector. Deprecated: the chain supersedes it,
+/// kept only so legacy configs migrate instead of resetting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SttMode {
+    #[default]
+    Local,
+    Cloud,
+    SelfHosted,
+}
+
+/// One STT chain entry. Local appears at most once and references
+/// the live local configuration (pills/models/backend/language);
+/// remotes carry their own connection config. Order = priority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SttEntryKind {
+    Local,
+    SelfHosted,
+    Cloud,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SttChainEntry {
+    pub id: String,
+    pub name: String,
+    pub kind: SttEntryKind,
+    pub enabled: bool,
+    /// Cloud only: OpenAI | Groq | Mistral | Gemini | Deepgram.
+    pub provider: String,
+    pub url: String,
+    pub model: String,
+    pub api_key: String,
+}
+
+impl SttChainEntry {
+    pub fn summary(&self) -> String {
+        match self.kind {
+            SttEntryKind::Local => "current local configuration".to_string(),
+            SttEntryKind::SelfHosted => format!("{} · {}", self.url, self.model),
+            SttEntryKind::Cloud => format!("{} · {}", self.provider, self.model),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SttSettings {
+    #[serde(default)]
+    pub entries: Vec<SttChainEntry>,
+    /// Deprecated migration source (see SttMode).
+    #[serde(default)]
     pub mode: SttMode,
     pub local_provider: LocalSttProvider,
     pub whisper_model: String,
@@ -401,6 +441,16 @@ impl Default for SttSettings {
     fn default() -> Self {
         Self {
             mode: SttMode::Local,
+            entries: vec![SttChainEntry {
+                id: "stt-local".to_string(),
+                name: "Local".to_string(),
+                kind: SttEntryKind::Local,
+                enabled: true,
+                provider: String::new(),
+                url: String::new(),
+                model: String::new(),
+                api_key: String::new(),
+            }],
             local_provider: LocalSttProvider::OpenAi,
             whisper_model: "base".to_string(),
             parakeet_model: "parakeet-tdt-0.6b-v3".to_string(),
@@ -545,6 +595,54 @@ impl Default for LanguageModelSettings {
             cleanup_enabled: true,
             cleanup_prompt: String::new(),
         }
+    }
+}
+
+impl SttSettings {
+    /// One-time seed for pre-chain configs: convert the legacy mode +
+    /// single-option fields. Idempotent.
+    pub fn ensure_seed(&mut self) {
+        if !self.entries.is_empty() {
+            return;
+        }
+        let mut entry = SttChainEntry {
+            id: "stt-legacy".to_string(),
+            name: String::new(),
+            kind: SttEntryKind::Local,
+            enabled: true,
+            provider: String::new(),
+            url: String::new(),
+            model: String::new(),
+            api_key: String::new(),
+        };
+        match self.mode {
+            SttMode::Local => {
+                entry.id = "stt-local".to_string();
+                entry.name = "Local".to_string();
+            }
+            SttMode::Cloud => {
+                entry.kind = SttEntryKind::Cloud;
+                entry.name = format!("{} ({})", self.cloud_provider, self.cloud_model);
+                entry.provider = self.cloud_provider.clone();
+                entry.model = self.cloud_model.clone();
+                entry.api_key = self.cloud_api_key.clone();
+            }
+            SttMode::SelfHosted => {
+                entry.kind = SttEntryKind::SelfHosted;
+                entry.name = format!("Self-hosted ({})", self.self_hosted_model);
+                entry.url = self.self_hosted_url.clone();
+                entry.model = self.self_hosted_model.clone();
+            }
+        }
+        if entry.name.trim().is_empty() {
+            entry.name = "Legacy option".to_string();
+        }
+        self.entries.push(entry);
+    }
+
+    /// Enabled entries top-down: the order the pipeline tries.
+    pub fn chain(&self) -> Vec<&SttChainEntry> {
+        self.entries.iter().filter(|e| e.enabled).collect()
     }
 }
 
@@ -753,7 +851,10 @@ mod snippet_tests {
             trigger: " omw, on my way ,,  ".to_string(),
             replacement: "On my way!".to_string(),
         };
-        assert_eq!(s.triggers(), vec!["omw".to_string(), "on my way".to_string()]);
+        assert_eq!(
+            s.triggers(),
+            vec!["omw".to_string(), "on my way".to_string()]
+        );
         let single = Snippet {
             trigger: "brb".to_string(),
             replacement: "x".to_string(),

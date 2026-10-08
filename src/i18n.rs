@@ -174,7 +174,6 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "group.floating" => ("Floating pill", "Píldora flotante"),
         "group.language" => ("Language", "Idioma"),
         "group.microphone" => ("Microphone", "Micrófono"),
-        "group.dictionary" => ("Dictionary", "Diccionario"),
         "group.dictation" => ("Dictation", "Dictado"),
         "group.smart" => ("Smart timing", "Tiempo smart"),
         "group.engine" => ("Engine", "Motor"),
@@ -217,10 +216,6 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.deviceid" => ("Device id", "ID de dispositivo"),
         "row.micwarm" => ("Keep microphone warm", "Mantener el micrófono activo"),
         "row.micunlisted" => ("Disconnected: ", "Desconectado: "),
-        "row.autolearn" => (
-            "Learn words from corrections",
-            "Aprender palabras de correcciones",
-        ),
         "row.activation" => ("Activation", "Activación"),
         "row.engine" => ("Engine", "Motor"),
         "opt.whisperlocal" => ("Whisper (local)", "Whisper (local)"),
@@ -244,6 +239,8 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "stt.gpu.cuda" => ("CUDA (NVIDIA)", "CUDA (NVIDIA)"),
         "stt.gpu.vulkan" => ("Vulkan (AMD/Intel)", "Vulkan (AMD/Intel)"),
         "stt.gpu.recommend" => ("Detected hardware", "Hardware detectado"),
+        "group.sttchain" => ("Speech engines", "Motores de voz"),
+        "stt.local.add" => ("Add local option", "Añadir opción local"),
         "stt.models.dictnote" => (
             "Dictionary hinting only works with OpenAI (whisper) models.",
             "Las sugerencias del diccionario solo funcionan con modelos OpenAI (whisper).",

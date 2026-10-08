@@ -68,27 +68,6 @@ fn switch_row(parent: &GtkBox, label: &str, active: bool) {
     parent.append(&b);
 }
 
-fn combo_row(parent: &GtkBox, label: &str, options: &[&str], active: usize) {
-    let (b, _) = row(label);
-    let d = DropDown::new(Some(StringList::new(options)), None::<gtk4::Expression>);
-    d.set_selected(active as u32);
-    d.set_sensitive(false); // not wired yet
-    b.append(&d);
-    parent.append(&b);
-}
-
-fn entry_row(parent: &GtkBox, label: &str, text: &str, secret: bool) {
-    let (b, _) = row(label);
-    let e = Entry::new();
-    e.set_text(text);
-    e.set_visibility(!secret);
-    e.set_sensitive(false); // not wired yet
-    e.set_hexpand(true);
-    e.set_max_width_chars(28);
-    b.append(&e);
-    parent.append(&b);
-}
-
 fn spin_row(parent: &GtkBox, label: &str, value: f64, min: f64, max: f64, step: f64) {
     let (b, _) = row(label);
     let s = SpinButton::with_range(min, max, step);
@@ -557,10 +536,6 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
         b.append(&warm_drop);
         rows.append(&b);
     }
-    root.append(&card);
-
-    let (card, rows) = group(tr("group.dictionary"));
-    switch_row(&rows, tr("row.autolearn"), p.auto_learn_dictionary);
     root.append(&card);
 
     root
@@ -1849,12 +1824,11 @@ fn update_gpu_progress(container: &GtkBox) {
 /// parakeet: per-model list), except Cohere which has no
 /// auto-detect and offers its 14 codes only.
 fn stt_lang_options(state: &Rc<AppState>) -> Vec<String> {
-    use crate::settings::{LocalSttProvider, SttMode};
+    use crate::settings::LocalSttProvider;
     use crate::stt;
     let s = state.settings.borrow();
-    if !matches!(s.stt.mode, SttMode::Local) {
-        return vec!["auto".to_string()];
-    }
+    // Language follows the local configuration (remotes take raw
+    // codes; the dropdown keeps the local lists).
     let model_id: &str = match s.stt.local_provider {
         LocalSttProvider::OpenAi => {
             return {
@@ -1879,6 +1853,159 @@ fn stt_lang_options(state: &Rc<AppState>) -> Vec<String> {
     v
 }
 
+/// Shared handles of the STT remote form (mirrors LmForm).
+#[derive(Clone)]
+struct SttForm {
+    name_e: Entry,
+    url_e: Entry,
+    model_e: Entry,
+    key_e: Entry,
+    provider_dd: DropDown,
+    kind_dd: DropDown,
+    add_btn: Button,
+    cancel_btn: Button,
+    editing: Rc<RefCell<Option<String>>>,
+}
+
+/// STT chain list. Local rows toggle only (configuration lives in
+/// the pills/models below); remote rows edit/remove/move.
+fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local: &Button) {
+    use crate::settings::SttEntryKind;
+    // Single local option: button hides while one exists.
+    add_local.set_visible(
+        !state
+            .settings
+            .borrow()
+            .stt
+            .entries
+            .iter()
+            .any(|e| matches!(e.kind, SttEntryKind::Local)),
+    );
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    let entries = state.settings.borrow().stt.entries.clone();
+    if entries.is_empty() {
+        let l = Label::new(Some(tr("lm.list.empty")));
+        l.add_css_class("dim");
+        l.set_xalign(0.0);
+        l.set_wrap(true);
+        list.append(&l);
+        return;
+    }
+    for (pos, entry) in entries.iter().enumerate() {
+        let card = GtkBox::new(Orientation::Horizontal, 8);
+        card.add_css_class("card");
+        let info = GtkBox::new(Orientation::Vertical, 2);
+        info.set_hexpand(true);
+        let name = Label::new(Some(&entry.name));
+        name.add_css_class("row-label");
+        name.set_xalign(0.0);
+        info.append(&name);
+        let sub = Label::new(Some(&entry.summary()));
+        sub.add_css_class("dim");
+        sub.set_xalign(0.0);
+        sub.set_wrap(true);
+        info.append(&sub);
+        card.append(&info);
+        let sw = Switch::new();
+        sw.set_active(entry.enabled);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            let id = entry.id.clone();
+            sw.connect_state_set(move |_, active| {
+                if let Some(e) = state
+                    .settings
+                    .borrow_mut()
+                    .stt
+                    .entries
+                    .iter_mut()
+                    .find(|e| e.id == id)
+                {
+                    e.enabled = active;
+                }
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        card.append(&sw);
+        for (label, delta) in [("↑", -1isize), ("↓", 1isize)] {
+            let btn = Button::with_label(label);
+            btn.set_valign(gtk4::Align::Center);
+            {
+                let state = state.clone();
+                let list = list.clone();
+                let form = form.clone();
+                let alb = add_local.clone();
+                btn.connect_clicked(move |_| {
+                    let mut st = state.settings.borrow_mut();
+                    let entries = &mut st.stt.entries;
+                    let other = pos as isize + delta;
+                    if other >= 0 && (other as usize) < entries.len() && (other as usize) != pos {
+                        entries.swap(pos, other as usize);
+                    }
+                    drop(st);
+                    persist_prefs(state.clone())();
+                    fill_stt_chain(&list, &state, &form, &alb);
+                });
+            }
+            card.append(&btn);
+        }
+        // Edit only for remotes (local config lives below).
+        if !matches!(entry.kind, SttEntryKind::Local) {
+            let edit = Button::with_label(tr("action.edit"));
+            edit.set_valign(gtk4::Align::Center);
+            {
+                let state = state.clone();
+                let form = form.clone();
+                let id = entry.id.clone();
+                edit.connect_clicked(move |_| {
+                    let st = state.settings.borrow();
+                    let Some(e) = st.stt.entries.iter().find(|e| e.id == id) else {
+                        return;
+                    };
+                    form.name_e.set_text(&e.name);
+                    form.url_e.set_text(&e.url);
+                    form.model_e.set_text(&e.model);
+                    form.key_e.set_text(&e.api_key);
+                    let providers = ["OpenAI", "Groq", "Mistral", "Gemini", "Deepgram"];
+                    form.provider_dd.set_selected(
+                        providers.iter().position(|p| *p == e.provider).unwrap_or(0) as u32,
+                    );
+                    form.kind_dd.set_selected(match e.kind {
+                        SttEntryKind::Cloud => 1,
+                        _ => 0,
+                    });
+                    form.add_btn.set_label(tr("action.save"));
+                    form.cancel_btn.set_visible(true);
+                    *form.editing.borrow_mut() = Some(id.clone());
+                });
+            }
+            card.append(&edit);
+        }
+        let del = Button::with_label(tr("action.remove"));
+        del.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            let list = list.clone();
+            let form = form.clone();
+            let alb = add_local.clone();
+            let id = entry.id.clone();
+            del.connect_clicked(move |_| {
+                {
+                    let mut st = state.settings.borrow_mut();
+                    st.stt.entries.retain(|e| e.id != id);
+                }
+                persist_prefs(state.clone())();
+                fill_stt_chain(&list, &state, &form, &alb);
+            });
+        }
+        card.append(&del);
+        list.append(&card);
+    }
+}
+
 fn stt_page(state: &Rc<AppState>) -> GtkBox {
     let root = section_box(tr("settings.stt"), tr("settings.stt.sub"));
 
@@ -1887,50 +2014,221 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     // filled after all cards exist (handler below runs later).
     let refresh_holder: Rc<std::cell::RefCell<Option<Rc<dyn Fn()>>>> =
         Rc::new(std::cell::RefCell::new(None));
-    let (card, rows) = group(tr("group.engine"));
+    // ---- Engines chain: one local option at most (toggle) plus
+    // ordered remote options (self-hosted / cloud). First enabled
+    // entry wins, failures fall through.
+    let (card, rows) = group(tr("group.sttchain"));
+    let chain_list = GtkBox::new(Orientation::Vertical, 8);
+    rows.append(&chain_list);
+    // Add row: local button (iff absent) + remote form.
+    let add_local_btn = Button::with_label(tr("stt.local.add"));
+    rows.append(&add_local_btn);
+    // Remote form: kind picker + provider/url/model/key + Add/Save.
+    let kind_dd = DropDown::new(
+        Some(StringList::new(&[
+            tr("opt.selfhostedserver"),
+            tr("opt.cloud"),
+        ])),
+        None::<gtk4::Expression>,
+    );
+    kind_dd.set_valign(gtk4::Align::Center);
     {
-        let (b, _) = row(tr("row.engine"));
-        let engine = DropDown::new(
-            Some(StringList::new(&[
-                tr("opt.local"),
-                tr("opt.cloud"),
-                tr("opt.selfhostedserver"),
-            ])),
-            None::<gtk4::Expression>,
-        );
-        {
-            use crate::settings::SttMode;
-            let s = state.settings.borrow();
-            engine.set_selected(match s.stt.mode {
-                SttMode::Cloud => 1,
-                SttMode::SelfHosted => 2,
-                _ => 0,
-            });
-        }
-        {
-            let state = state.clone();
-            let persist = persist_prefs(state.clone());
-            let refresh_holder = refresh_holder.clone();
-            engine.connect_selected_notify(move |d| {
-                use crate::settings::SttMode;
-                {
-                    let mut s = state.settings.borrow_mut();
-                    s.stt.mode = match d.selected() {
-                        1 => SttMode::Cloud,
-                        2 => SttMode::SelfHosted,
-                        _ => SttMode::Local,
-                    };
-                }
-                persist();
-                if let Some(r) = refresh_holder.borrow().as_ref() {
-                    r();
-                }
-            });
-        }
-        b.append(&engine);
+        let (b, _) = row(tr("row.lmtype"));
+        b.append(&kind_dd);
         rows.append(&b);
     }
+    let name_e = Entry::new();
+    let url_e = Entry::new();
+    let model_e = Entry::new();
+    let key_e = Entry::new();
+    let provider_dd = DropDown::new(
+        Some(StringList::new(&[
+            "OpenAI", "Groq", "Mistral", "Gemini", "Deepgram",
+        ])),
+        None::<gtk4::Expression>,
+    );
+    for e in [&name_e, &url_e, &model_e, &key_e] {
+        e.set_hexpand(true);
+    }
+    key_e.set_visibility(false);
+    url_e.set_text("http://localhost:8000");
+    {
+        let (b, _) = row(tr("row.name"));
+        b.append(&name_e);
+        rows.append(&b);
+    }
+    let cloud_box = GtkBox::new(Orientation::Vertical, 8);
+    {
+        let (b, _) = row(tr("row.provider"));
+        b.append(&provider_dd);
+        cloud_box.append(&b);
+        let (b, _) = row(tr("row.model"));
+        b.append(&model_e);
+        cloud_box.append(&b);
+        let (b, _) = row(tr("row.apikey"));
+        b.append(&key_e);
+        cloud_box.append(&b);
+    }
+    rows.append(&cloud_box);
+    let url_box = GtkBox::new(Orientation::Vertical, 8);
+    {
+        let (b, _) = row(tr("row.serverurl"));
+        b.append(&url_e);
+        url_box.append(&b);
+    }
+    rows.append(&url_box);
+    let add_btn = Button::with_label(tr("action.add"));
+    let cancel_btn = Button::with_label(tr("action.cancel"));
+    cancel_btn.set_visible(false);
+    {
+        let brow = GtkBox::new(Orientation::Horizontal, 8);
+        brow.set_halign(gtk4::Align::End);
+        brow.append(&cancel_btn);
+        brow.append(&add_btn);
+        rows.append(&brow);
+    }
     root.append(&card);
+
+    let form = SttForm {
+        name_e: name_e.clone(),
+        url_e: url_e.clone(),
+        model_e: model_e.clone(),
+        key_e: key_e.clone(),
+        provider_dd: provider_dd.clone(),
+        kind_dd: kind_dd.clone(),
+        add_btn: add_btn.clone(),
+        cancel_btn: cancel_btn.clone(),
+        editing: Rc::new(RefCell::new(None)),
+    };
+    fill_stt_chain(&chain_list, state, &form, &add_local_btn);
+    {
+        // Local option (at most one): appends + refills with form.
+        let state = state.clone();
+        let list = chain_list.clone();
+        let form = form.clone();
+        let alb0 = add_local_btn.clone();
+        let alb0b = alb0.clone();
+        alb0.connect_clicked(move |_| {
+            {
+                let mut lm = state.settings.borrow_mut();
+                if !lm
+                    .stt
+                    .entries
+                    .iter()
+                    .any(|e| matches!(e.kind, crate::settings::SttEntryKind::Local))
+                {
+                    lm.stt.entries.push(crate::settings::SttChainEntry {
+                        id: "stt-local".to_string(),
+                        name: "Local".to_string(),
+                        kind: crate::settings::SttEntryKind::Local,
+                        enabled: true,
+                        provider: String::new(),
+                        url: String::new(),
+                        model: String::new(),
+                        api_key: String::new(),
+                    });
+                }
+            }
+            persist_prefs(state.clone())();
+            fill_stt_chain(&list, &state, &form, &alb0b);
+        });
+    }
+    {
+        let cbx = cloud_box.clone();
+        let ubx = url_box.clone();
+        kind_dd.connect_selected_notify(move |d| {
+            cbx.set_visible(d.selected() == 1);
+            ubx.set_visible(d.selected() == 0);
+        });
+        cloud_box.set_visible(false);
+    }
+    {
+        // Cancel: drop the edit, reset the form.
+        let form = form.clone();
+        let cb = form.cancel_btn.clone();
+        cb.connect_clicked(move |_| {
+            *form.editing.borrow_mut() = None;
+            form.add_btn.set_label(tr("action.add"));
+            form.cancel_btn.set_visible(false);
+            form.name_e.set_text("");
+            form.key_e.set_text("");
+            form.url_e.set_text("http://localhost:8000");
+            form.model_e.set_text("");
+            form.provider_dd.set_selected(0);
+            form.kind_dd.set_selected(0);
+        });
+    }
+    {
+        let state = state.clone();
+        let list = chain_list.clone();
+        let ab = form.add_btn.clone();
+        let ab_inner = ab.clone();
+        let cb = form.cancel_btn.clone();
+        let form = form.clone();
+        let alb1 = add_local_btn.clone();
+        ab.connect_clicked(move |_| {
+            use crate::settings::SttEntryKind;
+            let cloud = form.kind_dd.selected() == 1;
+            let provider = match form.provider_dd.selected() {
+                1 => "Groq",
+                2 => "Mistral",
+                3 => "Gemini",
+                4 => "Deepgram",
+                _ => "OpenAI",
+            };
+            let mut entry = crate::settings::SttChainEntry {
+                id: String::new(),
+                name: form.name_e.text().to_string(),
+                kind: if cloud {
+                    SttEntryKind::Cloud
+                } else {
+                    SttEntryKind::SelfHosted
+                },
+                enabled: true,
+                provider: provider.to_string(),
+                url: form.url_e.text().trim().to_string(),
+                model: form.model_e.text().trim().to_string(),
+                api_key: form.key_e.text().to_string(),
+            };
+            if !cloud {
+                entry.provider.clear();
+            }
+            if entry.name.trim().is_empty() {
+                entry.name = if cloud {
+                    format!("{} ({})", entry.provider, entry.model)
+                } else {
+                    format!("Self-hosted ({})", entry.model)
+                };
+            }
+            {
+                let mut st = state.settings.borrow_mut();
+                if let Some(id) = form.editing.borrow().as_ref() {
+                    if let Some(e) = st.stt.entries.iter_mut().find(|e| &e.id == id) {
+                        entry.id = e.id.clone();
+                        entry.enabled = e.enabled;
+                        *e = entry;
+                    }
+                } else {
+                    entry.id = format!(
+                        "stt-{}-{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0),
+                        st.stt.entries.len()
+                    );
+                    st.stt.entries.push(entry);
+                }
+            }
+            *form.editing.borrow_mut() = None;
+            ab_inner.set_label(tr("action.add"));
+            cb.set_visible(false);
+            form.name_e.set_text("");
+            form.key_e.set_text("");
+            persist_prefs(state.clone())();
+            fill_stt_chain(&list, &state, &form, &alb1);
+        });
+    }
 
     // ---- Registry model list with download/delete/select ----
     // Vendor pill tabs on top (Oruk / OpenAI / NVIDIA / Cohere),
@@ -2015,7 +2313,6 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
             gtk4::glib::ControlFlow::Continue
         });
     }
-    let models_card = card.clone();
 
     // ---- Runtimes: whisper packs (+ backend picker) for the OpenAI
     // vendor, sherpa packs for Oruk / NVIDIA / Cohere. Toggled per
@@ -2126,77 +2423,6 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
             gtk4::glib::ControlFlow::Continue
         });
     }
-    // ---- Cloud provider (display-only for now; shown in Cloud mode) ----
-    let (card, rows) = group(tr("group.cloud"));
-    {
-        let settings = state.settings.borrow();
-        let t = &settings.stt;
-        const PROVIDERS: &[&str] = &["OpenAI", "Groq", "Mistral", "Gemini", "Deepgram"];
-        combo_row(
-            &rows,
-            tr("row.provider"),
-            PROVIDERS,
-            idx_of(PROVIDERS, &t.cloud_provider),
-        );
-        entry_row(&rows, tr("row.model"), &t.cloud_model, false);
-        entry_row(&rows, tr("row.apikey"), &t.cloud_api_key, true);
-    }
-    root.append(&card);
-    let cloud_card = card.clone();
-
-    // ---- Self-hosted server (wired URL + model) ----
-    let (card, rows) = group(tr("group.selfhosted"));
-    {
-        let (b, _) = row(tr("row.serverurl"));
-        let url_entry = Entry::new();
-        url_entry.set_text(&state.settings.borrow().stt.self_hosted_url);
-        url_entry.set_hexpand(true);
-        {
-            let state = state.clone();
-            let url_entry_conn = url_entry.clone();
-            let commit = Rc::new(move || {
-                let url_entry = url_entry_conn.clone();
-                state.settings.borrow_mut().stt.self_hosted_url =
-                    url_entry.text().trim().to_string();
-                persist_prefs(state.clone())();
-            });
-            let commit_activate = commit.clone();
-            let commit_focus = commit.clone();
-            url_entry.connect_activate(move |_| commit_activate());
-            let focus = gtk4::EventControllerFocus::new();
-            focus.connect_leave(move |_| commit_focus());
-            url_entry.add_controller(focus);
-        }
-        b.append(&url_entry);
-        rows.append(&b);
-    }
-    {
-        let (b, _) = row(tr("row.model"));
-        let model_entry = Entry::new();
-        model_entry.set_text(&state.settings.borrow().stt.self_hosted_model);
-        model_entry.set_hexpand(true);
-        {
-            let state = state.clone();
-            let model_entry_conn = model_entry.clone();
-            let commit = Rc::new(move || {
-                let model_entry = model_entry_conn.clone();
-                state.settings.borrow_mut().stt.self_hosted_model =
-                    model_entry.text().trim().to_string();
-                persist_prefs(state.clone())();
-            });
-            let commit_activate = commit.clone();
-            let commit_focus = commit.clone();
-            model_entry.connect_activate(move |_| commit_activate());
-            let focus = gtk4::EventControllerFocus::new();
-            focus.connect_leave(move |_| commit_focus());
-            model_entry.add_controller(focus);
-        }
-        b.append(&model_entry);
-        rows.append(&b);
-    }
-    root.append(&card);
-    let selfhosted_card = card.clone();
-
     // ---- Voice activity (wired except live preview) ----
     let (card, rows) = group(tr("group.vad"));
     // Language options follow the selected model: whisper reads the
@@ -2366,56 +2592,32 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     }
     root.append(&card);
 
-    // ---- Engine-conditional visibility ----
-    // GPU packs + model list only make sense for local whisper
-    // (parakeet ships its own sherpa binaries); cloud/self-hosted
-    // show their own sections. VAD always shows: it gates capture
-    // before anything leaves the machine.
+    // ---- Local-config visibility ----
+    // Runtimes/models/language always show: they configure the local
+    // option; the chain above decides what actually runs.
     let refresh: Rc<dyn Fn()> = Rc::new({
         let state = state.clone();
         let gpu_card = gpu_card.clone();
-        let models_card = models_card.clone();
-        let cloud_card = cloud_card.clone();
-        let selfhosted_card = selfhosted_card.clone();
         let whisper_box = whisper_box.clone();
         let sherpa_box = sherpa_box.clone();
         let needle_box = needle_box.clone();
         move || {
-            use crate::settings::SttMode;
-            let s = state.settings.borrow();
-            let (gpu, models, cloud, hosted) = match (&s.stt.mode, &s.stt.local_provider) {
-                // Runtimes card shows for every local vendor; its
-                // content switches (whisper packs vs sherpa packs).
-                (SttMode::Local, _) => (true, true, false, false),
-                (SttMode::Cloud, _) => (false, false, true, false),
-                (SttMode::SelfHosted, _) => (false, false, false, true),
-            };
-            models_card.set_visible(models);
             {
-                use crate::settings::{LocalSttProvider, SttMode};
+                use crate::settings::LocalSttProvider;
                 let s = state.settings.borrow();
-                let whisper = matches!(
-                    (&s.stt.mode, &s.stt.local_provider),
-                    (SttMode::Local, LocalSttProvider::OpenAi)
-                );
+                let whisper = matches!(s.stt.local_provider, LocalSttProvider::OpenAi);
                 let sherpa = matches!(
-                    (&s.stt.mode, &s.stt.local_provider),
-                    (SttMode::Local, LocalSttProvider::Nvidia)
-                        | (SttMode::Local, LocalSttProvider::Oruk)
+                    s.stt.local_provider,
+                    LocalSttProvider::Nvidia | LocalSttProvider::Oruk
                 );
-                let whistle = matches!(
-                    (&s.stt.mode, &s.stt.local_provider),
-                    (SttMode::Local, LocalSttProvider::Whistle)
-                );
+                let whistle = matches!(s.stt.local_provider, LocalSttProvider::Whistle);
                 whisper_box.set_visible(whisper);
                 sherpa_box.set_visible(sherpa);
                 needle_box.set_visible(whistle);
                 // No empty cards: runtimes show only when one of the
                 // engine boxes applies.
-                gpu_card.set_visible(gpu && (whisper || sherpa || whistle));
+                gpu_card.set_visible(whisper || sherpa || whistle);
             }
-            cloud_card.set_visible(cloud);
-            selfhosted_card.set_visible(hosted);
             refresh_lang();
         }
     });

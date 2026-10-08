@@ -51,7 +51,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use crate::audio::{self, wav_bytes_16k, Recorder, Resampler, ENGINE_RATE, MIN_SAMPLES_16K};
-use crate::settings::{GpuBackendSetting, LocalSttProvider, SttMode, SttSettings};
+use crate::settings::{GpuBackendSetting, LocalSttProvider, SttSettings};
 use crate::stt;
 
 // ---------------------------------------------------------------- ports
@@ -136,63 +136,97 @@ fn missing(what: &str) -> String {
 /// model files exist. Errors are user-actionable strings for the log
 /// (and future pill surface).
 pub fn plan_for(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
-    match s.mode {
-        SttMode::SelfHosted => {
-            let url = s.self_hosted_url.trim().trim_end_matches('/').to_string();
-            if url.is_empty() {
-                return Err("self-hosted URL is empty".to_string());
-            }
-            Ok(Plan::CloudOpenAiCompat {
-                base: url,
-                key: String::new(),
-                model: s.self_hosted_model.clone(),
-                lang: s.language.clone(),
-            })
-        }
-        SttMode::Cloud => cloud_plan(s),
-        SttMode::Local => local_plan(s, data_dir),
-    }
+    plans_for(s, data_dir)?
+        .into_iter()
+        .next()
+        .map(|(_, p)| p)
+        .ok_or_else(|| "no enabled STT options (add one in Speech to Text)".to_string())
 }
 
-fn cloud_plan(s: &SttSettings) -> Result<Plan, String> {
-    if s.cloud_api_key.trim().is_empty() {
+/// Enabled chain entries top-down: (entry name, plan). Local entries
+/// resolve against the live local configuration. Failures resolve
+/// per-entry with the entry name attached; the worker tries the next.
+pub fn plans_for(s: &SttSettings, data_dir: &Path) -> Result<Vec<(String, Plan)>, String> {
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    for entry in s.chain() {
+        let plan = match entry.kind {
+            crate::settings::SttEntryKind::Local => local_plan(s, data_dir),
+            crate::settings::SttEntryKind::SelfHosted => {
+                let url = entry.url.trim().trim_end_matches('/').to_string();
+                if url.is_empty() {
+                    Err("self-hosted URL is empty".to_string())
+                } else {
+                    Ok(Plan::CloudOpenAiCompat {
+                        base: url,
+                        key: String::new(),
+                        model: if entry.model.trim().is_empty() {
+                            "default".to_string()
+                        } else {
+                            entry.model.clone()
+                        },
+                        lang: s.language.clone(),
+                    })
+                }
+            }
+            crate::settings::SttEntryKind::Cloud => {
+                cloud_plan_for(&entry.provider, &entry.model, &entry.api_key, &s.language)
+            }
+        };
+        match plan {
+            Ok(p) => out.push((entry.name.clone(), p)),
+            Err(e) => errors.push(format!("{}: {e}", entry.name)),
+        }
+    }
+    if out.is_empty() {
+        return Err(if errors.is_empty() {
+            "no enabled STT options (add one in Speech to Text)".to_string()
+        } else {
+            errors.join("; ")
+        });
+    }
+    Ok(out)
+}
+
+fn cloud_plan_for(provider: &str, model: &str, key: &str, lang: &str) -> Result<Plan, String> {
+    if key.trim().is_empty() {
         return Err("cloud API key is empty (Settings → Speech to Text)".to_string());
     }
-    let key = s.cloud_api_key.trim().to_string();
-    let model = if s.cloud_model.trim().is_empty() {
-        default_cloud_model(&s.cloud_provider)
+    let key = key.trim().to_string();
+    let model = if model.trim().is_empty() {
+        default_cloud_model(provider)
     } else {
-        s.cloud_model.trim().to_string()
+        model.trim().to_string()
     };
-    match s.cloud_provider.as_str() {
+    match provider {
         "Deepgram" => Ok(Plan::CloudDeepgram {
             base: "https://api.deepgram.com".to_string(),
             key,
             model,
-            lang: s.language.clone(),
+            lang: lang.to_string(),
         }),
         "Gemini" => Ok(Plan::CloudGemini {
             key,
             model,
-            lang: s.language.clone(),
+            lang: lang.to_string(),
         }),
         "OpenAI" => Ok(Plan::CloudOpenAiCompat {
             base: "https://api.openai.com/v1".to_string(),
             key,
             model,
-            lang: s.language.clone(),
+            lang: lang.to_string(),
         }),
         "Groq" => Ok(Plan::CloudOpenAiCompat {
             base: "https://api.groq.com/openai/v1".to_string(),
             key,
             model,
-            lang: s.language.clone(),
+            lang: lang.to_string(),
         }),
         "Mistral" => Ok(Plan::CloudOpenAiCompat {
             base: "https://api.mistral.ai/v1".to_string(),
             key,
             model,
-            lang: s.language.clone(),
+            lang: lang.to_string(),
         }),
         other => Err(format!("cloud provider {other:?} is not supported yet")),
     }
@@ -1209,7 +1243,10 @@ struct LiveUtterance {
     spec: Option<SpecHandle>,
     /// Streaming engines: pump thread exit + final text channel.
     result_rx: Option<mpsc::Receiver<Result<String, String>>>,
+    /// Primary plan (drives session setup) + named fallbacks, in
+    /// chain order. The worker tries each until one answers.
     plan: Plan,
+    fallbacks: Vec<(String, Plan)>,
     started: Instant,
     /// Worker-side engine warmup needs these after release.
     data_dir: PathBuf,
@@ -1242,13 +1279,26 @@ fn live() -> &'static Mutex<Option<LiveUtterance>> {
 pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data_dir: &Path) {
     end_stale();
     CANCELLED.store(false, Ordering::Relaxed);
-    let plan = match plan_for(&stt, data_dir) {
-        Ok(p) => p,
+    let mut plans = match plans_for(&stt, data_dir) {
+        Ok(v) => v,
         Err(e) => {
             eprintln!("[stt] press: cannot start: {e}");
             return;
         }
     };
+    let (first_name, plan) = plans.remove(0);
+    let fallbacks = plans;
+    if !fallbacks.is_empty() {
+        eprintln!(
+            "[stt] fallbacks: {}",
+            fallbacks
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    let _ = first_name;
     let data_dir = data_dir.to_path_buf();
     let backend = stt.gpu_backend;
     // Background warmup; the release worker re-ensures anyway.
@@ -1328,6 +1378,7 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
         spec,
         result_rx,
         plan,
+        fallbacks,
         started: Instant::now(),
         data_dir,
         backend,
@@ -1365,9 +1416,18 @@ fn pump_online(
         }
         session.send_chunk(&f32c)
     };
+    let mut consumed = 0usize;
     while !stop.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(200));
-        let chunk = rec.lock().map(|mut r| r.drain_new()).unwrap_or_default();
+        // Snapshot, not drain: a failed stream falls back to file
+        // engines with the whole utterance intact.
+        let snap = rec.lock().map(|r| r.snapshot()).unwrap_or_default();
+        let chunk = if snap.len() > consumed {
+            snap[consumed..].to_vec()
+        } else {
+            Vec::new()
+        };
+        consumed = snap.len();
         if let Err(e) = feed(chunk) {
             let _ = tx.send(Err(e));
             return;
@@ -1380,7 +1440,17 @@ fn pump_online(
         let _ = tx.send(Err("cancelled".to_string()));
         return;
     }
-    let tail = rec.lock().map(|mut r| r.drain_new()).unwrap_or_default();
+    let tail = rec
+        .lock()
+        .map(|r| {
+            let snap = r.snapshot();
+            if snap.len() > consumed {
+                snap[consumed..].to_vec()
+            } else {
+                Vec::new()
+            }
+        })
+        .unwrap_or_default();
     if let Err(e) = feed(tail) {
         let _ = tx.send(Err(e));
         return;
@@ -1545,9 +1615,13 @@ fn finish_session(
 ) -> Result<Option<(String, f64, Option<Vec<u8>>)>, String> {
     let secs = sess.started.elapsed().as_secs_f64();
     // Engine warmup finishes here (cold first press waits, later
-    // ones sail through an already-running server).
-    if let Err(e) = ensure_servers(&sess.plan, &sess.data_dir, sess.backend) {
-        return Err(format!("release: engine not ready: {e}"));
+    // ones sail through an already-running server). Cloud plans are
+    // no-ops here; failures are per-plan below, not fatal.
+    ensure_servers(&sess.plan, &sess.data_dir, sess.backend).ok();
+    for (name, plan) in &sess.fallbacks {
+        if let Err(e) = ensure_servers(plan, &sess.data_dir, sess.backend) {
+            eprintln!("[stt] fallback {name} not ready: {e}");
+        }
     }
     eprintln!("[stt] release: engine ready, transcribing ({secs:.1}s window)");
     if let Some(rx) = sess.result_rx {
@@ -1557,8 +1631,15 @@ fn finish_session(
         if sess.keep_audio {
             eprintln!("[stt] release: audio retention skips streaming utterances");
         }
-        let text = rx.recv().map_err(|_| "online pump died".to_string())??;
-        return Ok(empty_to_none(text).map(|t| (t, secs, None)));
+        match rx.recv().map_err(|_| "online pump died".to_string())? {
+            Ok(text) => return Ok(empty_to_none(text).map(|t| (t, secs, None))),
+            Err(e) if e == "cancelled" => return Ok(None),
+            Err(e) => {
+                // Stream failed mid-hold: the recorder is intact
+                // (snapshot pump), fall through to file engines.
+                eprintln!("[stt] stream failed ({e}); falling back to file");
+            }
+        }
     }
     let (pcm, rate) = sess.recorder.lock().unwrap().finish();
     if rate == 0 || pcm.is_empty() {
@@ -1625,13 +1706,25 @@ fn finish_session(
         None
     };
     let t0 = Instant::now();
-    let out = transcribe_blocking(&sess.plan, &f32s, words)
-        .map(|r| empty_to_none(r).map(|t| (t, secs, wav)));
-    eprintln!(
-        "[stt] release: inference took {:.1}s",
-        t0.elapsed().as_secs_f64()
-    );
-    out
+    let mut attempts: Vec<(String, &Plan)> = vec![("primary".to_string(), &sess.plan)];
+    attempts.extend(sess.fallbacks.iter().map(|(n, p)| (n.clone(), p)));
+    let mut last_err = String::new();
+    for (name, plan) in attempts {
+        match transcribe_blocking(plan, &f32s, words) {
+            Ok(r) => {
+                eprintln!(
+                    "[stt] release: inference took {:.1}s ({name})",
+                    t0.elapsed().as_secs_f64()
+                );
+                return Ok(empty_to_none(r).map(|t| (t, secs, wav)));
+            }
+            Err(e) => {
+                eprintln!("[stt] {name} failed ({e}); trying next");
+                last_err = e;
+            }
+        }
+    }
+    Err(format!("all STT options failed; last: {last_err}"))
 }
 
 fn wav_of(buf_16k: &[f32], keep: bool) -> Option<Vec<u8>> {
@@ -1876,15 +1969,11 @@ fn llm_cleanup(
                     "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
                     entry.model
                 );
-                let text = http_post_json(
-                    &url,
-                    &[("x-goog-api-key", entry.api_key.as_str())],
-                    &body,
-                )?;
+                let text =
+                    http_post_json(&url, &[("x-goog-api-key", entry.api_key.as_str())], &body)?;
                 let v: serde_json::Value =
                     serde_json::from_str(&text).map_err(|e| format!("gemini json: {e}"))?;
-                Ok(v
-                    .pointer("/candidates/0/content/parts")
+                Ok(v.pointer("/candidates/0/content/parts")
                     .and_then(|p| p.as_array())
                     .map(|parts| {
                         parts
@@ -1912,8 +2001,7 @@ fn llm_cleanup(
                 )?;
                 let v: serde_json::Value =
                     serde_json::from_str(&text).map_err(|e| format!("claude json: {e}"))?;
-                Ok(v
-                    .pointer("/content/0/text")
+                Ok(v.pointer("/content/0/text")
                     .and_then(|t| t.as_str())
                     .unwrap_or_default()
                     .to_string())
@@ -2000,11 +2088,7 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
         .dictionary
         .snippets
         .iter()
-        .flat_map(|s| {
-            s.triggers()
-                .into_iter()
-                .map(|t| (t, s.replacement.clone()))
-        })
+        .flat_map(|s| s.triggers().into_iter().map(|t| (t, s.replacement.clone())))
         .collect();
     let expanded = crate::textnorm::expand_snippets(&raw, &snips);
     if expanded != raw {
@@ -2148,9 +2232,7 @@ mod tests {
         // passes, agreement, and the done channel.
         let tone: Vec<i16> = (0..44_100 * 4)
             .map(|i| {
-                (15_000.0
-                    * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 44_100.0).sin())
-                    as i16
+                (15_000.0 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 44_100.0).sin()) as i16
             })
             .collect();
         rec.lock().unwrap().push(&tone);
@@ -2236,10 +2318,55 @@ mod tests {
 
     #[test]
     fn plan_cloud_needs_key() {
+        use crate::settings::{SttChainEntry, SttEntryKind};
         let mut s = SttSettings::default();
-        s.mode = SttMode::Cloud;
+        s.entries = vec![SttChainEntry {
+            id: "t".to_string(),
+            name: "t".to_string(),
+            kind: SttEntryKind::Cloud,
+            enabled: true,
+            provider: "OpenAI".to_string(),
+            url: String::new(),
+            model: "whisper-1".to_string(),
+            api_key: String::new(),
+        }];
         let err = plan_for(&s, Path::new("/nonexistent")).unwrap_err();
         assert!(err.contains("API key"), "{err}");
+    }
+
+    #[test]
+    fn chain_falls_back_past_broken_first() {
+        use crate::settings::{SttChainEntry, SttEntryKind};
+        // First entry unresolvable (missing files), second fine is
+        // covered by plans_for collecting only Ok plans.
+        let mut s = SttSettings::default();
+        s.entries = vec![
+            SttChainEntry {
+                id: "bad".to_string(),
+                name: "bad-local".to_string(),
+                kind: SttEntryKind::Local,
+                enabled: true,
+                provider: String::new(),
+                url: String::new(),
+                model: String::new(),
+                api_key: String::new(),
+            },
+            SttChainEntry {
+                id: "ok".to_string(),
+                name: "ok-cloud".to_string(),
+                kind: SttEntryKind::Cloud,
+                enabled: true,
+                provider: "OpenAI".to_string(),
+                url: String::new(),
+                model: "whisper-1".to_string(),
+                api_key: "k".to_string(),
+            },
+        ];
+        // Local default provider with missing model dir fails; the
+        // cloud entry resolves: plans_for returns just it.
+        let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].0, "ok-cloud");
     }
 
     /// Live engine check (needs sherpa-cpu pack + orukeet on disk):

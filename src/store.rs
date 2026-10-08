@@ -275,10 +275,7 @@ impl Store {
         )?;
         // Rows predating raw_text carry the final text as raw (the
         // pipeline was passthrough then, so this is exact).
-        let _ = conn.execute(
-            "UPDATE history SET raw_text = text WHERE raw_text = ''",
-            [],
-        );
+        let _ = conn.execute("UPDATE history SET raw_text = text WHERE raw_text = ''", []);
         Ok(Self { conn })
     }
 
@@ -304,6 +301,7 @@ impl Store {
             .unwrap_or_default();
         // Pre-list configs seed one entry from legacy fields.
         settings.language_models.ensure_seed();
+        settings.stt.ensure_seed();
         // Typed tables are authoritative for dictionary content.
         settings.dictionary.words = self.load_words().unwrap_or_default();
         settings.dictionary.snippets = self.load_snippets().unwrap_or_default();
@@ -436,10 +434,8 @@ impl Store {
     /// Local delete: tombstone, so the row stays deleted across sync
     /// (union-by-uuid would otherwise resurrect it from a peer).
     pub fn delete_history(&self, uuid: &str) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "UPDATE history SET deleted = 1 WHERE uuid = ?1",
-            [uuid],
-        )?;
+        self.conn
+            .execute("UPDATE history SET deleted = 1 WHERE uuid = ?1", [uuid])?;
         bump_data_gen();
         bump_gen(&self.conn);
         Ok(())
@@ -509,11 +505,7 @@ impl Store {
     /// Discarded (cancelled-midway) row: no text, no words, but a real
     /// duration. No audio is ever stored (RAM-only capture posture —
     /// stricter than the reference, which keeps the clip).
-    pub fn add_discarded(
-        &self,
-        duration_secs: i64,
-        node_id: &str,
-    ) -> rusqlite::Result<String> {
+    pub fn add_discarded(&self, duration_secs: i64, node_id: &str) -> rusqlite::Result<String> {
         self.add_history_full("", "", 0, duration_secs, true, node_id)
     }
 
@@ -1066,24 +1058,19 @@ pub struct PeerGossip {
 mod tests {
     #[test]
     fn settings_engine_switch_roundtrip() {
-        use crate::settings::{LocalSttProvider, SttMode};
+        use crate::settings::LocalSttProvider;
         let store = Store::open_memory().unwrap();
         let mut s = store.load_settings();
-        // Simulate the engine dropdown handler: scoped mutation,
-        // then a separate persist read (never nested borrows).
+        // Scoped mutation, then a separate persist read (never nested
+        // borrows). Seeded chain survives the round trip.
         {
-            s.stt.mode = SttMode::Local;
             s.stt.local_provider = LocalSttProvider::Nvidia;
         }
         store.save_settings(&s).unwrap();
         let reloaded = store.load_settings();
-        assert_eq!(reloaded.stt.mode, SttMode::Local);
         assert_eq!(reloaded.stt.local_provider, LocalSttProvider::Nvidia);
-        {
-            s.stt.mode = SttMode::SelfHosted;
-        }
-        store.save_settings(&s).unwrap();
-        assert_eq!(store.load_settings().stt.mode, SttMode::SelfHosted);
+        assert!(!reloaded.stt.entries.is_empty());
+        assert_eq!(reloaded.stt.chain().len(), 1);
     }
 
     #[test]
@@ -1108,16 +1095,12 @@ mod tests {
     #[test]
     fn auto_delete_keeps_tombstones() {
         let store = Store::open_memory().unwrap();
-        let uuid = store
-            .add_history("r", "t", 2, 5, "node-x")
-            .unwrap();
+        let uuid = store.add_history("r", "t", 2, 5, "node-x").unwrap();
         store.delete_history(&uuid).unwrap();
         // Ancient live rows go; tombstones stay (delete-sync safety).
         let n = store.purge_old_history(0).unwrap();
         assert_eq!(n, 0, "tombstone must survive auto-delete");
-        store
-            .add_history("r2", "t2", 2, 5, "node-x")
-            .unwrap();
+        store.add_history("r2", "t2", 2, 5, "node-x").unwrap();
         // Backdate the live row 60 days.
         store
             .conn
