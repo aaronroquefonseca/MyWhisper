@@ -25,15 +25,48 @@ GTK4 + Rust, Linux/Wayland-first.
 
 ## Install (private releases)
 
-Tagged versions ship binary tarballs on the private GitHub Release.
+Tagged versions ship binary tarballs on the private GitHub Release
+(`gh` authenticated with an account that can see the repo).
 
-Arch: `packaging/arch/update.sh [version]` downloads the tarball,
-builds and installs the package, enables the user service.
+Arch (latest release):
 
-NixOS: `packaging/nixos/flake.nix` exposes the package plus
-`services.mywhisper.enable` (systemd user service). Needs a GitHub
-token in nix.conf (`access-tokens = github.com=...`) and the per-release
-`fetchzip` hash (see comments in the flake).
+```bash
+./packaging/arch/update.sh
+```
+
+Specific version:
+
+```bash
+./packaging/arch/update.sh 0.9.0
+```
+
+The script downloads the tarball, bumps the PKGBUILD, runs
+`makepkg -si` (needs sudo), then enables the user service:
+
+```bash
+systemctl --user enable --now mywhisper.service
+```
+
+NixOS — flake input (HTTPS + token, no SSH needed):
+
+```nix
+mywhisper.url = "github:aaronroquefonseca/MyWhisper?dir=packaging/nixos";
+```
+
+SSH alternative:
+
+```nix
+mywhisper.url = "git+ssh://git@github.com/aaronroquefonseca/MyWhisper?dir=packaging/nixos";
+```
+
+```nix
+imports = [ mywhisper.nixosModules.default ];
+services.mywhisper.enable = true;
+```
+
+Plus a GitHub token in nix.conf for the private tarball
+(`access-tokens = github.com=...`) and the per-release `fetchzip`
+hash (see comments in `packaging/nixos/flake.nix`).
 
 ## Build
 
