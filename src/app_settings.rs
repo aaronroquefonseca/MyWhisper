@@ -1854,9 +1854,11 @@ fn update_gpu_progress(container: &GtkBox) {
 /// auto-detect and offers its 14 codes only.
 /// Language list follows the local configuration, plus whether the
 /// dropdown locks (single-language model: greyed out, fixed).
-/// Whisper and Whistle take a language (auto supported); sherpa
-/// servers don't take one, so multi-language sherpa lists offer no
-/// auto (default en) and single-language ones lock.
+/// Whisper and Whistle take a language (auto supported). Sherpa
+/// servers take none, so auto on a multilingual sherpa model means
+/// "model decides" (mechanically identical to any selection, but
+/// the user's working choice); single-language ones lock. Cohere
+/// resolves auto to en at spawn (the server demands exactly one).
 struct SttLang {
     opts: Vec<String>,
     locked: bool,
@@ -1899,8 +1901,10 @@ fn stt_lang(state: &Rc<AppState>) -> SttLang {
             locked: true,
         };
     }
+    let mut v = vec!["auto".to_string()];
+    v.extend(langs);
     SttLang {
-        opts: langs,
+        opts: v,
         locked: false,
     }
 }
