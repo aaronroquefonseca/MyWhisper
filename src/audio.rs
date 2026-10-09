@@ -15,10 +15,15 @@ pub const ENGINE_RATE: u32 = 16_000;
 /// Utterances shorter than this are dropped (key taps, mic blips).
 pub const MIN_SAMPLES_16K: usize = 4_800; // 0.3 s
 
-/// One utterance being captured.
+/// One utterance being captured. Every pushed slice is stamped
+/// with its arrival time so release can truncate the buffer at the
+/// exact release instant: everything spoken before release is kept
+/// (plus the one straddling slice), nothing after is.
 #[derive(Debug, Default)]
 pub struct Recorder {
     samples: Vec<i16>,
+    /// (end offset, arrival stamp) per pushed slice.
+    ends: Vec<(usize, std::time::Instant)>,
     rate: u32,
     consumed: usize,
     active: bool,
@@ -27,6 +32,7 @@ pub struct Recorder {
 impl Recorder {
     pub fn start(&mut self, rate: u32) {
         self.samples.clear();
+        self.ends.clear();
         self.rate = rate;
         self.consumed = 0;
         self.active = true;
@@ -35,6 +41,8 @@ impl Recorder {
     pub fn push(&mut self, samples: &[i16]) {
         if self.active {
             self.samples.extend_from_slice(samples);
+            self.ends
+                .push((self.samples.len(), std::time::Instant::now()));
         }
     }
 
@@ -53,7 +61,25 @@ impl Recorder {
     /// Whole utterance at its capture rate; deactivates.
     pub fn finish(&mut self) -> (Vec<i16>, u32) {
         self.active = false;
+        self.ends.clear();
         (std::mem::take(&mut self.samples), self.rate)
+    }
+
+    /// Arrival stamp of the newest slice, if any.
+    pub fn last_stamp(&self) -> Option<std::time::Instant> {
+        self.ends.last().map(|(_, t)| *t)
+    }
+
+    /// Settle at release: keep everything up to the release instant
+    /// plus the one straddling slice (its head is pre-release
+    /// speech; its tail is milliseconds of room tone the VAD/file
+    /// path trims and streaming ignores). Drops everything after.
+    pub fn settle_release(&mut self, release: std::time::Instant) {
+        if let Some(pos) = self.ends.iter().position(|(_, t)| *t > release) {
+            let end = self.ends[pos].0;
+            self.samples.truncate(end);
+            self.ends.truncate(pos + 1);
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -279,6 +305,23 @@ pub fn wav_bytes_16k(samples: &[i16]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settle_release_cuts_at_release_plus_straddler() {
+        let mut r = Recorder::default();
+        r.start(44_100);
+        r.push(&[1i16; 100]);
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        let t_release = std::time::Instant::now();
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        r.push(&[2i16; 100]); // straddler: kept
+        r.push(&[3i16; 100]); // post-release: dropped
+        r.settle_release(t_release);
+        // Pre-release slice + straddler survive, later slice gone.
+        assert_eq!(r.samples.len(), 200);
+        assert!(r.samples.iter().take(100).all(|s| *s == 1));
+        assert!(r.samples.iter().skip(100).all(|s| *s == 2));
+    }
 
     #[test]
     fn wav_header_shape() {

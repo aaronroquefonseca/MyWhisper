@@ -45,13 +45,12 @@ use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{
-    Arc, Mutex, OnceLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
-    mpsc,
+    mpsc, Arc, Mutex, OnceLock,
 };
 use std::time::{Duration, Instant};
 
-use crate::audio::{self, ENGINE_RATE, MIN_SAMPLES_16K, Recorder, Resampler, wav_bytes_16k};
+use crate::audio::{self, wav_bytes_16k, Recorder, Resampler, ENGINE_RATE, MIN_SAMPLES_16K};
 use crate::settings::{GpuBackendSetting, LocalSttProvider, SherpaBackendSetting, SttSettings};
 use crate::stt;
 
@@ -623,38 +622,36 @@ pub fn keep_warm_timeout(value: &str) -> Option<Duration> {
 /// Background reaper: every 30 s, stop servers idle past keep-warm.
 /// No-op when unset (forever). Started once at service boot.
 pub fn spawn_server_reaper(data_dir: PathBuf) {
-    let _ = crate::runtime::spawn_dedicated("server-reaper", move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(30));
-            let keep = crate::store::Store::open(&data_dir.join("state.db"))
-                .map(|store| store.load_settings().stt.keep_warm.clone())
-                .unwrap_or_default();
-            let Some(timeout) = keep_warm_timeout(&keep) else {
+    let _ = crate::runtime::spawn_dedicated("server-reaper", move || loop {
+        std::thread::sleep(Duration::from_secs(30));
+        let keep = crate::store::Store::open(&data_dir.join("state.db"))
+            .map(|store| store.load_settings().stt.keep_warm.clone())
+            .unwrap_or_default();
+        let Some(timeout) = keep_warm_timeout(&keep) else {
+            continue;
+        };
+        let mut map = match servers().lock() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let mut dead = Vec::new();
+        for (name, s) in map.iter_mut() {
+            if s.last_used.elapsed() < timeout {
                 continue;
-            };
-            let mut map = match servers().lock() {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            let mut dead = Vec::new();
-            for (name, s) in map.iter_mut() {
-                if s.last_used.elapsed() < timeout {
-                    continue;
-                }
-                let alive = s.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
-                if !alive {
-                    dead.push(name.clone());
-                    continue;
-                }
-                eprintln!("[stt] keep-warm expired for {name}; stopping");
-                let _ = s.child.kill();
-                let _ = s.child.wait();
-                pidfile_remove(&data_dir, name);
+            }
+            let alive = s.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
+            if !alive {
                 dead.push(name.clone());
+                continue;
             }
-            for name in dead {
-                map.remove(&name);
-            }
+            eprintln!("[stt] keep-warm expired for {name}; stopping");
+            let _ = s.child.kill();
+            let _ = s.child.wait();
+            pidfile_remove(&data_dir, name);
+            dead.push(name.clone());
+        }
+        for name in dead {
+            map.remove(&name);
         }
     });
 }
@@ -779,8 +776,8 @@ fn ensure_server(
         },
     );
     drop(map); // the wait loop re-locks per iteration (non-reentrant)
-    // Wait for listen, but fail fast when the child dies first (e.g.
-    // cuda binary with no CUDA libs exits 127 in ms — no 20 s mystery).
+               // Wait for listen, but fail fast when the child dies first (e.g.
+               // cuda binary with no CUDA libs exits 127 in ms — no 20 s mystery).
     let start = Instant::now();
     loop {
         if port_open(port) {
@@ -1766,6 +1763,7 @@ fn pump_whistle(
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
     preview: bool,
+    settled: Arc<AtomicBool>,
     tx: mpsc::Sender<Result<String, String>>,
 ) {
     let mut consumed = 0usize;
@@ -1817,6 +1815,26 @@ fn pump_whistle(
     if cancel.load(Ordering::Relaxed) {
         let _ = tx.send(Err("cancelled".to_string()));
         return; // stream dropped: child killed, fifo removed
+    }
+    // Settled audio only (see wait_settled): drain what the loop
+    // missed past release before finalizing the stream.
+    wait_settled(&settled);
+    {
+        let (chunk, rate) = rec
+            .lock()
+            .map(|r| {
+                let snap = r.snapshot();
+                let chunk = if snap.len() > consumed {
+                    snap[consumed..].to_vec()
+                } else {
+                    Vec::new()
+                };
+                (chunk, r.rate())
+            })
+            .unwrap_or_default();
+        if !chunk.is_empty() && rate != 0 {
+            let _ = stream.feed(&chunk, rate);
+        }
     }
     let _ = tx.send(stream.finish());
 }
@@ -2098,6 +2116,7 @@ fn run_spec(
     overlap: usize,
     tx: mpsc::Sender<(String, usize, Vec<f32>)>,
     whisper_port: u16,
+    settled: Arc<AtomicBool>,
 ) {
     let words = crate::store::Store::open(&data_dir.join("state.db"))
         .ok()
@@ -2146,9 +2165,9 @@ fn run_spec(
             Err(e) => eprintln!("[stt] spec pass: {e}"),
         }
     }
-    // Release headroom (see RELEASE_TAIL_MS): one last snapshot so
-    // the tail decode covers the final syllable.
-    std::thread::sleep(Duration::from_millis(RELEASE_TAIL_MS));
+    // Settled audio only (see wait_settled): the tail decode covers
+    // the utterance exactly up to release.
+    wait_settled(&settled);
     {
         let snap = rec.lock().map(|r| r.snapshot()).unwrap_or_default();
         if snap.len() > consumed {
@@ -2195,6 +2214,10 @@ struct LiveUtterance {
     /// Overlap (16 kHz samples) for the speculative tail window.
     /// Zero when speculative passes are off.
     spec_overlap: usize,
+    /// Release settle flag: the tail thread sets it once the
+    /// recorder holds exactly the utterance up to release (flushed
+    /// + truncated + disarmed). Pumps/spec snapshot only after it.
+    settled: Arc<AtomicBool>,
     /// Server bind + ports snapshot at press (Network section).
     net: ServerNet,
 }
@@ -2277,6 +2300,7 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
     }
     eprintln!("[stt] press: armed ({})", plan.describe());
     let recorder = Arc::new(Mutex::new(Recorder::default()));
+    let settled = Arc::new(AtomicBool::new(false));
     recorder.lock().unwrap().start(0); // rate learned from first tap
     audio::set_recorder(Some(recorder.clone()));
     let stop = Arc::new(AtomicBool::new(false));
@@ -2292,8 +2316,18 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
         let overlap = (stt.spec_overlap_secs.clamp(0.0, 5.0) * 16_000.0) as usize;
         let sstop = spec_stop.clone();
         let spec_port = engine_port(&server_net(&stt), WHISPER_PORT);
+        let spec_settled = settled.clone();
         if let Err(e) = crate::runtime::submit("stt-spec", move || {
-            run_spec(rec, sstop, data, update, overlap, tx, spec_port);
+            run_spec(
+                rec,
+                sstop,
+                data,
+                update,
+                overlap,
+                tx,
+                spec_port,
+                spec_settled,
+            );
         }) {
             eprintln!("[stt] press: {e}");
             None
@@ -2322,8 +2356,9 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
                 let rec = recorder.clone();
                 let stop_pump = stop.clone();
                 let cancel_pump = cancel.clone();
+                let pump_settled = settled.clone();
                 if let Err(e) = crate::runtime::submit("stt-pump", move || {
-                    pump_online(session, rec, stop_pump, cancel_pump, tx);
+                    pump_online(session, rec, stop_pump, cancel_pump, pump_settled, tx);
                 }) {
                     eprintln!("[stt] press: {e}");
                     audio::set_recorder(None);
@@ -2362,8 +2397,17 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
                     let stop_pump = stop.clone();
                     let cancel_pump = cancel.clone();
                     let preview = stt.live_preview;
+                    let whistle_settled = settled.clone();
                     if let Err(e) = crate::runtime::submit("whistle-pump", move || {
-                        pump_whistle(stream, rec, stop_pump, cancel_pump, preview, tx);
+                        pump_whistle(
+                            stream,
+                            rec,
+                            stop_pump,
+                            cancel_pump,
+                            preview,
+                            whistle_settled,
+                            tx,
+                        );
                         if let Some(kw) = kw_cleanup {
                             let _ = std::fs::remove_file(kw);
                         }
@@ -2401,6 +2445,7 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
         keep_audio,
         spec_overlap: (stt.spec_overlap_secs.clamp(0.0, 5.0) * 16_000.0) as usize,
         net: server_net(&stt),
+        settled: settled.clone(),
     });
 }
 
@@ -2412,6 +2457,7 @@ fn pump_online(
     rec: Arc<Mutex<Recorder>>,
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
+    settled: Arc<AtomicBool>,
     tx: mpsc::Sender<Result<String, String>>,
 ) {
     let mut resampler: Option<(u32, Resampler)> = None;
@@ -2464,10 +2510,10 @@ fn pump_online(
         let _ = tx.send(Err("cancelled".to_string()));
         return;
     }
-    // Release headroom (see RELEASE_TAIL_MS): the tap stays armed
-    // past release, so wait for the late samples before the final
-    // snapshot, else the last syllable never reaches the server.
-    std::thread::sleep(Duration::from_millis(RELEASE_TAIL_MS));
+    // Settled audio only (see wait_settled): the release tail is
+    // complete and truncated at release, so this snapshot is the
+    // whole utterance up to release — no torn tail, no extra wait.
+    wait_settled(&settled);
     let tail = rec
         .lock()
         .map(|r| {
@@ -2499,6 +2545,7 @@ pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
     };
     sess.stop.store(true, Ordering::Relaxed);
     sess.cancel.store(true, Ordering::Relaxed);
+    sess.settled.store(true, Ordering::Relaxed);
     CANCELLED.store(true, Ordering::Relaxed);
     let held_secs = sess.started.elapsed().as_secs_f64();
     drop(sess); // result_rx drop unblocks the aborting pump
@@ -2573,12 +2620,26 @@ pub fn end_utterance(on_done: impl FnOnce() + Send + 'static) {
     end_utterance_inner(false, Some(Box::new(on_done)));
 }
 
-/// Release headroom: the mic stack still holds undelivered audio
-/// when the key comes up (device buffers + capture cadence, roughly
-/// 50-250 ms). The tap stays armed this long past release so the
-/// last syllable lands instead of clipping. Cost: this much extra
-/// latency on every release, by design.
-const RELEASE_TAIL_MS: u64 = 350;
+/// Release settle: bound on waiting for in-flight slices to land
+/// past the release instant (device quantum + scheduling; tens of
+/// ms typical). The recorder is then truncated AT release, so the
+/// wait only ever costs latency, never extra audio. Nothing is kept
+/// past release; nothing spoken before it is cut.
+const RELEASE_FLUSH_MS: u64 = 400;
+/// Settle-wait cap for consumers (pumps/spec): the release tail
+/// thread always settles, so this only trips on pathology.
+const SETTLE_WAIT_MS: u64 = 1500;
+
+/// Block until the release tail thread settles the recorder (or the
+/// cap trips). Consumers snapshot only settled audio: exactly the
+/// utterance up to release, never a torn tail.
+fn wait_settled(settled: &AtomicBool) {
+    let mut waited = 0u64;
+    while !settled.load(Ordering::Relaxed) && waited < SETTLE_WAIT_MS {
+        std::thread::sleep(Duration::from_millis(10));
+        waited += 10;
+    }
+}
 
 fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
     let sess = live().lock().unwrap().take();
@@ -2592,22 +2653,45 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
     sess.stop.store(true, Ordering::Relaxed);
     if stale {
         audio::set_recorder(None);
+        sess.settled.store(true, Ordering::Relaxed);
         return; // replaced, not transcribed
     }
     if BUSY.swap(true, Ordering::SeqCst) {
         eprintln!("[stt] worker busy; dropping overlapping utterance");
         audio::set_recorder(None);
+        sess.settled.store(true, Ordering::Relaxed);
         if let Some(done) = on_done {
             done();
         }
         return;
     }
-    // Tail wait off the GTK thread (the pill already shows
-    // Processing); the worker submit below lands after disarm, so
-    // its recorder snapshot includes the headroom audio.
+    // Tail settle off the GTK thread (the pill already shows
+    // Processing): wait for in-flight slices to land past release,
+    // truncate the recorder AT release (nothing before cut, nothing
+    // after kept), disarm, then hand the settled audio to the
+    // worker. Pumps/spec wait on the same flag before snapshotting.
+    let t_release = std::time::Instant::now();
+    let settled = sess.settled.clone();
+    let recorder = sess.recorder.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(RELEASE_TAIL_MS));
+        let mut waited = 0u64;
+        loop {
+            let past = recorder
+                .lock()
+                .map(|r| r.last_stamp().map(|t| t > t_release).unwrap_or(false))
+                .unwrap_or(true);
+            if past || waited >= RELEASE_FLUSH_MS {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            waited += 10;
+        }
+        recorder
+            .lock()
+            .map(|mut r| r.settle_release(t_release))
+            .unwrap_or_default();
         audio::set_recorder(None);
+        settled.store(true, Ordering::Relaxed);
         let on_done = Arc::new(Mutex::new(on_done));
         let od = on_done.clone();
         if let Err(e) = crate::runtime::submit("stt-worker", move || {
@@ -3431,7 +3515,18 @@ mod tests {
         let r = rec.clone();
         let s = stop.clone();
         let data = crate::paths::AppPaths::create().unwrap().data_dir;
-        std::thread::spawn(move || run_spec(r, s, data, 1.0, 16_000, tx, 8080));
+        std::thread::spawn(move || {
+            run_spec(
+                r,
+                s,
+                data,
+                1.0,
+                16_000,
+                tx,
+                8080,
+                Arc::new(AtomicBool::new(true)),
+            )
+        });
         std::thread::sleep(Duration::from_secs(5));
         stop.store(true, Ordering::Relaxed);
         let (committed, clen, buf) = rx.recv_timeout(Duration::from_secs(120)).unwrap();
