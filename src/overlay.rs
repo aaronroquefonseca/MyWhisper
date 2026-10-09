@@ -284,7 +284,13 @@ impl VoiceOverlay {
     /// stack, so the first words re-present it once at tall size
     /// (one flicker-free reconfigure: same content, new size).
     /// Width follows text live through content sizing.
+    /// Listening-only: late partials racing release are dropped —
+    /// otherwise text lands in the Processing pill next to the
+    /// spinner (and the hide+present reconfigure fires mid-shrink).
     pub fn set_live_text(&self, text: &str) {
+        if self.inner.state.get() != OverlayState::Listening {
+            return;
+        }
         let words: Vec<&str> = text.split_whitespace().collect();
         let tail = if words.len() > 12 {
             words[words.len() - 12..].join(" ")
