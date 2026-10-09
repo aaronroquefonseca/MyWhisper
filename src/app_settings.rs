@@ -2579,6 +2579,118 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
             gtk4::glib::ControlFlow::Continue
         });
     }
+    // ---- Voice activity (wired except live preview) ----
+    let (card, rows) = group(tr("group.vad"));
+    // Language options follow the selected model: whisper reads the
+    // full upstream list, sherpa models their own list, Cohere has
+    // no auto-detect so it offers its 14 codes only. Rebuilt on every
+    // visibility refresh (selection changes swap the list).
+    let lang_slot = GtkBox::new(Orientation::Horizontal, 8);
+    rows.append(&lang_slot);
+    let refresh_lang: Rc<dyn Fn()> = Rc::new({
+        let state = state.clone();
+        let lang_slot = lang_slot.clone();
+        move || {
+            while let Some(child) = lang_slot.first_child() {
+                lang_slot.remove(&child);
+            }
+            let opts = stt_lang_options(&state);
+            let (b, _) = row(tr("row.language"));
+            let lang_drop = DropDown::new(
+                Some(StringList::new(
+                    &opts.iter().map(String::as_str).collect::<Vec<_>>(),
+                )),
+                None::<gtk4::Expression>,
+            );
+            // STT codes stay untranslated (server contract). A stored
+            // code outside the new list falls back to the first entry.
+            lang_drop.set_selected(idx_of(
+                &opts.iter().map(String::as_str).collect::<Vec<_>>(),
+                &state.settings.borrow().stt.language,
+            ) as u32);
+            {
+                let state = state.clone();
+                lang_drop.connect_selected_notify(move |d| {
+                    let opts = stt_lang_options(&state);
+                    let code = opts
+                        .get(d.selected().min(opts.len() as u32 - 1) as usize)
+                        .cloned()
+                        .unwrap_or_else(|| "auto".to_string());
+                    state.settings.borrow_mut().stt.language = code;
+                    persist_prefs(state.clone())();
+                });
+            }
+            b.append(&lang_drop);
+            lang_slot.append(&b);
+        }
+    });
+    refresh_lang();
+    {
+        let (b, _) = row(tr("row.vad"));
+        let sw = Switch::new();
+        sw.set_active(state.settings.borrow().stt.vad_enabled);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state.settings.borrow_mut().stt.vad_enabled = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
+    spin_row(
+        &rows,
+        tr("row.vadthreshold"),
+        state.settings.borrow().stt.vad_threshold as f64,
+        0.0,
+        1.0,
+        0.05,
+    );
+    // spin_row leaves the control insensitive (display-only helper);
+    // enable it: this one is wired.
+    if let Some(row_box) = rows.last_child() {
+        let mut child = row_box.first_child();
+        while let Some(c) = child {
+            if let Ok(spin) = c.clone().downcast::<SpinButton>() {
+                spin.set_sensitive(true);
+                let state = state.clone();
+                spin.connect_value_changed(move |s| {
+                    state.settings.borrow_mut().stt.vad_threshold = s.value() as f32;
+                    persist_prefs(state.clone())();
+                });
+            }
+            child = c.next_sibling();
+        }
+    }
+    {
+        let (b, _) = row(tr("row.livepreview"));
+        let sw = Switch::new();
+        sw.set_active(state.settings.borrow().stt.live_preview);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state.settings.borrow_mut().stt.live_preview = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
+    // Streaming-only: file-based engines have nothing to preview.
+    {
+        let note = Label::new(Some(tr("stt.live.note")));
+        note.add_css_class("dim");
+        note.set_xalign(0.0);
+        note.set_wrap(true);
+        rows.append(&note);
+    }
+    root.append(&card);
+
     // ---- Servers: autostart, keep-warm, status, stop/cold-start ----
     // Only one local server runs at a time (one local
     // configuration): ensuring one stops any other. Autostart warms
@@ -2750,117 +2862,6 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         });
     }
 
-    // ---- Voice activity (wired except live preview) ----
-    let (card, rows) = group(tr("group.vad"));
-    // Language options follow the selected model: whisper reads the
-    // full upstream list, sherpa models their own list, Cohere has
-    // no auto-detect so it offers its 14 codes only. Rebuilt on every
-    // visibility refresh (selection changes swap the list).
-    let lang_slot = GtkBox::new(Orientation::Horizontal, 8);
-    rows.append(&lang_slot);
-    let refresh_lang: Rc<dyn Fn()> = Rc::new({
-        let state = state.clone();
-        let lang_slot = lang_slot.clone();
-        move || {
-            while let Some(child) = lang_slot.first_child() {
-                lang_slot.remove(&child);
-            }
-            let opts = stt_lang_options(&state);
-            let (b, _) = row(tr("row.language"));
-            let lang_drop = DropDown::new(
-                Some(StringList::new(
-                    &opts.iter().map(String::as_str).collect::<Vec<_>>(),
-                )),
-                None::<gtk4::Expression>,
-            );
-            // STT codes stay untranslated (server contract). A stored
-            // code outside the new list falls back to the first entry.
-            lang_drop.set_selected(idx_of(
-                &opts.iter().map(String::as_str).collect::<Vec<_>>(),
-                &state.settings.borrow().stt.language,
-            ) as u32);
-            {
-                let state = state.clone();
-                lang_drop.connect_selected_notify(move |d| {
-                    let opts = stt_lang_options(&state);
-                    let code = opts
-                        .get(d.selected().min(opts.len() as u32 - 1) as usize)
-                        .cloned()
-                        .unwrap_or_else(|| "auto".to_string());
-                    state.settings.borrow_mut().stt.language = code;
-                    persist_prefs(state.clone())();
-                });
-            }
-            b.append(&lang_drop);
-            lang_slot.append(&b);
-        }
-    });
-    refresh_lang();
-    {
-        let (b, _) = row(tr("row.vad"));
-        let sw = Switch::new();
-        sw.set_active(state.settings.borrow().stt.vad_enabled);
-        sw.set_valign(gtk4::Align::Center);
-        {
-            let state = state.clone();
-            sw.connect_state_set(move |_, active| {
-                state.settings.borrow_mut().stt.vad_enabled = active;
-                persist_prefs(state.clone())();
-                gtk4::glib::Propagation::Proceed
-            });
-        }
-        b.append(&sw);
-        rows.append(&b);
-    }
-    spin_row(
-        &rows,
-        tr("row.vadthreshold"),
-        state.settings.borrow().stt.vad_threshold as f64,
-        0.0,
-        1.0,
-        0.05,
-    );
-    // spin_row leaves the control insensitive (display-only helper);
-    // enable it: this one is wired.
-    if let Some(row_box) = rows.last_child() {
-        let mut child = row_box.first_child();
-        while let Some(c) = child {
-            if let Ok(spin) = c.clone().downcast::<SpinButton>() {
-                spin.set_sensitive(true);
-                let state = state.clone();
-                spin.connect_value_changed(move |s| {
-                    state.settings.borrow_mut().stt.vad_threshold = s.value() as f32;
-                    persist_prefs(state.clone())();
-                });
-            }
-            child = c.next_sibling();
-        }
-    }
-    {
-        let (b, _) = row(tr("row.livepreview"));
-        let sw = Switch::new();
-        sw.set_active(state.settings.borrow().stt.live_preview);
-        sw.set_valign(gtk4::Align::Center);
-        {
-            let state = state.clone();
-            sw.connect_state_set(move |_, active| {
-                state.settings.borrow_mut().stt.live_preview = active;
-                persist_prefs(state.clone())();
-                gtk4::glib::Propagation::Proceed
-            });
-        }
-        b.append(&sw);
-        rows.append(&b);
-    }
-    // Streaming-only: file-based engines have nothing to preview.
-    {
-        let note = Label::new(Some(tr("stt.live.note")));
-        note.add_css_class("dim");
-        note.set_xalign(0.0);
-        note.set_wrap(true);
-        rows.append(&note);
-    }
-    root.append(&card);
 
     // ---- Speculative streaming (whisper only, opt-in) ----
     // Background passes + local agreement while held, tail decode on
