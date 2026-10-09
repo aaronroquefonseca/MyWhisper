@@ -13,6 +13,12 @@ Thumbs.db
 .env.*
 secrets/
 
+# local packaging artifacts (release tarballs, built packages)
+packaging/arch/*.tar.gz
+packaging/arch/*.pkg.tar.zst
+packaging/arch/src/
+packaging/arch/pkg/
+
 # logs / tmp
 *.log
 tmp/
