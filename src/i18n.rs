@@ -70,7 +70,7 @@ fn system_is_spanish() -> bool {
         .unwrap_or(false)
 }
 
-fn spanish() -> bool {
+pub(crate) fn spanish() -> bool {
     match lang() {
         UiLang::Es => true,
         UiLang::En => false,
@@ -85,11 +85,7 @@ pub fn tr(tag: &str) -> &'static str {
         eprintln!("[i18n] missing string tag: {tag}");
         return Box::leak(tag.to_string().into_boxed_str());
     };
-    if spanish() {
-        es
-    } else {
-        en
-    }
+    if spanish() { es } else { en }
 }
 
 /// Look up a string with `{placeholder}` substitution.
@@ -99,6 +95,39 @@ pub fn trf(tag: &str, args: &[(&str, &str)]) -> String {
         out = out.replace(&format!("{{{k}}}"), v);
     }
     out
+}
+
+/// Translate registry presentation text while preserving engine IDs and backend data.
+pub(crate) fn backend_text(text: &'static str) -> &'static str {
+    let tag = match text {
+        "Fastest, lower quality" => "backend.caption.0",
+        "Good balance" => "backend.caption.1",
+        "Better quality, slower" => "backend.caption.2",
+        "High quality" => "backend.caption.3",
+        "Best quality, slowest" => "backend.caption.4",
+        "Fast with good quality" => "backend.caption.5",
+        "16.9 MB STT, 7 languages, own CPU engine" => "backend.caption.6",
+        "Fast multilingual ASR with auto language detection" => "backend.caption.7",
+        "English-only, fast" => "backend.caption.8",
+        "English streaming" => "backend.caption.9",
+        "Multilingual streaming, 15 languages" => "backend.caption.10",
+        "14 languages, no auto-detect (single-language server)" => "backend.caption.11",
+        "Multilingual Parakeet fine-tune (CC-BY-SA-4.0)" => "backend.caption.12",
+        "Portable whisper-server, works everywhere" => "backend.caption.13",
+        "NVIDIA GPUs (Pascal 6.1+, needs proprietary driver)" => "backend.caption.14",
+        "AMD/Intel/discrete GPUs via Vulkan" => "backend.caption.15",
+        "Offline + online websocket servers, CUDA 13 (needs system CUDA libs)" => {
+            "backend.caption.16"
+        }
+        "Offline + online websocket servers, onnxruntime included" => "backend.caption.17",
+        "CPU server" => "backend.caption.18",
+        "CUDA server" => "backend.caption.19",
+        "Vulkan server" => "backend.caption.20",
+        "Sherpa CUDA server" => "backend.caption.21",
+        "Sherpa CPU server" => "backend.caption.22",
+        _ => return text,
+    };
+    tr(tag)
 }
 
 // ---------------------------------------------------------------- rebuild
@@ -130,54 +159,68 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
     Some(match tag {
         // Sidebar + app chrome
         "app.name" => ("MyWhisper", "MyWhisper"),
-        "nav.home" => ("Home", "Inicio"),
-        "nav.insights" => ("Insights", "Estadísticas"),
+        "nav.home" => ("Dictation", "Dictado"),
+        "nav.insights" => ("Activity", "Actividad"),
         "nav.dictionary" => ("Dictionary", "Diccionario"),
-        "nav.sync" => ("Sync", "Sincronizar"),
+        "nav.sync" => ("Devices", "Dispositivos"),
         "nav.settings" => ("Settings", "Ajustes"),
 
         // Settings sections
-        "settings.preferences" => ("Preferences", "Preferencias"),
+        "settings.preferences" => ("General", "General"),
         "settings.preferences.sub" => (
-            "General application behavior.",
-            "Comportamiento general de la aplicación.",
+            "Choose your appearance, microphone, and recording indicator.",
+            "Elige la apariencia, el micrófono y el indicador de grabación.",
         ),
-        "settings.hotkeys" => ("Hotkeys", "Atajos"),
-        "settings.clipboard" => ("Clipboard", "Portapapeles"),
+        "settings.hotkeys" => ("Shortcuts", "Atajos"),
+        "settings.clipboard" => ("Text delivery", "Entrega de texto"),
         "settings.clipboard.sub" => (
-            "Automatic pasting and clipboard behavior.",
-            "Pegado automático y comportamiento del portapapeles.",
+            "Choose how finished dictations reach your apps and clipboard.",
+            "Elige cómo llegan los dictados terminados a tus aplicaciones y al portapapeles.",
         ),
         "settings.hotkeys.sub" => (
-            "Global shortcuts, read straight from your keyboards.\nHold = talk while held. Toggle = press to start/stop. Smart = quick tap toggles, longer press holds.",
-            "Atajos globales, leídos directamente de tus teclados.\nMantener = hablar mientras se pulsa. Alternar = pulsar para empezar/terminar. Smart = toque rápido alterna, pulsación larga mantiene.",
+            "Hold to talk: release to finish. Press to toggle: press again to finish. Smart: tap to toggle, or hold to talk.",
+            "Mantener para hablar: suelta para terminar. Pulsar para alternar: pulsa de nuevo para terminar. Inteligente: toca para alternar o mantén para hablar.",
         ),
-        "settings.stt" => ("Speech to Text", "Voz a texto"),
+        "settings.stt" => ("Transcription", "Transcripción"),
         "settings.stt.sub" => (
-            "How your voice is transcribed.",
-            "Cómo se transcribe tu voz.",
+            "Turn speech into text. Enabled engines are tried from top to bottom until one succeeds. Cloud engines send audio to the selected provider.",
+            "Convierte voz en texto. Los motores activos se prueban en orden hasta que uno funciona. Los motores en la nube envían el audio al proveedor elegido.",
         ),
-        "settings.lm" => ("Language Models", "Modelos de lenguaje"),
+        "settings.lm" => ("Language models", "Modelos de lenguaje"),
         "settings.lm.sub" => (
-            "Cleanup and assistant models. Ollama-first.",
-            "Modelos de limpieza y asistente. Ollama primero.",
+            "Manage language models and their connections. Choose how they are used in each feature’s settings.",
+            "Gestiona los modelos de lenguaje y sus conexiones. Elige cómo se usan en los ajustes de cada función.",
         ),
-        "settings.privacy" => ("Privacy & Data", "Privacidad y datos"),
-        "settings.privacy.sub" => ("Retention and history.", "Retención e historial."),
+        "settings.cleanup" => ("Text cleanup", "Edición de texto"),
+        "settings.cleanup.sub" => (
+            "Polish dictations after transcription.",
+            "Mejora los dictados después de transcribirlos.",
+        ),
+        "settings.privacy" => ("Privacy & storage", "Privacidad y almacenamiento"),
+        "settings.privacy.sub" => (
+            "Control what is saved on this device and how long it is kept.",
+            "Controla qué se guarda en este dispositivo y durante cuánto tiempo.",
+        ),
         "settings.system" => ("System", "Sistema"),
-        "settings.system.sub" => ("Version and local data.", "Versión y datos locales."),
+        "settings.system.sub" => (
+            "Check for updates and manage downloaded models and app data.",
+            "Busca actualizaciones y gestiona los modelos descargados y los datos de la aplicación.",
+        ),
         // Groups
         "group.appearance" => ("Appearance", "Apariencia"),
         "group.sound" => ("Sound", "Sonido"),
         "group.clipboard" => ("Clipboard", "Portapapeles"),
-        "group.paste" => ("Paste injection", "Inyección de pegado"),
-        "group.floating" => ("Floating pill", "Píldora flotante"),
+        "group.paste" => ("Automatic paste", "Pegado automático"),
+        "group.floating" => ("Recording indicator", "Indicador de grabación"),
         "group.language" => ("Language", "Idioma"),
         "group.microphone" => ("Microphone", "Micrófono"),
         "group.dictation" => ("Dictation", "Dictado"),
-        "group.smart" => ("Smart timing", "Tiempo smart"),
+        "group.smart" => ("Smart shortcut timing", "Tiempo del atajo inteligente"),
         "group.engine" => ("Engine", "Motor"),
-        "group.cloud" => ("Cloud provider (BYOK)", "Proveedor en la nube (BYOK)"),
+        "group.cloud" => (
+            "Cloud provider · your API key",
+            "Proveedor en la nube · tu clave API",
+        ),
         "group.selfhosted" => ("Self-hosted", "Autohospedado"),
         "group.vad" => ("Voice activity", "Actividad de voz"),
         "group.provider" => ("Provider", "Proveedor"),
@@ -200,12 +243,12 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Keep transcription in clipboard",
             "Mantener la transcripción en el portapapeles",
         ),
-        "row.copybackend" => ("Copy backend", "Motor de copiado"),
+        "row.copybackend" => ("Clipboard tool", "Herramienta de portapapeles"),
         "row.hidehistory" => (
             "Hide transcription from clipboard history",
             "Ocultar la transcripción del historial del portapapeles",
         ),
-        "row.pastebackend" => ("Paste backend", "Motor de pegado"),
+        "row.pastebackend" => ("Paste tool", "Herramienta de pegado"),
         "row.pastecombo" => ("Paste shortcut", "Atajo de pegado"),
         "status.available" => ("Available", "Disponible"),
         "status.missing" => ("Not found", "No encontrado"),
@@ -214,7 +257,7 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.sttlang" => ("Transcription language", "Idioma de transcripción"),
         "row.micinput" => ("Input", "Entrada"),
         "row.deviceid" => ("Device id", "ID de dispositivo"),
-        "row.micwarm" => ("Keep microphone warm", "Mantener el micrófono activo"),
+        "row.micwarm" => ("Keep microphone ready", "Mantener el micrófono preparado"),
         "row.micunlisted" => ("Disconnected: ", "Desconectado: "),
         "row.activation" => ("Activation", "Activación"),
         "row.engine" => ("Engine", "Motor"),
@@ -242,8 +285,8 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "stt.sherpa.backend" => ("Sherpa backend", "Motor Sherpa"),
         "stt.sherpa.cpu" => ("CPU", "CPU"),
         "stt.sherpa.cuda" => ("CUDA", "CUDA"),
-        "group.sttchain" => ("Speech engines", "Motores de voz"),
-        "stt.local.add" => ("Add local option", "Añadir opción local"),
+        "group.sttchain" => ("Transcription priority", "Prioridad de transcripción"),
+        "stt.local.add" => ("Add on-device engine", "Añadir motor local"),
         "stt.models.compatnote" => (
             "Not all models support dictionary hinting and live streaming (lower latency).",
             "No todos los modelos admiten sugerencias del diccionario ni streaming en directo (menor latencia).",
@@ -294,11 +337,23 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "opt.thinkingoff" => ("Off", "Desactivado"),
         "row.thinking" => ("Thinking", "Razonamiento"),
         "row.numctx" => ("Context window", "Ventana de contexto"),
-        "action.updatenow" => ("Update now", "Actualizar ahora"),
+        "action.updatenow" => ("Apply to model", "Aplicar al modelo"),
         "action.restore" => ("Restore default", "Restaurar original"),
         "row.lmtype" => ("Type", "Tipo"),
-        "group.lmadd" => ("Add option", "Añadir opción"),
-        "group.lmchain" => ("Configured options", "Opciones configuradas"),
+        "group.lmadd" => ("Add a language model", "Añadir un modelo de lenguaje"),
+        "group.lmmodels" => ("Configured models", "Modelos configurados"),
+        "group.lmchain" => ("Models", "Modelos"),
+        "cleanup.priority.note" => (
+            "Try enabled models in order. If none succeeds, keep the original text. Cloud models receive your text.",
+            "Prueba los modelos activos en orden. Si ninguno funciona, conserva el texto original. Los modelos en la nube reciben tu texto.",
+        ),
+        "cleanup.models.empty" => (
+            "Add a language model to use text cleanup.",
+            "Añade un modelo de lenguaje para editar texto.",
+        ),
+        "lm.usecleanup" => ("Use for text cleanup", "Usar para editar texto"),
+        "action.managelm" => ("Manage language models", "Gestionar modelos de lenguaje"),
+        "action.cleanupsettings" => ("Text cleanup settings", "Ajustes de edición de texto"),
         "lm.apikey.note" => (
             "Sent as a Bearer token (reverse-proxy setups). Empty means no token.",
             "Se envía como token Bearer (proxies inversos). Vacío significa sin token.",
@@ -308,11 +363,22 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Los motores locales autogestionados aún no están implementados: usa Ollama.",
         ),
         "lm.list.empty" => (
-            "No options yet: configure one above and press Add.",
-            "Aún no hay opciones: configura una arriba y pulsa Añadir.",
+            "No language models configured. Add one to get started.",
+            "No hay modelos de lenguaje configurados. Añade uno para empezar.",
         ),
         "row.keeploaded" => ("Keep model loaded", "Mantener el modelo cargado"),
         "row.customprompt" => ("Custom prompt", "Prompt personalizado"),
+        "action.editprompt" => ("Edit prompt", "Editar prompt"),
+        "prompt.edit.title" => ("Edit cleanup prompt", "Editar prompt de limpieza"),
+        "prompt.default" => ("Default prompt", "Prompt predeterminado"),
+        "prompt.custom" => ("Custom prompt", "Prompt personalizado"),
+        "prompt.default.summary" => (
+            "Fix grammar without changing meaning.",
+            "Corrige la gramática sin cambiar el sentido.",
+        ),
+        "action.usedefault" => ("Use default", "Usar predeterminado"),
+        "action.fullscreen" => ("Full screen", "Pantalla completa"),
+        "action.exitfullscreen" => ("Exit full screen", "Salir de pantalla completa"),
         "row.cleanup" => ("Clean up transcriptions", "Limpiar transcripciones"),
         "row.keepaudio" => ("Keep audio recordings", "Conservar grabaciones de audio"),
         "row.storedaudio" => ("Stored audio", "Audio guardado"),
@@ -321,19 +387,16 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.autodelete" => ("Auto-delete transcripts", "Borrado automático"),
         "group.sttservers" => ("Servers", "Servidores"),
         "row.autostartserver" => ("Auto-start servers", "Iniciar servidores"),
-        "row.keepwarm" => ("Keep warm", "Mantener activos"),
+        "row.keepwarm" => ("Keep server ready", "Mantener el servidor preparado"),
         "row.serverstatus" => ("Server status", "Estado del servidor"),
         "server.none" => ("No server running", "Ningún servidor en marcha"),
         "server.running" => ("Running", "En marcha"),
-        "server.external" => (
-            "external, not managed",
-            "externo, no gestionado",
-        ),
+        "server.external" => ("external, not managed", "externo, no gestionado"),
         "servers.note" => (
             "Only one server runs at a time; starting one stops the other.",
             "Solo un servidor funciona a la vez; al iniciar uno se detiene el otro.",
         ),
-        "action.coldstart" => ("Cold start", "Arranque en frío"),
+        "action.coldstart" => ("Start server", "Iniciar servidor"),
         "coldstart.tip.disabled" => (
             "Can't start: add a local option to the chain and enable it.",
             "No se puede iniciar: añade una opción local a la cadena y actívala.",
@@ -354,7 +417,7 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Update available: {version} — run update.sh to install it.",
             "Actualización disponible: {version} — ejecuta update.sh para instalarla.",
         ),
-                "stt.lang.locked.tip" => (
+        "stt.lang.locked.tip" => (
             "Single-language model: fixed.",
             "Modelo de un solo idioma: fijo.",
         ),
@@ -372,7 +435,8 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "sys.update.failed" => (
             "Couldn't reach releases (offline?).",
             "No se pudo contactar (¿sin conexión?).",
-        ),        "row.lanexpose.note" => (
+        ),
+        "row.lanexpose.note" => (
             "Except for Sherpa: Sherpa always listens on all interfaces, so disabling this option won't take effect for Sherpa.",
             "Excepto Sherpa: Sherpa siempre escucha en todas las interfaces, así que desactivar esta opción no tendrá efecto en Sherpa.",
         ),
@@ -385,23 +449,26 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "On for ws:// or wss:// servers (sherpa protocol, e.g. our sherpa-online). Off for http(s), which always uses request/response.",
             "Activado para servidores ws:// o wss:// (protocolo sherpa, p. ej. nuestro sherpa-online). Apagado para http(s), que siempre usa petición/respuesta.",
         ),
-        "sync.svc.switch" => ("Sync engine", "Motor de sincronización"),
+        "sync.svc.switch" => ("Enable device sync", "Activar sincronización"),
         "sync.svc.advertise" => (
-            "Allow nearby autodiscovery",
-            "Permitir autodescubrimiento cercano",
+            "Discover this device on the local network",
+            "Mostrar este dispositivo en la red local",
         ),
         "sync.svc.note" => (
-            "systemd owns the service process; this only gates the engine.",
-            "systemd gestiona el proceso; esto solo activa el motor.",
+            "Changes apply automatically while the background service is running. Turning sync off leaves your saved data intact.",
+            "Los cambios se aplican automáticamente si el servicio está activo. Desactivar la sincronización conserva los datos guardados.",
         ),
-        "home.svc.on" => ("Service running", "Servicio en marcha"),
-        "home.svc.off" => ("Service not running", "Servicio detenido"),
-        "home.svc.unhealthy" => ("Service unhealthy", "Servicio con errores"),
-        "home.hotkeys" => ("Listen to hotkeys", "Escuchar atajos"),
+        "home.svc.on" => ("Dictation service running", "Servicio de dictado activo"),
+        "home.svc.off" => ("Dictation service stopped", "Servicio de dictado detenido"),
+        "home.svc.unhealthy" => (
+            "Transcription needs attention",
+            "La transcripción necesita atención",
+        ),
+        "home.hotkeys" => ("Enable shortcuts", "Activar atajos"),
         "row.autodeleteaudio" => ("Auto-delete audio", "Borrado de audio"),
         "row.savediscarded" => (
-            "Save discarded transcriptions",
-            "Guardar transcripciones descartadas",
+            "Keep canceled recording entries",
+            "Guardar entradas de grabaciones canceladas",
         ),
         "row.appversion" => ("Application version", "Versión de la aplicación"),
         "row.cachepath" => ("Cache path", "Ruta de caché"),
@@ -413,17 +480,14 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.viztheme" => ("Theme", "Tema"),
         "row.ornament" => ("Ornament", "Ornamento"),
         "row.idle" => ("Idle animation", "Animación en reposo"),
-        "row.addcombo" => (
-            "Add combo (e.g. F13, Ctrl+Alt+D)",
-            "Añadir combinación (p. ej. F13, Ctrl+Alt+D)",
-        ),
+        "row.addcombo" => ("New shortcut", "Nuevo atajo"),
         // Dropdown options
         "opt.system" => ("System", "Sistema"),
         "opt.light" => ("Light", "Claro"),
         "opt.dark" => ("Dark", "Oscuro"),
         "opt.hold" => ("Hold", "Mantener"),
         "opt.toggle" => ("Toggle", "Alternar"),
-        "opt.smart" => ("Smart", "Smart"),
+        "opt.smart" => ("Smart", "Inteligente"),
         "opt.bottomcenter" => ("Bottom center", "Abajo centro"),
         "opt.bottomleft" => ("Bottom left", "Abajo izquierda"),
         "opt.bottomright" => ("Bottom right", "Abajo derecha"),
@@ -435,7 +499,8 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "opt.ms250" => ("250 ms", "250 ms"),
         "opt.ms500" => ("500 ms", "500 ms"),
         "opt.ms1000" => ("1 second", "1 segundo"),
-        "row.micextra" => ("Extra listening delay", "Escucha extra tras soltar"),        "opt.hold10s" => ("10 seconds", "10 segundos"),
+        "row.micextra" => ("Extra listening delay", "Escucha extra tras soltar"),
+        "opt.hold10s" => ("10 seconds", "10 segundos"),
         "opt.hold60s" => ("60 seconds", "60 segundos"),
         "opt.hold15m" => ("15 minutes", "15 minutos"),
         "opt.local" => ("Local (on-device)", "Local (en el dispositivo)"),
@@ -443,6 +508,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "opt.selfhosted" => ("Self-hosted", "Autohospedado"),
         "opt.ollama" => ("Ollama", "Ollama"),
         "opt.localmodel" => ("Local model", "Modelo local"),
+        "opt.localmodel.unavailable" => (
+            "Managed local model (unavailable)",
+            "Modelo local gestionado (no disponible)",
+        ),
         "opt.disabled" => ("Disabled", "Desactivado"),
         "opt.forever" => ("Forever", "Para siempre"),
         "opt.never" => ("Never", "Nunca"),
@@ -471,10 +540,13 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "opt.silhouette" => ("Silhouette", "Silueta"),
         "opt.calm" => ("Calm", "Calma"),
         // Hotkeys capture UI
-        "hotkeys.record" => ("Record", "Grabar"),
+        "hotkeys.record" => ("Capture keys", "Capturar teclas"),
         "hotkeys.recording" => ("Press keys… (Esc cancels)", "Pulsa teclas… (Esc cancela)"),
         "hotkeys.presskeys" => ("Press keys", "Pulsa teclas"),
-        "hotkeys.invalidcombo" => ("Invalid combo, try F13", "Combinación inválida, prueba F13"),
+        "hotkeys.invalidcombo" => (
+            "Enter a valid shortcut, such as Ctrl+Alt+D.",
+            "Introduce un atajo válido, como Ctrl+Alt+D.",
+        ),
         "hotkeys.invalid" => ("Invalid, try again", "Inválido, inténtalo de nuevo"),
         "hotkeys.unsupported" => (
             "Unsupported key, try again",
@@ -495,48 +567,48 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Umbral de toque (ms): toques cortos alternan, largos mantienen",
         ),
         // Home
-        "home.greeting" => ("Welcome back", "Te damos la bienvenida"),
+        "home.greeting" => ("Dictation", "Dictado"),
         "home.subtitle" => (
-            "Press your dictation hotkey anywhere to start writing with your voice.",
-            "Pulsa tu atajo de dictado en cualquier lugar para empezar a escribir con tu voz.",
+            "Speak in any app. Review and copy your recent dictations here.",
+            "Habla en cualquier aplicación. Revisa y copia tus dictados recientes aquí.",
         ),
         "home.empty.title" => ("No dictations yet", "Aún no hay dictados"),
         "home.empty.hint" => (
-            "Your history will appear here.\nDefault hotkey: {hotkey}",
-            "Tu historial aparecerá aquí.\nAtajo por defecto: {hotkey}",
+            "Place your cursor in another app, then use {hotkey} to dictate.\nFinished dictations appear here when history is enabled.",
+            "Coloca el cursor en otra aplicación y usa {hotkey} para dictar.\nLos dictados terminados aparecen aquí si el historial está activo.",
         ),
         "home.entry.meta" => ("{date} · {words} words", "{date} · {words} palabras"),
         "home.today" => ("Today", "Hoy"),
         "home.yesterday" => ("Yesterday", "Ayer"),
         "home.copy" => ("Copy", "Copiar"),
         "home.delete" => ("Delete", "Eliminar"),
-        "home.viewraw" => ("View raw transcript", "Ver transcripción original"),
-        "home.raw.title" => ("RAW TRANSCRIPT", "TRANSCRIPCIÓN ORIGINAL"),
+        "home.viewraw" => ("Show original", "Mostrar original"),
+        "home.raw.title" => ("Original transcription", "Transcripción original"),
         "home.raw.passthrough" => (
-            "No AI processing was applied to this transcription",
-            "No se aplicó procesamiento IA a esta transcripción",
+            "The original and final text are identical.",
+            "El texto original y el final son idénticos.",
         ),
         "home.wpm" => ("{wpm} wpm", "{wpm} ppm"),
-        "home.showdiscarded" => ("Show discarded", "Mostrar descartados"),
-        "home.hidediscarded" => ("Hide discarded", "Ocultar descartados"),
-        "home.discarded" => ("discarded", "descartado"),
+        "home.showdiscarded" => ("Show canceled recordings", "Mostrar grabaciones canceladas"),
+        "home.hidediscarded" => ("Hide canceled recordings", "Ocultar grabaciones canceladas"),
+        "home.discarded" => ("Recording canceled", "Grabación cancelada"),
         // Insights
-        "insights.title" => ("Insights", "Estadísticas"),
+        "insights.title" => ("Activity", "Actividad"),
         "insights.subtitle" => (
-            "Your usage, computed on-device.",
-            "Tu uso, calculado en este dispositivo.",
+            "Your saved dictations, calculated on this device. Deleting history also updates these totals.",
+            "Tus dictados guardados, calculados en este dispositivo. Al borrar el historial también cambian estos totales.",
         ),
         "insights.words" => ("Words spoken", "Palabras dictadas"),
-        "insights.alltime" => ("All time", "Desde siempre"),
+        "insights.alltime" => ("Saved history", "Historial guardado"),
         "insights.wpm" => ("Words per minute", "Palabras por minuto"),
         "insights.wpm.caption" => (
-            "Based on 100% of measured words",
-            "Basado en el 100% de palabras medidas",
+            "Dictations with a recorded duration",
+            "Dictados con duración registrada",
         ),
         "insights.dictations" => ("Dictations", "Dictados"),
         "insights.streak" => ("Current streak", "Racha actual"),
         "insights.streak.value" => ("{n} day{s}", "{n} día{s}"),
-        "insights.streak.caption" => ("Longest: {n} day{s}", "Récord: {n} día{s}"),
+        "insights.streak.caption" => ("Consecutive active days", "Días consecutivos con actividad"),
         "insights.activity" => ("Speaking activity", "Actividad de habla"),
         "insights.less" => ("Less", "Menos"),
         "insights.more" => ("More", "Más"),
@@ -554,10 +626,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "action.clearalltranscripts" => ("Clear all transcripts", "Borrar transcripciones"),
         "action.clearcache" => ("Clear cache", "Limpiar caché"),
         "action.openfolder" => ("Open folder", "Abrir carpeta"),
-        "action.resetdots" => ("Reset...", "Restablecer..."),
+        "action.resetdots" => ("Reset app data…", "Restablecer datos…"),
         "action.sendrequest" => ("Send request", "Enviar solicitud"),
         "action.syncnow" => ("Sync now", "Sincronizar ahora"),
-        "action.check" => ("Check", "Comprobar"),
+        "action.check" => ("Check for updates", "Buscar actualizaciones"),
         "action.start" => ("Start", "Iniciar"),
         "action.stop" => ("Stop", "Detener"),
         "action.accept" => ("Accept", "Aceptar"),
@@ -575,8 +647,8 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "sync.trusted" => ("Trusted device", "Dispositivo de confianza"),
         "sync.syncing" => ("Syncing with {id}…", "Sincronizando con {id}…"),
         "sync.synced" => (
-            "Synced with {id}: {words} words, {snippets} snippets, {history} history in",
-            "Sincronizado con {id}: {words} palabras, {snippets} fragmentos, {history} historial",
+            "Sync complete: {words} words, {snippets} snippets, {history} dictations received from {id}.",
+            "Sincronización completa: {words} palabras, {snippets} fragmentos y {history} dictados recibidos de {id}.",
         ),
         "sync.failed" => ("Sync failed: {err}", "Falló la sincronización: {err}"),
         "sync.err.untrusted" => (
@@ -591,10 +663,13 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Could not accept request.",
             "No se pudo aceptar la solicitud.",
         ),
-        "sync.err.save" => ("Could not save peer.", "No se pudo guardar el par."),
+        "sync.err.save" => (
+            "Could not save this device. Try again.",
+            "No se pudo guardar este dispositivo. Inténtalo de nuevo.",
+        ),
         "sync.err.badid" => (
-            "Need the peer's 64-char node id.",
-            "Se necesita el id de nodo de 64 caracteres.",
+            "Enter the other device’s full 64-character hexadecimal ID.",
+            "Introduce el ID hexadecimal completo de 64 caracteres del otro dispositivo.",
         ),
         "sync.accepted" => (
             "Device accepted. Syncing…",
@@ -612,8 +687,8 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "sync.reach.unknown" => ("Reachability unknown.", "Alcance desconocido."),
         "sync.reach.checking" => ("Checking…", "Comprobando…"),
         "sync.reach.off" => (
-            "Listener is off — enable sync and restart the service first.",
-            "El receptor está apagado — activa la sincronización y reinicia el servicio.",
+            "Enable device sync and start the dictation service to connect.",
+            "Activa la sincronización e inicia el servicio de dictado para conectar.",
         ),
         "sync.reach.down" => (
             "Sync listener is not answering on port {port}.",
@@ -623,11 +698,8 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Answering on {port}. LAN peers also need {port}/tcp allowed.",
             "Responde en {port}. Los equipos de la red también necesitan {port}/tcp permitido.",
         ),
-        "sync.reach.hint" => (
-            "Allow it with: {cmd}",
-            "Permítelo con: {cmd}",
-        ),
-        "sync.svc.title" => ("Background service", "Servicio en segundo plano"),
+        "sync.reach.hint" => ("Allow it with: {cmd}", "Permítelo con: {cmd}"),
+        "sync.svc.title" => ("Device sync", "Sincronización de dispositivos"),
         "sync.svc.on" => (
             "Running: hotkeys, sync and pill are live.",
             "En marcha: atajos, sincronización y píldora activos.",
@@ -638,18 +710,21 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         ),
         "sync.device.title" => ("This device", "Este dispositivo"),
         "sync.device.name" => ("Device name", "Nombre del dispositivo"),
-        "sync.device.id" => ("Node id", "ID de nodo"),
+        "sync.device.id" => ("Device ID", "ID del dispositivo"),
         "sync.device.port" => ("Listen port", "Puerto de escucha"),
         "sync.device.porthint" => (
-            "0 = off.",
-            "0 = apagado.",
+            "Use a port from 1 to 65535. Set 0 to turn off the listener.",
+            "Usa un puerto de 1 a 65535. El valor 0 desactiva el receptor.",
         ),
         "sync.add.title" => ("Add device", "Añadir dispositivo"),
         "sync.add.hint" => (
-            "Paste the peer's node id. Addresses are discovered automatically on the local network; the field below is only needed for devices that cannot be discovered (VPN hosts, manual IPs). Verify the id with them out-of-band, then they accept your request on their side.",
-            "Pega el id de nodo del par. Las direcciones se descubren automáticamente en la red local; el campo siguiente solo es necesario para dispositivos no detectables (VPN, IPs manuales). Verifica el id con ellos por otro medio, y aceptarán tu solicitud en su lado.",
+            "Copy the Device ID from MyWhisper on your other device. Send a pairing request, then accept it there. Both devices must be reachable.",
+            "Copia el ID de MyWhisper en tu otro dispositivo. Envía una solicitud y acéptala allí. Ambos dispositivos deben ser accesibles.",
         ),
-        "sync.add.idhint" => ("Peer node id (64 hex chars)", "ID de nodo del par (64 hex)"),
+        "sync.add.idhint" => (
+            "Other device’s ID (64 hexadecimal characters)",
+            "ID del otro dispositivo (64 caracteres hexadecimales)",
+        ),
         "sync.add.addrhint" => (
             "Address override, e.g. 192.168.1.31:42973 (optional)",
             "Dirección manual, p. ej. 192.168.1.31:42973 (opcional)",
@@ -668,8 +743,8 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         ),
         "sync.devices.title" => ("Devices", "Dispositivos"),
         "sync.devices.empty" => (
-            "No devices yet. Add one by node id, or wait for a request.",
-            "Aún no hay dispositivos. Añade uno por id de nodo o espera una solicitud.",
+            "No paired devices. Send a request below or accept a request from your other device.",
+            "No hay dispositivos emparejados. Envía una solicitud o acepta una de tu otro dispositivo.",
         ),
         "sync.request.sent" => (
             "Request recorded for {id}. They accept on their side, then sync starts.",
@@ -692,22 +767,350 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "action.create" => ("Create", "Crear"),
         // Dictionary
         "dict.title" => ("Dictionary", "Diccionario"),
-        "dict.tab.words" => ("Dictionary", "Diccionario"),
+        "dict.tab.words" => ("Words", "Palabras"),
         "dict.tab.snippets" => ("Snippets", "Fragmentos"),
         "dict.words.empty" => (
-            "No words yet. Added words are always recognized.",
-            "Aún no hay palabras. Las palabras añadidas siempre se reconocen.",
+            "No words yet. Add names or specialist terms to guide supported transcription engines. Recognition can still vary.",
+            "Aún no hay palabras. Añade nombres o términos especializados para orientar a los motores compatibles. El reconocimiento puede variar.",
         ),
-        "dict.words.add" => ("Add a word...", "Añade una palabra..."),
+        "dict.words.add" => (
+            "For example, MyWhisper or a person’s name",
+            "Por ejemplo, MyWhisper o el nombre de una persona",
+        ),
         "dict.snippets.empty" => (
-            "No snippets yet. Type a trigger anywhere to expand it.",
-            "Aún no hay fragmentos. Escribe un disparador en cualquier lugar para expandirlo.",
+            "No snippets yet. Save text and say its trigger phrase during dictation to insert it.",
+            "Aún no hay fragmentos. Guarda un texto y di su frase de activación al dictar para insertarlo.",
         ),
         "dict.snippets.trigger" => (
-            "Triggers, comma-separated, e.g. omw, on my way",
-            "Disparadores separados por comas, p. ej. omw, on my way",
+            "For example, my email signature",
+            "Por ejemplo, mi firma de correo",
         ),
         "dict.snippets.create" => ("Create snippet", "Crear fragmento"),
+        "feedback.saved" => ("Saved", "Guardado"),
+        "feedback.deleted" => ("Deleted", "Eliminado"),
+        "feedback.copied" => ("Copied to clipboard", "Copiado al portapapeles"),
+        "feedback.copyretry" => ("Copy failed. Retry", "Error al copiar. Reintentar"),
+        "lm.applying" => ("Applying…", "Aplicando…"),
+        "lm.applied" => ("Model settings applied", "Ajustes del modelo aplicados"),
+        "lm.applyfailed" => (
+            "Could not reach the model. Check its name and server URL.",
+            "No se pudo acceder al modelo. Comprueba su nombre y la URL del servidor.",
+        ),
+        "feedback.copyfailed" => (
+            "Could not copy. Check your clipboard tool in Text delivery.",
+            "No se pudo copiar. Comprueba la herramienta en Entrega de texto.",
+        ),
+        "feedback.savefailed" => (
+            "Could not save changes. Try again.",
+            "No se pudieron guardar los cambios. Inténtalo de nuevo.",
+        ),
+        "feedback.deletefailed" => (
+            "Could not delete. Try again.",
+            "No se pudo eliminar. Inténtalo de nuevo.",
+        ),
+        "feedback.cleared" => ("Saved data cleared", "Datos guardados borrados"),
+        "home.history" => ("Recent dictations", "Dictados recientes"),
+        "home.search" => ("Search recent dictations", "Buscar dictados recientes"),
+        "home.noresults" => ("No matching dictations", "No hay dictados que coincidan"),
+        "home.noresults.hint" => (
+            "Try another search or clear the search field.",
+            "Prueba otra búsqueda o borra el campo.",
+        ),
+        "home.more" => ("More actions", "Más acciones"),
+        "home.hideraw" => ("Hide original", "Ocultar original"),
+        "home.setup" => ("Set up dictation", "Configurar dictado"),
+        "home.shortcuts" => ("Edit shortcuts", "Editar atajos"),
+        "home.privacy" => ("History settings", "Ajustes del historial"),
+        "home.historyoff" => ("History is turned off", "El historial está desactivado"),
+        "home.historyoff.hint" => (
+            "Dictations still reach your apps. Turn on history in Privacy & storage to keep a copy here.",
+            "Los dictados siguen llegando a tus aplicaciones. Activa el historial en Privacidad y almacenamiento para guardarlos aquí.",
+        ),
+        "home.paused" => ("Dictation shortcuts paused", "Atajos de dictado en pausa"),
+        "home.start" => ("Start service", "Iniciar servicio"),
+        "home.starting" => ("Starting…", "Iniciando…"),
+        "home.start.failed" => (
+            "Could not start the service. Check that mywhisper.service is installed.",
+            "No se pudo iniciar el servicio. Comprueba que mywhisper.service está instalado.",
+        ),
+        "home.start.ok" => ("Service start requested", "Inicio del servicio solicitado"),
+        "home.shortcut.hold" => (
+            "Hold {key} to talk. Release to finish.",
+            "Mantén {key} para hablar. Suelta para terminar.",
+        ),
+        "home.shortcut.toggle" => (
+            "Press {key} to start. Press again to finish.",
+            "Pulsa {key} para empezar. Pulsa de nuevo para terminar.",
+        ),
+        "home.shortcut.smart" => (
+            "Tap {key} to toggle, or hold it to talk.",
+            "Toca {key} para alternar o mantén para hablar.",
+        ),
+        "dict.subtitle" => (
+            "Guide recognition with words. Insert saved text with spoken snippets.",
+            "Orienta el reconocimiento con palabras. Inserta texto guardado con fragmentos de voz.",
+        ),
+        "dict.words.hint" => (
+            "Add names and terms you use often. Engines with dictionary support use them as hints.",
+            "Añade nombres y términos habituales. Los motores compatibles los usan como sugerencias.",
+        ),
+        "dict.words.label" => ("Word or phrase", "Palabra o frase"),
+        "dict.words.create" => ("Add word", "Añadir palabra"),
+        "dict.snippets.hint" => (
+            "Say a trigger phrase while dictating to insert saved text. Separate alternative triggers with commas.",
+            "Di una frase de activación al dictar para insertar texto guardado. Separa las frases alternativas con comas.",
+        ),
+        "dict.snippets.label" => ("Spoken triggers", "Frases de activación"),
+        "dict.snippets.expansion" => ("Text to insert", "Texto que se insertará"),
+        "dict.required" => ("Enter a word or phrase.", "Introduce una palabra o frase."),
+        "dict.snippets.required" => (
+            "Enter both a trigger phrase and the text to insert.",
+            "Introduce la frase de activación y el texto que se insertará.",
+        ),
+        "dict.duplicate" => (
+            "This word or trigger already exists. Edit the existing entry instead.",
+            "Esta palabra o frase ya existe. Edita la entrada existente.",
+        ),
+        "confirm.delete.title" => ("Delete this entry?", "¿Eliminar esta entrada?"),
+        "confirm.delete.body" => (
+            "This cannot be undone. The deletion also applies to devices that sync this data.",
+            "No se puede deshacer. El borrado también se aplica a los dispositivos que sincronizan estos datos.",
+        ),
+        "confirm.audio.title" => (
+            "Delete all saved audio?",
+            "¿Eliminar todo el audio guardado?",
+        ),
+        "confirm.audio.body" => (
+            "All audio recordings saved on this device will be deleted. Your transcripts will stay. This cannot be undone.",
+            "Se borrarán todas las grabaciones guardadas en este dispositivo. Las transcripciones se conservarán. No se puede deshacer.",
+        ),
+        "confirm.history.title" => (
+            "Delete all dictation history?",
+            "¿Eliminar todo el historial?",
+        ),
+        "confirm.history.body" => (
+            "Saved transcripts and activity totals will be cleared. The deletion also applies to paired devices when they sync. This cannot be undone.",
+            "Se borrarán las transcripciones guardadas y los totales de actividad. El borrado también se aplica a los dispositivos emparejados al sincronizar. No se puede deshacer.",
+        ),
+        "confirm.cache.title" => (
+            "Remove downloaded models?",
+            "¿Eliminar los modelos descargados?",
+        ),
+        "confirm.cache.body" => (
+            "Downloaded models and runtimes will be removed. Download them again before using on-device transcription.",
+            "Se borrarán los modelos y motores descargados. Descárgalos de nuevo para transcribir en este dispositivo.",
+        ),
+        "confirm.reset.title" => (
+            "Reset MyWhisper data?",
+            "¿Restablecer los datos de MyWhisper?",
+        ),
+        "confirm.reset.body" => (
+            "Deletes history, words, snippets, recordings, downloads, and settings on this device. Paired devices and device identity are kept. This cannot be undone.",
+            "Elimina historial, palabras, fragmentos, grabaciones, descargas y ajustes de este dispositivo. Se conservan los dispositivos emparejados y la identidad. No se puede deshacer.",
+        ),
+        "settings.saved" => (
+            "Preferences save automatically",
+            "Las preferencias se guardan automáticamente",
+        ),
+        "settings.title" => ("Settings", "Ajustes"),
+        "settings.choose" => ("Section", "Sección"),
+        "action.moveup" => ("Move earlier", "Subir prioridad"),
+        "action.movedown" => ("Move later", "Bajar prioridad"),
+        "stt.remote.add" => ("Add remote engine", "Añadir motor remoto"),
+        "stt.required" => (
+            "Enter a server URL, or a cloud model and API key.",
+            "Introduce una URL de servidor o un modelo en la nube y una clave API.",
+        ),
+        "lm.required" => (
+            "Enter a model and a valid server URL, or a cloud model and API key.",
+            "Introduce un modelo y una URL válida o un modelo en la nube y una clave API.",
+        ),
+        "form.badurl" => (
+            "Use a complete http://, https://, ws://, or wss:// server URL.",
+            "Usa una URL completa con http://, https://, ws:// o wss://.",
+        ),
+        "sync.title" => ("Devices", "Dispositivos"),
+        "sync.working" => ("Syncing…", "Sincronizando…"),
+        "sync.remove.title" => (
+            "Remove this paired device?",
+            "¿Eliminar este dispositivo emparejado?",
+        ),
+        "sync.remove.body" => (
+            "It will stop syncing with this device. Saved words, snippets, and dictations stay on each device.",
+            "Dejará de sincronizar con este dispositivo. Las palabras, los fragmentos y los dictados se conservan en cada dispositivo.",
+        ),
+        "sync.add.idlabel" => ("Other device’s ID", "ID del otro dispositivo"),
+        "sync.add.optional" => (
+            "Manual address & name (optional)",
+            "Dirección manual y nombre (opcionales)",
+        ),
+        "sync.subtitle" => (
+            "Sync words, snippets, and dictation history directly between your trusted devices.",
+            "Sincroniza palabras, fragmentos e historial directamente entre tus dispositivos de confianza.",
+        ),
+        "sync.port.invalid" => (
+            "Enter a port between 0 and 65535.",
+            "Introduce un puerto entre 0 y 65535.",
+        ),
+        "sync.self" => (
+            "This is your device’s ID. Enter the ID from your other device.",
+            "Este es el ID de tu dispositivo. Introduce el ID del otro.",
+        ),
+        "sync.address.invalid" => (
+            "Enter an address as host:port, for example 192.168.1.31:42973.",
+            "Introduce una dirección como host:puerto, por ejemplo 192.168.1.31:42973.",
+        ),
+        "overlay.title" => ("Dictation result", "Resultado del dictado"),
+        "overlay.empty" => (
+            "Your finished text appears here.",
+            "El texto terminado aparece aquí.",
+        ),
+        "overlay.dismiss" => ("Dismiss", "Cerrar"),
+        "overlay.processing" => ("Transcribing…", "Transcribiendo…"),
+        "stt.local.current" => (
+            "Uses your local model settings below",
+            "Usa los ajustes del modelo local de abajo",
+        ),
+        "confirm.engine.title" => ("Remove this configuration?", "¿Quitar esta configuración?"),
+        "confirm.engine.body" => (
+            "Its saved connection settings will be removed from the priority list. Downloaded models and dictation history stay on this device.",
+            "Sus ajustes de conexión se quitarán de la lista de prioridad. Los modelos descargados y el historial se conservan en este dispositivo.",
+        ),
+        "confirm.download.title" => ("Delete this download?", "¿Eliminar esta descarga?"),
+        "confirm.download.body" => (
+            "You will need to download it again to use it. Your settings and dictation history will be kept.",
+            "Tendrás que volver a descargarlo para usarlo. Se conservarán tus ajustes y tu historial de dictados.",
+        ),
+        "backend.caption.0" => ("Fastest, lower quality", "Máxima velocidad, menor calidad"),
+        "backend.caption.1" => ("Good balance", "Buen equilibrio"),
+        "backend.caption.2" => ("Better quality, slower", "Mejor calidad, más lento"),
+        "backend.caption.3" => ("High quality", "Alta calidad"),
+        "backend.caption.4" => ("Best quality, slowest", "Máxima calidad, más lento"),
+        "backend.caption.5" => ("Fast with good quality", "Rápido y de buena calidad"),
+        "backend.caption.6" => (
+            "16.9 MB STT, 7 languages, own CPU engine",
+            "16,9 MB, 7 idiomas, motor propio para CPU",
+        ),
+        "backend.caption.7" => (
+            "Fast multilingual ASR with auto language detection",
+            "Reconocimiento multilingüe rápido con detección automática del idioma",
+        ),
+        "backend.caption.8" => ("English-only, fast", "Rápido, solo en inglés"),
+        "backend.caption.9" => ("English streaming", "Streaming en inglés"),
+        "backend.caption.10" => (
+            "Multilingual streaming, 15 languages",
+            "Streaming multilingüe, 15 idiomas",
+        ),
+        "backend.caption.11" => (
+            "14 languages, no auto-detect (single-language server)",
+            "14 idiomas, sin detección automática (un idioma por servidor)",
+        ),
+        "backend.caption.12" => (
+            "Multilingual Parakeet fine-tune (CC-BY-SA-4.0)",
+            "Modelo Parakeet ajustado para varios idiomas (CC-BY-SA-4.0)",
+        ),
+        "backend.caption.13" => (
+            "Portable whisper-server, works everywhere",
+            "Servidor Whisper portátil para CPU",
+        ),
+        "backend.caption.14" => (
+            "NVIDIA GPUs (Pascal 6.1+, needs proprietary driver)",
+            "GPU NVIDIA (Pascal 6.1 o posterior, requiere controlador propietario)",
+        ),
+        "backend.caption.15" => (
+            "AMD/Intel/discrete GPUs via Vulkan",
+            "GPU AMD, Intel y dedicadas mediante Vulkan",
+        ),
+        "backend.caption.16" => (
+            "Offline + online websocket servers, CUDA 13 (needs system CUDA libs)",
+            "Servidores WebSocket offline y online, CUDA 13 (requiere bibliotecas CUDA)",
+        ),
+        "backend.caption.17" => (
+            "Offline + online websocket servers, onnxruntime included",
+            "Servidores WebSocket offline y online, con onnxruntime incluido",
+        ),
+        "backend.caption.18" => ("CPU server", "Servidor CPU"),
+        "backend.caption.19" => ("CUDA server", "Servidor CUDA"),
+        "backend.caption.20" => ("Vulkan server", "Servidor Vulkan"),
+        "backend.caption.21" => ("Sherpa CUDA server", "Servidor Sherpa CUDA"),
+        "backend.caption.22" => ("Sherpa CPU server", "Servidor Sherpa CPU"),
+        "lm.residency.default" => ("Ollama default", "Predeterminado de Ollama"),
+        "lm.residency.forever" => ("Until server restarts", "Hasta reiniciar el servidor"),
+        "lm.residency.unload" => ("Unload immediately", "Descargar de memoria al terminar"),
+        "hotkeys.duplicate" => (
+            "This shortcut already exists. Change its behavior in the list above.",
+            "Este atajo ya existe. Cambia su comportamiento en la lista de arriba.",
+        ),
+        "hotkeys.keepone" => (
+            "Keep at least one shortcut. To pause dictation shortcuts, turn off Enable shortcuts on the Dictation page.",
+            "Conserva al menos un atajo. Para pausar los atajos de dictado, desactiva Activar atajos en Dictado.",
+        ),
+        "engine.keepone" => (
+            "Keep at least one configuration. Use its switch to turn it off.",
+            "Conserva al menos una configuración. Usa su interruptor para desactivarla.",
+        ),
+        "server.requested" => (
+            "Server request sent to the dictation service",
+            "Solicitud de servidor enviada al servicio de dictado",
+        ),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn placeholders(text: &str) -> BTreeSet<&str> {
+        text.split('{')
+            .skip(1)
+            .filter_map(|tail| tail.split_once('}').map(|(key, _)| key))
+            .collect()
+    }
+
+    #[test]
+    fn english_and_spanish_have_matching_placeholders() {
+        let table = include_str!("i18n.rs")
+            .split("fn try_lookup")
+            .nth(1)
+            .unwrap()
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        for line in table.lines() {
+            let Some(line) = line.trim_start().strip_prefix('"') else {
+                continue;
+            };
+            let Some((tag, rest)) = line.split_once('"') else {
+                continue;
+            };
+            if !rest.trim_start().starts_with("=>") {
+                continue;
+            }
+            let (en, es) = try_lookup(tag).unwrap();
+            assert!(!en.is_empty() && !es.is_empty(), "{tag}");
+            assert_eq!(placeholders(en), placeholders(es), "{tag}");
+        }
+    }
+
+    #[test]
+    fn desktop_ui_literal_translation_tags_exist() {
+        for source in [
+            include_str!("app.rs"),
+            include_str!("app_home.rs"),
+            include_str!("app_dictionary.rs"),
+            include_str!("app_insights.rs"),
+            include_str!("app_settings.rs"),
+            include_str!("app_sync.rs"),
+            include_str!("overlay.rs"),
+        ] {
+            for prefix in ["tr(\"", "trf(\""] {
+                for tail in source.split(prefix).skip(1) {
+                    let tag = tail.split('"').next().unwrap();
+                    assert!(try_lookup(tag).is_some(), "Missing UI copy: {tag}");
+                }
+            }
+        }
+    }
 }

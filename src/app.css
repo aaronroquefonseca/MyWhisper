@@ -1,0 +1,97 @@
+/* Shared desktop palette. Dark mode overrides colors, never layout. */
+@define-color app_bg #f7f8fa;
+@define-color app_fg #202631;
+@define-color app_muted #5b6472;
+@define-color app_card #ffffff;
+@define-color app_borders #dfe3e9;
+@define-color app_sidebar #f0f2f5;
+@define-color app_accent #315fcb;
+@define-color app_accent_fg #ffffff;
+@define-color app_selection #e5ecfc;
+@define-color app_entry_bg #ffffff;
+@define-color app_entry_border #cbd2dd;
+@define-color app_success #247344;
+@define-color app_danger #b32635;
+window.mywhisper-app { background: @app_bg; color: @app_fg; }
+label { color: @app_fg; }
+.sidebar { background: @app_sidebar; border-right: 1px solid @app_borders; padding: 20px 12px 12px; }
+.sidebar button { background: transparent; border-color: transparent; box-shadow: none; padding: 10px 12px; font-weight: 500; }
+.sidebar button:hover { background: @app_borders; }
+.sidebar button.active { background: @app_selection; color: @app_accent; }
+.sidebar button.active label, .sidebar button.active image { color: @app_accent; }
+.settings-nav { padding: 24px 8px; background: @app_bg; }
+.settings-nav button { padding: 9px 10px; }
+.settings-note { color: @app_muted; font-size: 0.85em; padding: 4px 8px; }
+.sidebar-brand { padding: 0 6px 24px; }
+.app-title { font-weight: 700; font-size: 1.2em; }
+.sidebar-footer { color: @app_muted; font-size: 0.85em; padding: 12px 8px 4px; }
+.page { padding: 28px 28px 24px; }
+.page-title { color: @app_fg; font-size: 2em; font-weight: 700; }
+.page-subtitle { color: @app_muted; font-size: 1em; }
+.card { background: @app_card; border: 1px solid @app_borders; border-radius: 12px; background-clip: padding-box; padding: 18px; }
+.settings-group { padding: 18px 20px; }
+.settings-group > label { margin-bottom: 10px; }
+.settings-expander { background: @app_card; border: 1px solid @app_borders; border-radius: 12px; padding: 16px 18px; }
+.settings-expander > title { color: @app_fg; font-weight: 600; min-height: 24px; }
+.expanded-content { padding: 18px 0 0; }
+.setting-row { min-height: 38px; }
+.setting-row > label { margin-right: 8px; }
+.section-title { color: @app_fg; font-size: 1.15em; font-weight: 700; }
+.row-label { color: @app_fg; font-weight: 500; }
+.dim, .stat-label { color: @app_muted; }
+.stat-label { font-size: 0.93em; }
+.stat-value { color: @app_fg; font-size: 2.15em; font-weight: 700; margin: 4px 0; }
+.cap-ok { color: @app_success; font-weight: 500; }
+.cap-no, .warn { color: @app_danger; font-weight: 500; }
+.status-banner { padding: 14px 18px; }
+.shortcut { background: @app_sidebar; border: 1px solid @app_borders; border-radius: 6px; padding: 5px 9px; font-weight: 600; }
+.history-entry { padding: 16px 18px; }
+.history-text { margin-top: 8px; margin-bottom: 4px; }
+.raw-transcript { background: @app_bg; border-radius: 8px; padding: 12px; margin-top: 8px; }
+.empty-state { padding: 40px 24px; }
+.empty-state image { color: @app_muted; margin-bottom: 8px; }
+button { background: @app_card; color: @app_fg; border: 1px solid @app_borders; border-radius: 8px; padding: 7px 12px; min-height: 20px; box-shadow: none; }
+button:hover { background: @app_sidebar; border-color: @app_entry_border; }
+button:active { background: @app_selection; }
+button.suggested-action { background: @app_accent; color: @app_accent_fg; border-color: @app_accent; font-weight: 600; }
+button.suggested-action label { color: @app_accent_fg; }
+button.suggested-action:hover { background: shade(@app_accent, 1.08); }
+button.destructive-action { color: @app_danger; }
+button.destructive-action label { color: @app_danger; }
+button.flat { background: transparent; border-color: transparent; }
+button.flat:hover { background: @app_borders; }
+button.flat:active { background: @app_selection; }
+/* Window controls already draw their own circular icon background. */
+headerbar windowcontrols button { background: transparent; border: none; box-shadow: none; padding: 0; min-width: 32px; min-height: 32px; border-radius: 50%; }
+headerbar windowcontrols button:hover, headerbar windowcontrols button:active { background: transparent; }
+button:disabled { opacity: 0.5; }
+button:focus-visible, entry:focus-within, dropdown:focus-visible, textview:focus-within { outline: 2px solid @app_accent; outline-offset: 2px; }
+entry, textview { background: @app_entry_bg; color: @app_fg; border: 1px solid @app_entry_border; border-radius: 8px; padding: 8px 10px; }
+entry.error { border-color: @app_danger; }
+textview text { background: @app_entry_bg; color: @app_fg; }
+entry placeholder { color: @app_muted; }
+dropdown > button { background: @app_entry_bg; border-color: @app_entry_border; }
+switch { background: @app_borders; border: none; }
+switch:checked { background: @app_accent; }
+switch slider { background: @app_card; }
+notebook, notebook > stack, scrolledwindow, viewport { background: transparent; color: @app_fg; }
+notebook { border: none; box-shadow: none; }
+notebook > header { background: transparent; padding: 0; border-bottom: 1px solid @app_borders; }
+notebook > stack { padding: 20px 0 0; }
+notebook tab { color: @app_muted; padding: 10px 16px; }
+notebook tab:checked { color: @app_accent; border-bottom: 2px solid @app_accent; }
+list, listview, row { background: transparent; color: @app_fg; }
+popover > contents { background: @app_card; color: @app_fg; border: 1px solid @app_borders; border-radius: 10px; padding: 6px; }
+popover listview row:hover, popover listbox row:hover { background: @app_selection; border-radius: 6px; }
+popover button { border-color: transparent; }
+tooltip { background: @app_fg; color: @app_bg; }
+tooltip label { color: @app_bg; }
+progressbar trough { background: @app_borders; border-radius: 4px; }
+progressbar progress { background: @app_accent; border-radius: 4px; }
+.heat { background: @app_borders; border-radius: 3px; }
+.heat-1 { background: alpha(@app_accent, 0.3); }
+.heat-2 { background: alpha(@app_accent, 0.6); }
+.heat-3 { background: @app_accent; }
+.heat:hover { outline: 2px solid @app_accent; }
+toast { background: @app_fg; color: @app_bg; border-radius: 10px; }
+toast label { color: @app_bg; }

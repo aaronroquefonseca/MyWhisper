@@ -462,7 +462,7 @@ impl Store {
     pub fn clear_history(&self) -> rusqlite::Result<usize> {
         let n = self
             .conn
-            .execute("DELETE FROM history WHERE deleted = 0", [])?;
+            .execute("UPDATE history SET deleted = 1 WHERE deleted = 0", [])?;
         bump_data_gen();
         bump_gen(&self.conn);
         Ok(n)
@@ -497,12 +497,12 @@ impl Store {
         Some(cmd)
     }
 
-    /// Distinct UTC days (epoch day numbers) with at least one entry,
+    /// Distinct local calendar days with at least one entry,
     /// newest first. Feeds the streak calculation.
     pub fn active_days(&self) -> rusqlite::Result<Vec<i64>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT DISTINCT recorded_at / 86400 FROM history WHERE deleted = 0 AND discarded = 0 ORDER BY 1 DESC")?;
+            .prepare("SELECT DISTINCT CAST(strftime('%s', recorded_at, 'unixepoch', 'localtime') AS INTEGER) / 86400 FROM history WHERE deleted = 0 AND discarded = 0 ORDER BY 1 DESC")?;
         stmt.query_map([], |row| row.get(0))?.collect()
     }
 
@@ -511,7 +511,7 @@ impl Store {
     /// Single indexed range scan -- no per-day queries.
     pub fn daily_aggregates(&self, days: u32) -> rusqlite::Result<Vec<(i64, i64, i64)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT recorded_at / 86400 AS day,
+            "SELECT CAST(strftime('%s', recorded_at, 'unixepoch', 'localtime') AS INTEGER) / 86400 AS day,
                     COALESCE(SUM(words), 0),
                     COUNT(*)
              FROM history
@@ -523,6 +523,34 @@ impl Store {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })?
         .collect()
+    }
+
+    /// Activity totals use the whole saved history. Zero-duration legacy
+    /// entries count toward words/dictations but cannot measure speaking speed.
+    pub fn usage_stats(&self) -> rusqlite::Result<crate::settings::UsageStats> {
+        self.conn.query_row(
+            "SELECT COALESCE(SUM(words), 0), COUNT(*),
+                    COALESCE(SUM(CASE WHEN duration_secs > 0 THEN words ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN duration_secs > 0 THEN duration_secs ELSE 0 END), 0)
+             FROM history WHERE deleted = 0 AND discarded = 0",
+            [],
+            |row| {
+                let words = row.get::<_, i64>(0)?.max(0) as u64;
+                let count = row.get::<_, i64>(1)?.max(0) as u64;
+                let measured_words = row.get::<_, i64>(2)?.max(0) as u64;
+                let seconds = row.get::<_, i64>(3)?.max(0) as u64;
+                Ok(crate::settings::UsageStats {
+                    words_spoken: words,
+                    dictations: count,
+                    words_per_minute: if seconds > 0 {
+                        measured_words as f64 * 60.0 / seconds as f64
+                    } else {
+                        0.0
+                    },
+                    streak_days: 0,
+                })
+            },
+        )
     }
 
     /// Local write: append one entry. The uuid embeds the node id so
@@ -584,10 +612,15 @@ impl Store {
     /// Delete rows older than `days` (auto-delete transcripts).
     /// Tombstones survive: dropping them would resurrect peers' rows.
     pub fn purge_old_history(&self, days: u32) -> rusqlite::Result<usize> {
-        Ok(self.conn.execute(
-            "DELETE FROM history WHERE deleted = 0 AND recorded_at < strftime('%s', 'now', ?1)",
+        let count = self.conn.execute(
+            "UPDATE history SET deleted = 1 WHERE deleted = 0 AND recorded_at < strftime('%s', 'now', ?1)",
             [format!("-{days} days")],
-        )?)
+        )?;
+        if count > 0 {
+            bump_data_gen();
+            bump_gen(&self.conn);
+        }
+        Ok(count)
     }
 
     // -- sync: export + LWW apply --------------------------------------------
@@ -1092,6 +1125,61 @@ pub struct PeerGossip {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn activity_counts_all_history_and_only_measured_speed() {
+        let store = Store::open_memory().unwrap();
+        for _ in 0..205 {
+            store.add_history("raw", "text", 10, 5, "node").unwrap();
+        }
+        store
+            .add_history("legacy", "legacy", 100, 0, "node")
+            .unwrap();
+        store.add_discarded(30, "node").unwrap();
+        let deleted = store
+            .add_history("deleted", "deleted", 100, 2, "node")
+            .unwrap();
+        store.delete_history(&deleted).unwrap();
+        let stats = store.usage_stats().unwrap();
+        assert_eq!(stats.dictations, 206);
+        assert_eq!(stats.words_spoken, 2150);
+        assert_eq!(stats.words_per_minute, 120.0);
+    }
+
+    #[test]
+    fn bulk_deletion_survives_sync_with_an_older_peer() {
+        let a = Store::open_memory().unwrap();
+        let b = Store::open_memory().unwrap();
+        a.add_history("raw", "text", 10, 5, "node").unwrap();
+        b.apply_history(&a.export_history().unwrap()).unwrap();
+        assert_eq!(a.clear_history().unwrap(), 1);
+        a.apply_history(&b.export_history().unwrap()).unwrap();
+        b.apply_history(&a.export_history().unwrap()).unwrap();
+        assert!(a.load_history(10, true).unwrap().is_empty());
+        assert!(b.load_history(10, true).unwrap().is_empty());
+        assert_eq!(a.usage_stats().unwrap().dictations, 0);
+    }
+
+    #[test]
+    fn retained_history_deletion_survives_sync() {
+        let a = Store::open_memory().unwrap();
+        let b = Store::open_memory().unwrap();
+        a.add_history("raw", "text", 10, 5, "node").unwrap();
+        a.conn
+            .execute(
+                "UPDATE history SET recorded_at = strftime('%s','now','-60 days')",
+                [],
+            )
+            .unwrap();
+        b.apply_history(&a.export_history().unwrap()).unwrap();
+        assert_eq!(a.purge_old_history(30).unwrap(), 1);
+        a.apply_history(&b.export_history().unwrap()).unwrap();
+        b.apply_history(&a.export_history().unwrap()).unwrap();
+        assert!(a.load_history(10, true).unwrap().is_empty());
+        assert!(b.load_history(10, true).unwrap().is_empty());
+    }
+
     #[test]
     fn server_cmd_is_one_shot() {
         let store = Store::open_memory().unwrap();
@@ -1197,8 +1285,6 @@ mod tests {
         drop(a);
         let _ = std::fs::remove_file(&dir);
     }
-
-    use super::*;
 
     const A: &str = "node-aaaa";
     const B: &str = "node-bbbb";

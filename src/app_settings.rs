@@ -1,9 +1,6 @@
 //! Settings page: sub-nav + sections.
 //!
-//! Every control initializes from [`AppSettings`] but nothing is
-//! wired yet: flipping a switch changes no model and persists
-//! nothing. Wiring later = connect each control to its model field
-//! (+ persistence + backend apply).
+//! Controls persist immediately; advanced details expand on demand.
 
 use gtk4::prelude::*;
 use gtk4::{
@@ -13,48 +10,92 @@ use gtk4::{
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use super::app::{apply_theme, log_theme_state, AppState};
-use crate::clipboard::{copy_backend_deps, paste_backend_deps, probe, BackendStatus};
+use super::app::{AppState, apply_theme, log_theme_state};
+use crate::clipboard::{BackendStatus, copy_backend_deps, paste_backend_deps, probe};
 use crate::i18n::{tr, trf};
 use crate::settings::{CopyBackend, PasteBackend, PasteCombo, Theme};
 
 // ---------------------------------------------------------------- helpers
 
+fn connect_download_delete(button: &Button, remove: impl Fn() -> std::io::Result<()> + 'static) {
+    super::app::connect_confirmed(
+        button,
+        tr("confirm.download.title"),
+        tr("confirm.download.body"),
+        tr("action.delete"),
+        move |_| match remove() {
+            Ok(()) => super::app::notify(tr("feedback.deleted")),
+            Err(error) => {
+                eprintln!("[app] delete download: {error}");
+                super::app::notify(tr("feedback.deletefailed"));
+            }
+        },
+    );
+}
+
 fn section_box(title: &str, subtitle: &str) -> GtkBox {
     let root = GtkBox::new(Orientation::Vertical, 12);
     root.add_css_class("page");
-    let t = Label::new(Some(title));
-    t.add_css_class("page-title");
-    t.set_xalign(0.0);
-    let s = Label::new(Some(subtitle));
-    s.add_css_class("page-subtitle");
-    s.set_xalign(0.0);
-    s.set_wrap(true);
-    s.set_max_width_chars(80);
-    root.append(&t);
-    root.append(&s);
+    super::app::page_heading(&root, title, subtitle);
     root
 }
 
 fn group(title: &str) -> (GtkBox, GtkBox) {
     let card = GtkBox::new(Orientation::Vertical, 4);
     card.add_css_class("card");
+    card.add_css_class("settings-group");
     let t = Label::new(Some(title));
     t.add_css_class("section-title");
     t.set_xalign(0.0);
     card.append(&t);
-    let rows = GtkBox::new(Orientation::Vertical, 8);
+    let rows = GtkBox::new(Orientation::Vertical, 14);
     card.append(&rows);
     (card, rows)
 }
 
+fn append_collapsible(root: &GtkBox, card: &GtkBox, title: &str) -> gtk4::Expander {
+    if let Some(heading) = card.first_child() {
+        card.remove(&heading);
+    }
+    card.remove_css_class("card");
+    card.remove_css_class("settings-group");
+    card.add_css_class("expanded-content");
+    let expander = gtk4::Expander::new(Some(title));
+    expander.add_css_class("settings-expander");
+    expander.set_child(Some(card));
+    root.append(&expander);
+    expander
+}
+
 fn row(label: &str) -> (GtkBox, Label) {
     let b = GtkBox::new(Orientation::Horizontal, 12);
+    b.add_css_class("setting-row");
     let l = Label::new(Some(label));
+    l.set_wrap(true);
+    l.set_max_width_chars(28);
     l.add_css_class("row-label");
     l.set_xalign(0.0);
     l.set_hexpand(true);
     b.append(&l);
+    let accessible_label = l.clone();
+    b.connect_map(move |row| {
+        let mut child = row.first_child();
+        while let Some(control) = child {
+            if control.is::<Entry>()
+                || control.is::<DropDown>()
+                || control.is::<Switch>()
+                || control.is::<SpinButton>()
+            {
+                control.update_property(&[gtk4::accessible::Property::Label(
+                    &accessible_label.text(),
+                )]);
+                if let Some(entry) = control.downcast_ref::<Entry>() {
+                    entry.set_width_chars(12);
+                }
+            }
+            child = control.next_sibling();
+        }
+    });
     (b, l)
 }
 
@@ -62,7 +103,7 @@ fn spin_row(parent: &GtkBox, label: &str, value: f64, min: f64, max: f64, step: 
     let (b, _) = row(label);
     let s = SpinButton::with_range(min, max, step);
     s.set_value(value);
-    s.set_sensitive(false); // not wired yet
+    s.set_sensitive(false); // Enabled by the section that attaches persistence.
     spin_text_buttons(&s);
     b.append(&s);
     parent.append(&b);
@@ -104,6 +145,23 @@ fn delete_opts() -> [&'static str; 7] {
     ]
 }
 
+fn valid_server_url(value: &str, websocket: bool) -> bool {
+    reqwest::Url::parse(value.trim()).is_ok_and(|url| {
+        url.host_str().is_some()
+            && (matches!(url.scheme(), "http" | "https")
+                || (websocket && matches!(url.scheme(), "ws" | "wss")))
+    })
+}
+
+fn same_shortcut(left: &str, right: &str) -> bool {
+    crate::hotkey::parse_combo(left)
+        .zip(crate::hotkey::parse_combo(right))
+        .is_some_and(|(a, b)| {
+            (a.ctrl, a.alt, a.shift, a.super_, a.target)
+                == (b.ctrl, b.alt, b.shift, b.super_, b.target)
+        })
+}
+
 // ---------------------------------------------------------------- sections
 
 /// Save settings without touching the hotkey listener (pill and
@@ -113,6 +171,7 @@ pub(crate) fn persist_prefs(state: Rc<AppState>) -> Rc<dyn Fn()> {
         let settings = state.settings.borrow();
         if let Err(e) = state.store.save_settings(&settings) {
             eprintln!("[app] prefs save failed: {e}");
+            super::app::notify(tr("feedback.savefailed"));
         }
     })
 }
@@ -123,8 +182,7 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
 
     let (card, rows) = group(tr("group.appearance"));
     // The theme picker is wired: it writes the model and applies the
-    // variant immediately. All other controls below are display-only
-    // until their backends land.
+    // variant immediately. Other preferences persist through the same store.
     let (b, _) = row(tr("row.theme"));
     let theme_drop = DropDown::new(
         Some(StringList::new(&[
@@ -134,6 +192,7 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
         ])),
         None::<gtk4::Expression>,
     );
+    theme_drop.set_widget_name("theme-picker");
     theme_drop.set_selected(match p.theme {
         Theme::System => 0,
         Theme::Light => 1,
@@ -190,6 +249,168 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
             });
         }
         b.append(&sw);
+        rows.append(&b);
+    }
+    root.append(&card);
+
+    let (card, rows) = group(tr("group.language"));
+    {
+        let (b, _) = row(tr("row.uilang"));
+        let lang_drop = DropDown::new(
+            Some(StringList::new(&[tr("opt.system"), "English", "Español"])),
+            None::<gtk4::Expression>,
+        );
+        lang_drop.set_widget_name("language-picker");
+        lang_drop.set_selected(match p.ui_language.as_str() {
+            "en" => 1,
+            "es" => 2,
+            _ => 0,
+        });
+        {
+            let state = state.clone();
+            lang_drop.connect_selected_notify(move |d| {
+                let code = match d.selected() {
+                    1 => "en",
+                    2 => "es",
+                    _ => "system",
+                };
+                state.settings.borrow_mut().preferences.ui_language = code.to_string();
+                persist_prefs(state.clone())();
+                crate::i18n::set_lang(crate::i18n::UiLang::parse(code));
+                crate::i18n::rebuild_ui();
+            });
+        }
+        b.append(&lang_drop);
+        rows.append(&b);
+    }
+    root.append(&card);
+
+    let (card, rows) = group(tr("group.microphone"));
+    // One picker: System default / Built-in / each live source by
+    // its server description (Bluetooth included; ALSA plugins and
+    // monitors excluded). Picking a device stores Specific + its
+    // server name. A stored-but-unlisted device (unplugged) still
+    // shows as the current choice.
+    {
+        let sources = crate::mic::input_sources();
+        let mut options: Vec<String> = vec![
+            tr("opt.sysdefault").to_string(),
+            tr("opt.builtin").to_string(),
+        ];
+        options.extend(sources.iter().map(|d| d.description.clone()));
+        if !matches!(
+            p.mic_selection,
+            crate::settings::MicSelection::System | crate::settings::MicSelection::BuiltIn
+        ) && !sources.iter().any(|d| d.name == p.mic_device_id)
+        {
+            options.push(tr("row.micunlisted").to_string() + &p.mic_device_id);
+        }
+        let (b, _) = row(tr("row.micinput"));
+        let input_drop = DropDown::new(
+            Some(StringList::new(
+                &options.iter().map(String::as_str).collect::<Vec<_>>(),
+            )),
+            None::<gtk4::Expression>,
+        );
+        input_drop.set_selected(match p.mic_selection {
+            crate::settings::MicSelection::System => 0,
+            crate::settings::MicSelection::BuiltIn => 1,
+            crate::settings::MicSelection::Specific => sources
+                .iter()
+                .position(|d| d.name == p.mic_device_id)
+                .map(|i| (i + 2) as u32)
+                .unwrap_or(options.len().saturating_sub(1) as u32),
+        });
+        {
+            let state = state.clone();
+            input_drop.connect_selected_notify(move |d| {
+                {
+                    let mut prefs = state.settings.borrow_mut();
+                    match d.selected() {
+                        0 => {
+                            prefs.preferences.mic_selection = crate::settings::MicSelection::System;
+                        }
+                        1 => {
+                            prefs.preferences.mic_selection =
+                                crate::settings::MicSelection::BuiltIn;
+                        }
+                        n => {
+                            prefs.preferences.mic_selection =
+                                crate::settings::MicSelection::Specific;
+                            if let Some(src) = sources.get((n as usize).saturating_sub(2)) {
+                                prefs.preferences.mic_device_id = src.name.clone();
+                            }
+                        }
+                    }
+                }
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&input_drop);
+        rows.append(&b);
+    }
+    // Warm hold is already wired (persisted; the mic honors it on
+    // every edge). Display-only combo becomes a live picker here.
+    {
+        let hold_opts = [
+            tr("opt.off"),
+            tr("opt.hold10s"),
+            tr("opt.hold60s"),
+            tr("opt.hold15m"),
+        ];
+        let (b, _) = row(tr("row.micwarm"));
+        let warm_drop = DropDown::new(Some(StringList::new(&hold_opts)), None::<gtk4::Expression>);
+        warm_drop.set_selected(match p.mic_warm_hold_secs {
+            10 => 1,
+            60 => 2,
+            900 => 3,
+            _ => 0,
+        });
+        {
+            let state = state.clone();
+            warm_drop.connect_selected_notify(move |d| {
+                state.settings.borrow_mut().preferences.mic_warm_hold_secs = match d.selected() {
+                    1 => 10,
+                    2 => 60,
+                    3 => 900,
+                    _ => 0,
+                };
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&warm_drop);
+        rows.append(&b);
+        let delay_opts = [
+            tr("opt.off"),
+            tr("opt.ms100"),
+            tr("opt.ms250"),
+            tr("opt.ms500"),
+            tr("opt.ms1000"),
+        ];
+        let (b, _) = row(tr("row.micextra"));
+        let delay_drop =
+            DropDown::new(Some(StringList::new(&delay_opts)), None::<gtk4::Expression>);
+        delay_drop.set_selected(match p.mic_release_delay_ms {
+            100 => 1,
+            250 => 2,
+            500 => 3,
+            1000 => 4,
+            _ => 0,
+        });
+        {
+            let state = state.clone();
+            delay_drop.connect_selected_notify(move |d| {
+                state.settings.borrow_mut().preferences.mic_release_delay_ms = match d.selected() {
+                    1 => 100,
+                    2 => 250,
+                    3 => 500,
+                    4 => 1000,
+                    _ => 0,
+                };
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&delay_drop);
         rows.append(&b);
     }
     root.append(&card);
@@ -397,168 +618,7 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
         b.append(&idle);
         rows.append(&b);
     }
-    root.append(&card);
-
-    let (card, rows) = group(tr("group.language"));
-    {
-        let (b, _) = row(tr("row.uilang"));
-        let lang_drop = DropDown::new(
-            Some(StringList::new(&[tr("opt.system"), "English", "Español"])),
-            None::<gtk4::Expression>,
-        );
-        lang_drop.set_selected(match p.ui_language.as_str() {
-            "en" => 1,
-            "es" => 2,
-            _ => 0,
-        });
-        {
-            let state = state.clone();
-            lang_drop.connect_selected_notify(move |d| {
-                let code = match d.selected() {
-                    1 => "en",
-                    2 => "es",
-                    _ => "system",
-                };
-                state.settings.borrow_mut().preferences.ui_language = code.to_string();
-                persist_prefs(state.clone())();
-                crate::i18n::set_lang(crate::i18n::UiLang::parse(code));
-                crate::i18n::rebuild_ui();
-            });
-        }
-        b.append(&lang_drop);
-        rows.append(&b);
-    }
-    root.append(&card);
-
-    let (card, rows) = group(tr("group.microphone"));
-    // One picker: System default / Built-in / each live source by
-    // its server description (Bluetooth included; ALSA plugins and
-    // monitors excluded). Picking a device stores Specific + its
-    // server name. A stored-but-unlisted device (unplugged) still
-    // shows as the current choice.
-    {
-        let sources = crate::mic::input_sources();
-        let mut options: Vec<String> = vec![
-            tr("opt.sysdefault").to_string(),
-            tr("opt.builtin").to_string(),
-        ];
-        options.extend(sources.iter().map(|d| d.description.clone()));
-        if !matches!(
-            p.mic_selection,
-            crate::settings::MicSelection::System | crate::settings::MicSelection::BuiltIn
-        ) && !sources.iter().any(|d| d.name == p.mic_device_id)
-        {
-            options.push(tr("row.micunlisted").to_string() + &p.mic_device_id);
-        }
-        let (b, _) = row(tr("row.micinput"));
-        let input_drop = DropDown::new(
-            Some(StringList::new(
-                &options.iter().map(String::as_str).collect::<Vec<_>>(),
-            )),
-            None::<gtk4::Expression>,
-        );
-        input_drop.set_selected(match p.mic_selection {
-            crate::settings::MicSelection::System => 0,
-            crate::settings::MicSelection::BuiltIn => 1,
-            crate::settings::MicSelection::Specific => sources
-                .iter()
-                .position(|d| d.name == p.mic_device_id)
-                .map(|i| (i + 2) as u32)
-                .unwrap_or(options.len().saturating_sub(1) as u32),
-        });
-        {
-            let state = state.clone();
-            input_drop.connect_selected_notify(move |d| {
-                {
-                    let mut prefs = state.settings.borrow_mut();
-                    match d.selected() {
-                        0 => {
-                            prefs.preferences.mic_selection = crate::settings::MicSelection::System;
-                        }
-                        1 => {
-                            prefs.preferences.mic_selection =
-                                crate::settings::MicSelection::BuiltIn;
-                        }
-                        n => {
-                            prefs.preferences.mic_selection =
-                                crate::settings::MicSelection::Specific;
-                            if let Some(src) = sources.get((n as usize).saturating_sub(2)) {
-                                prefs.preferences.mic_device_id = src.name.clone();
-                            }
-                        }
-                    }
-                }
-                persist_prefs(state.clone())();
-            });
-        }
-        b.append(&input_drop);
-        rows.append(&b);
-    }
-    // Warm hold is already wired (persisted; the mic honors it on
-    // every edge). Display-only combo becomes a live picker here.
-    {
-        let hold_opts = [
-            tr("opt.off"),
-            tr("opt.hold10s"),
-            tr("opt.hold60s"),
-            tr("opt.hold15m"),
-        ];
-        let (b, _) = row(tr("row.micwarm"));
-        let warm_drop = DropDown::new(Some(StringList::new(&hold_opts)), None::<gtk4::Expression>);
-        warm_drop.set_selected(match p.mic_warm_hold_secs {
-            10 => 1,
-            60 => 2,
-            900 => 3,
-            _ => 0,
-        });
-        {
-            let state = state.clone();
-            warm_drop.connect_selected_notify(move |d| {
-                state.settings.borrow_mut().preferences.mic_warm_hold_secs = match d.selected() {
-                    1 => 10,
-                    2 => 60,
-                    3 => 900,
-                    _ => 0,
-                };
-                persist_prefs(state.clone())();
-            });
-        }
-        b.append(&warm_drop);
-        rows.append(&b);
-        let delay_opts = [
-            tr("opt.off"),
-            tr("opt.ms100"),
-            tr("opt.ms250"),
-            tr("opt.ms500"),
-            tr("opt.ms1000"),
-        ];
-        let (b, _) = row(tr("row.micextra"));
-        let delay_drop =
-            DropDown::new(Some(StringList::new(&delay_opts)), None::<gtk4::Expression>);
-        delay_drop.set_selected(match p.mic_release_delay_ms {
-            100 => 1,
-            250 => 2,
-            500 => 3,
-            1000 => 4,
-            _ => 0,
-        });
-        {
-            let state = state.clone();
-            delay_drop.connect_selected_notify(move |d| {
-                state.settings.borrow_mut().preferences.mic_release_delay_ms = match d.selected() {
-                    1 => 100,
-                    2 => 250,
-                    3 => 500,
-                    4 => 1000,
-                    _ => 0,
-                };
-                persist_prefs(state.clone())();
-            });
-        }
-        b.append(&delay_drop);
-        rows.append(&b);
-    }
-    root.append(&card);
+    append_collapsible(&root, &card, tr("group.floating"));
 
     root
 }
@@ -772,10 +832,14 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     // Add row: text field + per-binding mode + Add/Record. Validated
     // by the same parser the listener uses; invalid combos are
     // refused with a hint.
-    let (add_row, _) = row(tr("row.addcombo"));
+    let (add_heading, _) = row(tr("row.addcombo"));
+    let add_row = GtkBox::new(Orientation::Horizontal, 8);
     let add_entry = Entry::new();
     add_entry.set_hexpand(true);
-    add_entry.set_placeholder_text(Some("F13"));
+    add_entry.set_width_chars(12);
+    add_entry.update_property(&[gtk4::accessible::Property::Label(tr("row.addcombo"))]);
+    add_entry.set_placeholder_text(Some("Ctrl+Alt+D"));
+    add_entry.connect_changed(|entry| entry.remove_css_class("error"));
     add_row.append(&add_entry);
     let add_mode = DropDown::new(
         Some(StringList::new(&[
@@ -796,12 +860,23 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
         let add_mode = add_mode.clone();
         add_btn.connect_clicked(move |_| {
             let raw = add_entry.text().trim().to_string();
-            if raw.is_empty() {
+            if crate::hotkey::parse_combo(&raw).is_none() {
+                add_entry.add_css_class("error");
+                super::app::toast(&add_entry, tr("hotkeys.invalidcombo"));
+                add_entry.grab_focus();
                 return;
             }
-            if crate::hotkey::parse_combo(&raw).is_none() {
-                add_entry.set_text("");
-                add_entry.set_placeholder_text(Some(tr("hotkeys.invalidcombo")));
+            if state
+                .settings
+                .borrow()
+                .hotkeys
+                .effective_hotkeys()
+                .iter()
+                .any(|binding| same_shortcut(&binding.combo, &raw))
+            {
+                add_entry.add_css_class("error");
+                super::app::toast(&add_entry, tr("hotkeys.duplicate"));
+                add_entry.grab_focus();
                 return;
             }
             let mode = match add_mode.selected() {
@@ -811,11 +886,9 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
             };
             {
                 let mut s = state.settings.borrow_mut();
-                if !s.hotkeys.dictation_hotkeys.iter().any(|b| b.combo == raw) {
-                    s.hotkeys
-                        .dictation_hotkeys
-                        .push(crate::settings::HotkeyBinding { combo: raw, mode });
-                }
+                s.hotkeys
+                    .dictation_hotkeys
+                    .push(crate::settings::HotkeyBinding { combo: raw, mode });
             }
             add_entry.set_text("");
             persist();
@@ -825,8 +898,11 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     add_row.append(&add_btn);
     let record_btn = Button::with_label(tr("hotkeys.record"));
     record_btn.set_tooltip_text(Some(tr("hotkeys.recordhint")));
-    add_row.append(&record_btn);
-    rows.append(&add_row);
+    add_heading.append(&record_btn);
+    let add_form = GtkBox::new(Orientation::Vertical, 6);
+    add_form.append(&add_heading);
+    add_form.append(&add_row);
+    rows.append(&add_form);
 
     let (b, _) = row(tr("row.resettodefault"));
     let reset = Button::with_label(tr("action.reset"));
@@ -874,7 +950,7 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
             child = c.next_sibling();
         }
     }
-    root.append(&smart_card);
+    append_collapsible(&root, &smart_card, tr("group.smart"));
 
     attach_hotkey_capture(
         &root,
@@ -895,7 +971,9 @@ fn refill_hotkey_list(list: &GtkBox, state: &Rc<AppState>, persist: &Rc<dyn Fn()
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
-    for binding in state.settings.borrow().hotkeys.effective_hotkeys() {
+    let bindings = state.settings.borrow().hotkeys.effective_hotkeys();
+    let can_remove = bindings.len() > 1;
+    for binding in bindings {
         let (b, _) = row(&binding.combo);
         let mode_drop = DropDown::new(
             Some(StringList::new(&[
@@ -935,6 +1013,8 @@ fn refill_hotkey_list(list: &GtkBox, state: &Rc<AppState>, persist: &Rc<dyn Fn()
         }
         b.append(&mode_drop);
         let remove = Button::with_label(tr("action.remove"));
+        remove.set_sensitive(can_remove);
+        remove.set_tooltip_text(Some(tr("hotkeys.keepone")));
         {
             let state = state.clone();
             let list = list.clone();
@@ -1314,7 +1394,11 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
         name.add_css_class("row-label");
         name.set_xalign(0.0);
         info.append(&name);
-        let sub = Label::new(Some(&format!("{} · {}", m.description, m.size_label)));
+        let sub = Label::new(Some(&format!(
+            "{} · {}",
+            crate::i18n::backend_text(m.description),
+            m.size_label
+        )));
         sub.add_css_class("dim");
         sub.set_xalign(0.0);
         sub.set_wrap(true);
@@ -1404,12 +1488,13 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
             {
                 let state = state.clone();
                 let id = m.id;
-                del.connect_clicked(move |_| {
+                connect_download_delete(&del, move || {
                     if let Some(data_dir) = state.db_path.parent() {
                         if let Some(entry) = stt::find_model(id) {
-                            let _ = stt::delete_model(data_dir, entry);
+                            return stt::delete_model(data_dir, entry);
                         }
                     }
+                    Ok(())
                 });
             }
             card.append(&del);
@@ -1527,11 +1612,15 @@ fn fill_sherpa_packs(container: &GtkBox, state: &Rc<AppState>) {
         card.set_tooltip_text(Some(pack.id));
         let info = GtkBox::new(Orientation::Vertical, 2);
         info.set_hexpand(true);
-        let name = Label::new(Some(pack.name));
+        let name = Label::new(Some(crate::i18n::backend_text(pack.name)));
         name.add_css_class("row-label");
         name.set_xalign(0.0);
         info.append(&name);
-        let sub = Label::new(Some(&format!("{} · {}", pack.description, pack.size_label)));
+        let sub = Label::new(Some(&format!(
+            "{} · {}",
+            crate::i18n::backend_text(pack.description),
+            pack.size_label
+        )));
         sub.add_css_class("dim");
         sub.set_xalign(0.0);
         sub.set_wrap(true);
@@ -1584,12 +1673,13 @@ fn fill_sherpa_packs(container: &GtkBox, state: &Rc<AppState>) {
             {
                 let state = state.clone();
                 let id = pack.id;
-                del.connect_clicked(move |_| {
+                connect_download_delete(&del, move || {
                     if let Some(data_dir) = state.db_path.parent() {
                         if let Some(pack) = stt::SHERPA_PACKS.iter().find(|p| p.id == id) {
-                            let _ = stt::delete_sherpa_pack(data_dir, pack);
+                            return stt::delete_sherpa_pack(data_dir, pack);
                         }
                     }
+                    Ok(())
                 });
             }
             card.append(&del);
@@ -1653,7 +1743,7 @@ fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
         card.set_tooltip_text(Some(pack.id));
         let info = GtkBox::new(Orientation::Vertical, 2);
         info.set_hexpand(true);
-        let name = Label::new(Some(pack.name));
+        let name = Label::new(Some(crate::i18n::backend_text(pack.name)));
         name.add_css_class("row-label");
         name.set_xalign(0.0);
         info.append(&name);
@@ -1662,9 +1752,13 @@ fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
         let installed = stt::gpu_installed(&data_dir, pack);
         let sub = Label::new(Some(&format!(
             "{} · {}{}",
-            pack.description,
+            crate::i18n::backend_text(pack.description),
             pack.size_label,
-            if installed { " · Installed" } else { "" }
+            if installed {
+                format!(" · {}", tr("stt.sherpa.installed"))
+            } else {
+                String::new()
+            }
         )));
         sub.add_css_class("dim");
         sub.set_xalign(0.0);
@@ -1714,12 +1808,13 @@ fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
             {
                 let state = state.clone();
                 let id = pack.id;
-                del.connect_clicked(move |_| {
+                connect_download_delete(&del, move || {
                     if let Some(data_dir) = state.db_path.parent() {
                         if let Some(pack) = stt::GPU_PACKS.iter().find(|p| p.id == id) {
-                            let _ = stt::delete_gpu_pack(data_dir, pack);
+                            return stt::delete_gpu_pack(data_dir, pack);
                         }
                     }
+                    Ok(())
                 });
             }
             card.append(&del);
@@ -1793,10 +1888,11 @@ fn refresh_needle_action(container: &GtkBox, state: &Rc<AppState>) {
         let del = Button::with_label(tr("action.delete"));
         {
             let state = state.clone();
-            del.connect_clicked(move |_| {
+            connect_download_delete(&del, move || {
                 if let Some(data_dir) = state.db_path.parent() {
-                    let _ = stt::delete_needle_pack(data_dir);
+                    return stt::delete_needle_pack(data_dir);
                 }
+                Ok(())
             });
         }
         container.append(&del);
@@ -1912,6 +2008,7 @@ fn stt_lang(state: &Rc<AppState>) -> SttLang {
 /// Shared handles of the STT remote form (mirrors LmForm).
 #[derive(Clone)]
 struct SttForm {
+    expander: gtk4::Expander,
     name_e: Entry,
     url_e: Entry,
     model_e: Entry,
@@ -1961,7 +2058,12 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
         name.add_css_class("row-label");
         name.set_xalign(0.0);
         info.append(&name);
-        let sub = Label::new(Some(&entry.summary()));
+        let summary = if matches!(entry.kind, SttEntryKind::Local) {
+            tr("stt.local.current").to_string()
+        } else {
+            entry.summary()
+        };
+        let sub = Label::new(Some(&summary));
         sub.add_css_class("dim");
         sub.set_xalign(0.0);
         sub.set_wrap(true);
@@ -1969,6 +2071,7 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
         card.append(&info);
         let sw = Switch::new();
         sw.set_active(entry.enabled);
+        sw.update_property(&[gtk4::accessible::Property::Label(&entry.name)]);
         sw.set_valign(gtk4::Align::Center);
         {
             let state = state.clone();
@@ -1991,6 +2094,21 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
         card.append(&sw);
         for (label, delta) in [("↑", -1isize), ("↓", 1isize)] {
             let btn = Button::with_label(label);
+            btn.set_tooltip_text(Some(tr(if delta < 0 {
+                "action.moveup"
+            } else {
+                "action.movedown"
+            })));
+            btn.update_property(&[gtk4::accessible::Property::Label(tr(if delta < 0 {
+                "action.moveup"
+            } else {
+                "action.movedown"
+            }))]);
+            btn.set_sensitive(if delta < 0 {
+                pos > 0
+            } else {
+                pos + 1 < entries.len()
+            });
             btn.set_valign(gtk4::Align::Center);
             {
                 let state = state.clone();
@@ -2020,10 +2138,19 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
                 let form = form.clone();
                 let id = entry.id.clone();
                 edit.connect_clicked(move |_| {
-                    let st = state.settings.borrow();
-                    let Some(e) = st.stt.entries.iter().find(|e| e.id == id) else {
+                    let entry = state
+                        .settings
+                        .borrow()
+                        .stt
+                        .entries
+                        .iter()
+                        .find(|e| e.id == id)
+                        .cloned();
+                    let Some(e) = entry else {
                         return;
                     };
+                    form.expander.set_expanded(true);
+                    form.name_e.grab_focus();
                     form.name_e.set_text(&e.name);
                     form.url_e.set_text(&e.url);
                     form.model_e.set_text(&e.model);
@@ -2051,6 +2178,8 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
             card.append(&edit);
         }
         let del = Button::with_label(tr("action.remove"));
+        del.set_sensitive(entries.len() > 1);
+        del.set_tooltip_text(Some(tr("engine.keepone")));
         del.set_valign(gtk4::Align::Center);
         {
             let state = state.clone();
@@ -2058,14 +2187,20 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
             let form = form.clone();
             let alb = add_local.clone();
             let id = entry.id.clone();
-            del.connect_clicked(move |_| {
-                {
-                    let mut st = state.settings.borrow_mut();
-                    st.stt.entries.retain(|e| e.id != id);
-                }
-                persist_prefs(state.clone())();
-                fill_stt_chain(&list, &state, &form, &alb);
-            });
+            super::app::connect_confirmed(
+                &del,
+                tr("confirm.engine.title"),
+                tr("confirm.engine.body"),
+                tr("action.remove"),
+                move |_| {
+                    {
+                        let mut st = state.settings.borrow_mut();
+                        st.stt.entries.retain(|e| e.id != id);
+                    }
+                    persist_prefs(state.clone())();
+                    fill_stt_chain(&list, &state, &form, &alb);
+                },
+            );
         }
         card.append(&del);
         list.append(&card);
@@ -2113,7 +2248,8 @@ fn refresh_server_widgets(state: &Rc<AppState>, status: &Label, stop: &Button, c
     let any_managed = running.iter().any(|(_, managed)| *managed);
     stop.set_visible(any_managed);
     cold.set_visible(running.is_empty());
-    cold.set_sensitive(local_on);
+    cold.set_sensitive(local_on && state.service_alive.get());
+    stop.set_sensitive(state.service_alive.get());
     cold.set_tooltip_text(if local_on {
         None
     } else {
@@ -2138,6 +2274,12 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     // Add row: local button (iff absent) + remote form.
     let add_local_btn = Button::with_label(tr("stt.local.add"));
     rows.append(&add_local_btn);
+    let remote_expander = gtk4::Expander::new(Some(tr("stt.remote.add")));
+    remote_expander.set_widget_name("remote-engine-form");
+    let remote_rows = GtkBox::new(Orientation::Vertical, 12);
+    remote_rows.set_margin_top(12);
+    remote_expander.set_child(Some(&remote_rows));
+    rows.append(&remote_expander);
     // Remote form: kind picker + provider/url/model/key + Add/Save.
     let kind_dd = DropDown::new(
         Some(StringList::new(&[
@@ -2150,7 +2292,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     {
         let (b, _) = row(tr("row.lmtype"));
         b.append(&kind_dd);
-        rows.append(&b);
+        remote_rows.append(&b);
     }
     let name_e = Entry::new();
     let url_e = Entry::new();
@@ -2174,10 +2316,11 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     }
     key_e.set_visibility(false);
     url_e.set_text("http://localhost:8000");
+    url_e.connect_changed(|entry| entry.remove_css_class("error"));
     {
         let (b, _) = row(tr("row.name"));
         b.append(&name_e);
-        rows.append(&b);
+        remote_rows.append(&b);
     }
     let cloud_box = GtkBox::new(Orientation::Vertical, 8);
     {
@@ -2191,7 +2334,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         b.append(&key_e);
         cloud_box.append(&b);
     }
-    rows.append(&cloud_box);
+    remote_rows.append(&cloud_box);
     let url_box = GtkBox::new(Orientation::Vertical, 8);
     {
         let (b, _) = row(tr("row.serverurl"));
@@ -2221,8 +2364,9 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
             url_box.append(&note);
         }
     }
-    rows.append(&url_box);
-    let add_btn = Button::with_label(tr("action.add"));
+    remote_rows.append(&url_box);
+    let add_btn = Button::with_label(tr("stt.remote.add"));
+    add_btn.add_css_class("suggested-action");
     let cancel_btn = Button::with_label(tr("action.cancel"));
     cancel_btn.set_visible(false);
     {
@@ -2230,11 +2374,12 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         brow.set_halign(gtk4::Align::End);
         brow.append(&cancel_btn);
         brow.append(&add_btn);
-        rows.append(&brow);
+        remote_rows.append(&brow);
     }
     root.append(&card);
 
     let form = SttForm {
+        expander: remote_expander.clone(),
         name_e: name_e.clone(),
         url_e: url_e.clone(),
         model_e: model_e.clone(),
@@ -2322,7 +2467,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         let cb = form.cancel_btn.clone();
         cb.connect_clicked(move |_| {
             *form.editing.borrow_mut() = None;
-            form.add_btn.set_label(tr("action.add"));
+            form.add_btn.set_label(tr("stt.remote.add"));
             form.cancel_btn.set_visible(false);
             form.name_e.set_text("");
             form.key_e.set_text("");
@@ -2346,6 +2491,17 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         ab.connect_clicked(move |_| {
             use crate::settings::SttEntryKind;
             let cloud = form.kind_dd.selected() == 1;
+            if cloud
+                && (form.model_e.text().trim().is_empty() || form.key_e.text().trim().is_empty())
+            {
+                super::app::toast(&form.add_btn, tr("stt.required"));
+                return;
+            }
+            if !cloud && !valid_server_url(&form.url_e.text(), true) {
+                form.url_e.add_css_class("error");
+                super::app::toast(&form.add_btn, tr("form.badurl"));
+                return;
+            }
             let provider = match form.provider_dd.selected() {
                 1 => "Groq",
                 2 => "Mistral",
@@ -2403,7 +2559,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 }
             }
             *form.editing.borrow_mut() = None;
-            ab_inner.set_label(tr("action.add"));
+            ab_inner.set_label(tr("stt.remote.add"));
             cb.set_visible(false);
             form.name_e.set_text("");
             form.key_e.set_text("");
@@ -2412,6 +2568,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
             form.stream_sw.set_active(false);
             persist_prefs(state.clone())();
             fill_stt_chain(&list, &state, &form, &alb1);
+            super::app::toast(&ab_inner, tr("feedback.saved"));
         });
     }
 
@@ -2491,7 +2648,11 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     {
         let state = state.clone();
         let list = list.clone();
+        let weak_root = root.downgrade();
         gtk4::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+            if weak_root.upgrade().is_none() {
+                return gtk4::glib::ControlFlow::Break;
+            }
             fill_stt_models(&list, &state);
             gtk4::glib::ControlFlow::Continue
         });
@@ -2616,7 +2777,11 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     {
         let state = state.clone();
         let gpu_list = gpu_list.clone();
+        let weak_root = root.downgrade();
         gtk4::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+            if weak_root.upgrade().is_none() {
+                return gtk4::glib::ControlFlow::Break;
+            }
             fill_gpu_packs(&gpu_list, &state);
             gtk4::glib::ControlFlow::Continue
         });
@@ -2625,7 +2790,11 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     {
         let state = state.clone();
         let sherpa_list = sherpa_list.clone();
+        let weak_root = root.downgrade();
         gtk4::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+            if weak_root.upgrade().is_none() {
+                return gtk4::glib::ControlFlow::Break;
+            }
             fill_sherpa_packs(&sherpa_list, &state);
             gtk4::glib::ControlFlow::Continue
         });
@@ -2633,7 +2802,11 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     {
         let state = state.clone();
         let needle_action = needle_action.clone();
+        let weak_root = root.downgrade();
         gtk4::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+            if weak_root.upgrade().is_none() {
+                return gtk4::glib::ControlFlow::Break;
+            }
             refresh_needle_action(&needle_action, &state);
             gtk4::glib::ControlFlow::Continue
         });
@@ -2811,10 +2984,10 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         rows.append(&b);
     }
     {
-        const WARM_OPTS: &[&str] = &["Forever", "1m", "5m", "15m", "30m", "1h"];
+        let warm_opts = [tr("opt.forever"), "1m", "5m", "15m", "30m", "1h"];
         const WARM_VALUES: &[&str] = &["", "1m", "5m", "15m", "30m", "1h"];
         let (b, _) = row(tr("row.keepwarm"));
-        let dd = DropDown::new(Some(StringList::new(WARM_OPTS)), None::<gtk4::Expression>);
+        let dd = DropDown::new(Some(StringList::new(&warm_opts)), None::<gtk4::Expression>);
         dd.set_selected(
             WARM_VALUES
                 .iter()
@@ -2853,9 +3026,11 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 // Best effort locally (no-op in the GUI process) +
                 // the command the service actually obeys.
                 crate::transcribe::drop_servers(&data_dir);
-                if let Ok(store) = crate::store::Store::open(&state.db_path) {
-                    let _ = store.set_server_cmd("stop");
-                }
+                super::app::notify(tr(if state.store.set_server_cmd("stop").is_ok() {
+                    "server.requested"
+                } else {
+                    "feedback.savefailed"
+                }));
             });
         }
         b.append(&stop);
@@ -2863,9 +3038,11 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         {
             let state = state.clone();
             cold.connect_clicked(move |_| {
-                if let Ok(store) = crate::store::Store::open(&state.db_path) {
-                    let _ = store.set_server_cmd("start");
-                }
+                super::app::notify(tr(if state.store.set_server_cmd("start").is_ok() {
+                    "server.requested"
+                } else {
+                    "feedback.savefailed"
+                }));
             });
         }
         b.append(&cold);
@@ -2935,7 +3112,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         note.set_wrap(true);
         rows.append(&note);
     }
-    root.append(&card);
+    append_collapsible(&root, &card, tr("group.sttservers"));
     {
         // Live status: the service owns the servers, so poll the
         // pidfile (cheap) and flip Stop/Cold-start on our own.
@@ -2943,7 +3120,11 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         let srv_status = srv_status.clone();
         let srv_stop = srv_stop.clone();
         let srv_cold = srv_cold.clone();
+        let weak_root = root.downgrade();
         gtk4::glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
+            if weak_root.upgrade().is_none() {
+                return gtk4::glib::ControlFlow::Break;
+            }
             refresh_server_widgets(&state, &srv_status, &srv_stop, &srv_cold);
             gtk4::glib::ControlFlow::Continue
         });
@@ -3023,7 +3204,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
             child = row_box.next_sibling();
         }
     }
-    root.append(&card);
+    append_collapsible(&root, &card, tr("group.spec"));
 
     // ---- Local-config visibility ----
     // Runtimes/models/language always show: they configure the local
@@ -3068,21 +3249,32 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
 }
 
 /// Ollama keep-alive options, parallel to KEEP_ALIVE_VALUES.
-const KEEP_ALIVE_LABELS: &[&str] = &[
-    "Default (Ollama default)",
-    "Until server reboot (-1)",
-    "Unload immediately (0)",
-    "5m",
-    "15m",
-    "30m",
-    "2h",
-    "5h",
-    "24h",
-];
+fn keep_alive_labels() -> [&'static str; 9] {
+    [
+        tr("lm.residency.default"),
+        tr("lm.residency.forever"),
+        tr("lm.residency.unload"),
+        "5m",
+        "15m",
+        "30m",
+        "2h",
+        "5h",
+        "24h",
+    ]
+}
 const KEEP_ALIVE_VALUES: &[&str] = &["", "-1", "0", "5m", "15m", "30m", "2h", "5h", "24h"];
 /// Ollama context window options, parallel to NUM_CTX_VALUES.
 /// Small prompts need little context; lower reserves less memory.
-const NUM_CTX_LABELS: &[&str] = &["Default", "512", "1024", "2048", "4096", "8192"];
+fn num_ctx_labels() -> [&'static str; 6] {
+    [
+        tr("opt.thinkingdefault"),
+        "512",
+        "1024",
+        "2048",
+        "4096",
+        "8192",
+    ]
+}
 const NUM_CTX_VALUES: &[Option<u32>] = &[
     None,
     Some(512),
@@ -3095,6 +3287,7 @@ const NUM_CTX_VALUES: &[Option<u32>] = &[
 /// Shared handles of the add/edit form, so list rows can refill it.
 #[derive(Clone)]
 struct LmForm {
+    expander: gtk4::Expander,
     name_e: Entry,
     url_e: Entry,
     ollama_model_e: Entry,
@@ -3112,39 +3305,48 @@ struct LmForm {
     editing: Rc<RefCell<Option<String>>>,
 }
 
-/// Configured LLM chain list. Rebuilt after every mutation (add /
-/// save / remove / move / toggle); order = priority top-down.
-fn fill_lm_chain(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
+fn lm_model_row(entry: &crate::settings::LlmEntry) -> GtkBox {
+    let card = GtkBox::new(Orientation::Horizontal, 8);
+    card.add_css_class("card");
+    let info = GtkBox::new(Orientation::Vertical, 2);
+    info.set_hexpand(true);
+    let name = Label::new(Some(&entry.name));
+    name.add_css_class("row-label");
+    name.set_xalign(0.0);
+    info.append(&name);
+    let sub = Label::new(Some(&entry.summary()));
+    sub.add_css_class("dim");
+    sub.set_xalign(0.0);
+    sub.set_wrap(true);
+    info.append(&sub);
+    card.append(&info);
+    card
+}
+
+/// Cleanup selection and fallback order use the existing persisted entries.
+fn fill_cleanup_chain(list: &GtkBox, state: &Rc<AppState>) {
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
     let entries = state.settings.borrow().language_models.entries.clone();
     if entries.is_empty() {
-        let l = Label::new(Some(tr("lm.list.empty")));
-        l.add_css_class("dim");
-        l.set_xalign(0.0);
-        l.set_wrap(true);
-        list.append(&l);
-        return;
+        let note = Label::new(Some(tr("cleanup.models.empty")));
+        note.add_css_class("dim");
+        note.set_xalign(0.0);
+        note.set_wrap(true);
+        list.append(&note);
     }
     for (pos, entry) in entries.iter().enumerate() {
-        let card = GtkBox::new(Orientation::Horizontal, 8);
-        card.add_css_class("card");
-        let info = GtkBox::new(Orientation::Vertical, 2);
-        info.set_hexpand(true);
-        let name = Label::new(Some(&entry.name));
-        name.add_css_class("row-label");
-        name.set_xalign(0.0);
-        info.append(&name);
-        let sub = Label::new(Some(&entry.summary()));
-        sub.add_css_class("dim");
-        sub.set_xalign(0.0);
-        sub.set_wrap(true);
-        info.append(&sub);
-        card.append(&info);
+        let card = lm_model_row(entry);
         // Enabled toggle.
         let sw = Switch::new();
         sw.set_active(entry.enabled);
+        sw.update_property(&[gtk4::accessible::Property::Label(&format!(
+            "{}: {}",
+            tr("row.cleanup"),
+            entry.name
+        ))]);
+        sw.set_tooltip_text(Some(tr("lm.usecleanup")));
         sw.set_valign(gtk4::Align::Center);
         {
             let state = state.clone();
@@ -3168,11 +3370,25 @@ fn fill_lm_chain(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
         // Move up / down (priority order).
         for (label, delta) in [("↑", -1isize), ("↓", 1isize)] {
             let btn = Button::with_label(label);
+            btn.set_tooltip_text(Some(tr(if delta < 0 {
+                "action.moveup"
+            } else {
+                "action.movedown"
+            })));
+            btn.update_property(&[gtk4::accessible::Property::Label(tr(if delta < 0 {
+                "action.moveup"
+            } else {
+                "action.movedown"
+            }))]);
+            btn.set_sensitive(if delta < 0 {
+                pos > 0
+            } else {
+                pos + 1 < entries.len()
+            });
             btn.set_valign(gtk4::Align::Center);
             {
                 let state = state.clone();
                 let list = list.clone();
-                let form = form.clone();
                 btn.connect_clicked(move |_| {
                     let mut lm = state.settings.borrow_mut();
                     let entries = &mut lm.language_models.entries;
@@ -3182,11 +3398,31 @@ fn fill_lm_chain(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
                     }
                     drop(lm);
                     persist_prefs(state.clone())();
-                    fill_lm_chain(&list, &state, &form);
+                    fill_cleanup_chain(&list, &state);
                 });
             }
             card.append(&btn);
         }
+        list.append(&card);
+    }
+}
+
+/// Model connections are managed independently of their cleanup selection.
+fn fill_lm_models(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    let entries = state.settings.borrow().language_models.entries.clone();
+    if entries.is_empty() {
+        let l = Label::new(Some(tr("lm.list.empty")));
+        l.add_css_class("dim");
+        l.set_xalign(0.0);
+        l.set_wrap(true);
+        list.append(&l);
+        return;
+    }
+    for entry in &entries {
+        let card = lm_model_row(entry);
         // (refills below use the outer form handle)
         let edit = Button::with_label(tr("action.edit"));
         edit.set_valign(gtk4::Align::Center);
@@ -3195,10 +3431,19 @@ fn fill_lm_chain(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
             let form = form.clone();
             let id = entry.id.clone();
             edit.connect_clicked(move |_| {
-                let lm = state.settings.borrow();
-                let Some(e) = lm.language_models.entries.iter().find(|e| e.id == id) else {
+                let entry = state
+                    .settings
+                    .borrow()
+                    .language_models
+                    .entries
+                    .iter()
+                    .find(|e| e.id == id)
+                    .cloned();
+                let Some(e) = entry else {
                     return;
                 };
+                form.expander.set_expanded(true);
+                form.name_e.grab_focus();
                 form.name_e.set_text(&e.name);
                 form.url_e.set_text(&e.url);
                 form.ollama_model_e.set_text(&e.model);
@@ -3244,20 +3489,28 @@ fn fill_lm_chain(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
         card.append(&edit);
         // Remove.
         let del = Button::with_label(tr("action.remove"));
+        del.set_sensitive(entries.len() > 1);
+        del.set_tooltip_text(Some(tr("engine.keepone")));
         del.set_valign(gtk4::Align::Center);
         {
             let state = state.clone();
             let list = list.clone();
             let form = form.clone();
             let id = entry.id.clone();
-            del.connect_clicked(move |_| {
-                {
-                    let mut lm = state.settings.borrow_mut();
-                    lm.language_models.entries.retain(|e| e.id != id);
-                }
-                persist_prefs(state.clone())();
-                fill_lm_chain(&list, &state, &form);
-            });
+            super::app::connect_confirmed(
+                &del,
+                tr("confirm.engine.title"),
+                tr("confirm.engine.body"),
+                tr("action.remove"),
+                move |_| {
+                    {
+                        let mut lm = state.settings.borrow_mut();
+                        lm.language_models.entries.retain(|e| e.id != id);
+                    }
+                    persist_prefs(state.clone())();
+                    fill_lm_models(&list, &state, &form);
+                },
+            );
         }
         card.append(&del);
         list.append(&card);
@@ -3268,16 +3521,12 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     use crate::settings::{CloudLlm, LlmEntry, LlmKind};
     let root = section_box(tr("settings.lm"), tr("settings.lm.sub"));
 
-    // Master switch lives on the cleanup toggle below (row.cleanup):
-    // on = STT output goes through the enabled chain top-down, off =
-    // raw transcript is final. Kinds mix freely in the chain.
-
     // Add card: pick a type to configure, fill the form, Add.
     let (card, rows) = group(tr("group.lmadd"));
     let kind_dd = DropDown::new(
         Some(StringList::new(&[
             tr("opt.ollama"),
-            tr("opt.localmodel"),
+            tr("opt.localmodel.unavailable"),
             tr("opt.cloud"),
         ])),
         None::<gtk4::Expression>,
@@ -3291,7 +3540,9 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     // Shared form handles (single-parent rule: name/model rows live
     // in `rows`, kind extras in their boxes).
     let name_e = Entry::new();
+    name_e.set_widget_name("lm-name");
     let ollama_model_e = Entry::new();
+    ollama_model_e.set_widget_name("lm-ollama-model");
     let cloud_model_e = Entry::new();
     let url_e = Entry::new();
     let key_e = Entry::new();
@@ -3331,7 +3582,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     let cloud_box = GtkBox::new(Orientation::Vertical, 8);
     let local_box = GtkBox::new(Orientation::Vertical, 8);
     let keepalive_dd = DropDown::new(
-        Some(StringList::new(KEEP_ALIVE_LABELS)),
+        Some(StringList::new(&keep_alive_labels())),
         None::<gtk4::Expression>,
     );
     keepalive_dd.set_valign(gtk4::Align::Center);
@@ -3351,7 +3602,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     let thinking_dd = thinking_opts();
     let cloud_thinking_dd = thinking_opts();
     let numctx_dd = DropDown::new(
-        Some(StringList::new(NUM_CTX_LABELS)),
+        Some(StringList::new(&num_ctx_labels())),
         None::<gtk4::Expression>,
     );
     numctx_dd.set_valign(gtk4::Align::Center);
@@ -3407,28 +3658,26 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
             let ollama_model_e = ollama_model_e.clone();
             let keepalive_dd = keepalive_dd.clone();
             let key_e = key_e.clone();
-            update_btn.connect_clicked(move |_| {
+            update_btn.connect_clicked(move |button| {
                 let url = url_e.text().trim().to_string();
                 let model = ollama_model_e.text().trim().to_string();
                 let token = key_e.text().trim().to_string();
-                if url.is_empty() || model.is_empty() {
-                    eprintln!("[lm] update now: url/model empty");
+                if !valid_server_url(&url, false) || model.is_empty() {
+                    super::app::toast(button, tr("lm.required"));
                     return;
                 }
                 let keep = KEEP_ALIVE_VALUES
                     .get(keepalive_dd.selected() as usize)
                     .copied()
                     .unwrap_or("");
-                let body = serde_json::json!({
-                    "model": model,
-                    "stream": false,
-                    "messages": [{"role": "user", "content": "hi"}],
-                });
-                // Send the selected keep-alive with a minimal ping;
-                // output ignored. Best effort, logged.
-                let url_done = url.clone();
-                if let Err(e) = crate::runtime::submit("ollama-ping", move || {
-                    let mut body = body.clone();
+                let result = std::sync::Arc::new(std::sync::Mutex::new(None));
+                let sender = result.clone();
+                button.set_sensitive(false);
+                button.set_label(tr("lm.applying"));
+                // Empty messages load/unload the model without generating a reply.
+                std::thread::spawn(move || {
+                    let mut body =
+                        serde_json::json!({"model": model, "stream": false, "messages": []});
                     if !keep.is_empty() {
                         body["keep_alive"] = match keep {
                             "-1" => serde_json::Value::from(-1),
@@ -3436,31 +3685,42 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
                             _ => serde_json::Value::String(keep.to_string()),
                         };
                     }
-                    let endpoint = format!("{}/api/chat", url_done.trim_end_matches('/'));
-                    let client = match reqwest::blocking::Client::builder()
+                    let success = reqwest::blocking::Client::builder()
                         .timeout(std::time::Duration::from_secs(60))
                         .build()
-                    {
-                        Ok(c) => c,
-                        Err(e) => {
-                            eprintln!("[lm] update now: {e}");
-                            return;
-                        }
-                    };
-                    let mut post = client
-                        .post(&endpoint)
-                        .header("Content-Type", "application/json")
-                        .body(body.to_string());
-                    if !token.is_empty() {
-                        post = post.bearer_auth(token);
+                        .and_then(|client| {
+                            let mut request = client
+                                .post(format!("{}/api/chat", url.trim_end_matches('/')))
+                                .header("Content-Type", "application/json")
+                                .body(body.to_string());
+                            if !token.is_empty() {
+                                request = request.bearer_auth(token);
+                            }
+                            request
+                                .send()
+                                .and_then(|response| response.error_for_status())
+                        })
+                        .is_ok();
+                    *sender.lock().unwrap() = Some(success);
+                });
+                let button = button.clone();
+                gtk4::glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+                    if let Some(success) = result.lock().unwrap().take() {
+                        button.set_sensitive(true);
+                        button.set_label(tr("action.updatenow"));
+                        super::app::toast(
+                            &button,
+                            tr(if success {
+                                "lm.applied"
+                            } else {
+                                "lm.applyfailed"
+                            }),
+                        );
+                        gtk4::glib::ControlFlow::Break
+                    } else {
+                        gtk4::glib::ControlFlow::Continue
                     }
-                    match post.send() {
-                        Ok(res) => eprintln!("[lm] update now: http {}", res.status()),
-                        Err(e) => eprintln!("[lm] update now: {e}"),
-                    }
-                }) {
-                    eprintln!("[lm] update now: {e}");
-                }
+                });
             });
         }
     }
@@ -3490,6 +3750,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     local_box.set_visible(false);
     // Show the form for the picked kind.
     let add_btn = Button::with_label(tr("action.add"));
+    add_btn.add_css_class("suggested-action");
     let cancel_btn = Button::with_label(tr("action.cancel"));
     cancel_btn.set_visible(false); // only while editing
     {
@@ -3499,7 +3760,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         brow.append(&add_btn);
         rows.append(&brow);
     }
-    root.append(&card);
+    let form_expander = append_collapsible(&root, &card, tr("group.lmadd"));
     {
         let ollama_box = ollama_box.clone();
         let cloud_box = cloud_box.clone();
@@ -3528,14 +3789,21 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         provider_dd.set_selected(2); // OpenAI default
         cloud_model_e.set_text(CloudLlm::OpenAI.default_model());
     }
-    // Chain card: ordered configured options.
-    let (card, chain_rows) = group(tr("group.lmchain"));
+    let (card, model_rows) = group(tr("group.lmmodels"));
     let list = GtkBox::new(Orientation::Vertical, 8);
-    chain_rows.append(&list);
-    root.append(&card);
+    model_rows.append(&list);
+    let cleanup_link = Button::with_label(tr("action.cleanupsettings"));
+    cleanup_link.add_css_class("flat");
+    cleanup_link.set_halign(gtk4::Align::Start);
+    cleanup_link.connect_clicked(|button| {
+        super::app::navigate(button, "settings", "Text Cleanup");
+    });
+    model_rows.append(&cleanup_link);
+    root.insert_child_after(&card, root.first_child().as_ref());
 
     // Form bundle shared with the list rows (Edit refills it).
     let form = LmForm {
+        expander: form_expander.clone(),
         name_e: name_e.clone(),
         url_e: url_e.clone(),
         ollama_model_e: ollama_model_e.clone(),
@@ -3552,7 +3820,13 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         cancel_btn: cancel_btn.clone(),
         editing: Rc::new(RefCell::new(None)),
     };
-    fill_lm_chain(&list, state, &form);
+    fill_lm_models(&list, state, &form);
+    // Re-entering this page reflects cleanup priority changes without losing form drafts.
+    {
+        let state = state.clone();
+        let form = form.clone();
+        list.connect_map(move |list| fill_lm_models(list, &state, &form));
+    }
     // Cancel: drop the edit, reset the form to add-mode defaults.
     {
         let form = form.clone();
@@ -3615,6 +3889,14 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
             } else {
                 ollama_model_e.text().to_string()
             };
+            if kind == LlmKind::Local
+                || model.trim().is_empty()
+                || (kind == LlmKind::Cloud && cloud_key_e.text().trim().is_empty())
+                || (kind == LlmKind::Ollama && !valid_server_url(&url_e.text(), false))
+            {
+                super::app::toast(&ab, tr("lm.required"));
+                return;
+            }
             let keep_alive = KEEP_ALIVE_VALUES
                 .get(form.keepalive_dd.selected() as usize)
                 .copied()
@@ -3685,15 +3967,217 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
             name_e.set_text("");
             key_e.set_text("");
             persist_prefs(state.clone())();
-            fill_lm_chain(&list, &state, &form);
+            fill_lm_models(&list, &state, &form);
+            super::app::toast(&ab, tr("feedback.saved"));
         });
     }
 
+    root
+}
+
+fn update_prompt_summary(state: &Rc<AppState>, status: &Label, preview: &Label) {
+    let settings = state.settings.borrow();
+    let stored = &settings.language_models.cleanup_prompt;
+    let is_default = stored.trim().is_empty()
+        || stored.trim() == crate::transcribe::DEFAULT_CLEANUP_PROMPT.trim();
+    status.set_text(tr(if is_default {
+        "prompt.default"
+    } else {
+        "prompt.custom"
+    }));
+    preview.set_text(&if is_default {
+        tr("prompt.default.summary").to_string()
+    } else {
+        stored
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(240)
+            .collect()
+    });
+}
+
+/// Editing uses a private draft; only Save updates the persisted prompt.
+fn open_prompt_editor(from: &Button, state: &Rc<AppState>, status: &Label, preview: &Label) {
+    use libadwaita::prelude::*;
+    let Some(parent) = from
+        .root()
+        .and_then(|root| root.downcast::<gtk4::Window>().ok())
+    else {
+        return;
+    };
+    let editor = libadwaita::Window::new();
+    editor.set_widget_name("cleanup-prompt-editor");
+    editor.add_css_class("mywhisper-app");
+    editor.set_title(Some(tr("prompt.edit.title")));
+    editor.set_application(parent.application().as_ref());
+    editor.set_transient_for(Some(&parent));
+    editor.set_destroy_with_parent(true);
+    editor.set_modal(true);
+    editor.set_default_size(
+        (parent.width() - 48).clamp(480, 880),
+        (parent.height() - 48).clamp(360, 800),
+    );
+    let layout = GtkBox::new(Orientation::Vertical, 0);
+    let header = libadwaita::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    header.set_title_widget(Some(&Label::new(Some(tr("prompt.edit.title")))));
+    let cancel = Button::with_label(tr("action.cancel"));
+    cancel.set_widget_name("prompt-editor-cancel");
+    let weak_editor = editor.downgrade();
+    cancel.connect_clicked(move |_| {
+        if let Some(editor) = weak_editor.upgrade() {
+            editor.close();
+        }
+    });
+    header.pack_start(&cancel);
+    let save = Button::with_label(tr("action.save"));
+    save.set_widget_name("prompt-editor-save");
+    save.add_css_class("suggested-action");
+    save.set_sensitive(false);
+    header.pack_end(&save);
+    layout.append(&header);
+
+    let content = GtkBox::new(Orientation::Vertical, 16);
+    content.set_margin_top(20);
+    content.set_margin_bottom(20);
+    content.set_margin_start(20);
+    content.set_margin_end(20);
+    content.set_vexpand(true);
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+    scroll.set_vexpand(true);
+    let text = TextView::new();
+    text.set_widget_name("expanded-cleanup-prompt");
+    text.update_property(&[gtk4::accessible::Property::Label(tr("row.customprompt"))]);
+    text.set_wrap_mode(gtk4::WrapMode::WordChar);
+    text.set_pixels_above_lines(3);
+    text.set_pixels_below_lines(3);
+    text.set_pixels_inside_wrap(2);
+    let stored = state
+        .settings
+        .borrow()
+        .language_models
+        .cleanup_prompt
+        .clone();
+    let initial = crate::transcribe::effective_prompt(&stored).to_string();
+    let buffer = text.buffer();
+    buffer.set_text(&initial);
+    buffer.set_enable_undo(true);
+    scroll.set_child(Some(&text));
+    content.append(&scroll);
+    let error = Label::new(None);
+    error.add_css_class("warn");
+    error.set_wrap(true);
+    error.set_xalign(0.0);
+    error.set_visible(false);
+    content.append(&error);
+    let actions = GtkBox::new(Orientation::Horizontal, 12);
+    let use_default = Button::with_label(tr("action.usedefault"));
+    use_default.set_widget_name("prompt-editor-default");
+    use_default.set_visible(initial != crate::transcribe::DEFAULT_CLEANUP_PROMPT);
+    let draft = buffer.clone();
+    use_default.connect_clicked(move |_| draft.set_text(crate::transcribe::DEFAULT_CLEANUP_PROMPT));
+    actions.append(&use_default);
+    let full_screen = Button::with_label(tr("action.fullscreen"));
+    full_screen.set_widget_name("prompt-editor-fullscreen");
+    full_screen.set_hexpand(true);
+    full_screen.set_halign(gtk4::Align::End);
+    let weak_editor = editor.downgrade();
+    full_screen.connect_clicked(move |_| {
+        if let Some(editor) = weak_editor.upgrade() {
+            if editor.is_fullscreen() {
+                editor.unfullscreen();
+            } else {
+                editor.fullscreen();
+            }
+        }
+    });
+    let weak_button = full_screen.downgrade();
+    editor.connect_fullscreened_notify(move |editor| {
+        if let Some(button) = weak_button.upgrade() {
+            button.set_label(tr(if editor.is_fullscreen() {
+                "action.exitfullscreen"
+            } else {
+                "action.fullscreen"
+            }));
+        }
+    });
+    actions.append(&full_screen);
+    content.append(&actions);
+    let clamp = libadwaita::Clamp::new();
+    clamp.set_maximum_size(760);
+    clamp.set_tightening_threshold(760);
+    clamp.set_vexpand(true);
+    clamp.set_child(Some(&content));
+    layout.append(&clamp);
+    editor.set_content(Some(&layout));
+    let weak_save = save.downgrade();
+    let weak_default = use_default.downgrade();
+    buffer.connect_changed(move |buffer| {
+        let draft = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+        if let Some(save) = weak_save.upgrade() {
+            save.set_sensitive(draft != initial);
+        }
+        if let Some(default) = weak_default.upgrade() {
+            default.set_visible(draft != crate::transcribe::DEFAULT_CLEANUP_PROMPT);
+        }
+    });
+    {
+        let state = state.clone();
+        let status = status.clone();
+        let preview = preview.clone();
+        let weak_editor = editor.downgrade();
+        save.connect_clicked(move |_| {
+            let mut settings = state.settings.borrow().clone();
+            settings.language_models.cleanup_prompt = buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                .to_string();
+            match state.store.save_settings(&settings) {
+                Ok(()) => {
+                    *state.settings.borrow_mut() = settings;
+                    update_prompt_summary(&state, &status, &preview);
+                    if let Some(editor) = weak_editor.upgrade() {
+                        editor.close();
+                    }
+                }
+                Err(failure) => {
+                    eprintln!("[app] prompt save failed: {failure}");
+                    error.set_text(tr("feedback.savefailed"));
+                    error.set_visible(true);
+                }
+            }
+        });
+    }
+    let keys = EventControllerKey::new();
+    keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    let weak_editor = editor.downgrade();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk4::gdk::Key::Escape {
+            if let Some(editor) = weak_editor.upgrade() {
+                editor.close();
+            }
+            gtk4::glib::Propagation::Stop
+        } else {
+            gtk4::glib::Propagation::Proceed
+        }
+    });
+    editor.add_controller(keys);
+    editor.present();
+    text.grab_focus();
+}
+
+fn text_cleanup_page(state: &Rc<AppState>) -> GtkBox {
+    let root = section_box(tr("settings.cleanup"), tr("settings.cleanup.sub"));
     let (card, rows) = group(tr("group.cleanup"));
     {
         // Master switch for post-processing (wired): on = chain runs.
         let (b, _) = row(tr("row.cleanup"));
         let sw = Switch::new();
+        sw.set_widget_name("cleanup-enabled");
+        sw.update_property(&[gtk4::accessible::Property::Label(tr("row.cleanup"))]);
         sw.set_active(state.settings.borrow().language_models.cleanup_enabled);
         sw.set_valign(gtk4::Align::Center);
         {
@@ -3706,53 +4190,61 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         }
         b.append(&sw);
         rows.append(&b);
-        // Custom prompt: full-width campus, tall, scrolled, prefilled
-        // with the default. Empty stored value = default
-        // (effective_prompt); restore writes the default explicitly.
-        let title = Label::new(Some(tr("row.customprompt")));
-        title.set_xalign(0.0);
-        title.add_css_class("row-label");
-        rows.append(&title);
-        let scroll = gtk4::ScrolledWindow::new();
-        scroll.set_min_content_height(340);
-        scroll.set_hexpand(true);
-        scroll.set_vexpand(false);
-        let prompt = TextView::new();
-        prompt.set_wrap_mode(gtk4::WrapMode::Word);
-        let stored = state
-            .settings
-            .borrow()
-            .language_models
-            .cleanup_prompt
-            .clone();
-        prompt.buffer().set_text(if stored.trim().is_empty() {
-            crate::transcribe::DEFAULT_CLEANUP_PROMPT
-        } else {
-            stored.as_str()
-        });
+        let instructions = GtkBox::new(Orientation::Horizontal, 16);
+        let info = GtkBox::new(Orientation::Vertical, 4);
+        info.set_hexpand(true);
+        let status = Label::new(None);
+        status.set_widget_name("cleanup-prompt-status");
+        status.set_xalign(0.0);
+        status.add_css_class("row-label");
+        let preview = Label::new(None);
+        preview.set_widget_name("cleanup-prompt-preview");
+        preview.set_xalign(0.0);
+        preview.set_wrap(true);
+        preview.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
+        preview.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        preview.set_lines(2);
+        preview.set_max_width_chars(48);
+        preview.add_css_class("dim");
+        update_prompt_summary(state, &status, &preview);
+        info.append(&status);
+        info.append(&preview);
+        instructions.append(&info);
+        let edit = Button::with_label(tr("action.editprompt"));
+        edit.set_valign(gtk4::Align::Center);
         {
             let state = state.clone();
-            prompt.buffer().connect_changed(move |buf| {
-                let (start, end) = (buf.start_iter(), buf.end_iter());
-                state.settings.borrow_mut().language_models.cleanup_prompt =
-                    buf.text(&start, &end, false).to_string();
-                persist_prefs(state.clone())();
+            edit.connect_clicked(move |button| {
+                open_prompt_editor(button, &state, &status, &preview)
             });
         }
-        scroll.set_child(Some(&prompt));
-        rows.append(&scroll);
-        let restore = Button::with_label(tr("action.restore"));
-        restore.set_halign(gtk4::Align::End);
-        {
-            let prompt = prompt.clone();
-            restore.connect_clicked(move |_| {
-                prompt
-                    .buffer()
-                    .set_text(crate::transcribe::DEFAULT_CLEANUP_PROMPT);
-            });
-        }
-        rows.append(&restore);
+        instructions.append(&edit);
+        rows.append(&instructions);
     }
+    root.append(&card);
+
+    let (card, rows) = group(tr("group.lmchain"));
+    let note = Label::new(Some(tr("cleanup.priority.note")));
+    note.add_css_class("dim");
+    note.set_xalign(0.0);
+    note.set_wrap(true);
+    rows.append(&note);
+    let list = GtkBox::new(Orientation::Vertical, 8);
+    list.set_widget_name("cleanup-models");
+    rows.append(&list);
+    fill_cleanup_chain(&list, state);
+    {
+        let state = state.clone();
+        // Models added, edited or removed on the other page are immediately available here.
+        list.connect_map(move |list| fill_cleanup_chain(list, &state));
+    }
+    let manage = Button::with_label(tr("action.managelm"));
+    manage.add_css_class("flat");
+    manage.set_halign(gtk4::Align::Start);
+    manage.connect_clicked(|button| {
+        super::app::navigate(button, "settings", "Language Models");
+    });
+    rows.append(&manage);
     root.append(&card);
 
     root
@@ -3850,15 +4342,22 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
         let clear = Button::with_label(tr("action.clearallaudio"));
         {
             let state = state.clone();
-            clear.connect_clicked(move |_| {
-                let data_dir = state
-                    .db_path
-                    .parent()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_default();
-                let n = crate::audio::clear_audio(&data_dir);
-                eprintln!("[privacy] cleared {n} audio files");
-            });
+            super::app::connect_confirmed(
+                &clear,
+                tr("confirm.audio.title"),
+                tr("confirm.audio.body"),
+                tr("action.clearallaudio"),
+                move |_| {
+                    let data_dir = state
+                        .db_path
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_default();
+                    let n = crate::audio::clear_audio(&data_dir);
+                    eprintln!("[privacy] cleared {n} audio files");
+                    super::app::notify(tr("feedback.cleared"));
+                },
+            );
         }
         b.append(&clear);
         rows.append(&b);
@@ -3934,10 +4433,23 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
         let clear = Button::with_label(tr("action.clearalltranscripts"));
         {
             let state = state.clone();
-            clear.connect_clicked(move |_| match state.store.clear_history() {
-                Ok(n) => eprintln!("[privacy] cleared {n} transcripts"),
-                Err(e) => eprintln!("[privacy] clear transcripts: {e}"),
-            });
+            super::app::connect_confirmed(
+                &clear,
+                tr("confirm.history.title"),
+                tr("confirm.history.body"),
+                tr("action.clearalltranscripts"),
+                move |_| match state.store.clear_history() {
+                    Ok(n) => {
+                        eprintln!("[privacy] cleared {n} transcripts");
+                        super::app::notify(tr("feedback.cleared"));
+                        crate::net::sync_after_change(state.db_path.clone(), state.creds.clone());
+                    }
+                    Err(e) => {
+                        eprintln!("[privacy] clear transcripts: {e}");
+                        super::app::notify(tr("feedback.deletefailed"));
+                    }
+                },
+            );
         }
         b.append(&clear);
         rows.append(&b);
@@ -4075,23 +4587,38 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
     {
         let state = state.clone();
         let data_dir = data_dir.clone();
-        clear.connect_clicked(move |_| {
-            // Downloads only (models + runtimes): settings, history
-            // and identity survive. Next dictation reports exactly
-            // what to re-download.
-            let mut gone = 0;
-            for sub in ["models", "bin"] {
-                let dir = data_dir.join(sub);
-                if dir.exists() {
-                    match std::fs::remove_dir_all(&dir).and(std::fs::create_dir_all(&dir)) {
-                        Ok(()) => gone += 1,
-                        Err(e) => eprintln!("[system] clear {sub}: {e}"),
+        super::app::connect_confirmed(
+            &clear,
+            tr("confirm.cache.title"),
+            tr("confirm.cache.body"),
+            tr("action.clearcache"),
+            move |_| {
+                // Downloads only (models + runtimes): settings, history
+                // and identity survive. Next dictation reports exactly
+                // what to re-download.
+                let mut gone = 0;
+                let mut failed = false;
+                for sub in ["models", "bin"] {
+                    let dir = data_dir.join(sub);
+                    if dir.exists() {
+                        match std::fs::remove_dir_all(&dir).and(std::fs::create_dir_all(&dir)) {
+                            Ok(()) => gone += 1,
+                            Err(e) => {
+                                failed = true;
+                                eprintln!("[system] clear {sub}: {e}");
+                            }
+                        }
                     }
                 }
-            }
-            eprintln!("[system] cache cleared ({gone}/2 dirs)");
-            let _ = state;
-        });
+                eprintln!("[system] cache cleared ({gone}/2 dirs)");
+                super::app::notify(tr(if failed {
+                    "feedback.deletefailed"
+                } else {
+                    "feedback.cleared"
+                }));
+                let _ = state;
+            },
+        );
     }
     b.append(&clear);
     rows.append(&b);
@@ -4103,37 +4630,49 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
     {
         let state = state.clone();
         let data_dir = data_dir.clone();
-        reset.connect_clicked(move |_| {
-            // Wipe user data + downloads. Identity (device key) and
-            // the running service survive: the next dictation
-            // re-reads defaults from the fresh DB and reports missing
-            // models; restart the service for a fully clean slate.
-            if let Err(e) = state.store.reset_all_data() {
-                eprintln!("[system] reset db: {e}");
-                return;
-            }
-            for sub in ["models", "bin", "audio"] {
-                let dir = data_dir.join(sub);
-                if dir.exists() {
-                    if let Err(e) = std::fs::remove_dir_all(&dir).and(std::fs::create_dir_all(&dir))
-                    {
-                        eprintln!("[system] reset {sub}: {e}");
+        super::app::connect_confirmed(
+            &reset,
+            tr("confirm.reset.title"),
+            tr("confirm.reset.body"),
+            tr("action.resetdots"),
+            move |_| {
+                // Wipe user data + downloads. Identity (device key) and
+                // the running service survive: the next dictation
+                // re-reads defaults from the fresh DB and reports missing
+                // models; restart the service for a fully clean slate.
+                if let Err(e) = state.store.reset_all_data() {
+                    eprintln!("[system] reset db: {e}");
+                    super::app::notify(tr("feedback.deletefailed"));
+                    return;
+                }
+                for sub in ["models", "bin", "audio"] {
+                    let dir = data_dir.join(sub);
+                    if dir.exists() {
+                        if let Err(e) =
+                            std::fs::remove_dir_all(&dir).and(std::fs::create_dir_all(&dir))
+                        {
+                            eprintln!("[system] reset {sub}: {e}");
+                        }
                     }
                 }
-            }
-            {
-                let mut settings = state.settings.borrow_mut();
-                *settings = crate::settings::AppSettings::default();
-                drop(settings);
-            }
-            if let Err(e) = state
-                .store
-                .save_settings(&crate::settings::AppSettings::default())
-            {
-                eprintln!("[system] reset persist: {e}");
-            }
-            eprintln!("[system] application data reset");
-        });
+                {
+                    let mut settings = state.settings.borrow_mut();
+                    *settings = crate::settings::AppSettings::default();
+                    drop(settings);
+                }
+                if let Err(e) = state
+                    .store
+                    .save_settings(&crate::settings::AppSettings::default())
+                {
+                    eprintln!("[system] reset persist: {e}");
+                }
+                eprintln!("[system] application data reset");
+                crate::i18n::set_lang(crate::i18n::UiLang::System);
+                apply_theme(crate::settings::Theme::System);
+                crate::i18n::rebuild_ui();
+                super::app::notify(tr("feedback.cleared"));
+            },
+        );
     }
     b.append(&reset);
     rows.append(&b);
@@ -4149,10 +4688,20 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
 
     let nav = GtkBox::new(Orientation::Vertical, 4);
     nav.add_css_class("sidebar");
-    nav.set_size_request(170, -1);
+    nav.add_css_class("settings-nav");
+    nav.set_size_request(156, -1);
+    let title = Label::new(Some(tr("settings.title")));
+    title.add_css_class("section-title");
+    title.set_xalign(0.0);
+    title.set_margin_start(10);
+    title.set_margin_bottom(14);
+    nav.append(&title);
     root.append(&nav);
 
     let stack = Stack::new();
+    stack.set_widget_name("settings-pages");
+    stack.set_hhomogeneous(false);
+    stack.set_vhomogeneous(false);
     stack.set_hexpand(true);
     stack.set_vexpand(true);
     root.append(&stack);
@@ -4162,6 +4711,7 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
         let state = state.clone();
         move |theme: Theme| {
             state.settings.borrow_mut().preferences.theme = theme;
+            persist_prefs(state.clone())();
             apply_theme(theme);
             log_theme_state();
             eprintln!("[app] theme -> {theme:?}");
@@ -4172,9 +4722,10 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
     let sections = [
         ("Preferences", preferences_page(state, &on_theme)),
         ("Hotkeys", hotkeys_page(state)),
-        ("Clipboard", clipboard_page(state)),
         ("Speech to Text", stt_page(state)),
+        ("Text Cleanup", text_cleanup_page(state)),
         ("Language Models", language_models_page(state)),
+        ("Clipboard", clipboard_page(state)),
         ("Privacy & Data", privacy_page(state)),
         ("System", system_page(state)),
     ];
@@ -4185,6 +4736,7 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
             "Hotkeys" => tr("settings.hotkeys"),
             "Clipboard" => tr("settings.clipboard"),
             "Speech to Text" => tr("settings.stt"),
+            "Text Cleanup" => tr("settings.cleanup"),
             "Language Models" => tr("settings.lm"),
             "Privacy & Data" => tr("settings.privacy"),
             "System" => tr("settings.system"),
@@ -4196,16 +4748,33 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
     let mut pending: Vec<(Button, String)> = Vec::new();
     for (id, widget) in sections {
         let scrolled = gtk4::ScrolledWindow::new();
-        scrolled.set_child(Some(&widget));
+        scrolled.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+        let clamp = libadwaita::Clamp::new();
+        clamp.set_maximum_size(840);
+        clamp.set_child(Some(&widget));
+        scrolled.set_child(Some(&clamp));
         scrolled.set_vexpand(true);
         stack.add_named(&scrolled, Some(id));
         let b = Button::with_label(section_label(id));
+        if let Some(label) = b.child().and_then(|child| child.downcast::<Label>().ok()) {
+            label.set_wrap(true);
+            label.set_max_width_chars(18);
+            label.set_justify(gtk4::Justification::Center);
+        }
         b.set_halign(gtk4::Align::Fill);
         nav.append(&b);
         buttons.push((b.clone(), id.to_string()));
         pending.push((b, id.to_string()));
     }
 
+    let note = Label::new(Some(tr("settings.saved")));
+    note.set_wrap(true);
+    note.set_max_width_chars(18);
+    note.set_xalign(0.5);
+    note.set_justify(gtk4::Justification::Center);
+    note.add_css_class("settings-note");
+    note.set_margin_top(8);
+    nav.append(&note);
     let set_active = Rc::new(move |active: &str| {
         for (b, id) in buttons.iter() {
             if id == active {
@@ -4216,6 +4785,12 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
         }
     });
 
+    let highlight = set_active.clone();
+    stack.connect_visible_child_name_notify(move |stack| {
+        if let Some(name) = stack.visible_child_name() {
+            highlight(&name);
+        }
+    });
     for (b, name) in pending {
         let stack = stack.clone();
         let set_active = set_active.clone();
@@ -4225,8 +4800,8 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
         });
     }
     let initial = match initial_section {
-        "Hotkeys" | "Clipboard" | "Speech to Text" | "Language Models" | "Privacy & Data"
-        | "System" => initial_section,
+        "Hotkeys" | "Clipboard" | "Speech to Text" | "Text Cleanup" | "Language Models"
+        | "Privacy & Data" | "System" => initial_section,
         _ => "Preferences",
     };
     set_active(initial);
@@ -4238,6 +4813,32 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shortcut_conflicts_use_parsed_keys_instead_of_spelling() {
+        assert!(same_shortcut("ctrl+alt+d", "Alt+Control+D"));
+        assert!(same_shortcut("Super+Ctrl", "Control+Super"));
+        assert!(!same_shortcut("F13", "F14"));
+        assert!(!same_shortcut("", ""));
+        assert!(!same_shortcut("Ctrl+D", "Ctrl+Shift+D"));
+    }
+
+    #[test]
+    fn provider_urls_require_a_host_and_supported_transport() {
+        assert!(valid_server_url("http://localhost:11434", false));
+        assert!(valid_server_url("https://speech.example.com/api", false));
+        assert!(valid_server_url("wss://speech.example.com", true));
+        assert!(!valid_server_url("wss://speech.example.com", false));
+        for value in [
+            "",
+            "localhost:11434",
+            "file:///tmp/model",
+            "https://",
+            "ftp://host",
+        ] {
+            assert!(!valid_server_url(value, true), "{value}");
+        }
+    }
 
     #[test]
     fn capture_maps_keys_to_combo_tokens() {
