@@ -423,10 +423,19 @@ pub fn build_app_window(
     sidebar.add_css_class("sidebar");
     sidebar.set_size_request(190, -1);
     root.append(&sidebar);
+    let brand = GtkBox::new(Orientation::Horizontal, 8);
+    brand.add_css_class("sidebar-brand");
+    // Embed the source asset so development builds also show the real logo.
+    let bytes = gtk4::glib::Bytes::from_static(include_bytes!("../assets/icons/app-icon.svg"));
+    let logo = gtk4::Image::from_paintable(Some(&gtk4::Svg::from_bytes(&bytes)));
+    logo.set_pixel_size(32);
+    logo.set_valign(gtk4::Align::Center);
+    brand.append(&logo);
     let title = Label::new(Some(tr("app.name")));
     title.add_css_class("app-title");
     title.set_xalign(0.0);
-    sidebar.append(&title);
+    brand.append(&title);
+    sidebar.append(&brand);
 
     let stack = Stack::new();
     stack.set_widget_name("main-pages");

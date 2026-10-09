@@ -22,7 +22,8 @@ label { color: @app_fg; }
 .settings-nav { padding: 24px 8px; background: @app_bg; }
 .settings-nav button { padding: 9px 10px; }
 .settings-note { color: @app_muted; font-size: 0.85em; padding: 4px 8px; }
-.app-title { font-weight: 700; font-size: 1.2em; padding: 0 6px 24px; }
+.sidebar-brand { padding: 0 6px 24px; }
+.app-title { font-weight: 700; font-size: 1.2em; }
 .sidebar-footer { color: @app_muted; font-size: 0.85em; padding: 12px 8px 4px; }
 .page { padding: 28px 28px 24px; }
 .page-title { color: @app_fg; font-size: 2em; font-weight: 700; }

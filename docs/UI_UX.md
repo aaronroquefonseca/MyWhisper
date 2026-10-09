@@ -57,6 +57,7 @@ The system font is inherited. Body copy uses the native size, titles use `2em`, 
 
 - Header controls provide normal drag, minimize, maximize, and close behavior.
 - Sidebar buttons switch destinations without modal dismissal. The selected destination remains visible.
+- The existing app logo appears once beside MyWhisper at the top of the sidebar, with no click action. The embedded SVG also works in development builds without installing the app's icon theme files. Its 32px treatment follows [GNOME app-icon guidance](https://developer.gnome.org/hig/guidelines/app-icons.html#detail), which recommends checking icons at smaller sizes.
 - Settings subnavigation switches the seven preference sections. Dictation setup links select the relevant settings section directly.
 - Theme applies immediately and persists. Interface language rebuilds the window at the current destination and section; repeated app activation presents the active window.
 
