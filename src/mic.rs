@@ -51,11 +51,12 @@ impl ParecMic {
         // Dedicated reader (long-lived): Builder-based, so a saturated
         // system fails the mic open instead of panicking the service.
         crate::runtime::spawn_dedicated("parec-reader", move || {
-            // s16le mono in ~12ms slices: RMS per slice, same x8
-            // staging as cpal. Small slices keep pill latency low;
-            // larger ones batch updates into visible steps. Every
-            // full slice is also offered to the capture tap (RAM
-            // dictation buffer; no-op when disarmed).
+            // s16le mono in ~12ms slices: raw RMS per slice (0..1, no
+            // gain here -- viz.rs applies the single (x8)^0.75 curve).
+            // Small slices keep pill latency low; larger ones batch
+            // updates into visible steps. Every full slice is also
+            // offered to the capture tap (RAM dictation buffer; no-op
+            // when disarmed).
             let mut buf = [0u8; 1024];
             loop {
                 let mut got = 0;
@@ -75,7 +76,7 @@ impl ParecMic {
                     sum += f * f;
                 }
                 let rms = (sum / 512.0).sqrt() as f32;
-                bits.store((rms * 8.0).clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+                bits.store(rms.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
                 tap_samples(&pcm, 44_100);
             }
         })?;
@@ -90,7 +91,9 @@ impl ParecMic {
 
     fn drain(&mut self) -> f32 {
         let fresh = f32::from_bits(self.level_bits.load(Ordering::Relaxed));
-        self.smoothed = fresh.max(self.smoothed * 0.88);
+        // Peak-hold with brisk decay so syllables stay dynamic
+        // instead of pinning at the top.
+        self.smoothed = fresh.max(self.smoothed * 0.82);
         self.smoothed
     }
 }
@@ -246,9 +249,9 @@ where
         })
         .sum();
     let rms = (sum / data.len() as f64).sqrt() as f32;
-    // Same gain staging as the render curve so conversational speech
-    // (~0.02-0.15 RMS) spans the threshold and lane nicely.
-    out.store((rms * 8.0).clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    // Raw RMS only: viz.rs owns the single (x8)^0.75 render curve,
+    // so conversational speech (~0.02-0.15 RMS) stays dynamic.
+    out.store(rms.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
 }
 
 impl CpalMic {
@@ -338,8 +341,8 @@ impl CpalMic {
 
     fn drain(&mut self) -> f32 {
         let fresh = f32::from_bits(self.level_bits.load(Ordering::Relaxed));
-        // Peak-hold with decay so syllables read as discrete hits.
-        self.smoothed = fresh.max(self.smoothed * 0.88);
+        // Peak-hold with brisk decay so syllables read as discrete hits.
+        self.smoothed = fresh.max(self.smoothed * 0.82);
         self.smoothed
     }
 }

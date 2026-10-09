@@ -538,7 +538,6 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "opt.dot" => ("Dot", "Punto"),
         "opt.still" => ("Still", "Quieto"),
         "opt.silhouette" => ("Silhouette", "Silueta"),
-        "opt.calm" => ("Calm", "Calma"),
         // Hotkeys capture UI
         "hotkeys.record" => ("Capture keys", "Capturar teclas"),
         "hotkeys.recording" => ("Press keys… (Esc cancels)", "Pulsa teclas… (Esc cancela)"),

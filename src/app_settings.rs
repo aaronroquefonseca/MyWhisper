@@ -591,17 +591,13 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
     {
         let (b, _) = row(tr("row.idle"));
         let idle = DropDown::new(
-            Some(StringList::new(&[
-                tr("opt.still"),
-                tr("opt.silhouette"),
-                tr("opt.calm"),
-            ])),
+            Some(StringList::new(&[tr("opt.still"), tr("opt.silhouette")])),
             None::<gtk4::Expression>,
         );
         idle.set_selected(match p.pill.idle {
-            crate::viz::IdleStyle::Still => 0,
             crate::viz::IdleStyle::Silhouette => 1,
-            crate::viz::IdleStyle::Calm => 2,
+            // Legacy stored Calm maps to Still (removed from UI).
+            _ => 0,
         });
         {
             let state = state.clone();
@@ -609,7 +605,6 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
             idle.connect_selected_notify(move |d| {
                 state.settings.borrow_mut().preferences.pill.idle = match d.selected() {
                     1 => crate::viz::IdleStyle::Silhouette,
-                    2 => crate::viz::IdleStyle::Calm,
                     _ => crate::viz::IdleStyle::Still,
                 };
                 persist();

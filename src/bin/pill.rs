@@ -11,7 +11,7 @@ const APP_ID: &str = "com.mywhisper.Pill";
 ///
 ///   --mode tape|history      --bars 7|11|15|21   --height 8..32
 ///   --theme white|grey|red  --ornament none|mark|mic|dot
-///   --idle still|silhouette|calm   --mic real|sim
+///   --idle still|silhouette   --mic real|sim
 ///   --sim lively|quiet|off      (sim auto-burst cadence)
 ///   --say TEXT (show the assistant panel with TEXT)   --hide
 fn main() -> gtk4::glib::ExitCode {
@@ -77,7 +77,11 @@ fn apply_cli(overlay: &VoiceOverlay) {
     }
     match value_of(&args, "--idle").as_deref() {
         Some("silhouette") => overlay.set_viz_idle(IdleStyle::Silhouette),
-        Some("calm") => overlay.set_viz_idle(IdleStyle::Calm),
+        // Legacy flag: calm was removed (looked identical to still).
+        Some("calm") => {
+            eprintln!("[poc] WARNING: --idle calm removed; using still");
+            overlay.set_viz_idle(IdleStyle::Still)
+        }
         Some("still") | None => overlay.set_viz_idle(IdleStyle::Still),
         Some(other) => eprintln!("[poc] WARNING: unknown --idle {other:?}"),
     }

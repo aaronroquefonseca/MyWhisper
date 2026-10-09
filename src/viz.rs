@@ -13,7 +13,7 @@
 //!   edge) or `history` (center bar live, older samples propagate
 //!   outward ~100 ms/step).
 //! * idle (level below threshold): `still` (bars rest at minimum),
-//!   `silhouette` (static resting profile), `calm` (faint slow sine).
+//!   `silhouette` (static resting profile).
 //! * bars: odd counts 7/11/15/21 (default 11, per reference).
 //! * theme: `white` / `grey` / `red` (all flat monochrome).
 //! * ornament: `none` / `mark` (local 5-bar symbolic motif) /
@@ -46,11 +46,13 @@ const ORNAMENT_W: f64 = 22.0;
 /// when inference starts.
 const SPINNER_PX: i32 = 30;
 const MARK_PX: i32 = 18;
-const SPEECH_THRESHOLD: f32 = 0.12;
-const QUIET_ENV: f32 = 0.03;
+const SPEECH_THRESHOLD: f32 = 0.045;
+const QUIET_ENV: f32 = 0.02;
 
 // Level curve from the reference: gain puts loud voicing at the top
 // of the lane, exponent 0.75 keeps quiet speech visible.
+// Input is raw RMS 0..1 (mic backends must NOT pre-apply gain;
+// double staging saturates everything to the top).
 const LEVEL_GAIN: f32 = 8.0;
 const LEVEL_EXPONENT: f32 = 0.75;
 
@@ -148,14 +150,17 @@ impl LevelSource for SimMic {
             }
         }
         let speaking = self.t < self.burst_end;
+        // Raw-RMS range: conversational onsets sit just above
+        // SPEECH_THRESHOLD, peaks touch ~0.2 so the (x8)^0.75 curve
+        // spans 0.25..1.0 instead of pinning at the top.
         let target = if speaking {
-            (0.55 + 0.30 * (self.t * 9.0).sin() + 0.15 * (self.t * 23.7).sin()).clamp(0.05, 1.0)
+            (0.11 + 0.06 * (self.t * 9.0).sin() + 0.03 * (self.t * 23.7).sin()).clamp(0.02, 0.22)
         } else {
-            0.02
+            0.008
         };
         let k = (dt * 14.0).min(1.0);
         self.level += (target - self.level) * k;
-        (self.level + self.rand() * 0.015).clamp(0.0, 1.0)
+        (self.level + self.rand() * 0.004).clamp(0.0, 1.0)
     }
 
     fn burst(&mut self) {
@@ -204,6 +209,9 @@ pub enum Ornament {
 pub enum IdleStyle {
     Still,
     Silhouette,
+    /// Deprecated: kept so stored prefs with `Calm` still deserialize.
+    /// Never offered in UI/CLI; behaves as `Still`.
+    #[deprecated(note = "Calm idle removed from UI; treated as Still")]
     Calm,
 }
 
@@ -350,6 +358,13 @@ impl Visualizer {
     }
 
     pub fn set_idle(&self, idle: IdleStyle) {
+        // Calm was removed from UI (indistinguishable from Still);
+        // stored prefs may still carry it.
+        #[allow(deprecated)]
+        let idle = match idle {
+            IdleStyle::Calm => IdleStyle::Still,
+            other => other,
+        };
         let mut st = self.state.borrow_mut();
         if st.idle != idle {
             st.idle = idle;
@@ -514,12 +529,13 @@ fn tick(st: &mut VizState) {
         st.proc_blend
     };
 
-    // Speech envelope: fast attack, slow release.
+    // Speech envelope: fast attack, medium release so syllables
+    // read as discrete hits instead of one pinned block.
     let target = if level > SPEECH_THRESHOLD { level } else { 0.0 };
     if target > st.env {
         st.env += (target - st.env) * 0.5;
     } else {
-        st.env *= 0.94;
+        st.env *= 0.90;
     }
 
     // Sample history/tape buffers at ~100 ms.
@@ -538,6 +554,8 @@ fn heights(st: &VizState) -> Vec<f32> {
     if !speaking {
         match st.idle {
             IdleStyle::Still => {} // rest at minimum
+            #[allow(deprecated)]
+            IdleStyle::Calm => {} // legacy stored value: same as Still
             IdleStyle::Silhouette => {
                 for (i, h) in out.iter_mut().enumerate() {
                     // Resample the 11-step reference profile.
@@ -548,12 +566,6 @@ fn heights(st: &VizState) -> Vec<f32> {
                     let v = RESTING_SILHOUETTE[lo]
                         + (RESTING_SILHOUETTE[hi] - RESTING_SILHOUETTE[lo]) * (pos - lo as f32);
                     *h = v / 22.0;
-                }
-            }
-            IdleStyle::Calm => {
-                for (i, h) in out.iter_mut().enumerate() {
-                    let wave = (st.phase * 0.35 + i as f32 * 0.55).sin().abs();
-                    *h = 0.015 + 0.02 * wave;
                 }
             }
         }
