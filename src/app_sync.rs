@@ -529,7 +529,7 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
             if let Ok(port) = port_entry.text().trim().parse::<u16>() {
                 state.settings.borrow_mut().sync.listen_port = port;
                 persist_sync(&state);
-                eprintln!("[app] sync: listen port saved ({port}, restart applies)");
+                eprintln!("[app] sync: listen port saved ({port})");
             }
         });
     }

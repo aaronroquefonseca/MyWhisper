@@ -46,15 +46,10 @@ fn main() -> gtk4::glib::ExitCode {
         let discovered: std::sync::Arc<
             std::sync::Mutex<std::collections::HashMap<String, mywhisper::net::Discovered>>,
         > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-        // Sync engine obeys its toggle (applies at boot: the stack
-        // is detached threads, unstoppable at runtime by design).
-        let sync_on = store.load_settings().sync.enabled;
-        let _sync_port = if sync_on {
-            mywhisper::service::start_sync_engine(&paths, &store, &identity, discovered)
-        } else {
-            eprintln!("[sync] disabled in settings (enable + restart service to apply)");
-            0
-        };
+        // Sync engine obeys its toggle immediately: the watcher
+        // starts/stops the stack as the setting moves (boot state
+        // applies on the first tick, no restart needed).
+        mywhisper::service::spawn_sync_watcher(paths.db_file(), identity, discovered);
         let app = gtk4::Application::builder()
             .application_id(SERVICE_APP_ID)
             .build();

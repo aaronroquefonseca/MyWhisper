@@ -34,6 +34,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -523,9 +524,18 @@ pub fn serve(
     creds: SyncCreds,
     name: String,
     addresses: Vec<String>,
+    stop: &AtomicBool,
 ) {
+    let _ = listener.set_nonblocking(true);
     for conn in listener.incoming() {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
         match conn {
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
             Ok(stream) => {
                 let remote = stream
                     .peer_addr()
@@ -627,6 +637,13 @@ pub fn firewall_allow_hint(port: u16) -> Option<String> {
 
 pub struct MdnsHandles {
     _daemon: mdns_sd::ServiceDaemon,
+}
+
+impl MdnsHandles {
+    /// Unregister + stop the daemon (browser recv ends, threads exit).
+    pub fn shutdown(&self) {
+        let _ = self._daemon.shutdown();
+    }
 }
 
 /// Advertise this node on the LAN and browse for peers in the
@@ -742,11 +759,25 @@ pub fn sync_all_trusted(db_path: &Path, creds: &SyncCreds) -> Vec<String> {
 
 /// Every minute, sync with each trusted peer that has a known
 /// address. Failures just log; the next round retries.
-pub fn auto_sync_loop(db_path: PathBuf, creds: SyncCreds) {
+pub fn auto_sync_loop(db_path: PathBuf, creds: SyncCreds, stop: Arc<AtomicBool>) {
+    for _ in 0..AUTO_SYNC_SECS {
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
     loop {
-        std::thread::sleep(Duration::from_secs(AUTO_SYNC_SECS));
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
         for line in sync_all_trusted(&db_path, &creds) {
             eprintln!("[sync] auto: {line}");
+        }
+        for _ in 0..AUTO_SYNC_SECS {
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(1));
         }
     }
 }
@@ -778,11 +809,17 @@ pub fn watch_discovered(
     db_path: PathBuf,
     creds: SyncCreds,
     discovered: Arc<Mutex<HashMap<String, Discovered>>>,
+    stop: Arc<AtomicBool>,
 ) {
     std::thread::spawn(move || {
         let mut known_present: std::collections::HashSet<String> = std::collections::HashSet::new();
         loop {
-            std::thread::sleep(Duration::from_secs(10));
+            for _ in 0..10 {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
             let store = match Store::open(&db_path) {
                 Ok(s) => s,
                 Err(_) => continue,

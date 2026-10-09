@@ -372,8 +372,8 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         ),
         "sync.svc.switch" => ("Sync engine", "Motor de sincronización"),
         "sync.svc.note" => (
-            "systemd owns the service process; this only gates the engine. Applies at boot.",
-            "systemd gestiona el proceso; esto solo activa el motor. Se aplica al arrancar.",
+            "systemd owns the service process; this only gates the engine.",
+            "systemd gestiona el proceso; esto solo activa el motor.",
         ),
         "home.svc.on" => ("Service running", "Servicio en marcha"),
         "home.svc.off" => ("Service not running", "Servicio detenido"),
@@ -622,8 +622,8 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "sync.device.id" => ("Node id", "ID de nodo"),
         "sync.device.port" => ("Listen port", "Puerto de escucha"),
         "sync.device.porthint" => (
-            "0 = off. Restart applies.",
-            "0 = apagado. Requiere reinicio.",
+            "0 = off.",
+            "0 = apagado.",
         ),
         "sync.add.title" => ("Add device", "Añadir dispositivo"),
         "sync.add.hint" => (

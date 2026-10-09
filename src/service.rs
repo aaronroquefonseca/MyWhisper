@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -86,16 +87,38 @@ pub fn set_service_running(running: bool) -> Result<String, String> {
 }
 
 /// Bound sync port, published in the heartbeat so frontends show
-/// the real listener (0 = off). Set once by start_sync_engine.
+/// the real listener (0 = off).
 static SYNC_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
 
 pub fn set_sync_port(port: u16) {
     SYNC_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// Running sync stack. Drop stops everything: the listener loop
+/// polls the flag, the periodic threads exit within a second, the
+/// mDNS daemon unregisters. In-flight syncs finish on their own.
+pub struct SyncEngine {
+    stop: Arc<AtomicBool>,
+    mdns: Option<crate::net::MdnsHandles>,
+}
+
+impl Drop for SyncEngine {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(m) = self.mdns.take() {
+            m.shutdown();
+        }
+        set_sync_port(0);
+        eprintln!("[sync] engine stopped");
+    }
+}
+
+static SYNC_ENGINE: Mutex<Option<SyncEngine>> = Mutex::new(None);
+
 /// Start the sync stack: TCP listener, mDNS advertise+browse,
 /// periodic auto-sync, startup catch-up, appear-watcher. Returns the
 /// bound port (0 = listener off). Safe to call only as engine owner.
+/// Replaces any running engine (single owner: the service).
 pub fn start_sync_engine(
     paths: &AppPaths,
     store: &Store,
@@ -104,6 +127,7 @@ pub fn start_sync_engine(
 ) -> u16 {
     let saved = store.load_settings();
     let device_name = crate::device::display_name(&saved.sync.device_name, &identity.node_id);
+    let stop = Arc::new(AtomicBool::new(false));
     let port: u16 = match crate::net::listen(saved.sync.listen_port) {
         Ok(Some(listener)) => {
             let port = listener
@@ -117,25 +141,32 @@ pub fn start_sync_engine(
             if let Some(ip) = crate::net::lan_ip() {
                 hello_addrs.push(format!("{ip}:{port}"));
             }
-            std::thread::spawn(move || {
-                crate::net::serve(listener, db_path, creds, device_name, hello_addrs)
-            });
-            match crate::net::start_mdns(
+            {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    crate::net::serve(listener, db_path, creds, device_name, hello_addrs, &stop)
+                });
+            }
+            let mdns = match crate::net::start_mdns(
                 &identity.node_id,
                 &saved.sync.device_name.clone(),
                 port,
                 discovered.clone(),
             ) {
-                Ok(_handles) => {
-                    std::mem::forget(_handles);
+                Ok(handles) => {
                     eprintln!("[sync] mdns advertising on :{port}");
+                    Some(handles)
                 }
-                Err(e) => eprintln!("[sync] mdns off: {e}"),
-            }
+                Err(e) => {
+                    eprintln!("[sync] mdns off: {e}");
+                    None
+                }
+            };
             {
                 let db_path = paths.db_file();
                 let creds = identity.creds();
-                std::thread::spawn(move || crate::net::auto_sync_loop(db_path, creds));
+                let stop = stop.clone();
+                std::thread::spawn(move || crate::net::auto_sync_loop(db_path, creds, stop));
             }
             {
                 let db_path = paths.db_file();
@@ -143,8 +174,10 @@ pub fn start_sync_engine(
             }
             {
                 let db_path = paths.db_file();
-                crate::net::watch_discovered(db_path, identity.creds(), discovered.clone());
+                let stop = stop.clone();
+                crate::net::watch_discovered(db_path, identity.creds(), discovered.clone(), stop);
             }
+            *SYNC_ENGINE.lock().unwrap() = Some(SyncEngine { stop, mdns });
             port
         }
         Ok(None) => 0,
@@ -155,6 +188,70 @@ pub fn start_sync_engine(
     };
     set_sync_port(port);
     port
+}
+
+/// Stop the sync stack now (toggle off). Dropping the guard stops
+/// the listener, the loops and mDNS; the heartbeat flips to 0.
+pub fn stop_sync_engine() {
+    SYNC_ENGINE.lock().unwrap().take();
+}
+
+/// Watch the sync toggle (written by any frontend): applies changes
+/// immediately — starts the engine when enabled, stops it when
+/// disabled. First check runs at once (covers boot, no restart
+/// needed). Engine owner only: call from the service.
+pub fn spawn_sync_watcher(
+    db_file: PathBuf,
+    identity: DeviceIdentity,
+    discovered: Arc<Mutex<HashMap<String, Discovered>>>,
+) {
+    std::thread::spawn(move || {
+        let mut first = true;
+        // Last applied (enabled, port, name): any move restarts the
+        // engine, so port/name edits apply immediately too.
+        let mut applied: Option<(bool, u16, String)> = None;
+        loop {
+            if !first {
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            first = false;
+            let Ok(store) = Store::open(&db_file) else {
+                continue;
+            };
+            let settings = store.load_settings();
+            let want = (
+                settings.sync.enabled,
+                settings.sync.listen_port,
+                settings.sync.device_name.clone(),
+            );
+            if Some(want.clone()) == applied {
+                continue;
+            }
+            if want.0 {
+                eprintln!(
+                    "[sync] applying engine (port {}, name {:?})",
+                    want.1, want.2
+                );
+                stop_sync_engine();
+                let Ok(paths) = AppPaths::create() else {
+                    continue;
+                };
+                let Ok(store) = Store::open(&db_file) else {
+                    continue;
+                };
+                start_sync_engine(&paths, &store, &identity, discovered.clone());
+                // If the listener failed, retry on the next change,
+                // not in a tight loop.
+                applied = Some(want);
+            } else {
+                if applied.as_ref().map(|(on, _, _)| *on).unwrap_or(false) {
+                    eprintln!("[sync] toggle off: stopping engine now");
+                }
+                stop_sync_engine();
+                applied = Some(want);
+            }
+        }
+    });
 }
 
 /// Watch the database for hotkey changes (written by any frontend)
