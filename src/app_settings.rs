@@ -3305,40 +3305,48 @@ struct LmForm {
     editing: Rc<RefCell<Option<String>>>,
 }
 
-/// Configured LLM chain list. Rebuilt after every mutation (add /
-/// save / remove / move / toggle); order = priority top-down.
-fn fill_lm_chain(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
+fn lm_model_row(entry: &crate::settings::LlmEntry) -> GtkBox {
+    let card = GtkBox::new(Orientation::Horizontal, 8);
+    card.add_css_class("card");
+    let info = GtkBox::new(Orientation::Vertical, 2);
+    info.set_hexpand(true);
+    let name = Label::new(Some(&entry.name));
+    name.add_css_class("row-label");
+    name.set_xalign(0.0);
+    info.append(&name);
+    let sub = Label::new(Some(&entry.summary()));
+    sub.add_css_class("dim");
+    sub.set_xalign(0.0);
+    sub.set_wrap(true);
+    info.append(&sub);
+    card.append(&info);
+    card
+}
+
+/// Cleanup selection and fallback order use the existing persisted entries.
+fn fill_cleanup_chain(list: &GtkBox, state: &Rc<AppState>) {
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
     let entries = state.settings.borrow().language_models.entries.clone();
     if entries.is_empty() {
-        let l = Label::new(Some(tr("lm.list.empty")));
-        l.add_css_class("dim");
-        l.set_xalign(0.0);
-        l.set_wrap(true);
-        list.append(&l);
-        return;
+        let note = Label::new(Some(tr("cleanup.models.empty")));
+        note.add_css_class("dim");
+        note.set_xalign(0.0);
+        note.set_wrap(true);
+        list.append(&note);
     }
     for (pos, entry) in entries.iter().enumerate() {
-        let card = GtkBox::new(Orientation::Horizontal, 8);
-        card.add_css_class("card");
-        let info = GtkBox::new(Orientation::Vertical, 2);
-        info.set_hexpand(true);
-        let name = Label::new(Some(&entry.name));
-        name.add_css_class("row-label");
-        name.set_xalign(0.0);
-        info.append(&name);
-        let sub = Label::new(Some(&entry.summary()));
-        sub.add_css_class("dim");
-        sub.set_xalign(0.0);
-        sub.set_wrap(true);
-        info.append(&sub);
-        card.append(&info);
+        let card = lm_model_row(entry);
         // Enabled toggle.
         let sw = Switch::new();
         sw.set_active(entry.enabled);
-        sw.update_property(&[gtk4::accessible::Property::Label(&entry.name)]);
+        sw.update_property(&[gtk4::accessible::Property::Label(&format!(
+            "{}: {}",
+            tr("row.cleanup"),
+            entry.name
+        ))]);
+        sw.set_tooltip_text(Some(tr("lm.usecleanup")));
         sw.set_valign(gtk4::Align::Center);
         {
             let state = state.clone();
@@ -3381,7 +3389,6 @@ fn fill_lm_chain(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
             {
                 let state = state.clone();
                 let list = list.clone();
-                let form = form.clone();
                 btn.connect_clicked(move |_| {
                     let mut lm = state.settings.borrow_mut();
                     let entries = &mut lm.language_models.entries;
@@ -3391,11 +3398,31 @@ fn fill_lm_chain(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
                     }
                     drop(lm);
                     persist_prefs(state.clone())();
-                    fill_lm_chain(&list, &state, &form);
+                    fill_cleanup_chain(&list, &state);
                 });
             }
             card.append(&btn);
         }
+        list.append(&card);
+    }
+}
+
+/// Model connections are managed independently of their cleanup selection.
+fn fill_lm_models(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    let entries = state.settings.borrow().language_models.entries.clone();
+    if entries.is_empty() {
+        let l = Label::new(Some(tr("lm.list.empty")));
+        l.add_css_class("dim");
+        l.set_xalign(0.0);
+        l.set_wrap(true);
+        list.append(&l);
+        return;
+    }
+    for entry in &entries {
+        let card = lm_model_row(entry);
         // (refills below use the outer form handle)
         let edit = Button::with_label(tr("action.edit"));
         edit.set_valign(gtk4::Align::Center);
@@ -3481,7 +3508,7 @@ fn fill_lm_chain(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
                         lm.language_models.entries.retain(|e| e.id != id);
                     }
                     persist_prefs(state.clone())();
-                    fill_lm_chain(&list, &state, &form);
+                    fill_lm_models(&list, &state, &form);
                 },
             );
         }
@@ -3493,10 +3520,6 @@ fn fill_lm_chain(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
 fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     use crate::settings::{CloudLlm, LlmEntry, LlmKind};
     let root = section_box(tr("settings.lm"), tr("settings.lm.sub"));
-
-    // Master switch lives on the cleanup toggle below (row.cleanup):
-    // on = STT output goes through the enabled chain top-down, off =
-    // raw transcript is final. Kinds mix freely in the chain.
 
     // Add card: pick a type to configure, fill the form, Add.
     let (card, rows) = group(tr("group.lmadd"));
@@ -3517,7 +3540,9 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     // Shared form handles (single-parent rule: name/model rows live
     // in `rows`, kind extras in their boxes).
     let name_e = Entry::new();
+    name_e.set_widget_name("lm-name");
     let ollama_model_e = Entry::new();
+    ollama_model_e.set_widget_name("lm-ollama-model");
     let cloud_model_e = Entry::new();
     let url_e = Entry::new();
     let key_e = Entry::new();
@@ -3764,10 +3789,16 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         provider_dd.set_selected(2); // OpenAI default
         cloud_model_e.set_text(CloudLlm::OpenAI.default_model());
     }
-    // Chain card: ordered configured options.
-    let (card, chain_rows) = group(tr("group.lmchain"));
+    let (card, model_rows) = group(tr("group.lmmodels"));
     let list = GtkBox::new(Orientation::Vertical, 8);
-    chain_rows.append(&list);
+    model_rows.append(&list);
+    let cleanup_link = Button::with_label(tr("action.cleanupsettings"));
+    cleanup_link.add_css_class("flat");
+    cleanup_link.set_halign(gtk4::Align::Start);
+    cleanup_link.connect_clicked(|button| {
+        super::app::navigate(button, "settings", "Text Cleanup");
+    });
+    model_rows.append(&cleanup_link);
     root.insert_child_after(&card, root.first_child().as_ref());
 
     // Form bundle shared with the list rows (Edit refills it).
@@ -3789,7 +3820,13 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         cancel_btn: cancel_btn.clone(),
         editing: Rc::new(RefCell::new(None)),
     };
-    fill_lm_chain(&list, state, &form);
+    fill_lm_models(&list, state, &form);
+    // Re-entering this page reflects cleanup priority changes without losing form drafts.
+    {
+        let state = state.clone();
+        let form = form.clone();
+        list.connect_map(move |list| fill_lm_models(list, &state, &form));
+    }
     // Cancel: drop the edit, reset the form to add-mode defaults.
     {
         let form = form.clone();
@@ -3930,16 +3967,23 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
             name_e.set_text("");
             key_e.set_text("");
             persist_prefs(state.clone())();
-            fill_lm_chain(&list, &state, &form);
+            fill_lm_models(&list, &state, &form);
             super::app::toast(&ab, tr("feedback.saved"));
         });
     }
 
+    root
+}
+
+fn text_cleanup_page(state: &Rc<AppState>) -> GtkBox {
+    let root = section_box(tr("settings.cleanup"), tr("settings.cleanup.sub"));
     let (card, rows) = group(tr("group.cleanup"));
     {
         // Master switch for post-processing (wired): on = chain runs.
         let (b, _) = row(tr("row.cleanup"));
         let sw = Switch::new();
+        sw.set_widget_name("cleanup-enabled");
+        sw.update_property(&[gtk4::accessible::Property::Label(tr("row.cleanup"))]);
         sw.set_active(state.settings.borrow().language_models.cleanup_enabled);
         sw.set_valign(gtk4::Align::Center);
         {
@@ -3965,6 +4009,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         scroll.set_hexpand(true);
         scroll.set_vexpand(false);
         let prompt = TextView::new();
+        prompt.set_widget_name("cleanup-prompt");
         prompt.update_property(&[gtk4::accessible::Property::Label(tr("row.customprompt"))]);
         prompt.set_wrap_mode(gtk4::WrapMode::Word);
         let stored = state
@@ -4001,7 +4046,31 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         }
         prompt_rows.append(&restore);
     }
-    root.insert_child_after(&card, root.first_child().as_ref());
+    root.append(&card);
+
+    let (card, rows) = group(tr("group.lmchain"));
+    let note = Label::new(Some(tr("cleanup.priority.note")));
+    note.add_css_class("dim");
+    note.set_xalign(0.0);
+    note.set_wrap(true);
+    rows.append(&note);
+    let list = GtkBox::new(Orientation::Vertical, 8);
+    list.set_widget_name("cleanup-models");
+    rows.append(&list);
+    fill_cleanup_chain(&list, state);
+    {
+        let state = state.clone();
+        // Models added, edited or removed on the other page are immediately available here.
+        list.connect_map(move |list| fill_cleanup_chain(list, &state));
+    }
+    let manage = Button::with_label(tr("action.managelm"));
+    manage.add_css_class("flat");
+    manage.set_halign(gtk4::Align::Start);
+    manage.connect_clicked(|button| {
+        super::app::navigate(button, "settings", "Language Models");
+    });
+    rows.append(&manage);
+    root.append(&card);
 
     root
 }
@@ -4479,6 +4548,7 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
         ("Preferences", preferences_page(state, &on_theme)),
         ("Hotkeys", hotkeys_page(state)),
         ("Speech to Text", stt_page(state)),
+        ("Text Cleanup", text_cleanup_page(state)),
         ("Language Models", language_models_page(state)),
         ("Clipboard", clipboard_page(state)),
         ("Privacy & Data", privacy_page(state)),
@@ -4491,6 +4561,7 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
             "Hotkeys" => tr("settings.hotkeys"),
             "Clipboard" => tr("settings.clipboard"),
             "Speech to Text" => tr("settings.stt"),
+            "Text Cleanup" => tr("settings.cleanup"),
             "Language Models" => tr("settings.lm"),
             "Privacy & Data" => tr("settings.privacy"),
             "System" => tr("settings.system"),
@@ -4554,8 +4625,8 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
         });
     }
     let initial = match initial_section {
-        "Hotkeys" | "Clipboard" | "Speech to Text" | "Language Models" | "Privacy & Data"
-        | "System" => initial_section,
+        "Hotkeys" | "Clipboard" | "Speech to Text" | "Text Cleanup" | "Language Models"
+        | "Privacy & Data" | "System" => initial_section,
         _ => "Preferences",
     };
     set_active(initial);

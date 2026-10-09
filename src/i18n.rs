@@ -186,10 +186,15 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Turn speech into text. Enabled engines are tried from top to bottom until one succeeds. Cloud engines send audio to the selected provider.",
             "Convierte voz en texto. Los motores activos se prueban en orden hasta que uno funciona. Los motores en la nube envían el audio al proveedor elegido.",
         ),
-        "settings.lm" => ("Text cleanup", "Edición de texto"),
+        "settings.lm" => ("Language models", "Modelos de lenguaje"),
         "settings.lm.sub" => (
-            "Optionally polish transcribed text with a language model. Enabled models are tried in order. Cloud models send text to the selected provider.",
-            "Mejora las transcripciones con un modelo de lenguaje, si lo deseas. Los modelos activos se prueban en orden. Los modelos en la nube envían el texto al proveedor elegido.",
+            "Manage language models and their connections. Choose how they are used in each feature’s settings.",
+            "Gestiona los modelos de lenguaje y sus conexiones. Elige cómo se usan en los ajustes de cada función.",
+        ),
+        "settings.cleanup" => ("Text cleanup", "Edición de texto"),
+        "settings.cleanup.sub" => (
+            "Polish dictations after transcription. Cloud models send the transcribed text to the selected provider.",
+            "Mejora los dictados después de transcribirlos. Los modelos en la nube envían el texto transcrito al proveedor elegido.",
         ),
         "settings.privacy" => ("Privacy & storage", "Privacidad y almacenamiento"),
         "settings.privacy.sub" => (
@@ -335,8 +340,20 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "action.updatenow" => ("Apply to model", "Aplicar al modelo"),
         "action.restore" => ("Restore default", "Restaurar original"),
         "row.lmtype" => ("Type", "Tipo"),
-        "group.lmadd" => ("Add a cleanup model", "Añadir un modelo de edición"),
-        "group.lmchain" => ("Cleanup priority", "Prioridad de edición"),
+        "group.lmadd" => ("Add a language model", "Añadir un modelo de lenguaje"),
+        "group.lmmodels" => ("Configured models", "Modelos configurados"),
+        "group.lmchain" => ("Models for text cleanup", "Modelos para editar texto"),
+        "cleanup.priority.note" => (
+            "Enable the models to use for cleanup and arrange their priority. They are tried from top to bottom; if none succeeds, the original text is kept.",
+            "Activa los modelos que quieras usar para editar texto y ordena su prioridad. Se prueban de arriba abajo; si ninguno funciona, se conserva el texto original.",
+        ),
+        "cleanup.models.empty" => (
+            "Add a language model to use text cleanup.",
+            "Añade un modelo de lenguaje para editar texto.",
+        ),
+        "lm.usecleanup" => ("Use for text cleanup", "Usar para editar texto"),
+        "action.managelm" => ("Manage language models", "Gestionar modelos de lenguaje"),
+        "action.cleanupsettings" => ("Text cleanup settings", "Ajustes de edición de texto"),
         "lm.apikey.note" => (
             "Sent as a Bearer token (reverse-proxy setups). Empty means no token.",
             "Se envía como token Bearer (proxies inversos). Vacío significa sin token.",
@@ -346,8 +363,8 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Los motores locales autogestionados aún no están implementados: usa Ollama.",
         ),
         "lm.list.empty" => (
-            "No engines configured. Add one to get started.",
-            "No hay motores configurados. Añade uno para empezar.",
+            "No language models configured. Add one to get started.",
+            "No hay modelos de lenguaje configurados. Añade uno para empezar.",
         ),
         "row.keeploaded" => ("Keep model loaded", "Mantener el modelo cargado"),
         "row.customprompt" => ("Custom prompt", "Prompt personalizado"),

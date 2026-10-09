@@ -236,24 +236,154 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
             14 => button(&root, "action.edit").emit_clicked(),
             15 => {
                 button(&root, "action.cancel").emit_clicked();
-                let settings: gtk4::Stack = named(&root, "settings-pages");
-                settings.set_visible_child_name("Privacy & Data");
+                button(&root, "action.cleanupsettings").emit_clicked();
             }
-            16 => button(&root, "action.clearalltranscripts").emit_clicked(),
+            16 => {
+                assert_eq!(
+                    named::<gtk4::Stack>(&root, "settings-pages")
+                        .visible_child_name()
+                        .as_deref(),
+                    Some("Text Cleanup")
+                );
+                named::<gtk4::Switch>(&root, "cleanup-enabled").set_active(false);
+                assert!(!state.store.load_settings().language_models.cleanup_enabled);
+                let page = named::<gtk4::Stack>(&root, "settings-pages")
+                    .visible_child()
+                    .unwrap();
+                for widget in descendants(&page) {
+                    if let Some(expander) = widget.downcast_ref::<gtk4::Expander>() {
+                        expander.set_expanded(true);
+                    }
+                }
+                named::<gtk4::TextView>(&root, "cleanup-prompt")
+                    .buffer()
+                    .set_text("Fix punctuation only.");
+                assert_eq!(
+                    state.store.load_settings().language_models.cleanup_prompt,
+                    "Fix punctuation only."
+                );
+            }
             17 => {
+                button(&root, "action.restore").emit_clicked();
+                assert_eq!(
+                    state.store.load_settings().language_models.cleanup_prompt,
+                    mywhisper::transcribe::DEFAULT_CLEANUP_PROMPT
+                );
+                named::<gtk4::Switch>(&root, "cleanup-enabled").set_active(true);
+                assert!(state.store.load_settings().language_models.cleanup_enabled);
+                button(&root, "action.managelm").emit_clicked();
+            }
+            18 => {
+                let settings: gtk4::Stack = named(&root, "settings-pages");
+                assert_eq!(
+                    settings.visible_child_name().as_deref(),
+                    Some("Language Models")
+                );
+                let page = settings.visible_child().unwrap();
+                assert!(
+                    !descendants(&page)
+                        .iter()
+                        .any(|widget| widget.is::<gtk4::Switch>() || widget.is::<gtk4::TextView>())
+                );
+                for widget in descendants(&page) {
+                    if let Some(expander) = widget.downcast_ref::<gtk4::Expander>() {
+                        expander.set_expanded(true);
+                    }
+                }
+                named::<gtk4::Entry>(&root, "lm-name").set_text("Cleanup fallback");
+                named::<gtk4::Entry>(&root, "lm-ollama-model").set_text("cleanup-smoke");
+                button(&root, "action.add").emit_clicked();
+                assert_eq!(state.store.load_settings().language_models.entries.len(), 2);
+                button(&root, "action.cleanupsettings").emit_clicked();
+            }
+            19 => {
+                let list: gtk4::Box = named(&root, "cleanup-models");
+                let switches: Vec<_> = descendants(list.upcast_ref())
+                    .into_iter()
+                    .filter_map(|widget| widget.downcast::<gtk4::Switch>().ok())
+                    .collect();
+                assert_eq!(switches.len(), 2);
+                switches[0].set_active(false);
+                let down = descendants(list.upcast_ref())
+                    .into_iter()
+                    .find_map(|widget| {
+                        widget.downcast::<gtk4::Button>().ok().filter(|button| {
+                            button.label().as_deref() == Some("↓") && button.is_sensitive()
+                        })
+                    })
+                    .unwrap();
+                down.emit_clicked();
+                let saved = state.store.load_settings();
+                assert_eq!(saved.language_models.entries[0].model, "cleanup-smoke");
+                assert_eq!(saved.language_models.chain().len(), 1);
+                assert!(!saved.language_models.entries[1].enabled);
+                button(&root, "action.managelm").emit_clicked();
+            }
+            20 => {
+                button(&root, "action.edit").emit_clicked();
+                assert_eq!(
+                    named::<gtk4::Entry>(&root, "lm-name").text(),
+                    "Cleanup fallback"
+                );
+                named::<gtk4::Entry>(&root, "lm-ollama-model").set_text("cleanup-smoke-edited");
+                button(&root, "action.save").emit_clicked();
+                button(&root, "action.cleanupsettings").emit_clicked();
+            }
+            21 => {
+                let list: gtk4::Box = named(&root, "cleanup-models");
+                assert!(descendants(list.upcast_ref()).iter().any(|widget| {
+                    widget
+                        .downcast_ref::<gtk4::Label>()
+                        .is_some_and(|label| label.text().contains("cleanup-smoke-edited"))
+                }));
+                let saved = state.store.load_settings();
+                assert_eq!(
+                    saved.language_models.chain()[0].model,
+                    "cleanup-smoke-edited"
+                );
+                assert!(!saved.language_models.entries[1].enabled);
+                button(&root, "action.managelm").emit_clicked();
+            }
+            22 => button(&root, "action.remove").emit_clicked(),
+            23 => {
+                respond(&window, "confirm");
+                button(&root, "action.cleanupsettings").emit_clicked();
+            }
+            24 => {
+                let list: gtk4::Box = named(&root, "cleanup-models");
+                assert_eq!(
+                    descendants(list.upcast_ref())
+                        .iter()
+                        .filter(|widget| widget.is::<gtk4::Switch>())
+                        .count(),
+                    1
+                );
+                assert!(
+                    state
+                        .store
+                        .load_settings()
+                        .language_models
+                        .chain()
+                        .is_empty()
+                );
+                named::<gtk4::Stack>(&root, "settings-pages")
+                    .set_visible_child_name("Privacy & Data");
+            }
+            25 => button(&root, "action.clearalltranscripts").emit_clicked(),
+            26 => {
                 respond(&window, "cancel");
                 assert_eq!(
                     state.store.load_history(200, true).unwrap().len(),
                     original_history
                 );
             }
-            18 => button(&root, "action.clearalltranscripts").emit_clicked(),
-            19 => {
+            27 => button(&root, "action.clearalltranscripts").emit_clicked(),
+            28 => {
                 respond(&window, "confirm");
                 assert!(state.store.load_history(200, true).unwrap().is_empty());
                 named::<gtk4::Stack>(&root, "settings-pages").set_visible_child_name("Preferences");
             }
-            20 => {
+            29 => {
                 let theme: gtk4::DropDown = named(&root, "theme-picker");
                 theme.set_selected(2);
                 assert_eq!(
@@ -272,7 +402,7 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                     2
                 });
             }
-            21 => {
+            30 => {
                 let fresh = app.active_window().unwrap();
                 assert_ne!(fresh, window);
                 assert_eq!(
@@ -288,7 +418,7 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                     Some("Preferences")
                 );
                 println!(
-                    "Native UI smoke passed: validation, draft retention, delete cancel/confirm, multiline snippet creation/editing, alias conflicts, search, deep links, model editing, bulk history clear, theme persistence, language rebuild."
+                    "Native UI smoke passed: validation, draft retention, delete cancel/confirm, multiline snippet creation/editing, alias conflicts, search, deep links, separate model/cleanup settings, cleanup persistence, model add/edit/remove, priority and selection across pages, bulk history clear, theme persistence, language rebuild."
                 );
                 app.quit();
                 return gtk4::glib::ControlFlow::Break;

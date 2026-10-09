@@ -7,7 +7,7 @@ MyWhisper is a native desktop dictation app. The central workflow is: choose a m
 | Original friction | Implemented change |
 | --- | --- |
 | Settings and Sync appeared as large overlays, unlike the other destinations. | Five persistent destinations: Dictation, Activity, Dictionary, Devices, Settings. Settings has its own task-oriented subnavigation. |
-| Engine terminology exposed implementation details before explaining the task. | Transcription and Text cleanup explain their order, fallback behavior, and whether audio or text goes to a cloud provider. |
+| Engine terminology exposed implementation details before explaining the task. | Transcription and Text cleanup explain their order, fallback behavior, and whether audio or text goes to a cloud provider. Language models separately manages reusable model connections. |
 | Advanced options competed with everyday preferences. | Custom prompts, remote connection forms, recording-indicator details, server/network options, and speculative decoding expand on demand. |
 | Copy implied dictionary terms were guaranteed and snippets were typed shortcuts. | Words help supported engines recognize terms. Spoken trigger phrases insert saved text; comma-separated alternatives remain supported. |
 | Edits could disappear during background dictionary refreshes; snippet edits flattened multiline content. | Refresh waits while editing; both snippet creation and editing use multiline text fields. |
@@ -58,7 +58,8 @@ The system font is inherited. Body copy uses the native size, titles use `2em`, 
 - Header controls provide normal drag, minimize, maximize, and close behavior.
 - Sidebar buttons switch destinations without modal dismissal. The selected destination remains visible.
 - The existing monochrome app mark appears once beside MyWhisper at the top of the sidebar, with no click action. It follows the text colour in both themes, using the symbolic treatment described in [GNOME UI-icon guidance](https://developer.gnome.org/hig/guidelines/ui-icons.html). The embedded SVG also works in development builds without installing the app's icon theme files.
-- Settings subnavigation switches the seven preference sections. Dictation setup links select the relevant settings section directly.
+- Settings subnavigation switches the eight preference sections. Dictation setup links select the relevant settings section directly.
+- Language models manages connections, credentials, and model parameters. Text cleanup owns its toggle, prompt, and selected models/fallback order. This follows the separation between reusable model configuration and feature tasks in [Open WebUI task settings](https://docs.openwebui.com/features/administration/task-models/) and [AnythingLLM LLM setup](https://docs.anythingllm.com/setup/llm-configuration/overview). Both pages link to each other. Existing settings and cleanup behavior remain compatible; no database migration is required.
 - Theme applies immediately and persists. Interface language rebuilds the window at the current destination and section; repeated app activation presents the active window.
 
 ### Dictation
@@ -118,8 +119,9 @@ Ordinary preferences save automatically. Add/Save forms commit connection config
 | Voice activity / live preview / speculative options | Sets detection threshold, compatible live-preview behavior, and speculative update/overlap timing. Capability badges describe unsupported dictionary or streaming features. |
 | Servers/network: Start server / Stop | Sends the existing one-shot command to the service; server status follows process state. Auto-start, readiness, backend, port, and LAN exposure remain configurable. |
 | Text cleanup: master switch / Custom prompt / Restore default | Enables optional cleanup, edits the persisted prompt, or restores the original prompt. |
-| Text cleanup: priority / Add / Edit / Save / Cancel / Remove | Uses the same ordering and connection-form model as transcription. Ollama and supported cloud providers remain available. Managed local models are explicitly unavailable and cannot be added. |
-| Text cleanup: Apply to model | Sends the selected keep-alive choice to the configured Ollama model; shows a busy state and outcome. It does not save the surrounding form. |
+| Text cleanup: model enable / move up/down / Manage language models | Selects which configured models clean up dictations and their fallback order. The management link opens Language models; returning reflects model additions, edits, and removals. No model succeeds or none is enabled: the original text is retained. |
+| Language models: Add / Edit / Save / Cancel / Remove / Text cleanup settings | Manages model connections, credentials, and model parameters independently of cleanup controls. Editing preserves cleanup selection and priority. Ollama and supported cloud providers remain available. Managed local models are explicitly unavailable and cannot be added. The cleanup link opens its feature settings. |
+| Language models: Apply to model | Sends the selected keep-alive choice to the configured Ollama model; shows a busy state and outcome. It does not save the surrounding form. |
 | Text delivery | Chooses automatic paste, clipboard retention, backend tools, paste combination, and the existing history visibility preference. Backend availability hints retain detected dependency details. |
 | Privacy & storage | Configures audio/history saving, retention, and canceled-record metadata. Retention controls become insensitive when their corresponding saving option is off. |
 | Privacy: Open folder / Clear all audio / Clear all transcripts | Opens the audio directory or confirms bulk deletion. History deletion retains tombstones for sync safety. |
@@ -155,12 +157,13 @@ The preview uses a disposable in-memory store and sample dictations. It does not
 ```sh
 cargo run --example ui_preview -- home light en
 cargo run --example ui_preview -- settings dark es 'Language Models'
+cargo run --example ui_preview -- settings light en 'Text Cleanup'
 cargo run --example ui_preview -- dictionary dark es Preferences empty
 cargo run --example ui_preview -- home light en Preferences --smoke
 ```
 
-The native smoke sequence exercises required/duplicate validation, Enter submission, edit preservation across a data refresh, Cancel/confirm deletion, multiline snippet creation/editing and alias conflicts, recent-history search, setup deep links, cleanup-model editing, bulk history Cancel/confirm, persisted theme changes, and language rebuilding against disposable data. It is run in English/light and Spanish/dark.
+The native smoke sequence exercises required/duplicate validation, Enter submission, edit preservation across a data refresh, Cancel/confirm deletion, multiline snippet creation/editing and alias conflicts, recent-history search, setup deep links, separate model/cleanup navigation, cleanup toggle and prompt persistence/restoration, model add/edit/remove reflected across pages, cleanup selection and priority persistence, bulk history Cancel/confirm, persisted theme changes, and language rebuilding against disposable data. It is run in English/light and Spanish/dark.
 
-Visual inspection covers all five destinations and all seven settings sections, expanded forms, dark/light styles, English/Spanish, empty states, and narrower desktop windows. The activity layout is also checked at 1920×1080 and through repeated wide/narrow resizing. `cargo check --all-targets --locked` passes. `cargo test --locked` passes 77 tests, with five existing opt-in model/inference tests ignored. Tests cover translation-tag availability and placeholder parity, shortcut conflicts, provider/address validation, responsive calendar sizing, full-history statistics, and sync-safe deletion. Live microphone capture, downloaded inference runtimes, cloud credentials, real peer-device networking, and compositor-specific overlay placement need their normal hardware/integration tests.
+Visual inspection covers all five destinations and all eight settings sections, expanded forms, dark/light styles, English/Spanish, empty states, and narrower desktop windows. The activity layout is also checked at 1920×1080 and through repeated wide/narrow resizing. `cargo check --all-targets --locked` passes. `cargo test --locked` passes 77 tests, with five existing opt-in model/inference tests ignored. Tests cover translation-tag availability and placeholder parity, shortcut conflicts, provider/address validation, responsive calendar sizing, full-history statistics, and sync-safe deletion. Live microphone capture, downloaded inference runtimes, cloud credentials, real peer-device networking, and compositor-specific overlay placement need their normal hardware/integration tests.
 
 Live Wayland/OpenGL captures on the review machine showed intermittent marks above headings and missing text strokes. Cairo captures rendered the text cleanly. The GUI was relaunched with `GSK_RENDERER=cairo` for review; this is a per-launch rendering workaround, documented in the README, rather than a claim to fix GTK or graphics drivers. [GTK's renderer documentation](https://docs.gtk.org/gtk4/running.html#gsk-renderer) describes the supported renderer selections.

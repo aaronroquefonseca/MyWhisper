@@ -9,7 +9,7 @@ const APP_ID: &str = "com.mywhisper.App";
 const SERVICE_APP_ID: &str = "com.mywhisper.Service";
 /// Desktop app host. Deep-link flags mirror the reference app:
 /// `--page home|insights|dictionary|settings`
-/// `--section Preferences|Hotkeys|Speech to Text|Language Models|Privacy & Data|System`
+/// `--section Preferences|Hotkeys|Speech to Text|Text Cleanup|Language Models|Clipboard|Privacy & Data|System`
 /// `--theme system|light|dark` (overrides the stored preference)
 /// `--service` runs the headless background engine (hotkeys, sync,
 /// pill) with no window. The engine lives ONLY in the service: the
