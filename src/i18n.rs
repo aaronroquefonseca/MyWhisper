@@ -354,6 +354,15 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Except for Sherpa: Sherpa always listens on all interfaces, so disabling this option won't take effect for Sherpa.",
             "Excepto Sherpa: Sherpa siempre escucha en todas las interfaces, así que desactivar esta opción no tendrá efecto en Sherpa.",
         ),
+        "row.streaming" => ("Streaming", "Streaming"),
+        "stt.selfhost.key.note" => (
+            "Bearer token for reverse-proxy setups. Empty means no token.",
+            "Token Bearer para proxies inversos. Vacío significa sin token.",
+        ),
+        "stt.selfhost.stream.note" => (
+            "On for ws:// or wss:// servers (sherpa protocol, e.g. our sherpa-online). Off for http(s), which always uses request/response.",
+            "Activado para servidores ws:// o wss:// (protocolo sherpa, p. ej. nuestro sherpa-online). Apagado para http(s), que siempre usa petición/respuesta.",
+        ),
         "sync.svc.switch" => ("Sync engine", "Motor de sincronización"),
         "sync.svc.note" => (
             "systemd owns the service process; this only gates the engine. Applies at boot.",

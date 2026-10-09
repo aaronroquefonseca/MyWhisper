@@ -1857,6 +1857,9 @@ struct SttForm {
     url_e: Entry,
     model_e: Entry,
     key_e: Entry,
+    stream_sw: Switch,
+    stream_intent: Rc<RefCell<bool>>,
+    sh_key_e: Entry,
     provider_dd: DropDown,
     kind_dd: DropDown,
     add_btn: Button,
@@ -1966,6 +1969,13 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
                     form.url_e.set_text(&e.url);
                     form.model_e.set_text(&e.model);
                     form.key_e.set_text(&e.api_key);
+                    form.sh_key_e.set_text(&e.api_key);
+                    *form.stream_intent.borrow_mut() = e.streaming;
+                    {
+                        let ws = crate::transcribe::is_ws_url(e.url.trim_start());
+                        form.stream_sw.set_sensitive(ws);
+                        form.stream_sw.set_active(e.streaming && ws);
+                    }
                     let providers = ["OpenAI", "Groq", "Mistral", "Gemini", "Deepgram"];
                     form.provider_dd.set_selected(
                         providers.iter().position(|p| *p == e.provider).unwrap_or(0) as u32,
@@ -2087,13 +2097,20 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     let url_e = Entry::new();
     let model_e = Entry::new();
     let key_e = Entry::new();
+    let sh_key_e = Entry::new();
+    let stream_sw = Switch::new();
+    // Streaming intent (user's choice) vs display: the toggle shows
+    // intent && ws-url, so http(s) reads off. Guard silences the
+    // handler on programmatic flips.
+    let stream_intent = Rc::new(RefCell::new(true));
+    let stream_guard = Rc::new(RefCell::new(false));
     let provider_dd = DropDown::new(
         Some(StringList::new(&[
             "OpenAI", "Groq", "Mistral", "Gemini", "Deepgram",
         ])),
         None::<gtk4::Expression>,
     );
-    for e in [&name_e, &url_e, &model_e, &key_e] {
+    for e in [&name_e, &url_e, &model_e, &key_e, &sh_key_e] {
         e.set_hexpand(true);
     }
     key_e.set_visibility(false);
@@ -2121,6 +2138,29 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         let (b, _) = row(tr("row.serverurl"));
         b.append(&url_e);
         url_box.append(&b);
+        let (b, _) = row(tr("row.apikey"));
+        b.append(&sh_key_e);
+        sh_key_e.set_visibility(false);
+        url_box.append(&b);
+        {
+            let note = Label::new(Some(tr("stt.selfhost.key.note")));
+            note.add_css_class("dim");
+            note.set_xalign(0.0);
+            note.set_wrap(true);
+            url_box.append(&note);
+        }
+        let (b, _) = row(tr("row.streaming"));
+        b.append(&stream_sw);
+        stream_sw.set_valign(gtk4::Align::Center);
+        stream_sw.set_active(true);
+        url_box.append(&b);
+        {
+            let note = Label::new(Some(tr("stt.selfhost.stream.note")));
+            note.add_css_class("dim");
+            note.set_xalign(0.0);
+            note.set_wrap(true);
+            url_box.append(&note);
+        }
     }
     rows.append(&url_box);
     let add_btn = Button::with_label(tr("action.add"));
@@ -2140,6 +2180,9 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         url_e: url_e.clone(),
         model_e: model_e.clone(),
         key_e: key_e.clone(),
+        stream_sw: stream_sw.clone(),
+        stream_intent: stream_intent.clone(),
+        sh_key_e: sh_key_e.clone(),
         provider_dd: provider_dd.clone(),
         kind_dd: kind_dd.clone(),
         add_btn: add_btn.clone(),
@@ -2172,6 +2215,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                         url: String::new(),
                         model: String::new(),
                         api_key: String::new(),
+                        streaming: true,
                     });
                 }
             }
@@ -2189,6 +2233,31 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         cloud_box.set_visible(false);
     }
     {
+        // Streaming toggle only applies to ws:// URLs (sherpa
+        // protocol). http(s) always uses request/response, so the
+        // toggle reads off there while intent is remembered.
+        let sw = stream_sw.clone();
+        let intent = stream_intent.clone();
+        let guard = stream_guard.clone();
+        let intent2 = intent.clone();
+        let guard2 = guard.clone();
+        let sync = move |url: &str| {
+            let ws = crate::transcribe::is_ws_url(url.trim_start());
+            sw.set_sensitive(ws);
+            *guard.borrow_mut() = true;
+            sw.set_active(*intent.borrow() && ws);
+            *guard.borrow_mut() = false;
+        };
+        sync(&url_e.text());
+        url_e.connect_changed(move |e| sync(&e.text()));
+        stream_sw.connect_state_set(move |_, active| {
+            if !*guard2.borrow() {
+                *intent2.borrow_mut() = active;
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+    }
+    {
         // Cancel: drop the edit, reset the form.
         let form = form.clone();
         let cb = form.cancel_btn.clone();
@@ -2198,6 +2267,9 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
             form.cancel_btn.set_visible(false);
             form.name_e.set_text("");
             form.key_e.set_text("");
+            form.sh_key_e.set_text("");
+            *form.stream_intent.borrow_mut() = true;
+            form.stream_sw.set_active(false);
             form.url_e.set_text("http://localhost:8000");
             form.model_e.set_text("");
             form.provider_dd.set_selected(0);
@@ -2234,7 +2306,12 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 provider: provider.to_string(),
                 url: form.url_e.text().trim().to_string(),
                 model: form.model_e.text().trim().to_string(),
-                api_key: form.key_e.text().to_string(),
+                api_key: if cloud {
+                    form.key_e.text().to_string()
+                } else {
+                    form.sh_key_e.text().to_string()
+                },
+                streaming: *form.stream_intent.borrow(),
             };
             if !cloud {
                 entry.provider.clear();
@@ -2271,6 +2348,9 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
             cb.set_visible(false);
             form.name_e.set_text("");
             form.key_e.set_text("");
+            form.sh_key_e.set_text("");
+            *form.stream_intent.borrow_mut() = true;
+            form.stream_sw.set_active(false);
             persist_prefs(state.clone())();
             fill_stt_chain(&list, &state, &form, &alb1);
         });

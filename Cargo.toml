@@ -28,6 +28,6 @@ tokio = { version = "1.53.2", features = ["rt"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = "0.3.23"
-tungstenite = "0.30.0"
+tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 zbus = "5.19.0"
 zip = "8.6.0"

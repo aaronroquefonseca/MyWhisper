@@ -113,6 +113,12 @@ pub enum Plan {
         model: String,
         lang: String,
     },
+    /// Self-hosted sherpa-protocol server (ws:// URL, e.g. our own
+    /// sherpa-online on :6006). Never spawned (foreign by
+    /// definition); streaming like SherpaOnline.
+    SelfHostedWs {
+        url: String,
+    },
     CloudDeepgram {
         base: String,
         key: String,
@@ -128,7 +134,7 @@ pub enum Plan {
 
 impl Plan {
     pub fn streaming(&self) -> bool {
-        matches!(self, Plan::SherpaOnline { .. })
+        matches!(self, Plan::SherpaOnline { .. } | Plan::SelfHostedWs { .. })
     }
 
     pub fn describe(&self) -> String {
@@ -148,10 +154,18 @@ impl Plan {
             Plan::CloudOpenAiCompat { base, model, .. } => {
                 format!("cloud {base} ({model})")
             }
+            Plan::SelfHostedWs { url } => {
+                format!("self-hosted ws {url}")
+            }
             Plan::CloudDeepgram { model, .. } => format!("deepgram ({model})"),
             Plan::CloudGemini { model, .. } => format!("gemini ({model})"),
         }
     }
+}
+
+/// ws:// or wss:// (sherpa streaming protocol, plain or TLS).
+pub fn is_ws_url(url: &str) -> bool {
+    url.starts_with("ws://") || url.starts_with("wss://")
 }
 
 fn missing(what: &str) -> String {
@@ -182,10 +196,15 @@ pub fn plans_for(s: &SttSettings, data_dir: &Path) -> Result<Vec<(String, Plan)>
                 let url = entry.url.trim().trim_end_matches('/').to_string();
                 if url.is_empty() {
                     Err("self-hosted URL is empty".to_string())
+                } else if entry.streaming && is_ws_url(&url) {
+                    // Streaming sherpa protocol (our sherpa-online
+                    // servers speak it, including spawned ones).
+                    // Never spawned here: foreign by definition.
+                    Ok(Plan::SelfHostedWs { url })
                 } else {
                     Ok(Plan::CloudOpenAiCompat {
                         base: url,
-                        key: String::new(),
+                        key: entry.api_key.trim().to_string(),
                         model: if entry.model.trim().is_empty() {
                             "default".to_string()
                         } else {
@@ -1174,8 +1193,11 @@ fn ensure_sherpa_online(
 type Ws = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>;
 
 fn ws_connect(port: u16, read_timeout: Duration) -> Result<Ws, String> {
-    let (ws, _) = tungstenite::connect(format!("ws://127.0.0.1:{port}"))
-        .map_err(|e| format!("ws connect :{port}: {e}"))?;
+    ws_connect_url(&format!("ws://127.0.0.1:{port}"), read_timeout)
+}
+
+fn ws_connect_url(url: &str, read_timeout: Duration) -> Result<Ws, String> {
+    let (ws, _) = tungstenite::connect(url).map_err(|e| format!("ws connect {url}: {e}"))?;
     if let tungstenite::stream::MaybeTlsStream::Plain(s) = ws.get_ref() {
         let _ = s.set_read_timeout(Some(read_timeout));
         let _ = s.set_write_timeout(Some(Duration::from_secs(30)));
@@ -1262,6 +1284,16 @@ fn ws_read_timeout(ws: &mut Ws, timeout: Duration) {
 impl OnlineSession {
     pub fn open() -> Result<Self, String> {
         Self::open_with(SHERPA_ONLINE_PORT, INFERENCE_TIMEOUT)
+    }
+
+    pub fn open_with_url(url: &str, read_timeout: Duration) -> Result<Self, String> {
+        Ok(Self {
+            ws: Some(ws_connect_url(url, read_timeout)?),
+            segments: Vec::new(),
+            current: String::new(),
+            read_timeout,
+            preview: false,
+        })
     }
 
     pub fn open_with(port: u16, read_timeout: Duration) -> Result<Self, String> {
@@ -2259,7 +2291,11 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
     };
     let result_rx = if plan.streaming() {
         let online_port = engine_port(&server_net(&stt), SHERPA_ONLINE_PORT);
-        match OnlineSession::open_with(online_port, INFERENCE_TIMEOUT).map(|mut session| {
+        let open = match &plan {
+            Plan::SelfHostedWs { url } => OnlineSession::open_with_url(url, INFERENCE_TIMEOUT),
+            _ => OnlineSession::open_with(online_port, INFERENCE_TIMEOUT),
+        };
+        match open.map(|mut session| {
             session.preview = stt.live_preview;
             session
         }) {
@@ -2774,6 +2810,13 @@ fn transcribe_blocking(
             }
             s.finish()
         }
+        Plan::SelfHostedWs { url } => {
+            let mut s = OnlineSession::open_with_url(url, INFERENCE_TIMEOUT)?;
+            for chunk in f32s.chunks(8000) {
+                s.send_chunk(chunk)?;
+            }
+            s.finish()
+        }
         Plan::CloudOpenAiCompat {
             base,
             key,
@@ -2842,7 +2885,8 @@ fn ensure_servers(
             ensure_sherpa_offline(data_dir, sherpa_backend, model_dir, net)
         }
         // CLI per utterance: nothing to keep running.
-        Plan::WhistleCli { .. } => Ok(()),
+        // Self-hosted WS: foreign by definition, never spawned.
+        Plan::WhistleCli { .. } | Plan::SelfHostedWs { .. } => Ok(()),
         Plan::CloudOpenAiCompat { .. } | Plan::CloudDeepgram { .. } | Plan::CloudGemini { .. } => {
             Ok(())
         }
@@ -3422,6 +3466,48 @@ mod tests {
     }
 
     #[test]
+    fn plans_selfhosted_ws_and_bearer() {
+        use crate::settings::{SttChainEntry, SttEntryKind};
+        let entry = |url: &str, streaming: bool, key: &str| SttChainEntry {
+            id: "t".to_string(),
+            name: "t".to_string(),
+            kind: SttEntryKind::SelfHosted,
+            enabled: true,
+            provider: String::new(),
+            url: url.to_string(),
+            model: String::new(),
+            api_key: key.to_string(),
+            streaming,
+        };
+        // ws:// + streaming = sherpa-protocol plan (never spawned).
+        let mut s = SttSettings::default();
+        s.entries = vec![entry("ws://127.0.0.1:6006", true, "")];
+        let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
+        assert!(matches!(plans[0].1, Plan::SelfHostedWs { .. }));
+        assert!(plans[0].1.streaming());
+        // wss:// resolves the same (TLS at connect time).
+        let mut s = SttSettings::default();
+        s.entries = vec![entry("wss://example.com:6006", true, "")];
+        let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
+        assert!(matches!(plans[0].1, Plan::SelfHostedWs { .. }));
+        // http + token = OpenAI-compat with bearer key; streaming
+        // toggle inert for http.
+        let mut s = SttSettings::default();
+        s.entries = vec![entry("http://127.0.0.1:8080", true, "tok")];
+        let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
+        match &plans[0].1 {
+            Plan::CloudOpenAiCompat { key, .. } => assert_eq!(key, "tok"),
+            p => panic!("expected compat, got {}", p.describe()),
+        }
+        assert!(!plans[0].1.streaming());
+        // ws:// + streaming off = compat fallback.
+        let mut s = SttSettings::default();
+        s.entries = vec![entry("ws://127.0.0.1:6006", false, "")];
+        let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
+        assert!(matches!(plans[0].1, Plan::CloudOpenAiCompat { .. }));
+    }
+
+    #[test]
     fn plan_cloud_needs_key() {
         use crate::settings::{SttChainEntry, SttEntryKind};
         let mut s = SttSettings::default();
@@ -3434,6 +3520,7 @@ mod tests {
             url: String::new(),
             model: "whisper-1".to_string(),
             api_key: String::new(),
+            streaming: true,
         }];
         let err = plan_for(&s, Path::new("/nonexistent")).unwrap_err();
         assert!(err.contains("API key"), "{err}");
@@ -3455,6 +3542,7 @@ mod tests {
                 url: String::new(),
                 model: String::new(),
                 api_key: String::new(),
+                streaming: true,
             },
             SttChainEntry {
                 id: "ok".to_string(),
@@ -3465,6 +3553,7 @@ mod tests {
                 url: String::new(),
                 model: "whisper-1".to_string(),
                 api_key: "k".to_string(),
+                streaming: true,
             },
         ];
         // Local default provider with missing model dir fails; the

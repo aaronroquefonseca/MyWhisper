@@ -409,6 +409,11 @@ pub struct SttChainEntry {
     pub url: String,
     pub model: String,
     pub api_key: String,
+    /// Self-hosted only: server speaks a streaming protocol
+    /// (ws:// sherpa servers). Default true; http(s) URLs always
+    /// use request/response regardless.
+    #[serde(default = "default_true")]
+    pub streaming: bool,
 }
 
 impl SttChainEntry {
@@ -495,6 +500,7 @@ impl Default for SttSettings {
                 url: String::new(),
                 model: String::new(),
                 api_key: String::new(),
+                streaming: true,
             }],
             local_provider: LocalSttProvider::OpenAi,
             whisper_model: "base".to_string(),
@@ -688,6 +694,7 @@ impl SttSettings {
             url: String::new(),
             model: String::new(),
             api_key: String::new(),
+            streaming: true,
         };
         match self.mode {
             SttMode::Local => {
