@@ -21,8 +21,8 @@
 //! threads, but spawned through [`spawn_dedicated`] (Builder +
 //! `Result`), never the panicking `thread::spawn`.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 /// Pool workers. Dictation needs at most: 1 transcribe worker +
 /// 1 streaming pump + 1 warmup + slack for cues/reapers.

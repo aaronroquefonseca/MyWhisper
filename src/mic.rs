@@ -11,8 +11,8 @@ use crate::viz::{LevelSource, SimCadence, SimMic};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
 /// Capture through `parec` (PulseAudio/PipeWire CLI): exact source
@@ -469,11 +469,7 @@ impl MicInput {
     // Introspection for the future settings UI.
     #[allow(dead_code)]
     pub fn source_name(&self) -> &'static str {
-        if self.use_real {
-            "real"
-        } else {
-            "sim"
-        }
+        if self.use_real { "real" } else { "sim" }
     }
 
     pub fn set_sim_cadence(&mut self, cadence: SimCadence) {

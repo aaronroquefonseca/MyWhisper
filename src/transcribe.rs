@@ -45,12 +45,13 @@ use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{
+    Arc, Mutex, OnceLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
-    mpsc, Arc, Mutex, OnceLock,
+    mpsc,
 };
 use std::time::{Duration, Instant};
 
-use crate::audio::{self, wav_bytes_16k, Recorder, Resampler, ENGINE_RATE, MIN_SAMPLES_16K};
+use crate::audio::{self, ENGINE_RATE, MIN_SAMPLES_16K, Recorder, Resampler, wav_bytes_16k};
 use crate::settings::{GpuBackendSetting, LocalSttProvider, SherpaBackendSetting, SttSettings};
 use crate::stt;
 
@@ -622,36 +623,38 @@ pub fn keep_warm_timeout(value: &str) -> Option<Duration> {
 /// Background reaper: every 30 s, stop servers idle past keep-warm.
 /// No-op when unset (forever). Started once at service boot.
 pub fn spawn_server_reaper(data_dir: PathBuf) {
-    let _ = crate::runtime::spawn_dedicated("server-reaper", move || loop {
-        std::thread::sleep(Duration::from_secs(30));
-        let keep = crate::store::Store::open(&data_dir.join("state.db"))
-            .map(|store| store.load_settings().stt.keep_warm.clone())
-            .unwrap_or_default();
-        let Some(timeout) = keep_warm_timeout(&keep) else {
-            continue;
-        };
-        let mut map = match servers().lock() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let mut dead = Vec::new();
-        for (name, s) in map.iter_mut() {
-            if s.last_used.elapsed() < timeout {
+    let _ = crate::runtime::spawn_dedicated("server-reaper", move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(30));
+            let keep = crate::store::Store::open(&data_dir.join("state.db"))
+                .map(|store| store.load_settings().stt.keep_warm.clone())
+                .unwrap_or_default();
+            let Some(timeout) = keep_warm_timeout(&keep) else {
                 continue;
-            }
-            let alive = s.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
-            if !alive {
+            };
+            let mut map = match servers().lock() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let mut dead = Vec::new();
+            for (name, s) in map.iter_mut() {
+                if s.last_used.elapsed() < timeout {
+                    continue;
+                }
+                let alive = s.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
+                if !alive {
+                    dead.push(name.clone());
+                    continue;
+                }
+                eprintln!("[stt] keep-warm expired for {name}; stopping");
+                let _ = s.child.kill();
+                let _ = s.child.wait();
+                pidfile_remove(&data_dir, name);
                 dead.push(name.clone());
-                continue;
             }
-            eprintln!("[stt] keep-warm expired for {name}; stopping");
-            let _ = s.child.kill();
-            let _ = s.child.wait();
-            pidfile_remove(&data_dir, name);
-            dead.push(name.clone());
-        }
-        for name in dead {
-            map.remove(&name);
+            for name in dead {
+                map.remove(&name);
+            }
         }
     });
 }
@@ -776,8 +779,8 @@ fn ensure_server(
         },
     );
     drop(map); // the wait loop re-locks per iteration (non-reentrant)
-               // Wait for listen, but fail fast when the child dies first (e.g.
-               // cuda binary with no CUDA libs exits 127 in ms — no 20 s mystery).
+    // Wait for listen, but fail fast when the child dies first (e.g.
+    // cuda binary with no CUDA libs exits 127 in ms — no 20 s mystery).
     let start = Instant::now();
     loop {
         if port_open(port) {

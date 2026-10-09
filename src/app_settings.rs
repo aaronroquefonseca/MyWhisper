@@ -13,8 +13,8 @@ use gtk4::{
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use super::app::{apply_theme, log_theme_state, AppState};
-use crate::clipboard::{copy_backend_deps, paste_backend_deps, probe, BackendStatus};
+use super::app::{AppState, apply_theme, log_theme_state};
+use crate::clipboard::{BackendStatus, copy_backend_deps, paste_backend_deps, probe};
 use crate::i18n::{tr, trf};
 use crate::settings::{CopyBackend, PasteBackend, PasteCombo, Theme};
 
@@ -2861,7 +2861,6 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
             gtk4::glib::ControlFlow::Continue
         });
     }
-
 
     // ---- Speculative streaming (whisper only, opt-in) ----
     // Background passes + local agreement while held, tail decode on

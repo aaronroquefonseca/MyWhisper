@@ -15,8 +15,8 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 // ---------------------------------------------------------------- registry
@@ -147,8 +147,7 @@ pub const WHISPER_MODELS: &[ModelEntry] = &[
         size_label: "1.6GB",
         size_mb: 1600,
         expected_bytes: Some(1_670_000_000),
-        download_url:
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+        download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
         extract_dir: None,
         required_files: &[],
         runtime: None,
@@ -584,8 +583,8 @@ static DOWNLOADS: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<String, (DlSnapshot, Arc<AtomicBool>)>>,
 > = std::sync::OnceLock::new();
 
-fn downloads(
-) -> &'static std::sync::Mutex<std::collections::HashMap<String, (DlSnapshot, Arc<AtomicBool>)>> {
+fn downloads()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, (DlSnapshot, Arc<AtomicBool>)>> {
     DOWNLOADS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 

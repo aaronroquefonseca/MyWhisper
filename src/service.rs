@@ -277,24 +277,26 @@ pub fn spawn_heartbeat(state_dir: PathBuf) {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let pid = std::process::id();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(5));
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        let body = serde_json::json!({
-            "pid": pid,
-            "version": crate::APP_VERSION,
-            "boot": boot,
-            "beat": now,
-            "engine_failures": crate::transcribe::engine_failures(),
-            "hotkeys_listening": crate::transcribe::hotkeys_listening(),
-        });
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(5));
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let body = serde_json::json!({
+                "pid": pid,
+                "version": crate::APP_VERSION,
+                "boot": boot,
+                "beat": now,
+                "engine_failures": crate::transcribe::engine_failures(),
+                "hotkeys_listening": crate::transcribe::hotkeys_listening(),
+            });
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&path, body.to_string());
         }
-        let _ = std::fs::write(&path, body.to_string());
     });
 }
 

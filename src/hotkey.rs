@@ -15,8 +15,8 @@ use evdev::{Device, EventSummary, EventType, KeyCode};
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::FileTypeExt;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
