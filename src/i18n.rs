@@ -338,6 +338,22 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Can't start: add a local option to the chain and enable it.",
             "No se puede iniciar: añade una opción local a la cadena y actívala.",
         ),
+        "servers.net.note" => (
+            "Not compatible with Whistle (no server: it runs once per dictation).",
+            "No compatible con Whistle (sin servidor: se ejecuta una vez por dictado).",
+        ),
+        "section.network" => ("Network", "Red"),
+        "row.netport" => ("Server port", "Puerto del servidor"),
+        "net.port.empty" => ("Empty = default", "Vacío = predeterminado"),
+        "net.port.tip" => (
+            "Empty = default (whisper 8080, sherpa-online 6006, sherpa-offline 6007). Set = that port for whichever server runs. Applies on next server start.",
+            "Vacío = predeterminado (whisper 8080, sherpa-online 6006, sherpa-offline 6007). Si se indica, ese puerto para el servidor que se ejecute. Se aplica al próximo arranque.",
+        ),
+        "row.lanexpose" => ("Expose on local network", "Exponer en la red local"),
+        "row.lanexpose.note" => (
+            "Except for Sherpa: Sherpa always listens on all interfaces, so disabling this option won't take effect for Sherpa.",
+            "Excepto Sherpa: Sherpa siempre escucha en todas las interfaces, así que desactivar esta opción no tendrá efecto en Sherpa.",
+        ),
         "sync.svc.switch" => ("Sync engine", "Motor de sincronización"),
         "sync.svc.note" => (
             "systemd owns the service process; this only gates the engine. Applies at boot.",

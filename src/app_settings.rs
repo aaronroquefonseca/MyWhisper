@@ -2019,7 +2019,10 @@ fn refresh_server_widgets(state: &Rc<AppState>, status: &Label, stop: &Button, c
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_default();
-    let running = crate::transcribe::server_status(&data_dir);
+    let running = {
+        let net = crate::transcribe::server_net(&s.stt);
+        crate::transcribe::server_status(&data_dir, &net)
+    };
     if running.is_empty() {
         status.set_text(tr("server.none"));
     } else {
@@ -2590,6 +2593,69 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         rows.append(&b);
         (status, stop, cold)
     };
+    // ---- Network subsection: one port + LAN exposure ----
+    // One server runs at a time, so one port suffices: empty =
+    // each engine's default, set = that port for whichever runs.
+    {
+        let t = Label::new(Some(tr("section.network")));
+        t.add_css_class("section-title");
+        t.set_xalign(0.0);
+        t.set_margin_top(12);
+        rows.append(&t);
+    }
+    {
+        let note = Label::new(Some(tr("servers.net.note")));
+        note.add_css_class("dim");
+        note.set_xalign(0.0);
+        note.set_wrap(true);
+        rows.append(&note);
+    }
+    {
+        let (b, _) = row(tr("row.netport"));
+        let e = Entry::new();
+        e.set_text(&state.settings.borrow().stt.server_port);
+        e.set_placeholder_text(Some(tr("net.port.empty")));
+        e.set_tooltip_text(Some(tr("net.port.tip")));
+        e.set_hexpand(true);
+        e.set_max_width_chars(8);
+        {
+            let state = state.clone();
+            e.connect_changed(move |e| {
+                // Digits only; anything else falls back to
+                // default at resolve time anyway.
+                let clean: String = e.text().chars().filter(|c| c.is_ascii_digit()).collect();
+                if clean != e.text() {
+                    e.set_text(&clean);
+                    return;
+                }
+                state.settings.borrow_mut().stt.server_port = clean;
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&e);
+        rows.append(&b);
+    }
+    {
+        let (b, _) = row(tr("row.lanexpose"));
+        let sw = Switch::new();
+        sw.set_active(state.settings.borrow().stt.lan_expose);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state.settings.borrow_mut().stt.lan_expose = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+        let note = Label::new(Some(tr("row.lanexpose.note")));
+        note.add_css_class("dim");
+        note.set_xalign(0.0);
+        note.set_wrap(true);
+        rows.append(&note);
+    }
     root.append(&card);
     {
         // Live status: the service owns the servers, so poll the

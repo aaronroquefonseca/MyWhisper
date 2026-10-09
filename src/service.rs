@@ -183,11 +183,13 @@ pub fn spawn_hotkey_watcher(
                         let settings = store.load_settings();
                         match crate::transcribe::plan_for(&settings.stt, &data_dir) {
                             Ok(plan) => {
+                                let net = crate::transcribe::server_net(&settings.stt);
                                 let _ = crate::transcribe::ensure_for_plan(
                                     &plan,
                                     &data_dir,
                                     settings.stt.gpu_backend,
                                     settings.stt.sherpa_backend,
+                                    &net,
                                 );
                             }
                             Err(e) => {

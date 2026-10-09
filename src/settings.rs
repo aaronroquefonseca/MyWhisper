@@ -461,6 +461,19 @@ pub struct SttSettings {
     /// servers idle longer are stopped. Server families only.
     #[serde(default)]
     pub keep_warm: String,
+    /// Server port ("" = each engine's default: whisper 8080,
+    /// sherpa-online 6006, sherpa-offline 6007; set = that port for
+    /// whichever server runs — only one runs at a time). Whistle
+    /// has no server: network options don't apply to it.
+    #[serde(default)]
+    pub server_port: String,
+    /// Expose servers on the LAN (0.0.0.0) instead of loopback.
+    /// Default off. Whisper-only in practice: the sherpa binaries
+    /// have no bind flag and always listen on 0.0.0.0 (upstream),
+    /// so this can't restrict them — reported, not silently
+    /// papered over.
+    #[serde(default)]
+    pub lan_expose: bool,
     pub live_preview: bool,
     /// Manual GPU backend choice (never auto-switched).
     pub gpu_backend: GpuBackendSetting,
@@ -499,6 +512,8 @@ impl Default for SttSettings {
             spec_overlap_secs: 1.0,
             auto_start_server: true,
             keep_warm: String::new(),
+            server_port: String::new(),
+            lan_expose: false,
             live_preview: false,
             gpu_backend: GpuBackendSetting::Cpu,
             sherpa_backend: SherpaBackendSetting::Cpu,

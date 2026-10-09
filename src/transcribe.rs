@@ -59,6 +59,31 @@ use crate::stt;
 const WHISPER_PORT: u16 = 8080;
 const SHERPA_ONLINE_PORT: u16 = 6006;
 const SHERPA_OFFLINE_PORT: u16 = 6007;
+
+/// Effective server bind + port override, resolved from settings
+/// once per utterance/ensure (see Network section). One server runs
+/// at a time, so one override suffices: set = that port for
+/// whichever engine runs; empty = each engine's default.
+/// Clients always dial loopback; only the whisper bind follows
+/// lan_expose — the sherpa binaries have no bind flag and always
+/// listen on 0.0.0.0 (upstream limitation, surfaced in the UI).
+#[derive(Debug, Clone)]
+pub struct ServerNet {
+    pub host: &'static str,
+    pub port_override: Option<u16>,
+}
+
+pub fn server_net(s: &SttSettings) -> ServerNet {
+    ServerNet {
+        host: if s.lan_expose { "0.0.0.0" } else { "127.0.0.1" },
+        port_override: s.server_port.trim().parse::<u16>().ok().filter(|p| *p != 0),
+    }
+}
+
+/// Port for one engine: the override when set, else its default.
+fn engine_port(net: &ServerNet, def: u16) -> u16 {
+    net.port_override.unwrap_or(def)
+}
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(20);
 const INFERENCE_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -497,7 +522,7 @@ unsafe fn libc_kill(pid: u32) {
 /// GUI-side status reads this cross-process: the GUI never owns the
 /// children, and a foreign server still serves traffic — reporting
 /// "none" while dictation works would be a lie.
-pub fn server_status(data_dir: &Path) -> Vec<(String, bool)> {
+pub fn server_status(data_dir: &Path, net: &ServerNet) -> Vec<(String, bool)> {
     let path = data_dir.join("servers.json");
     let map: HashMap<String, u32> = std::fs::read_to_string(&path)
         .ok()
@@ -505,9 +530,9 @@ pub fn server_status(data_dir: &Path) -> Vec<(String, bool)> {
         .unwrap_or_default();
     let mut out = Vec::new();
     for (name, port) in [
-        ("whisper", WHISPER_PORT),
-        ("sherpa-offline", SHERPA_OFFLINE_PORT),
-        ("sherpa-online", SHERPA_ONLINE_PORT),
+        ("whisper", engine_port(net, WHISPER_PORT)),
+        ("sherpa-offline", engine_port(net, SHERPA_OFFLINE_PORT)),
+        ("sherpa-online", engine_port(net, SHERPA_ONLINE_PORT)),
     ] {
         if !port_open(port) {
             continue;
@@ -858,17 +883,20 @@ fn ensure_whisper(
     backend: GpuBackendSetting,
     model: &Path,
     lang: &str,
+    net: &ServerNet,
 ) -> Result<(), String> {
     let bin = whisper_binary(data_dir, backend)?;
     let key = format!("{}|{}|{lang}", bin.display(), model.display());
     let model_arg = model.to_string_lossy().to_string();
     let lang_arg = lang.to_string();
     let ld_path = server_ld_path(data_dir, &bin);
+    let whisper_port = engine_port(net, WHISPER_PORT);
+    let whisper_host = net.host;
     ensure_server(
         data_dir,
         "whisper",
         key,
-        WHISPER_PORT,
+        whisper_port,
         || {
             let (out, err) = server_logs("whisper-server");
             let mut cmd = Command::new(&bin);
@@ -877,9 +905,9 @@ fn ensure_whisper(
                 "--model",
                 &model_arg,
                 "--host",
-                "127.0.0.1",
+                whisper_host,
                 "--port",
-                &WHISPER_PORT.to_string(),
+                &whisper_port.to_string(),
                 "--language",
                 &lang_arg,
                 "--threads",
@@ -902,7 +930,7 @@ fn ensure_whisper(
         .unwrap_or(true);
     if swap {
         drop(map);
-        whisper_load(model)?;
+        whisper_load(model, whisper_port)?;
         let mut map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
         if let Some(s) = map.get_mut("whisper") {
             s.loaded_model = Some(model.to_path_buf());
@@ -949,11 +977,11 @@ fn http_client() -> Result<reqwest::blocking::Client, String> {
         .map_err(|e| format!("http client: {e}"))
 }
 
-fn whisper_load(model: &Path) -> Result<(), String> {
+fn whisper_load(model: &Path, port: u16) -> Result<(), String> {
     let boundary = "mywhisperload";
     let body = multipart_body(boundary, &[("model", &model.to_string_lossy())], None);
     let res = http_client()?
-        .post(format!("http://127.0.0.1:{WHISPER_PORT}/load"))
+        .post(format!("http://127.0.0.1:{port}/load"))
         .header(
             "Content-Type",
             format!("multipart/form-data; boundary={boundary}"),
@@ -1026,6 +1054,7 @@ fn ensure_sherpa_offline(
     data_dir: &Path,
     backend: SherpaBackendSetting,
     model_dir: &Path,
+    net: &ServerNet,
 ) -> Result<(), String> {
     let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-offline-websocket-server")?;
     let words = load_hint_words(data_dir);
@@ -1039,11 +1068,12 @@ fn ensure_sherpa_offline(
     };
     let key = format!("{}|{}|{hw_hash}", bin.display(), model_dir.display());
     let (bin_s, dir_s) = (bin.clone(), model_dir.to_path_buf());
+    let offline_port = engine_port(net, SHERPA_OFFLINE_PORT);
     ensure_server(
         data_dir,
         "sherpa-offline",
         key,
-        SHERPA_OFFLINE_PORT,
+        offline_port,
         || {
             let f = |n: &str| dir_s.join(n).to_string_lossy().to_string();
             let (out, err) = server_logs("sherpa-offline-server");
@@ -1056,8 +1086,9 @@ fn ensure_sherpa_offline(
                 SherpaBackendSetting::Cpu => "--provider=cpu",
             }
             .to_string();
+            // No --host upstream: sherpa always binds 0.0.0.0.
             let mut args = vec![
-                format!("--port={SHERPA_OFFLINE_PORT}"),
+                format!("--port={offline_port}"),
                 provider_flag,
                 format!("--tokens={}", f("tokens.txt")),
                 format!("--encoder={}", f("encoder.int8.onnx")),
@@ -1075,7 +1106,7 @@ fn ensure_sherpa_offline(
                 .spawn()
                 .map_err(|e| format!("spawn sherpa offline server: {e}"))
         },
-        probe_sherpa_offline,
+        move || probe_sherpa_offline(offline_port),
     )
 }
 
@@ -1083,6 +1114,7 @@ fn ensure_sherpa_online(
     data_dir: &Path,
     backend: SherpaBackendSetting,
     model_dir: &Path,
+    net: &ServerNet,
 ) -> Result<(), String> {
     let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-online-websocket-server")?;
     let words = load_hint_words(data_dir);
@@ -1096,11 +1128,12 @@ fn ensure_sherpa_online(
     };
     let key = format!("{}|{}|{hw_hash}", bin.display(), model_dir.display());
     let (bin_s, dir_s) = (bin.clone(), model_dir.to_path_buf());
+    let online_port = engine_port(net, SHERPA_ONLINE_PORT);
     ensure_server(
         data_dir,
         "sherpa-online",
         key,
-        SHERPA_ONLINE_PORT,
+        online_port,
         || {
             let f = |n: &str| dir_s.join(n).to_string_lossy().to_string();
             let (out, err) = server_logs("sherpa-online-server");
@@ -1112,8 +1145,9 @@ fn ensure_sherpa_online(
                 SherpaBackendSetting::Cpu => "--provider=cpu",
             }
             .to_string();
+            // No --host upstream: sherpa always binds 0.0.0.0.
             let mut args = vec![
-                format!("--port={SHERPA_ONLINE_PORT}"),
+                format!("--port={online_port}"),
                 provider_flag,
                 format!("--tokens={}", f("tokens.txt")),
                 format!("--encoder={}", f("encoder.int8.onnx")),
@@ -1131,7 +1165,7 @@ fn ensure_sherpa_online(
                 .spawn()
                 .map_err(|e| format!("spawn sherpa online server: {e}"))
         },
-        probe_sherpa_online,
+        move || probe_sherpa_online(online_port),
     )
 }
 
@@ -1187,17 +1221,17 @@ fn sherpa_text(msg: &str) -> Result<String, String> {
 /// Tiny-decode readiness probes: 0.5 s of silence must come back
 /// within 60 s. Catches "port open, model still loading" (sherpa
 /// listens before the recognizer is ready).
-fn probe_sherpa_offline() -> Result<(), String> {
+fn probe_sherpa_offline(port: u16) -> Result<(), String> {
     let silence = vec![0.0f32; 8000];
     eprintln!("[stt] sherpa-offline probe: 0.5s silence");
-    let text = sherpa_offline_transcribe_inner(&silence, Duration::from_secs(60))?;
+    let text = sherpa_offline_transcribe_inner(&silence, Duration::from_secs(60), port)?;
     eprintln!("[stt] sherpa-offline probe ok (reply: {text:?})");
     Ok(())
 }
 
-fn probe_sherpa_online() -> Result<(), String> {
+fn probe_sherpa_online(port: u16) -> Result<(), String> {
     eprintln!("[stt] sherpa-online probe: 0.5s silence");
-    let mut s = OnlineSession::open_with(SHERPA_ONLINE_PORT, Duration::from_secs(60))?;
+    let mut s = OnlineSession::open_with(port, Duration::from_secs(60))?;
     s.send_chunk(&vec![0.0f32; 8000])?;
     let text = s.finish()?;
     eprintln!("[stt] sherpa-online probe ok (reply: {text:?})");
@@ -1753,15 +1787,16 @@ fn pump_whistle(
 }
 
 /// Offline (whole-utterance) transcription over one WS connection.
-pub fn sherpa_offline_transcribe(samples_16k: &[f32]) -> Result<String, String> {
-    sherpa_offline_transcribe_inner(samples_16k, INFERENCE_TIMEOUT)
+pub fn sherpa_offline_transcribe(samples_16k: &[f32], port: u16) -> Result<String, String> {
+    sherpa_offline_transcribe_inner(samples_16k, INFERENCE_TIMEOUT, port)
 }
 
 fn sherpa_offline_transcribe_inner(
     samples_16k: &[f32],
     read_timeout: Duration,
+    port: u16,
 ) -> Result<String, String> {
-    let mut ws = ws_connect(SHERPA_OFFLINE_PORT, read_timeout)?;
+    let mut ws = ws_connect(port, read_timeout)?;
     // [rate u32-LE][BYTE count u32-LE][float32…], ≤10 KiB per message.
     // The count is BYTES (samples*4): the server heap-sizes its buffer
     // from it and overflows on excess, so this must be exact.
@@ -1806,7 +1841,7 @@ fn whisper_json_text(v: &serde_json::Value) -> String {
         .unwrap_or_default()
 }
 
-pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>) -> Result<String, String> {
+pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>, port: u16) -> Result<String, String> {
     let boundary = "mywhisperwav";
     let mut fields = vec![("temperature", "0.0"), ("response_format", "json")];
     let prompt_owned;
@@ -1822,7 +1857,7 @@ pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>) -> Result<String, 
         Some(("file", "audio.wav", "audio/wav", wav)),
     );
     let res = http_client()?
-        .post(format!("http://127.0.0.1:{WHISPER_PORT}/inference"))
+        .post(format!("http://127.0.0.1:{port}/inference"))
         .header(
             "Content-Type",
             format!("multipart/form-data; boundary={boundary}"),
@@ -2027,6 +2062,7 @@ fn run_spec(
     update_secs: f32,
     overlap: usize,
     tx: mpsc::Sender<(String, usize, Vec<f32>)>,
+    whisper_port: u16,
 ) {
     let words = crate::store::Store::open(&data_dir.join("state.db"))
         .ok()
@@ -2060,7 +2096,7 @@ fn run_spec(
         }
         let window = crate::speculative::unconfirmed_window(&buffer, committed.1, overlap);
         let wav = wav_bytes_16k(&audio::f32_to_i16(&window));
-        match whisper_transcribe(&wav, prompt.clone()) {
+        match whisper_transcribe(&wav, prompt.clone(), whisper_port) {
             Ok(hyp) => {
                 let agreed = crate::speculative::confirm_prefix(&prev_hyp, &hyp);
                 if agreed.split_whitespace().count() > committed.0.split_whitespace().count() {
@@ -2109,6 +2145,8 @@ struct LiveUtterance {
     /// Overlap (16 kHz samples) for the speculative tail window.
     /// Zero when speculative passes are off.
     spec_overlap: usize,
+    /// Server bind + ports snapshot at press (Network section).
+    net: ServerNet,
 }
 
 static LIVE: OnceLock<Mutex<Option<LiveUtterance>>> = OnceLock::new();
@@ -2172,6 +2210,7 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
     let data_dir = data_dir.to_path_buf();
     let backend = stt.gpu_backend;
     let sherpa_backend = stt.sherpa_backend;
+    let warm_net = server_net(&stt);
     // Background warmup; the release worker re-ensures anyway.
     // Pool-submitted: a saturated system skips warmup instead of
     // dying (the worker will still try when the utterance ends).
@@ -2179,7 +2218,7 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
         let plan = plan.clone();
         let data_dir = data_dir.clone();
         if let Err(e) = crate::runtime::submit("stt-warmup", move || {
-            if let Err(e) = ensure_servers(&plan, &data_dir, backend, sherpa_backend) {
+            if let Err(e) = ensure_servers(&plan, &data_dir, backend, sherpa_backend, &warm_net) {
                 eprintln!("[stt] warmup: {e}");
             }
         }) {
@@ -2202,8 +2241,9 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
         let update = stt.spec_update_secs.clamp(0.5, 10.0);
         let overlap = (stt.spec_overlap_secs.clamp(0.0, 5.0) * 16_000.0) as usize;
         let sstop = spec_stop.clone();
+        let spec_port = engine_port(&server_net(&stt), WHISPER_PORT);
         if let Err(e) = crate::runtime::submit("stt-spec", move || {
-            run_spec(rec, sstop, data, update, overlap, tx);
+            run_spec(rec, sstop, data, update, overlap, tx, spec_port);
         }) {
             eprintln!("[stt] press: {e}");
             None
@@ -2218,7 +2258,8 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
         None
     };
     let result_rx = if plan.streaming() {
-        match OnlineSession::open().map(|mut session| {
+        let online_port = engine_port(&server_net(&stt), SHERPA_ONLINE_PORT);
+        match OnlineSession::open_with(online_port, INFERENCE_TIMEOUT).map(|mut session| {
             session.preview = stt.live_preview;
             session
         }) {
@@ -2302,6 +2343,7 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
         vad_gate: stt.vad_threshold,
         keep_audio,
         spec_overlap: (stt.spec_overlap_secs.clamp(0.0, 5.0) * 16_000.0) as usize,
+        net: server_net(&stt),
     });
 }
 
@@ -2555,10 +2597,17 @@ fn finish_session(
         &sess.data_dir,
         sess.backend,
         sess.sherpa_backend,
+        &sess.net,
     )
     .ok();
     for (name, plan) in &sess.fallbacks {
-        if let Err(e) = ensure_servers(plan, &sess.data_dir, sess.backend, sess.sherpa_backend) {
+        if let Err(e) = ensure_servers(
+            plan,
+            &sess.data_dir,
+            sess.backend,
+            sess.sherpa_backend,
+            &sess.net,
+        ) {
             eprintln!("[stt] fallback {name} not ready: {e}");
         }
     }
@@ -2618,14 +2667,16 @@ fn finish_session(
         let tail_wav = wav_bytes_16k(&audio::f32_to_i16(&tail));
         let prompt =
             crate::textnorm::dictionary_prompt(words, crate::textnorm::WHISPER_PROMPT_CHARS);
-        let out = whisper_transcribe(&tail_wav, prompt).map(|tail_text| {
-            let merged = crate::speculative::merge_tail(&committed, &tail_text);
-            eprintln!(
-                "[stt] release: tail decode took {:.1}s",
-                t0.elapsed().as_secs_f64()
-            );
-            empty_to_none(merged).map(|t| (t, secs, wav_of(&buf, sess.keep_audio)))
-        });
+        let out = whisper_transcribe(&tail_wav, prompt, engine_port(&sess.net, WHISPER_PORT)).map(
+            |tail_text| {
+                let merged = crate::speculative::merge_tail(&committed, &tail_text);
+                eprintln!(
+                    "[stt] release: tail decode took {:.1}s",
+                    t0.elapsed().as_secs_f64()
+                );
+                empty_to_none(merged).map(|t| (t, secs, wav_of(&buf, sess.keep_audio)))
+            },
+        );
         return out;
     }
     eprintln!("[stt] release: {} samples @ {} Hz", pcm.len(), rate);
@@ -2660,7 +2711,7 @@ fn finish_session(
     attempts.extend(sess.fallbacks.iter().map(|(n, p)| (n.clone(), p)));
     let mut last_err = String::new();
     for (name, plan) in attempts {
-        match transcribe_blocking(plan, &f32s, words) {
+        match transcribe_blocking(plan, &f32s, words, &sess.net) {
             Ok(r) => {
                 eprintln!(
                     "[stt] release: inference took {:.1}s ({name})",
@@ -2691,16 +2742,24 @@ fn empty_to_none(t: String) -> Option<String> {
     }
 }
 
-fn transcribe_blocking(plan: &Plan, f32s: &[f32], words: &[String]) -> Result<String, String> {
+fn transcribe_blocking(
+    plan: &Plan,
+    f32s: &[f32],
+    words: &[String],
+    net: &ServerNet,
+) -> Result<String, String> {
     match plan {
         Plan::WhisperHttp { .. } => {
             let wav = wav_bytes_16k(&audio::f32_to_i16(f32s));
             whisper_transcribe(
                 &wav,
                 crate::textnorm::dictionary_prompt(words, crate::textnorm::WHISPER_PROMPT_CHARS),
+                engine_port(net, WHISPER_PORT),
             )
         }
-        Plan::SherpaOffline { .. } => sherpa_offline_transcribe(f32s),
+        Plan::SherpaOffline { .. } => {
+            sherpa_offline_transcribe(f32s, engine_port(net, SHERPA_OFFLINE_PORT))
+        }
         Plan::WhistleCli {
             engine,
             model,
@@ -2708,7 +2767,8 @@ fn transcribe_blocking(plan: &Plan, f32s: &[f32], words: &[String]) -> Result<St
         } => whistle_transcribe(engine, model, f32s, words, lang),
         Plan::SherpaOnline { .. } => {
             // Release without a pump (shouldn't happen): one-shot.
-            let mut s = OnlineSession::open()?;
+            let mut s =
+                OnlineSession::open_with(engine_port(net, SHERPA_ONLINE_PORT), INFERENCE_TIMEOUT)?;
             for chunk in f32s.chunks(8000) {
                 s.send_chunk(chunk)?;
             }
@@ -2759,8 +2819,9 @@ pub fn ensure_for_plan(
     data_dir: &Path,
     gpu_backend: GpuBackendSetting,
     sherpa_backend: SherpaBackendSetting,
+    net: &ServerNet,
 ) -> Result<(), String> {
-    ensure_servers(plan, data_dir, gpu_backend, sherpa_backend)
+    ensure_servers(plan, data_dir, gpu_backend, sherpa_backend, net)
 }
 
 fn ensure_servers(
@@ -2768,16 +2829,17 @@ fn ensure_servers(
     data_dir: &Path,
     gpu_backend: GpuBackendSetting,
     sherpa_backend: SherpaBackendSetting,
+    net: &ServerNet,
 ) -> Result<(), String> {
     match plan {
         Plan::WhisperHttp { model_bin, lang } => {
-            ensure_whisper(data_dir, gpu_backend, model_bin, lang)
+            ensure_whisper(data_dir, gpu_backend, model_bin, lang, net)
         }
         Plan::SherpaOnline { model_dir } => {
-            ensure_sherpa_online(data_dir, sherpa_backend, model_dir)
+            ensure_sherpa_online(data_dir, sherpa_backend, model_dir, net)
         }
         Plan::SherpaOffline { model_dir } => {
-            ensure_sherpa_offline(data_dir, sherpa_backend, model_dir)
+            ensure_sherpa_offline(data_dir, sherpa_backend, model_dir, net)
         }
         // CLI per utterance: nothing to keep running.
         Plan::WhistleCli { .. } => Ok(()),
@@ -3155,6 +3217,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn server_net_defaults_and_overrides() {
+        let s = SttSettings::default();
+        let net = server_net(&s);
+        assert_eq!(net.host, "127.0.0.1");
+        assert_eq!(net.port_override, None);
+        assert_eq!(engine_port(&net, 8080), 8080);
+        let mut s = s;
+        s.server_port = "9090".to_string();
+        s.lan_expose = true;
+        let net = server_net(&s);
+        assert_eq!(net.host, "0.0.0.0");
+        assert_eq!(engine_port(&net, 6006), 9090);
+        s.server_port = "abc".to_string(); // invalid -> no override
+        assert_eq!(server_net(&s).port_override, None);
+        s.server_port = "0".to_string(); // 0 -> no override
+        assert_eq!(server_net(&s).port_override, None);
+    }
+
+    #[test]
     fn multipart_shape() {
         let body = multipart_body(
             "b",
@@ -3265,7 +3346,7 @@ mod tests {
         let r = rec.clone();
         let s = stop.clone();
         let data = crate::paths::AppPaths::create().unwrap().data_dir;
-        std::thread::spawn(move || run_spec(r, s, data, 1.0, 16_000, tx));
+        std::thread::spawn(move || run_spec(r, s, data, 1.0, 16_000, tx, 8080));
         std::thread::sleep(Duration::from_secs(5));
         stop.store(true, Ordering::Relaxed);
         let (committed, clen, buf) = rx.recv_timeout(Duration::from_secs(120)).unwrap();
@@ -3441,9 +3522,19 @@ mod tests {
             eprintln!("SKIP: orukeet not on disk");
             return;
         }
-        ensure_sherpa_offline(&data_dir, crate::settings::SherpaBackendSetting::Cpu, &dir)
-            .expect("spawn+probe");
-        let text = sherpa_offline_transcribe(&vec![0.0f32; 16_000]).expect("decode");
+        let net = ServerNet {
+            host: "127.0.0.1",
+            port_override: None,
+        };
+        ensure_sherpa_offline(
+            &data_dir,
+            crate::settings::SherpaBackendSetting::Cpu,
+            &dir,
+            &net,
+        )
+        .expect("spawn+probe");
+        let text =
+            sherpa_offline_transcribe(&vec![0.0f32; 16_000], SHERPA_OFFLINE_PORT).expect("decode");
         assert!(text.trim().is_empty(), "silence gave {text:?}");
     }
 }

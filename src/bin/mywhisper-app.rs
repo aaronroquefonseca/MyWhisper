@@ -205,10 +205,7 @@ fn run_headless(
                 Ok(store) => {
                     let settings = store.load_settings();
                     let local_on = settings.stt.entries.iter().any(|e| {
-                        matches!(
-                            e.kind,
-                            mywhisper::settings::SttEntryKind::Local
-                        ) && e.enabled
+                        matches!(e.kind, mywhisper::settings::SttEntryKind::Local) && e.enabled
                     });
                     if !settings.stt.auto_start_server || !local_on {
                         eprintln!("[stt] warmup skipped (lazy start)");
@@ -217,11 +214,13 @@ fn run_headless(
                     match mywhisper::transcribe::plan_for(&settings.stt, &data_dir) {
                         Ok(plan) => {
                             eprintln!("[stt] startup warmup: {}", plan.describe());
+                            let net = mywhisper::transcribe::server_net(&settings.stt);
                             if let Err(e) = mywhisper::transcribe::ensure_for_plan(
                                 &plan,
                                 &data_dir,
                                 settings.stt.gpu_backend,
                                 settings.stt.sherpa_backend,
+                                &net,
                             ) {
                                 eprintln!("[stt] startup warmup: {e}");
                             }
