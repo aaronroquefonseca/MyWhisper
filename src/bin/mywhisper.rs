@@ -1,5 +1,5 @@
 use gtk4::prelude::*;
-use mywhisper::app::{apply_theme, build_app_window, log_theme_state, AppState};
+use mywhisper::app::{AppState, apply_theme, build_app_window, log_theme_state};
 use std::rc::Rc;
 
 const APP_ID: &str = "com.mywhisper.App";
@@ -75,14 +75,12 @@ fn main() -> gtk4::glib::ExitCode {
         let discovered_ui = discovered.clone();
         // Single window: repeat launches remote-activate this instance;
         // focus the existing window instead of building another.
-        let window: Rc<std::cell::RefCell<Option<gtk4::ApplicationWindow>>> =
-            Rc::new(std::cell::RefCell::new(None));
         app.connect_activate(move |app| {
             eprintln!("[app] activate (frontend)");
             // Temporary update check: once per GUI launch, in the
             // background; the Home banner surfaces the result.
             mywhisper::update::check_for_updates();
-            if let Some(w) = window.borrow().as_ref() {
+            if let Some(w) = app.active_window() {
                 w.present();
                 return;
             }
@@ -113,14 +111,6 @@ fn main() -> gtk4::glib::ExitCode {
             log_theme_state();
             let win = build_app_window(app, &state, &page, &section);
             win.present();
-            {
-                let slot = window.clone();
-                win.connect_close_request(move |_| {
-                    slot.borrow_mut().take();
-                    gtk4::glib::Propagation::Proceed
-                });
-            }
-            *window.borrow_mut() = Some(win);
         });
         app.run_with_args::<&str>(&[])
     }

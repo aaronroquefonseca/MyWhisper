@@ -10,9 +10,9 @@ GTK4 + Rust, Linux/Wayland-first.
   systemd user service (`mywhisper.service`).
 - **Pill**: Wayland layer-shell overlay with live mic visualizer,
   streaming transcription preview and an animated Processing state.
-- **App** (`mywhisper`): desktop window — Home (health + history),
-  Insights (stats + heatmap), Dictionary (words + snippets), Speech
-  to Text, Language Models, Sync.
+- **App** (`mywhisper`): desktop window — Dictation (health + recent
+  history), Activity (stats + heatmap), Dictionary (words + spoken
+  snippets), Devices, and Settings (including transcription and text cleanup).
 - **Speech to Text**: chained options, top-down fallback. Local
   whisper (HTTP :8080), sherpa online/offline (websocket :6006/:6007),
   Whistle CLI, self-hosted (OpenAI-compat http or sherpa-protocol
@@ -81,6 +81,16 @@ cargo test
 ./target/debug/mywhisper --service   # background engine
 ./target/debug/mywhisper             # desktop app
 ```
+
+Preview the UI with disposable sample data:
+
+```bash
+cargo run --example ui_preview -- home light en
+cargo run --example ui_preview -- settings dark es 'Speech to Text'
+cargo run --example ui_preview -- home light en Preferences --smoke
+```
+
+See [UI/UX audit, design references, and control behavior](docs/UI_UX.md).
 
 ## System deps (Arch)
 

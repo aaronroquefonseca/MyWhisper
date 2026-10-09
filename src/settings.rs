@@ -1,10 +1,8 @@
 //! Application settings model.
 //!
 //! Plain data with serde support and opinionated defaults. The UI in
-//! `app_settings` initializes its widgets from this model; nothing is
-//! wired yet -- persistence, hotkey capture, device probing and all
-//! backends come later. Keep every future-tweakable knob here so the
-//! UI never grows parallel state.
+//! `app_settings` initializes and persists controls through this model.
+//! The background service observes the same stored preferences.
 
 use serde::{Deserialize, Serialize};
 
@@ -45,7 +43,7 @@ pub const DEFAULT_SYNC_PORT: u16 = 42973;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncSettings {
     /// Master sync switch (sync tab toggle): the service starts the
-    /// sync engine at boot only when on. systemd owns the process.
+    /// sync engine only when on, and watches changes. systemd owns the process.
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// This device's display name shown to peers.

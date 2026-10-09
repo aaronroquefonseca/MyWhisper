@@ -8,9 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
-/// Overlay lifecycle states. Only `Listening` and `Assistant` have
-/// meaningful UI in this proof-of-concept; the rest exist so the
-/// future state machine has a place to land.
+/// Recording indicator lifecycle: microphone feedback, transcription,
+/// expanded result, and error feedback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)] // Processing/Error are future states required by the POC spec.
 pub enum OverlayState {
@@ -110,6 +109,7 @@ struct Inner {
     compact: GtkBox,
     expanded: GtkBox,
     body: Label,
+    copy_button: Button,
     viz: Visualizer,
     state: Cell<OverlayState>,
     /// First-words reconfigure done for this utterance.
@@ -196,18 +196,18 @@ impl VoiceOverlay {
         // while new space opens above it.
         let expanded = GtkBox::new(Orientation::Vertical, 10);
         expanded.set_valign(gtk4::Align::End);
-        let title = Label::new(Some("Assistant"));
+        let title = Label::new(Some(crate::i18n::tr("overlay.title")));
         title.set_xalign(0.0);
         title.add_css_class("voice-title");
-        let body = Label::new(Some("This is a test of the expanded assistant."));
+        let body = Label::new(Some(crate::i18n::tr("overlay.empty")));
         body.set_xalign(0.0);
         body.set_wrap(true);
         body.set_max_width_chars(40);
         body.add_css_class("voice-body");
         let row = GtkBox::new(Orientation::Horizontal, 8);
         row.set_halign(gtk4::Align::Fill);
-        let do_btn = Button::with_label("Do something");
-        let collapse_btn = Button::with_label("Collapse");
+        let do_btn = Button::with_label(crate::i18n::tr("action.copy"));
+        let collapse_btn = Button::with_label(crate::i18n::tr("overlay.dismiss"));
         row.append(&do_btn);
         row.append(&collapse_btn);
         expanded.append(&title);
@@ -223,6 +223,7 @@ impl VoiceOverlay {
                 compact,
                 expanded,
                 body,
+                copy_button: do_btn.clone(),
                 viz,
                 state: Cell::new(OverlayState::Hidden),
                 live_configured: Cell::new(false),
@@ -246,12 +247,18 @@ impl VoiceOverlay {
             let o = overlay.clone();
             collapse_btn.connect_clicked(move |_| {
                 eprintln!("[poc] overlay button event: Collapse clicked");
-                o.set_state(OverlayState::Listening);
+                o.hide();
             });
         }
-        do_btn.connect_clicked(|_| {
-            eprintln!("[poc] overlay button event: Do-something clicked");
-        });
+        {
+            let o = overlay.clone();
+            do_btn.connect_clicked(move |button| {
+                match crate::clipboard::copy_text(&o.inner.body.text(), false) {
+                    Ok(()) => button.set_label(crate::i18n::tr("feedback.copied")),
+                    Err(_) => button.set_label(crate::i18n::tr("feedback.copyretry")),
+                }
+            });
+        }
 
         overlay
     }
@@ -421,6 +428,9 @@ impl VoiceOverlay {
     /// the variable-size proof: any content height/width is honored.
     pub fn set_assistant_text(&self, text: &str) {
         self.inner.body.set_text(text);
+        self.inner
+            .copy_button
+            .set_label(crate::i18n::tr("action.copy"));
         eprintln!("[poc] assistant text set ({} chars)", text.len());
         if self.inner.state.get() == OverlayState::Assistant && self.inner.window.is_visible() {
             let (tw, th) = self.measure_content();
