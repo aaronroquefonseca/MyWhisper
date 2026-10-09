@@ -213,6 +213,27 @@ fn fill_heat(heat_col: &GtkBox, state: &Rc<AppState>) {
         }
     }
     heat_col.append(&grid);
+
+    // Keep the key attached to the chart, including when it scrolls.
+    let legend = GtkBox::new(Orientation::Horizontal, 4);
+    legend.set_halign(gtk4::Align::End);
+    legend.set_margin_top(6);
+    let less = Label::new(Some(tr("insights.less")));
+    less.add_css_class("dim");
+    legend.append(&less);
+    for level in 0..4 {
+        let sw = GtkBox::new(Orientation::Horizontal, 0);
+        sw.set_size_request(14, 14);
+        sw.add_css_class("heat");
+        if level > 0 {
+            sw.add_css_class(&format!("heat-{level}"));
+        }
+        legend.append(&sw);
+    }
+    let more = Label::new(Some(tr("insights.more")));
+    more.add_css_class("dim");
+    legend.append(&more);
+    heat_col.append(&legend);
 }
 
 pub fn page(state: &Rc<AppState>) -> ScrolledWindow {
@@ -279,33 +300,16 @@ pub fn page(state: &Rc<AppState>) -> ScrolledWindow {
     heat_slot.set_hexpand(true);
     let heat_scroll = ScrolledWindow::new();
     heat_scroll.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Never);
+    heat_scroll.set_overlay_scrolling(false);
     heat_scroll.set_propagate_natural_height(true);
     heat_scroll.set_hexpand(true);
     heat_scroll.set_child(Some(&heat_slot));
     heat_center.append(&heat_scroll);
     let heat_col = GtkBox::new(Orientation::Vertical, 2);
+    heat_col.set_halign(gtk4::Align::Center);
     heat_slot.append(&heat_col);
 
     fill_heat(&heat_col, state);
-
-    // Legend: Less [swatches] More.
-    let legend = GtkBox::new(Orientation::Horizontal, 4);
-    let less = Label::new(Some(tr("insights.less")));
-    less.add_css_class("dim");
-    legend.append(&less);
-    for level in 0..4 {
-        let sw = GtkBox::new(Orientation::Horizontal, 0);
-        sw.set_size_request(14, 14);
-        sw.add_css_class("heat");
-        if level > 0 {
-            sw.add_css_class(&format!("heat-{level}"));
-        }
-        legend.append(&sw);
-    }
-    let more = Label::new(Some(tr("insights.more")));
-    more.add_css_class("dim");
-    legend.append(&more);
-    card.append(&legend);
 
     col.append(&card);
 

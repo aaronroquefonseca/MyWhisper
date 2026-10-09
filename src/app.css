@@ -21,6 +21,7 @@ label { color: @app_fg; }
 .sidebar button.active label, .sidebar button.active image { color: @app_accent; }
 .settings-nav { padding: 24px 8px; background: @app_bg; }
 .settings-nav button { padding: 9px 10px; }
+.settings-note { color: @app_muted; font-size: 0.85em; padding: 4px 8px; }
 .app-title { font-weight: 700; font-size: 1.2em; padding: 0 6px 24px; }
 .sidebar-footer { color: @app_muted; font-size: 0.85em; padding: 12px 8px 4px; }
 .page { padding: 28px 28px 24px; }
@@ -57,6 +58,11 @@ button.suggested-action:hover { background: shade(@app_accent, 1.08); }
 button.destructive-action { color: @app_danger; }
 button.destructive-action label { color: @app_danger; }
 button.flat { background: transparent; border-color: transparent; }
+button.flat:hover { background: @app_borders; }
+button.flat:active { background: @app_selection; }
+/* Window controls already draw their own circular icon background. */
+headerbar windowcontrols button { background: transparent; border: none; box-shadow: none; padding: 0; min-width: 32px; min-height: 32px; border-radius: 50%; }
+headerbar windowcontrols button:hover, headerbar windowcontrols button:active { background: transparent; }
 button:disabled { opacity: 0.5; }
 button:focus-visible, entry:focus-within, dropdown:focus-visible, textview:focus-within { outline: 2px solid @app_accent; outline-offset: 2px; }
 entry, textview { background: @app_entry_bg; color: @app_fg; border: 1px solid @app_entry_border; border-radius: 8px; padding: 8px 10px; }

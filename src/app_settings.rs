@@ -4524,9 +4524,10 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
     let note = Label::new(Some(tr("settings.saved")));
     note.set_wrap(true);
     note.set_max_width_chars(18);
-    note.set_xalign(0.0);
-    note.add_css_class("sidebar-footer");
-    note.set_margin_top(16);
+    note.set_xalign(0.5);
+    note.set_justify(gtk4::Justification::Center);
+    note.add_css_class("settings-note");
+    note.set_margin_top(8);
     nav.append(&note);
     let set_active = Rc::new(move |active: &str| {
         for (b, id) in buttons.iter() {

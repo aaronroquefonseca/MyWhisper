@@ -79,6 +79,8 @@ Empty states distinguish no history yet, history saving disabled, and a search w
 
 There are no mutation controls. Words and dictations count retained, non-deleted, non-discarded records. WPM excludes recordings without measured duration. Current streak describes consecutive active local calendar days. The 24-week chart uses retained activity; hovering a cell shows its actual date and word count. Deleting history changes these totals.
 
+The compact calendar is centered within its card; its intensity key sits at the chart's lower right and scrolls with it in narrower windows. Flat secondary actions retain visible hover/pressed feedback, following [Libadwaita's flat-button behavior](https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/style-classes.html#flat). Header controls retain their native circular treatment without an extra button frame, consistent with [GNOME header bars](https://developer.gnome.org/hig/patterns/containers/header-bars.html). The automatic-saving note is centered directly below the settings section list to keep it visually attached to those controls.
+
 ### Dictionary
 
 | Control | Behavior |
