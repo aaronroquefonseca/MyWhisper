@@ -321,31 +321,45 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     }
     banner.append(&hk_switch);
     col.append(&banner);
+    // Temporary update notice (startup `gh` check): hidden unless a
+    // newer private release exists.
+    let update_label = Label::new(None);
+    update_label.add_css_class("dim");
+    update_label.set_xalign(0.0);
+    update_label.set_visible(false);
+    col.append(&update_label);
     let refresh_banner: Rc<dyn Fn()> = Rc::new({
         let dot = dot.clone();
         let banner_label = banner_label.clone();
+        let update_label = update_label.clone();
         let state_dir = state_dir.clone();
-        move || match crate::service::read_heartbeat(&state_dir) {
-            None => {
-                dot.set_text("●");
-                dot.add_css_class("cap-no");
-                dot.remove_css_class("cap-ok");
-                banner_label.set_text(tr("home.svc.off"));
+        move || {
+            if let Some(v) = crate::update::available_update() {
+                update_label.set_text(trf("home.update", &[("version", &v)]).as_str());
+                update_label.set_visible(true);
             }
-            Some(hb) => {
-                let fails = hb
-                    .get("engine_failures")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                dot.set_text("●");
-                if fails >= 3 {
+            match crate::service::read_heartbeat(&state_dir) {
+                None => {
+                    dot.set_text("●");
                     dot.add_css_class("cap-no");
                     dot.remove_css_class("cap-ok");
-                    banner_label.set_text(tr("home.svc.unhealthy"));
-                } else {
-                    dot.add_css_class("cap-ok");
-                    dot.remove_css_class("cap-no");
-                    banner_label.set_text(tr("home.svc.on"));
+                    banner_label.set_text(tr("home.svc.off"));
+                }
+                Some(hb) => {
+                    let fails = hb
+                        .get("engine_failures")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    dot.set_text("●");
+                    if fails >= 3 {
+                        dot.add_css_class("cap-no");
+                        dot.remove_css_class("cap-ok");
+                        banner_label.set_text(tr("home.svc.unhealthy"));
+                    } else {
+                        dot.add_css_class("cap-ok");
+                        dot.remove_css_class("cap-no");
+                        banner_label.set_text(tr("home.svc.on"));
+                    }
                 }
             }
         }

@@ -350,6 +350,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Vacío = predeterminado (whisper 8080, sherpa-online 6006, sherpa-offline 6007). Si se indica, ese puerto para el servidor que se ejecute. Se aplica al próximo arranque.",
         ),
         "row.lanexpose" => ("Expose on local network", "Exponer en la red local"),
+        "home.update" => (
+            "Update available: {version} — run update.sh to install it.",
+            "Actualización disponible: {version} — ejecuta update.sh para instalarla.",
+        ),
         "row.lanexpose.note" => (
             "Except for Sherpa: Sherpa always listens on all interfaces, so disabling this option won't take effect for Sherpa.",
             "Excepto Sherpa: Sherpa siempre escucha en todas las interfaces, así que desactivar esta opción no tendrá efecto en Sherpa.",

@@ -84,6 +84,9 @@ fn main() -> gtk4::glib::ExitCode {
             Rc::new(std::cell::RefCell::new(None));
         app.connect_activate(move |app| {
             eprintln!("[app] activate (frontend)");
+            // Temporary update check: once per GUI launch, in the
+            // background; the Home banner surfaces the result.
+            mywhisper::update::check_for_updates();
             if let Some(w) = window.borrow().as_ref() {
                 w.present();
                 return;

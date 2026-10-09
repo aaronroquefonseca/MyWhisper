@@ -27,4 +27,5 @@ pub mod store;
 pub mod stt;
 pub mod textnorm;
 pub mod transcribe;
+pub mod update;
 pub mod viz;
