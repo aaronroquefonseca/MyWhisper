@@ -8,8 +8,8 @@ use crate::i18n::tr;
 use gtk4::prelude::*;
 use gtk4::{Application, ApplicationWindow, Box as GtkBox, Button, Label, Orientation, Stack};
 use std::rc::Rc;
-use std::sync::Once;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Once;
 
 use crate::settings::{AppSettings, HistoryEntry, Theme, UsageStats};
 
@@ -214,6 +214,10 @@ window {
     font-weight: 500;
 }
 .cap-no {
+    color: #e05252;
+    font-weight: 500;
+}
+.warn {
     color: #e05252;
     font-weight: 500;
 }

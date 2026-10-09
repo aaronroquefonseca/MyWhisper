@@ -2723,7 +2723,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     let (card, rows) = group(tr("group.spec"));
     {
         let note = Label::new(Some(tr("spec.note")));
-        note.add_css_class("dim");
+        note.add_css_class("warn");
         note.set_xalign(0.0);
         note.set_wrap(true);
         rows.append(&note);

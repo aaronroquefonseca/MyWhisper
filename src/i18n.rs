@@ -268,12 +268,15 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.language" => ("Language", "Idioma"),
         "row.vad" => ("Voice activity detection", "Detección de actividad de voz"),
         "row.vadthreshold" => ("VAD threshold", "Umbral VAD"),
-        "group.spec" => ("Speculative streaming", "Streaming especulativo"),
+        "group.spec" => (
+            "Speculative streaming for whisper",
+            "Streaming especulativo para whisper",
+        ),
         "spec.note" => (
             "Experimental, not recommended. Decodes while you speak to reduce latency on long holds.",
             "Experimental, no recomendado. Decodifica mientras hablas para reducir la latencia en dictados largos.",
         ),
-        "row.specenable" => ("Speculative passes (whisper)", "Pasadas especulativas (whisper)"),
+        "row.specenable" => ("Speculative passes", "Pasadas especulativas"),
         "row.specupdate" => ("Update every (s)", "Actualizar cada (s)"),
         "row.specoverlap" => ("Overlap (s)", "Solapamiento (s)"),
         "row.livepreview" => ("Live transcription preview", "Vista previa en vivo"),
