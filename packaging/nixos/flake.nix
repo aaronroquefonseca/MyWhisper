@@ -6,7 +6,7 @@
   outputs = { self, nixpkgs }: let
     system = "x86_64-linux";
     pkgs = import nixpkgs { inherit system; };
-    version = "0.9.2";
+    version = "0.9.3";
     mywhisper = pkgs.stdenv.mkDerivation {
       pname = "mywhisper";
       inherit version;
