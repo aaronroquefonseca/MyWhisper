@@ -300,7 +300,6 @@ pub fn page(state: &Rc<AppState>) -> ScrolledWindow {
     heat_slot.set_hexpand(true);
     let heat_scroll = ScrolledWindow::new();
     heat_scroll.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Never);
-    heat_scroll.set_overlay_scrolling(false);
     heat_scroll.set_propagate_natural_height(true);
     heat_scroll.set_hexpand(true);
     heat_scroll.set_child(Some(&heat_slot));
