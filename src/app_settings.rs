@@ -58,7 +58,6 @@ fn row(label: &str) -> (GtkBox, Label) {
     (b, l)
 }
 
-
 fn spin_row(parent: &GtkBox, label: &str, value: f64, min: f64, max: f64, step: f64) {
     let (b, _) = row(label);
     let s = SpinButton::with_range(min, max, step);
@@ -109,7 +108,7 @@ fn delete_opts() -> [&'static str; 7] {
 
 /// Save settings without touching the hotkey listener (pill and
 /// preference changes propagate to the service through the DB).
-fn persist_prefs(state: Rc<AppState>) -> Rc<dyn Fn()> {
+pub(crate) fn persist_prefs(state: Rc<AppState>) -> Rc<dyn Fn()> {
     Rc::new(move || {
         let settings = state.settings.borrow();
         if let Err(e) = state.store.save_settings(&settings) {
@@ -2004,6 +2003,52 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
     }
 }
 
+/// Servers row liveness: status text + Stop iff one runs, else
+/// Cold start (greyed out without an enabled local option). Called
+/// from the page refresh and from a 2 s poll (the service owns the
+/// servers, the GUI only reads the pidfile).
+fn refresh_server_widgets(state: &Rc<AppState>, status: &Label, stop: &Button, cold: &Button) {
+    let s = state.settings.borrow();
+    let local_on = s
+        .stt
+        .entries
+        .iter()
+        .any(|e| matches!(e.kind, crate::settings::SttEntryKind::Local) && e.enabled);
+    let data_dir = state
+        .db_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    let running = crate::transcribe::server_status(&data_dir);
+    if running.is_empty() {
+        status.set_text(tr("server.none"));
+    } else {
+        let names: Vec<String> = running
+            .iter()
+            .map(|(n, managed)| {
+                if *managed {
+                    n.clone()
+                } else {
+                    format!("{n} ({})", tr("server.external"))
+                }
+            })
+            .collect();
+        status.set_text(&format!("{}: {}", tr("server.running"), names.join(", ")));
+    }
+    // Stop only kills what we supervise (never a foreign process);
+    // Cold start hides while anything answers (ensure would just
+    // reuse it anyway).
+    let any_managed = running.iter().any(|(_, managed)| *managed);
+    stop.set_visible(any_managed);
+    cold.set_visible(running.is_empty());
+    cold.set_sensitive(local_on);
+    cold.set_tooltip_text(if local_on {
+        None
+    } else {
+        Some(tr("coldstart.tip.disabled"))
+    });
+}
+
 fn stt_page(state: &Rc<AppState>) -> GtkBox {
     let root = section_box(tr("settings.stt"), tr("settings.stt.sub"));
 
@@ -2451,6 +2496,114 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
             gtk4::glib::ControlFlow::Continue
         });
     }
+    // ---- Servers: autostart, keep-warm, status, stop/cold-start ----
+    // Only one local server runs at a time (one local
+    // configuration): ensuring one stops any other. Autostart warms
+    // it at service boot (only when a local option is enabled);
+    // otherwise the first press records instantly while the server
+    // spins up and the buffer catches up. Keep-warm stops idle
+    // servers ("" = forever). Buttons reach the service through
+    // one-shot DB commands (the GUI never owns the servers).
+    let (card, rows) = group(tr("group.sttservers"));
+    {
+        let note = Label::new(Some(tr("servers.note")));
+        note.add_css_class("dim");
+        note.set_xalign(0.0);
+        note.set_wrap(true);
+        rows.append(&note);
+    }
+    {
+        let (b, _) = row(tr("row.autostartserver"));
+        let sw = Switch::new();
+        sw.set_active(state.settings.borrow().stt.auto_start_server);
+        sw.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            sw.connect_state_set(move |_, active| {
+                state.settings.borrow_mut().stt.auto_start_server = active;
+                persist_prefs(state.clone())();
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        b.append(&sw);
+        rows.append(&b);
+    }
+    {
+        const WARM_OPTS: &[&str] = &["Forever", "1m", "5m", "15m", "30m", "1h"];
+        const WARM_VALUES: &[&str] = &["", "1m", "5m", "15m", "30m", "1h"];
+        let (b, _) = row(tr("row.keepwarm"));
+        let dd = DropDown::new(Some(StringList::new(WARM_OPTS)), None::<gtk4::Expression>);
+        dd.set_selected(
+            WARM_VALUES
+                .iter()
+                .position(|v| *v == state.settings.borrow().stt.keep_warm.as_str())
+                .unwrap_or(0) as u32,
+        );
+        dd.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            dd.connect_selected_notify(move |d| {
+                state.settings.borrow_mut().stt.keep_warm = WARM_VALUES
+                    .get(d.selected() as usize)
+                    .unwrap_or(&"")
+                    .to_string();
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&dd);
+        rows.append(&b);
+    }
+    let (srv_status, srv_stop, srv_cold) = {
+        let (b, _) = row(tr("row.serverstatus"));
+        let status = Label::new(None);
+        status.set_xalign(0.0);
+        status.set_hexpand(true);
+        b.append(&status);
+        let stop = Button::with_label(tr("action.stop"));
+        {
+            let state = state.clone();
+            stop.connect_clicked(move |_| {
+                let data_dir = state
+                    .db_path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_default();
+                // Best effort locally (no-op in the GUI process) +
+                // the command the service actually obeys.
+                crate::transcribe::drop_servers(&data_dir);
+                if let Ok(store) = crate::store::Store::open(&state.db_path) {
+                    let _ = store.set_server_cmd("stop");
+                }
+            });
+        }
+        b.append(&stop);
+        let cold = Button::with_label(tr("action.coldstart"));
+        {
+            let state = state.clone();
+            cold.connect_clicked(move |_| {
+                if let Ok(store) = crate::store::Store::open(&state.db_path) {
+                    let _ = store.set_server_cmd("start");
+                }
+            });
+        }
+        b.append(&cold);
+        rows.append(&b);
+        (status, stop, cold)
+    };
+    root.append(&card);
+    {
+        // Live status: the service owns the servers, so poll the
+        // pidfile (cheap) and flip Stop/Cold-start on our own.
+        let state = state.clone();
+        let srv_status = srv_status.clone();
+        let srv_stop = srv_stop.clone();
+        let srv_cold = srv_cold.clone();
+        gtk4::glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
+            refresh_server_widgets(&state, &srv_status, &srv_stop, &srv_cold);
+            gtk4::glib::ControlFlow::Continue
+        });
+    }
+
     // ---- Voice activity (wired except live preview) ----
     let (card, rows) = group(tr("group.vad"));
     // Language options follow the selected model: whisper reads the
@@ -2648,6 +2801,9 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         let whisper_box = whisper_box.clone();
         let sherpa_box = sherpa_box.clone();
         let needle_box = needle_box.clone();
+        let srv_status = srv_status.clone();
+        let srv_stop = srv_stop.clone();
+        let srv_cold = srv_cold.clone();
         move || {
             {
                 use crate::settings::LocalSttProvider;
@@ -2664,6 +2820,10 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 // No empty cards: runtimes show only when one of the
                 // engine boxes applies.
                 gpu_card.set_visible(whisper || sherpa || whistle);
+                drop(s);
+                // Servers: status + Stop iff one runs, else Cold start
+                // (greyed out without an enabled local option).
+                refresh_server_widgets(&state, &srv_status, &srv_stop, &srv_cold);
             }
             refresh_lang();
         }

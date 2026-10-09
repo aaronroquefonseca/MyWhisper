@@ -461,6 +461,35 @@ impl Store {
         Ok(n)
     }
 
+    /// One-shot service commands (GUI -> service): "stop"/"start"
+    /// STT servers. Consumed (deleted) on read; stale entries die at
+    /// service boot without running.
+    pub fn set_server_cmd(&self, cmd: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO kv (key, value) VALUES ('stt_server_cmd', ?1)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [cmd],
+        )?;
+        bump_gen(&self.conn);
+        Ok(())
+    }
+
+    pub fn take_server_cmd(&self) -> Option<String> {
+        let cmd: String = self
+            .conn
+            .query_row(
+                "SELECT value FROM kv WHERE key = 'stt_server_cmd'",
+                [],
+                |row| row.get(0),
+            )
+            .ok()?;
+        let _ = self
+            .conn
+            .execute("DELETE FROM kv WHERE key = 'stt_server_cmd'", []);
+        bump_gen(&self.conn);
+        Some(cmd)
+    }
+
     /// Distinct UTC days (epoch day numbers) with at least one entry,
     /// newest first. Feeds the streak calculation.
     pub fn active_days(&self) -> rusqlite::Result<Vec<i64>> {
@@ -1056,6 +1085,16 @@ pub struct PeerGossip {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn server_cmd_is_one_shot() {
+        let store = Store::open_memory().unwrap();
+        assert_eq!(store.take_server_cmd(), None);
+        store.set_server_cmd("stop").unwrap();
+        assert_eq!(store.take_server_cmd().as_deref(), Some("stop"));
+        // Consumed: second read finds nothing.
+        assert_eq!(store.take_server_cmd(), None);
+    }
+
     #[test]
     fn settings_engine_switch_roundtrip() {
         use crate::settings::LocalSttProvider;

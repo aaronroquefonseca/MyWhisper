@@ -44,6 +44,10 @@ pub const DEFAULT_SYNC_PORT: u16 = 42973;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncSettings {
+    /// Master sync switch (sync tab toggle): the service starts the
+    /// sync engine at boot only when on. systemd owns the process.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     /// This device's display name shown to peers.
     pub device_name: String,
     /// TCP port for incoming sync connections (0 = disabled).
@@ -53,6 +57,7 @@ pub struct SyncSettings {
 impl Default for SyncSettings {
     fn default() -> Self {
         Self {
+            enabled: true,
             device_name: String::new(),
             listen_port: DEFAULT_SYNC_PORT,
         }
@@ -279,6 +284,11 @@ pub struct HotkeySettings {
     /// toggle, longer ones hold. Default 150.
     #[serde(default = "default_smart_tap_ms")]
     pub smart_tap_ms: u64,
+    /// Master hotkey switch (banner toggle): off mutes all hotkey
+    /// events (presses never reach the pipeline). systemd owns the
+    /// process; this only gates input.
+    #[serde(default = "default_true")]
+    pub hotkeys_enabled: bool,
 }
 
 fn default_smart_tap_ms() -> u64 {
@@ -291,6 +301,7 @@ impl Default for HotkeySettings {
             dictation_hotkeys: default_dictation_hotkeys(),
             dictation_hotkey: String::new(),
             smart_tap_ms: default_smart_tap_ms(),
+            hotkeys_enabled: true,
         }
     }
 }
@@ -441,6 +452,15 @@ pub struct SttSettings {
     /// pass and the final tail.
     #[serde(default = "default_spec_overlap")]
     pub spec_overlap_secs: f32,
+    /// Start servers at service boot when a local option is enabled
+    /// (default on). Off = lazy: first press records instantly while
+    /// the server spins up, then the buffered audio feeds in.
+    #[serde(default = "default_true")]
+    pub auto_start_server: bool,
+    /// Keep-warm idle timeout («» = forever, else 1m/5m/15m/30m/1h):
+    /// servers idle longer are stopped. Server families only.
+    #[serde(default)]
+    pub keep_warm: String,
     pub live_preview: bool,
     /// Manual GPU backend choice (never auto-switched).
     pub gpu_backend: GpuBackendSetting,
@@ -477,6 +497,8 @@ impl Default for SttSettings {
             spec_enabled: false,
             spec_update_secs: 2.0,
             spec_overlap_secs: 1.0,
+            auto_start_server: true,
+            keep_warm: String::new(),
             live_preview: false,
             gpu_backend: GpuBackendSetting::Cpu,
             sherpa_backend: SherpaBackendSetting::Cpu,

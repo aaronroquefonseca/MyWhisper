@@ -46,8 +46,15 @@ fn main() -> gtk4::glib::ExitCode {
         let discovered: std::sync::Arc<
             std::sync::Mutex<std::collections::HashMap<String, mywhisper::net::Discovered>>,
         > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-        let _sync_port =
-            mywhisper::service::start_sync_engine(&paths, &store, &identity, discovered);
+        // Sync engine obeys its toggle (applies at boot: the stack
+        // is detached threads, unstoppable at runtime by design).
+        let sync_on = store.load_settings().sync.enabled;
+        let _sync_port = if sync_on {
+            mywhisper::service::start_sync_engine(&paths, &store, &identity, discovered)
+        } else {
+            eprintln!("[sync] disabled in settings (enable + restart service to apply)");
+            0
+        };
         let app = gtk4::Application::builder()
             .application_id(SERVICE_APP_ID)
             .build();
@@ -171,6 +178,20 @@ fn run_headless(
         eprintln!("[service] FATAL: {e}");
         return gtk4::glib::ExitCode::FAILURE;
     }
+    // Reap crash orphans first (pidfile), then start the keep-warm
+    // reaper. PDEATHSIG on every spawn is the real guarantee; this
+    // cleans up runs that died before it existed.
+    {
+        let db_path = paths.db_file();
+        let data_dir = db_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
+        mywhisper::transcribe::reap_stale_servers(&data_dir);
+        mywhisper::transcribe::spawn_server_reaper(data_dir);
+    }
+    // Service heartbeat for the home banner (5 s cadence).
+    mywhisper::service::spawn_heartbeat(paths.state_dir.clone());
     // Warm the configured STT engine now (model load takes seconds):
     // first press then only arms capture instead of cold-starting.
     {
@@ -183,6 +204,16 @@ fn run_headless(
             match mywhisper::store::Store::open(&db_path) {
                 Ok(store) => {
                     let settings = store.load_settings();
+                    let local_on = settings.stt.entries.iter().any(|e| {
+                        matches!(
+                            e.kind,
+                            mywhisper::settings::SttEntryKind::Local
+                        ) && e.enabled
+                    });
+                    if !settings.stt.auto_start_server || !local_on {
+                        eprintln!("[stt] warmup skipped (lazy start)");
+                        return;
+                    }
                     match mywhisper::transcribe::plan_for(&settings.stt, &data_dir) {
                         Ok(plan) => {
                             eprintln!("[stt] startup warmup: {}", plan.describe());

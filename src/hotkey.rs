@@ -406,6 +406,11 @@ fn poll_events(
                 continue;
             };
             // value 0 = release, 1 = press, 2 = repeat (ignored).
+            // Banner mute: when hotkeys are disabled, no event
+            // reaches the pipeline (presses are swallowed here).
+            if !crate::transcribe::hotkeys_listening() {
+                continue;
+            }
             match value {
                 1 => {
                     held.insert(key);

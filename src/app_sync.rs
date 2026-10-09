@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::app::AppState;
+use super::app_settings::persist_prefs;
 use crate::i18n::{tr, trf};
 
 fn short_id(node_id: &str) -> String {
@@ -369,9 +370,10 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     status.set_xalign(0.0);
     status.set_wrap(true);
 
-    // ---- Background service ----
-    // Hotkeys, sync and the pill live in the service process only.
-    // This card reports its state and starts/stops it on demand.
+    // ---- Sync engine ----
+    // systemd owns the service process; this toggle only decides
+    // whether it runs the sync engine. Applies at service boot (the
+    // stack is detached threads, unstoppable at runtime by design).
     let svc_card = GtkBox::new(Orientation::Vertical, 8);
     svc_card.add_css_class("card");
     let t = Label::new(Some(tr("sync.svc.title")));
@@ -379,53 +381,29 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     t.set_xalign(0.0);
     svc_card.append(&t);
     let svc_row = GtkBox::new(Orientation::Horizontal, 8);
-    let svc_label = Label::new(Some(""));
+    let svc_label = Label::new(Some(tr("sync.svc.switch")));
     svc_label.set_xalign(0.0);
     svc_label.set_hexpand(true);
     svc_row.append(&svc_label);
-    let svc_toggle = Button::with_label("");
-    svc_row.append(&svc_toggle);
-    svc_card.append(&svc_row);
-    col.append(&svc_card);
-    let refresh_svc: Rc<dyn Fn()> = Rc::new({
-        let state = state.clone();
-        let svc_label = svc_label.clone();
-        let svc_toggle = svc_toggle.clone();
-        move || {
-            // Re-probe the lock each refresh: the service may have
-            // been started/stopped outside this process.
-            let alive = state
-                .db_path
-                .parent()
-                .map(|d| crate::service::engine_running_paths(&d.join("engine.lock")))
-                .unwrap_or(false);
-            state.service_alive.set(alive);
-            if alive {
-                svc_label.set_text(tr("sync.svc.on"));
-                svc_toggle.set_label(tr("action.stop"));
-            } else {
-                svc_label.set_text(tr("sync.svc.off"));
-                svc_toggle.set_label(tr("action.start"));
-            }
-        }
-    });
-    refresh_svc();
+    let svc_switch = Switch::new();
+    svc_switch.set_active(state.settings.borrow().sync.enabled);
+    svc_switch.set_valign(gtk4::Align::Center);
     {
         let state = state.clone();
-        let refresh_svc = refresh_svc.clone();
-        svc_toggle.connect_clicked(move |_| {
-            let want_running = !state.service_alive.get();
-            match crate::service::set_service_running(want_running) {
-                Ok(msg) => eprintln!("[app] {msg}"),
-                Err(e) => eprintln!("[app] service toggle failed: {e}"),
-            }
-            // Re-probe after a beat; systemctl is async.
-            let refresh_svc = refresh_svc.clone();
-            gtk4::glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
-                refresh_svc()
-            });
+        svc_switch.connect_state_set(move |_, active| {
+            state.settings.borrow_mut().sync.enabled = active;
+            persist_prefs(state.clone())();
+            gtk4::glib::Propagation::Proceed
         });
     }
+    svc_row.append(&svc_switch);
+    svc_card.append(&svc_row);
+    let svc_note = Label::new(Some(tr("sync.svc.note")));
+    svc_note.add_css_class("dim");
+    svc_note.set_xalign(0.0);
+    svc_note.set_wrap(true);
+    svc_card.append(&svc_note);
+    col.append(&svc_card);
 
     // ---- This device ----
     let card = GtkBox::new(Orientation::Vertical, 8);
@@ -664,17 +642,14 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     });
     refresh_all(&nearby_list, &req_list, &list);
 
-    // Background discovery + incoming requests repaint the lists,
-    // plus the service status banner.
+    // Background discovery + incoming requests repaint the lists.
     {
         let refresh_all = refresh_all.clone();
         let nearby_list = nearby_list.clone();
         let req_list = req_list.clone();
         let list = list.clone();
-        let refresh_svc = refresh_svc.clone();
         gtk4::glib::timeout_add_local(Duration::from_secs(2), move || {
             refresh_all(&nearby_list, &req_list, &list);
-            refresh_svc();
             gtk4::glib::ControlFlow::Continue
         });
     }

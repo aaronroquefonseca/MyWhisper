@@ -15,8 +15,8 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
+    Arc,
 };
 
 // ---------------------------------------------------------------- registry
@@ -147,7 +147,8 @@ pub const WHISPER_MODELS: &[ModelEntry] = &[
         size_label: "1.6GB",
         size_mb: 1600,
         expected_bytes: Some(1_670_000_000),
-        download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+        download_url:
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
         extract_dir: None,
         required_files: &[],
         runtime: None,
@@ -162,22 +163,20 @@ pub const WHISPER_MODELS: &[ModelEntry] = &[
 /// whatever the source, so manual placement always works).
 pub const WHISTLE_LANGS: &[&str] = &["en", "de", "fr", "es", "it", "nl", "pl"];
 
-pub const WHISTLE_MODELS: &[ModelEntry] = &[
-    ModelEntry {
-        id: "whistle-v1",
-        kind: ModelKind::Whistle,
-        name: "Whistle v1",
-        description: "16.9 MB STT, 7 languages, own CPU engine",
-        size_label: "17MB",
-        size_mb: 17,
-        expected_bytes: Some(16_919_407),
-        download_url: "https://huggingface.co/Cactus-Compute/whistle/resolve/main/whistle.cact",
-        extract_dir: None,
-        required_files: &["whistle.cact"],
-        runtime: None,
-        recommended: true,
-    },
-];
+pub const WHISTLE_MODELS: &[ModelEntry] = &[ModelEntry {
+    id: "whistle-v1",
+    kind: ModelKind::Whistle,
+    name: "Whistle v1",
+    description: "16.9 MB STT, 7 languages, own CPU engine",
+    size_label: "17MB",
+    size_mb: 17,
+    expected_bytes: Some(16_919_407),
+    download_url: "https://huggingface.co/Cactus-Compute/whistle/resolve/main/whistle.cact",
+    extract_dir: None,
+    required_files: &["whistle.cact"],
+    runtime: None,
+    recommended: true,
+}];
 
 pub const PARAKEET_MODELS: &[ModelEntry] = &[
     ModelEntry {
@@ -585,8 +584,8 @@ static DOWNLOADS: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<String, (DlSnapshot, Arc<AtomicBool>)>>,
 > = std::sync::OnceLock::new();
 
-fn downloads()
--> &'static std::sync::Mutex<std::collections::HashMap<String, (DlSnapshot, Arc<AtomicBool>)>> {
+fn downloads(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, (DlSnapshot, Arc<AtomicBool>)>> {
     DOWNLOADS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -683,8 +682,6 @@ mod tests {
         let wh = find_model("whistle-v1").unwrap();
         assert_eq!(capabilities(wh), (true, true));
     }
-
-    use super::*;
 
     #[test]
     fn registry_is_complete_and_consistent() {
@@ -1113,35 +1110,38 @@ pub struct SherpaPack {
     pub binaries: &'static [&'static str],
 }
 
-pub const SHERPA_PACKS: &[SherpaPack] = &[SherpaPack {
-    id: "sherpa-cuda",
-    name: "Sherpa CUDA server",
-    description: "Offline + online websocket servers, CUDA 13 (needs system CUDA libs)",
-    size_label: "255MB",
-    size_bytes: 254_858_007,
-    asset: "sherpa-onnx-v1.13.8-cuda-13.x-cudnn-9.x-onnxruntime1.28.2-linux-x64-gpu.tar.bz2",
-    sha256: "7eddaee14a42d143ec995ed68e9ec3623dd6ca9d22076139d4c0879c3121c819",
-    subdir: "sherpa-cuda",
-    binaries: &[
-        "bin/sherpa-onnx-offline-websocket-server",
-        "bin/sherpa-onnx-online-websocket-server",
-        "lib/libonnxruntime.so",
-    ],
-}, SherpaPack {
-    id: "sherpa-cpu",
-    name: "Sherpa CPU server",
-    description: "Offline + online websocket servers, onnxruntime included",
-    size_label: "25MB",
-    size_bytes: 24_802_494,
-    asset: "sherpa-onnx-v1.13.8-linux-x64-shared-no-tts.tar.bz2",
-    sha256: "d0f96c8b65c6cd0974fada22737e337de81bc8cd2abbec2e39caf358b1eec5fc",
-    subdir: "sherpa-cpu",
-    binaries: &[
-        "bin/sherpa-onnx-offline-websocket-server",
-        "bin/sherpa-onnx-online-websocket-server",
-        "lib/libonnxruntime.so",
-    ],
-}];
+pub const SHERPA_PACKS: &[SherpaPack] = &[
+    SherpaPack {
+        id: "sherpa-cuda",
+        name: "Sherpa CUDA server",
+        description: "Offline + online websocket servers, CUDA 13 (needs system CUDA libs)",
+        size_label: "255MB",
+        size_bytes: 254_858_007,
+        asset: "sherpa-onnx-v1.13.8-cuda-13.x-cudnn-9.x-onnxruntime1.28.2-linux-x64-gpu.tar.bz2",
+        sha256: "7eddaee14a42d143ec995ed68e9ec3623dd6ca9d22076139d4c0879c3121c819",
+        subdir: "sherpa-cuda",
+        binaries: &[
+            "bin/sherpa-onnx-offline-websocket-server",
+            "bin/sherpa-onnx-online-websocket-server",
+            "lib/libonnxruntime.so",
+        ],
+    },
+    SherpaPack {
+        id: "sherpa-cpu",
+        name: "Sherpa CPU server",
+        description: "Offline + online websocket servers, onnxruntime included",
+        size_label: "25MB",
+        size_bytes: 24_802_494,
+        asset: "sherpa-onnx-v1.13.8-linux-x64-shared-no-tts.tar.bz2",
+        sha256: "d0f96c8b65c6cd0974fada22737e337de81bc8cd2abbec2e39caf358b1eec5fc",
+        subdir: "sherpa-cpu",
+        binaries: &[
+            "bin/sherpa-onnx-offline-websocket-server",
+            "bin/sherpa-onnx-online-websocket-server",
+            "lib/libonnxruntime.so",
+        ],
+    },
+];
 
 fn sherpa_url(asset: &str) -> String {
     format!("https://github.com/k2-fsa/sherpa-onnx/releases/download/{SHERPA_TAG}/{asset}")

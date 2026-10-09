@@ -7,7 +7,7 @@
 //! from stored words/duration ("—" when duration is 0).
 
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Button, Label, Orientation};
+use gtk4::{Box as GtkBox, Button, Label, Orientation, Switch};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -291,6 +291,66 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
 
     let col = centered_column(&root, 880);
 
+    // Service banner (top): health from the heartbeat file + the
+    // hotkey-listen toggle. Refreshed on the timer below.
+    let state_dir = crate::paths::AppPaths::create()
+        .map(|p| p.state_dir)
+        .unwrap_or_default();
+    let banner = GtkBox::new(Orientation::Horizontal, 8);
+    banner.add_css_class("card");
+    let dot = Label::new(Some("●"));
+    dot.add_css_class("cap-no");
+    banner.append(&dot);
+    let banner_label = Label::new(Some(tr("home.svc.off")));
+    banner_label.set_xalign(0.0);
+    banner_label.set_hexpand(true);
+    banner.append(&banner_label);
+    let hk_label = Label::new(Some(tr("home.hotkeys")));
+    hk_label.add_css_class("dim");
+    banner.append(&hk_label);
+    let hk_switch = Switch::new();
+    hk_switch.set_active(state.settings.borrow().hotkeys.hotkeys_enabled);
+    hk_switch.set_valign(gtk4::Align::Center);
+    {
+        let state = state.clone();
+        hk_switch.connect_state_set(move |_, active| {
+            state.settings.borrow_mut().hotkeys.hotkeys_enabled = active;
+            super::app_settings::persist_prefs(state.clone())();
+            gtk4::glib::Propagation::Proceed
+        });
+    }
+    banner.append(&hk_switch);
+    col.append(&banner);
+    let refresh_banner: Rc<dyn Fn()> = Rc::new({
+        let dot = dot.clone();
+        let banner_label = banner_label.clone();
+        let state_dir = state_dir.clone();
+        move || match crate::service::read_heartbeat(&state_dir) {
+            None => {
+                dot.set_text("●");
+                dot.add_css_class("cap-no");
+                dot.remove_css_class("cap-ok");
+                banner_label.set_text(tr("home.svc.off"));
+            }
+            Some(hb) => {
+                let fails = hb
+                    .get("engine_failures")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                dot.set_text("●");
+                if fails >= 3 {
+                    dot.add_css_class("cap-no");
+                    dot.remove_css_class("cap-ok");
+                    banner_label.set_text(tr("home.svc.unhealthy"));
+                } else {
+                    dot.add_css_class("cap-ok");
+                    dot.remove_css_class("cap-no");
+                    banner_label.set_text(tr("home.svc.on"));
+                }
+            }
+        }
+    });
+    refresh_banner();
     let greeting = Label::new(Some(tr("home.greeting")));
     greeting.add_css_class("page-title");
     greeting.set_xalign(0.0);
@@ -328,26 +388,23 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
             } else {
                 tr("home.showdiscarded")
             });
-            let history = state
-                .store
-                .load_history(200, show)
-                .unwrap_or_default();
+            let history = state.store.load_history(200, show).unwrap_or_default();
             fill_history(&list, &state, &history, &expanded);
         });
     }
 
-    // Live refresh on synced arrivals (same generation signal as the
-    // dictionary page). Honors the discarded toggle.
     {
         let state = state.clone();
         let expanded = expanded.clone();
         let show_discarded = show_discarded.clone();
+        let refresh_banner = refresh_banner.clone();
         let seen = Rc::new(Cell::new((crate::store::data_gen(), 0i64)));
         gtk4::glib::timeout_add_local(Duration::from_millis(1500), move || {
             let token = (
                 crate::store::data_gen(),
                 crate::store::read_gen(&state.store),
             );
+            refresh_banner();
             if seen.get() != token {
                 seen.set(token);
                 let history = state

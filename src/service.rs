@@ -158,13 +158,49 @@ pub fn spawn_hotkey_watcher(
     std::thread::spawn(move || {
         let mut last: (Vec<(String, crate::settings::ActivationMode)>, u64) = (Vec::new(), 0);
         let mut first = true;
+        // Stale GUI commands from before this boot die unrun.
+        if let Ok(store) = Store::open(&db_path) {
+            let _ = store.take_server_cmd();
+        }
         loop {
             std::thread::sleep(Duration::from_secs(2));
             let Ok(store) = Store::open(&db_path) else {
                 continue;
             };
+            // One-shot GUI commands: Stop / Cold-start the STT server.
+            if let Some(cmd) = store.take_server_cmd() {
+                let data_dir = db_path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_default();
+                match cmd.as_str() {
+                    "stop" => {
+                        eprintln!("[service] GUI stop-servers command");
+                        crate::transcribe::drop_servers(&data_dir);
+                    }
+                    "start" => {
+                        eprintln!("[service] GUI cold-start command");
+                        let settings = store.load_settings();
+                        match crate::transcribe::plan_for(&settings.stt, &data_dir) {
+                            Ok(plan) => {
+                                let _ = crate::transcribe::ensure_for_plan(
+                                    &plan,
+                                    &data_dir,
+                                    settings.stt.gpu_backend,
+                                    settings.stt.sherpa_backend,
+                                );
+                            }
+                            Err(e) => {
+                                eprintln!("[service] cold start: no local plan: {e}");
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
             let settings = store.load_settings();
             let hotkeys = settings.hotkeys;
+            crate::transcribe::set_hotkeys_listening(hotkeys.hotkeys_enabled);
             crate::sound::set_enabled(settings.preferences.dictation_sounds);
             crate::media::set_enabled(settings.preferences.pause_media_on_dictation);
             let current = (
@@ -227,6 +263,53 @@ pub fn spawn_pill_watcher(db_path: PathBuf, tx: std::sync::mpsc::Sender<PillCmd>
             }
         }
     });
+}
+
+/// Service heartbeat file for the home banner (`<state>/service.json`,
+/// 5 s cadence): pid, version, boot time, last beat, consecutive
+/// engine failures, hotkey listening. Stale/missing = not running.
+pub fn spawn_heartbeat(state_dir: PathBuf) {
+    let path = state_dir.join("service.json");
+    let boot = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let pid = std::process::id();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(5));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let body = serde_json::json!({
+            "pid": pid,
+            "version": crate::APP_VERSION,
+            "boot": boot,
+            "beat": now,
+            "engine_failures": crate::transcribe::engine_failures(),
+            "hotkeys_listening": crate::transcribe::hotkeys_listening(),
+        });
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, body.to_string());
+    });
+}
+
+/// Read someone else's heartbeat (GUI side). Ok only when fresh
+/// (< 15 s): stale or missing means not running.
+pub fn read_heartbeat(state_dir: &std::path::Path) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(state_dir.join("service.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let beat = v.get("beat")?.as_i64()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    if now - beat > 15 {
+        return None;
+    }
+    Some(v)
 }
 
 // ---------------------------------------------------------------- systemd
