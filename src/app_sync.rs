@@ -348,7 +348,47 @@ fn spawn_sync(state: &Rc<AppState>, peer: crate::store::Peer, status: &Label) {
     });
 }
 
-pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
+/// Live listener port from the service heartbeat (0 = off /
+/// service not running). The page never trusts a stale snapshot.
+fn live_sync_port() -> u16 {
+    let state_dir = crate::paths::AppPaths::create()
+        .map(|p| p.state_dir)
+        .unwrap_or_default();
+    crate::service::read_heartbeat(&state_dir)
+        .and_then(|hb| hb.get("sync_port")?.as_u64())
+        .unwrap_or(0) as u16
+}
+
+fn listen_text(port: u16) -> String {
+    if port == 0 {
+        tr("sync.listener.off").to_string()
+    } else {
+        trf("sync.listener.on", &[("port", &port.to_string())])
+    }
+}
+
+/// Self-reachability probe, no privileges: dial the live listener
+/// through the LAN address (never 127.0.0.1) + the allow-command
+/// hint for the installed firewall, if any.
+fn probe_msg() -> String {
+    let port = live_sync_port();
+    if port == 0 {
+        return tr("sync.reach.off").to_string();
+    }
+    // The dial only proves the listener answers (local addresses
+    // leave via OUTPUT, which firewalls allow) — never a firewall
+    // verdict. Firewall state is NEVER queried.
+    if crate::net::self_reachable(port).is_none() {
+        return trf("sync.reach.down", &[("port", &port.to_string())]);
+    }
+    let base = trf("sync.reach.up", &[("port", &port.to_string())]);
+    match crate::net::firewall_allow_hint(port) {
+        Some(cmd) => format!("{base}\n{}", trf("sync.reach.hint", &[("cmd", &cmd)])),
+        None => base,
+    }
+}
+
+pub fn page(state: &Rc<AppState>) -> GtkBox {
     // Title lives in the modal header; content starts at the cards.
     let root = GtkBox::new(Orientation::Vertical, 0);
     let scrolled = gtk4::ScrolledWindow::new();
@@ -496,21 +536,23 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     port_row.append(&port_save);
     card.append(&port_row);
 
-    let listen = Label::new(Some(
-        if listening_port == 0 {
-            tr("sync.listener.off").to_string()
-        } else {
-            trf("sync.listener.on", &[("port", &listening_port.to_string())])
-        }
-        .as_str(),
-    ));
+    let listen = Label::new(Some(listen_text(live_sync_port()).as_str()));
     listen.add_css_class("dim");
     listen.set_xalign(0.0);
     card.append(&listen);
+    // The service owns the listener: refresh its real port on a
+    // timer (toggle applies at service boot, not here).
+    {
+        let listen = listen.clone();
+        gtk4::glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
+            listen.set_text(listen_text(live_sync_port()).as_str());
+            gtk4::glib::ControlFlow::Continue
+        });
+    }
 
-    // Self-reachability probe. Explicit button, never automatic:
-    // the firewall query can pop a polkit auth dialog, so it only
-    // runs when the user asks.
+    // Self-reachability probe. Automatic (no button: nothing here
+    // can pop polkit): on page build, then every 15 s. Off-GTK
+    // thread (a filtered port can block up to the dial timeout).
     let reach_row = GtkBox::new(Orientation::Horizontal, 8);
     let reach = Label::new(Some(tr("sync.reach.unknown")));
     reach.add_css_class("dim");
@@ -518,34 +560,14 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
     reach.set_wrap(true);
     reach.set_hexpand(true);
     reach_row.append(&reach);
-    let check = Button::with_label(tr("action.check"));
-    reach_row.append(&check);
     card.append(&reach_row);
-    {
-        check.connect_clicked(move |_| {
-            reach.set_text(tr("sync.reach.checking"));
+    let run_probe: Rc<dyn Fn()> = Rc::new({
+        let reach = reach.clone();
+        move || {
             let result: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
             let result_tx = result.clone();
             std::thread::spawn(move || {
-                // The loopback dial only proves the listener answers
-                // (it leaves via OUTPUT, which firewalls allow), so
-                // report it and the firewall state as separate facts.
-                let up = crate::net::self_reachable(listening_port).is_some();
-                let msg = match (up, crate::net::firewall_state(listening_port)) {
-                    (false, _) => trf("sync.reach.down", &[("port", &listening_port.to_string())]),
-                    (true, Some((true, _))) => {
-                        trf("sync.reach.open", &[("port", &listening_port.to_string())])
-                    }
-                    (true, Some((false, _))) => trf(
-                        "sync.reach.blocked",
-                        &[("port", &listening_port.to_string())],
-                    ),
-                    (true, None) => trf(
-                        "sync.reach.unknownfw",
-                        &[("port", &listening_port.to_string())],
-                    ),
-                };
-                *result_tx.lock().unwrap() = Some(msg);
+                *result_tx.lock().unwrap() = Some(probe_msg());
             });
             let reach = reach.clone();
             gtk4::glib::timeout_add_local(Duration::from_millis(300), move || {
@@ -557,6 +579,14 @@ pub fn page(state: &Rc<AppState>, listening_port: u16) -> GtkBox {
                     None => gtk4::glib::ControlFlow::Continue,
                 }
             });
+        }
+    });
+    run_probe();
+    {
+        let run_probe = run_probe.clone();
+        gtk4::glib::timeout_add_local(Duration::from_secs(15), move || {
+            run_probe();
+            gtk4::glib::ControlFlow::Continue
         });
     }
     col.append(&card);

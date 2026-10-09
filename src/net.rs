@@ -602,37 +602,25 @@ pub fn self_reachable(port: u16) -> Option<String> {
     }
 }
 
-fn firewall_query(args: &[&str]) -> Option<bool> {
-    let out = std::process::Command::new("firewall-cmd")
-        .args(args)
-        .output()
-        .ok()?;
-    Some(out.status.success())
-}
-
-/// Local firewall state for our sync port. `None` when firewalld is
-/// absent/unreadable. Returns `(port_open, mdns_allowed)`.
-///
-/// NOTE: on systems with polkit auth for firewalld queries this call
-/// can pop an auth dialog, so callers must cache it process-wide
-/// (see `firewall_state`), never per click/page.
-pub fn firewall_state_uncached(port: u16) -> Option<(bool, bool)> {
-    let arg = format!("--query-port={port}/tcp");
-    let port_open = firewall_query(&[&arg])?;
-    let mdns = firewall_query(&["--query-service=mdns"])?;
-    Some((port_open, mdns))
-}
-
-static FIREWALL_CACHE: std::sync::OnceLock<(u16, Option<(bool, bool)>)> =
-    std::sync::OnceLock::new();
-
-/// Process-wide cached firewall state for one port. Firewall rules
-/// effectively never change mid-session, and every query risks a
-/// polkit auth dialog, so this runs exactly once.
-pub fn firewall_state(port: u16) -> Option<(bool, bool)> {
-    FIREWALL_CACHE
-        .get_or_init(|| (port, firewall_state_uncached(port)))
-        .1
+/// Allow-command hint for the installed firewall, if any (pure
+/// presence check, no privileges, no queries: nothing here can pop
+/// polkit). The Check button prints it next to the dial result so
+/// the user opens the port themselves, whatever they run.
+pub fn firewall_allow_hint(port: u16) -> Option<String> {
+    fn present(bin: &str) -> bool {
+        std::env::var_os("PATH")
+            .map(|paths| std::env::split_paths(&paths).any(|p| p.join(bin).is_file()))
+            == Some(true)
+    }
+    if present("firewall-cmd") {
+        Some(format!(
+            "sudo firewall-cmd --add-port={port}/tcp --permanent && sudo firewall-cmd --reload"
+        ))
+    } else if present("ufw") {
+        Some(format!("sudo ufw allow {port}/tcp"))
+    } else {
+        None
+    }
 }
 
 // -- mDNS ----------------------------------------------------------------

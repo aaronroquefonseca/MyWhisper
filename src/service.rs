@@ -85,6 +85,14 @@ pub fn set_service_running(running: bool) -> Result<String, String> {
     }
 }
 
+/// Bound sync port, published in the heartbeat so frontends show
+/// the real listener (0 = off). Set once by start_sync_engine.
+static SYNC_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+pub fn set_sync_port(port: u16) {
+    SYNC_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Start the sync stack: TCP listener, mDNS advertise+browse,
 /// periodic auto-sync, startup catch-up, appear-watcher. Returns the
 /// bound port (0 = listener off). Safe to call only as engine owner.
@@ -96,7 +104,7 @@ pub fn start_sync_engine(
 ) -> u16 {
     let saved = store.load_settings();
     let device_name = crate::device::display_name(&saved.sync.device_name, &identity.node_id);
-    match crate::net::listen(saved.sync.listen_port) {
+    let port: u16 = match crate::net::listen(saved.sync.listen_port) {
         Ok(Some(listener)) => {
             let port = listener
                 .local_addr()
@@ -144,7 +152,9 @@ pub fn start_sync_engine(
             eprintln!("[sync] listener off: {e}");
             0
         }
-    }
+    };
+    set_sync_port(port);
+    port
 }
 
 /// Watch the database for hotkey changes (written by any frontend)
@@ -277,26 +287,25 @@ pub fn spawn_heartbeat(state_dir: PathBuf) {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let pid = std::process::id();
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(5));
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            let body = serde_json::json!({
-                "pid": pid,
-                "version": crate::APP_VERSION,
-                "boot": boot,
-                "beat": now,
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(5));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let body = serde_json::json!({
+            "pid": pid,
+            "version": crate::APP_VERSION,
+            "boot": boot,
+            "beat": now,
                 "engine_failures": crate::transcribe::engine_failures(),
                 "hotkeys_listening": crate::transcribe::hotkeys_listening(),
-            });
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(&path, body.to_string());
+                "sync_port": SYNC_PORT.load(std::sync::atomic::Ordering::SeqCst),
+        });
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
+        let _ = std::fs::write(&path, body.to_string());
     });
 }
 

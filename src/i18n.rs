@@ -592,21 +592,21 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         ),
         "sync.reach.unknown" => ("Reachability unknown.", "Alcance desconocido."),
         "sync.reach.checking" => ("Checking…", "Comprobando…"),
+        "sync.reach.off" => (
+            "Listener is off — enable sync and restart the service first.",
+            "El receptor está apagado — activa la sincronización y reinicia el servicio.",
+        ),
         "sync.reach.down" => (
             "Sync listener is not answering on port {port}.",
             "El receptor no responde en el puerto {port}.",
         ),
-        "sync.reach.open" => (
-            "Listener up, firewall open for {port}/tcp.",
-            "Receptor activo, firewall abierto para {port}/tcp.",
+        "sync.reach.up" => (
+            "Answering on {port}. LAN peers also need {port}/tcp allowed.",
+            "Responde en {port}. Los equipos de la red también necesitan {port}/tcp permitido.",
         ),
-        "sync.reach.blocked" => (
-            "Listener is up, but the firewall blocks port {port}/tcp, so peers cannot reach you. Run: sudo firewall-cmd --permanent --add-port={port}/tcp && sudo firewall-cmd --reload",
-            "El receptor está activo, pero el firewall bloquea el puerto {port}/tcp. Ejecuta: sudo firewall-cmd --permanent --add-port={port}/tcp && sudo firewall-cmd --reload",
-        ),
-        "sync.reach.unknownfw" => (
-            "Listener is up on port {port} (firewall state unknown).",
-            "Receptor activo en el puerto {port} (estado del firewall desconocido).",
+        "sync.reach.hint" => (
+            "Allow it with: {cmd}",
+            "Permítelo con: {cmd}",
         ),
         "sync.svc.title" => ("Background service", "Servicio en segundo plano"),
         "sync.svc.on" => (

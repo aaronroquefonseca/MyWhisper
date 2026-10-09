@@ -8,8 +8,8 @@ use crate::i18n::tr;
 use gtk4::prelude::*;
 use gtk4::{Application, ApplicationWindow, Box as GtkBox, Button, Label, Orientation, Stack};
 use std::rc::Rc;
-use std::sync::Once;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Once;
 
 use crate::settings::{AppSettings, HistoryEntry, Theme, UsageStats};
 
@@ -533,7 +533,6 @@ pub fn build_app_window(
         Some("dictionary"),
         "Dictionary",
     );
-    let listening_port = state.sync_port.get();
 
     // ---- Settings modal (overlay layer, hidden by default) ----
     let overlay = gtk4::Overlay::new();
@@ -583,7 +582,7 @@ pub fn build_app_window(
     settings_panel.append(&settings_content);
 
     let (sync_panel, sync_close) = modal_panel(&overlay, crate::i18n::tr("nav.sync"));
-    let sync_content = crate::app_sync::page(state, listening_port);
+    let sync_content = crate::app_sync::page(state);
     sync_content.set_vexpand(true);
     sync_content.set_margin_start(12);
     sync_content.set_margin_end(12);
