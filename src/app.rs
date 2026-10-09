@@ -426,8 +426,11 @@ pub fn build_app_window(
     let brand = GtkBox::new(Orientation::Horizontal, 8);
     brand.add_css_class("sidebar-brand");
     // Embed the source asset so development builds also show the real logo.
-    let bytes = gtk4::glib::Bytes::from_static(include_bytes!("../assets/icons/app-icon.svg"));
-    let logo = gtk4::Image::from_paintable(Some(&gtk4::Svg::from_bytes(&bytes)));
+    let source =
+        include_str!("../assets/icons/symbolic.svg").replace("currentColor", "SymbolicForeground");
+    let bytes = gtk4::glib::Bytes::from_owned(source.into_bytes());
+    let mark = gtk4::Svg::from_bytes(&bytes);
+    let logo = gtk4::Image::from_paintable(Some(&mark));
     logo.set_pixel_size(32);
     logo.set_valign(gtk4::Align::Center);
     brand.append(&logo);
