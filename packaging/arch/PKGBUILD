@@ -1,0 +1,22 @@
+# Maintainer: you (private package, not for the AUR)
+pkgname=mywhisper
+pkgver=0.9.0
+pkgrel=1
+pkgdesc="Voice dictation with on-device transcription"
+arch=('x86_64')
+url="https://github.com/aaronroquefonseca/MyWhisper"
+license=('custom')
+depends=('gtk4' 'libadwaita' 'gtk4-layer-shell' 'alsa-lib' 'hicolor-icon-theme')
+# Private release tarball: fetched by update.sh via `gh` (makepkg
+# cannot send GitHub tokens), then built from this directory.
+source=("mywhisper-v${pkgver}-x86_64-unknown-linux-gnu.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  local stage="mywhisper-v${pkgver}-x86_64-unknown-linux-gnu"
+  install -Dm755 "$stage/mywhisper-app" "$pkgdir/usr/bin/mywhisper-app"
+  install -Dm644 "$stage/mywhisper.service" "$pkgdir/usr/lib/systemd/user/mywhisper.service"
+  install -Dm644 "$stage/com.mywhisper.App.desktop" "$pkgdir/usr/share/applications/com.mywhisper.App.desktop"
+  install -Dm644 "$stage/com.mywhisper.App.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/com.mywhisper.App.svg"
+  install -Dm644 "$stage/com.mywhisper.App-symbolic.svg" "$pkgdir/usr/share/icons/hicolor/symbolic/apps/com.mywhisper.App-symbolic.svg"
+}

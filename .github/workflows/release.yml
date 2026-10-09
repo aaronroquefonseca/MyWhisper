@@ -1,0 +1,44 @@
+name: release
+
+# Tag a version (v0.9.0) and push: the binary tarball lands on the
+# private GitHub Release. No public repos involved.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config \
+            libgtk-4-dev libadwaita-1-dev \
+            libgtk4-layer-shell-dev \
+            libasound2-dev ca-certificates curl
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --bin mywhisper-app
+      - name: Tarball
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          STAGE="mywhisper-${TAG}-x86_64-unknown-linux-gnu"
+          mkdir -p "$STAGE"
+          cp target/release/mywhisper-app "$STAGE/"
+          cp packaging/systemd/mywhisper.service "$STAGE/"
+          cp assets/applications/com.mywhisper.App.desktop "$STAGE/"
+          cp assets/icons/app-icon.svg "$STAGE/com.mywhisper.App.svg"
+          cp assets/icons/symbolic.svg "$STAGE/com.mywhisper.App-symbolic.svg"
+          tar czf "$STAGE.tar.gz" "$STAGE"
+          echo "TARBALL=$STAGE.tar.gz" >> "$GITHUB_ENV"
+      - name: Release
+        run: gh release create "${GITHUB_REF#refs/tags/}" "$TARBALL" --title "${GITHUB_REF#refs/tags/}" --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
