@@ -6,6 +6,7 @@
 
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Grid, Label, Orientation, ScrolledWindow};
+use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -37,9 +38,13 @@ fn weekday_names() -> [&'static str; 7] {
 }
 const WEEKS: i32 = 24;
 const CELL: i32 = 15;
-const PITCH: i32 = CELL + 5;
+const GAP: i32 = 5;
 const DAY_COL_W: i32 = 38;
-const MONTH_X0: i32 = DAY_COL_W + 5;
+const MONTH_X0: i32 = DAY_COL_W + GAP;
+
+fn heat_cell_size(width: i32) -> i32 {
+    ((width - MONTH_X0 - (WEEKS - 1) * GAP) / WEEKS).clamp(CELL, 32)
+}
 
 fn stat_card(label: &str, value: &str, caption: &str) -> (GtkBox, Label, Label) {
     let card = GtkBox::new(Orientation::Vertical, 4);
@@ -146,12 +151,13 @@ fn cell_epoch_day(week: i32, day: i32) -> i64 {
 }
 
 /// (Re)build the month row + day grid from live aggregates.
-fn fill_heat(heat_col: &GtkBox, state: &Rc<AppState>) {
+fn fill_heat(heat_col: &GtkBox, state: &Rc<AppState>, cell_size: i32) {
     while let Some(child) = heat_col.first_child() {
         heat_col.remove(&child);
     }
     let months = gtk4::Fixed::new();
-    months.set_size_request(MONTH_X0 + WEEKS * PITCH, 18);
+    let pitch = cell_size + GAP;
+    months.set_size_request(MONTH_X0 + WEEKS * cell_size + (WEEKS - 1) * GAP, 18);
     let mut prev_month = cell_date(0, 0).1;
     for week in 0..WEEKS {
         let month = cell_date(week, 0).1;
@@ -160,15 +166,15 @@ fn fill_heat(heat_col: &GtkBox, state: &Rc<AppState>) {
             let m = Label::new(Some(month_names()[(month - 1) as usize]));
             m.add_css_class("dim");
             m.set_halign(gtk4::Align::Start);
-            months.put(&m, (MONTH_X0 + week * PITCH) as f64, 0.0);
+            months.put(&m, (MONTH_X0 + week * pitch) as f64, 0.0);
             prev_month = month;
         }
     }
     heat_col.append(&months);
 
     let grid = Grid::new();
-    grid.set_row_spacing(5);
-    grid.set_column_spacing(5);
+    grid.set_row_spacing(GAP as u32);
+    grid.set_column_spacing(GAP as u32);
     let aggregates = aggregate_map(state);
     for week in 0..WEEKS {
         for day in 0..7 {
@@ -187,7 +193,7 @@ fn fill_heat(heat_col: &GtkBox, state: &Rc<AppState>) {
             let level = level_of(words);
             let (y, mo, d) = cell_date(week, day);
             let cell = GtkBox::new(Orientation::Horizontal, 0);
-            cell.set_size_request(CELL, CELL);
+            cell.set_size_request(cell_size, cell_size);
             cell.add_css_class("heat");
             if level > 0 {
                 cell.add_css_class(&format!("heat-{level}"));
@@ -288,10 +294,8 @@ pub fn page(state: &Rc<AppState>) -> ScrolledWindow {
     ht.set_xalign(0.0);
     card.append(&ht);
 
-    // Centered heat area: grid (weekdays + cells only, so every
-    // column stays exactly one cell wide) under a fixed-position
-    // month row (labels in a Grid would stretch their column to the
-    // month-name width). Rebuilt wholesale on data changes.
+    // Square cells grow with the available card width. The calendar and
+    // heading share a left edge; the date range stays the same on resize.
     let heat_center = GtkBox::new(Orientation::Horizontal, 0);
     heat_center.set_halign(gtk4::Align::Fill);
     heat_center.set_hexpand(true);
@@ -305,15 +309,30 @@ pub fn page(state: &Rc<AppState>) -> ScrolledWindow {
     heat_scroll.set_child(Some(&heat_slot));
     heat_center.append(&heat_scroll);
     let heat_col = GtkBox::new(Orientation::Vertical, 2);
-    heat_col.set_halign(gtk4::Align::Center);
+    heat_col.set_halign(gtk4::Align::Start);
     heat_slot.append(&heat_col);
 
-    fill_heat(&heat_col, state);
+    let cell_size = Rc::new(Cell::new(CELL));
+    fill_heat(&heat_col, state, cell_size.get());
+    {
+        let state = state.clone();
+        let cell_size = cell_size.clone();
+        let heat_col = heat_col.downgrade();
+        heat_scroll.add_tick_callback(move |scroll, _| {
+            let Some(heat_col) = heat_col.upgrade() else {
+                return gtk4::glib::ControlFlow::Break;
+            };
+            let size = heat_cell_size(scroll.width());
+            if cell_size.replace(size) != size {
+                fill_heat(&heat_col, &state, size);
+            }
+            gtk4::glib::ControlFlow::Continue
+        });
+    }
 
     col.append(&card);
 
     {
-        use std::cell::Cell;
         use std::time::Duration;
         let state = state.clone();
         let seen = Rc::new(Cell::new((crate::store::data_gen(), 0i64)));
@@ -335,7 +354,7 @@ pub fn page(state: &Rc<AppState>) -> ScrolledWindow {
                 let (sv, sc) = streak_text(stats.streak_days);
                 streak_value_label.set_text(&sv);
                 streak_caption_label.set_text(&sc);
-                fill_heat(&heat_col, &state);
+                fill_heat(&heat_col, &state, cell_size.get());
             }
             gtk4::glib::ControlFlow::Continue
         });
@@ -346,4 +365,22 @@ pub fn page(state: &Rc<AppState>) -> ScrolledWindow {
     scrolled.set_child(Some(&outer));
     scrolled.set_vexpand(true);
     scrolled
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calendar_cells_fit_wide_cards_and_keep_a_readable_minimum() {
+        assert_eq!(heat_cell_size(0), CELL);
+        assert_eq!(heat_cell_size(400), CELL);
+        assert_eq!(heat_cell_size(842), 28);
+        for width in 518..=880 {
+            let cell = heat_cell_size(width);
+            let chart_width = MONTH_X0 + WEEKS * cell + (WEEKS - 1) * GAP;
+            assert!(chart_width <= width);
+            assert!(width - chart_width < WEEKS);
+        }
+    }
 }

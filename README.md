@@ -92,6 +92,17 @@ cargo run --example ui_preview -- home light en Preferences --smoke
 
 See [UI/UX audit, design references, and control behavior](docs/UI_UX.md).
 
+If text has stray marks or missing strokes with the GPU renderer, try
+GTK's Cairo renderer for the desktop window:
+
+```bash
+GSK_RENDERER=cairo ./target/debug/mywhisper
+```
+
+Close the existing desktop window first so the new process takes effect.
+This workaround only selects the renderer for that launch; it does not
+change system graphics settings or the background service.
+
 ## System deps (Arch)
 
 gtk4, gtk4-layer-shell, libadwaita, alsa-lib, pkgconf.
