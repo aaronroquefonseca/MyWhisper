@@ -29,13 +29,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --release --bin mywhisper-app
+        run: cargo build --release --bin mywhisper
       - name: Tarball
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           STAGE="mywhisper-${TAG}-x86_64-unknown-linux-gnu"
           mkdir -p "$STAGE"
-          cp target/release/mywhisper-app "$STAGE/"
+          cp target/release/mywhisper "$STAGE/"
           cp packaging/systemd/mywhisper.service "$STAGE/"
           cp assets/applications/com.mywhisper.App.desktop "$STAGE/"
           cp assets/icons/app-icon.svg "$STAGE/com.mywhisper.App.svg"
@@ -43,6 +43,8 @@ jobs:
           tar czf "$STAGE.tar.gz" "$STAGE"
           echo "TARBALL=$STAGE.tar.gz" >> "$GITHUB_ENV"
       - name: Release
-        run: gh release create "${GITHUB_REF#refs/tags/}" "$TARBALL" --title "${GITHUB_REF#refs/tags/}" --generate-notes
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          gh release create "${GITHUB_REF#refs/tags/}" "$TARBALL" --title "${GITHUB_REF#refs/tags/}" --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

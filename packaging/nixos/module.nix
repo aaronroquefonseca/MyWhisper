@@ -21,7 +21,7 @@ in {
       wantedBy = [ "graphical-session.target" ];
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${cfg.package}/bin/mywhisper-app --service";
+        ExecStart = "${cfg.package}/bin/mywhisper --service";
         Restart = "on-failure";
         RestartSec = "3s";
       };

@@ -14,7 +14,7 @@ sha256sums=('SKIP')
 
 package() {
   local stage="mywhisper-v${pkgver}-x86_64-unknown-linux-gnu"
-  install -Dm755 "$stage/mywhisper-app" "$pkgdir/usr/bin/mywhisper-app"
+  install -Dm755 "$stage/mywhisper" "$pkgdir/usr/bin/mywhisper"
   install -Dm644 "$stage/mywhisper.service" "$pkgdir/usr/lib/systemd/user/mywhisper.service"
   install -Dm644 "$stage/com.mywhisper.App.desktop" "$pkgdir/usr/share/applications/com.mywhisper.App.desktop"
   install -Dm644 "$stage/com.mywhisper.App.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/com.mywhisper.App.svg"

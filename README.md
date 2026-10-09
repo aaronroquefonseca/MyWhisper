@@ -5,12 +5,12 @@ GTK4 + Rust, Linux/Wayland-first.
 
 ## Pieces
 
-- **Service** (`mywhisper-app --service`): headless background engine —
+- **Service** (`mywhisper --service`): headless background engine —
   global hotkeys, capture, transcription, sync, heartbeat. Runs as a
   systemd user service (`mywhisper.service`).
 - **Pill**: Wayland layer-shell overlay with live mic visualizer,
   streaming transcription preview and an animated Processing state.
-- **App** (`mywhisper-app`): desktop window — Home (health + history),
+- **App** (`mywhisper`): desktop window — Home (health + history),
   Insights (stats + heatmap), Dictionary (words + snippets), Speech
   to Text, Language Models, Sync.
 - **Speech to Text**: chained options, top-down fallback. Local
@@ -45,8 +45,8 @@ cargo test
 ## Run (dev)
 
 ```bash
-./target/debug/mywhisper-app --service   # background engine
-./target/debug/mywhisper-app             # desktop app
+./target/debug/mywhisper --service   # background engine
+./target/debug/mywhisper             # desktop app
 ```
 
 ## System deps (Arch)

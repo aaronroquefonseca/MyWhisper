@@ -30,7 +30,7 @@
       installPhase = ''
         runHook preInstall
         inner=$(echo */ | head -n1)
-        install -Dm755 "$inner/mywhisper-app" $out/bin/mywhisper-app
+        install -Dm755 "$inner/mywhisper" $out/bin/mywhisper
         install -Dm644 "$inner/mywhisper.service" $out/share/mywhisper/mywhisper.service
         install -Dm644 "$inner/com.mywhisper.App.desktop" $out/share/applications/com.mywhisper.App.desktop
         install -Dm644 "$inner/com.mywhisper.App.svg" $out/share/icons/hicolor/scalable/apps/com.mywhisper.App.svg

@@ -25,7 +25,7 @@ fn main() -> gtk4::glib::ExitCode {
     tracing::info!(
         node = %identity.node_id,
         db = ?paths.db_file(),
-        "mywhisper-app starting"
+        "mywhisper starting"
     );
 
     let args: Vec<String> = std::env::args().collect();

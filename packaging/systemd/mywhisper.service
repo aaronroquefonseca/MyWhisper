@@ -5,7 +5,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/mywhisper-app --service
+ExecStart=/usr/bin/mywhisper --service
 Restart=on-failure
 RestartSec=3
 # The engine is single-instance (flock on engine.lock); a second
