@@ -189,6 +189,11 @@ pub struct Preferences {
     pub mic_selection: MicSelection,
     pub mic_device_id: String,
     pub mic_warm_hold_secs: u32,
+    /// Extra listening past release (ms, 0 = disabled): the release
+    /// cut shifts later by this much. Settle/flush/truncate all key
+    /// off the shifted instant.
+    #[serde(default)]
+    pub mic_release_delay_ms: u64,
     pub auto_learn_dictionary: bool,
 }
 
@@ -209,6 +214,7 @@ impl Default for Preferences {
             mic_selection: MicSelection::System,
             mic_device_id: String::new(),
             mic_warm_hold_secs: 0,
+            mic_release_delay_ms: 0,
             auto_learn_dictionary: false,
         }
     }

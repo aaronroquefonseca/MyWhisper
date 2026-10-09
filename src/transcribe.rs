@@ -2218,6 +2218,9 @@ struct LiveUtterance {
     /// recorder holds exactly the utterance up to release (flushed
     /// + truncated + disarmed). Pumps/spec snapshot only after it.
     settled: Arc<AtomicBool>,
+    /// Extra listening past release (ms, 0 = disabled): shifts the
+    /// release cut later. Flush/truncate key off the shifted cut.
+    release_delay_ms: u64,
     /// Server bind + ports snapshot at press (Network section).
     net: ServerNet,
 }
@@ -2257,7 +2260,12 @@ fn live() -> &'static Mutex<Option<LiveUtterance>> {
 /// brackets the hold. Server warmup happens in the background: the
 /// release worker blocks on it before transcribing, so a cold first
 /// press pastes late but never loses audio.
-pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data_dir: &Path) {
+pub fn begin_utterance(
+    stt: crate::settings::SttSettings,
+    keep_audio: bool,
+    data_dir: &Path,
+    release_delay_ms: u64,
+) {
     end_stale();
     CANCELLED.store(false, Ordering::Relaxed);
     let mut plans = match plans_for(&stt, data_dir) {
@@ -2446,6 +2454,7 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
         spec_overlap: (stt.spec_overlap_secs.clamp(0.0, 5.0) * 16_000.0) as usize,
         net: server_net(&stt),
         settled: settled.clone(),
+        release_delay_ms,
     });
 }
 
@@ -2671,6 +2680,9 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
     // after kept), disarm, then hand the settled audio to the
     // worker. Pumps/spec wait on the same flag before snapshotting.
     let t_release = std::time::Instant::now();
+    let delay_ms = sess.release_delay_ms;
+    let t_cut = t_release + Duration::from_millis(delay_ms);
+    let cap_ms = RELEASE_FLUSH_MS + delay_ms;
     let settled = sess.settled.clone();
     let recorder = sess.recorder.clone();
     std::thread::spawn(move || {
@@ -2678,9 +2690,9 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
         loop {
             let past = recorder
                 .lock()
-                .map(|r| r.last_stamp().map(|t| t > t_release).unwrap_or(false))
+                .map(|r| r.last_stamp().map(|t| t > t_cut).unwrap_or(false))
                 .unwrap_or(true);
-            if past || waited >= RELEASE_FLUSH_MS {
+            if past || waited >= cap_ms {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -2688,7 +2700,7 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
         }
         recorder
             .lock()
-            .map(|mut r| r.settle_release(t_release))
+            .map(|mut r| r.settle_release(t_cut))
             .unwrap_or_default();
         audio::set_recorder(None);
         settled.store(true, Ordering::Relaxed);

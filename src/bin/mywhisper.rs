@@ -292,6 +292,7 @@ fn run_headless(
                                             settings.stt,
                                             settings.privacy.keep_audio_recordings,
                                             &data_dir,
+                                            settings.preferences.mic_release_delay_ms,
                                         );
                                     }
                                     Err(e) => eprintln!("[stt] store: {e}"),

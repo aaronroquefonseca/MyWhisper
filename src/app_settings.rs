@@ -13,8 +13,8 @@ use gtk4::{
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use super::app::{AppState, apply_theme, log_theme_state};
-use crate::clipboard::{BackendStatus, copy_backend_deps, paste_backend_deps, probe};
+use super::app::{apply_theme, log_theme_state, AppState};
+use crate::clipboard::{copy_backend_deps, paste_backend_deps, probe, BackendStatus};
 use crate::i18n::{tr, trf};
 use crate::settings::{CopyBackend, PasteBackend, PasteCombo, Theme};
 
@@ -524,6 +524,38 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
             });
         }
         b.append(&warm_drop);
+        rows.append(&b);
+        let delay_opts = [
+            tr("opt.off"),
+            tr("opt.ms100"),
+            tr("opt.ms250"),
+            tr("opt.ms500"),
+            tr("opt.ms1000"),
+        ];
+        let (b, _) = row(tr("row.micextra"));
+        let delay_drop =
+            DropDown::new(Some(StringList::new(&delay_opts)), None::<gtk4::Expression>);
+        delay_drop.set_selected(match p.mic_release_delay_ms {
+            100 => 1,
+            250 => 2,
+            500 => 3,
+            1000 => 4,
+            _ => 0,
+        });
+        {
+            let state = state.clone();
+            delay_drop.connect_selected_notify(move |d| {
+                state.settings.borrow_mut().preferences.mic_release_delay_ms = match d.selected() {
+                    1 => 100,
+                    2 => 250,
+                    3 => 500,
+                    4 => 1000,
+                    _ => 0,
+                };
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&delay_drop);
         rows.append(&b);
     }
     root.append(&card);
