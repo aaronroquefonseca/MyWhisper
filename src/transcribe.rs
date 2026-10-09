@@ -2143,6 +2143,21 @@ fn run_spec(
             Err(e) => eprintln!("[stt] spec pass: {e}"),
         }
     }
+    // Release headroom (see RELEASE_TAIL_MS): one last snapshot so
+    // the tail decode covers the final syllable.
+    std::thread::sleep(Duration::from_millis(RELEASE_TAIL_MS));
+    {
+        let snap = rec.lock().map(|r| r.snapshot()).unwrap_or_default();
+        if snap.len() > consumed {
+            let rate = rec.lock().map(|r| r.rate()).unwrap_or(0);
+            if resampler.as_ref().map(|(r, _)| *r) != Some(rate) {
+                resampler = Some((rate, Resampler::new(rate.max(1))));
+            }
+            if let Some(rs) = resampler.as_mut() {
+                buffer.extend_from_slice(&rs.1.process(&snap[consumed..]));
+            }
+        }
+    }
     let _ = tx.send((committed.0, committed.1, buffer));
 }
 
@@ -2443,6 +2458,10 @@ fn pump_online(
         let _ = tx.send(Err("cancelled".to_string()));
         return;
     }
+    // Release headroom (see RELEASE_TAIL_MS): the tap stays armed
+    // past release, so wait for the late samples before the final
+    // snapshot, else the last syllable never reaches the server.
+    std::thread::sleep(Duration::from_millis(RELEASE_TAIL_MS));
     let tail = rec
         .lock()
         .map(|r| {
@@ -2548,10 +2567,17 @@ pub fn end_utterance(on_done: impl FnOnce() + Send + 'static) {
     end_utterance_inner(false, Some(Box::new(on_done)));
 }
 
+/// Release headroom: the mic stack still holds undelivered audio
+/// when the key comes up (device buffers + capture cadence, roughly
+/// 50-250 ms). The tap stays armed this long past release so the
+/// last syllable lands instead of clipping. Cost: this much extra
+/// latency on every release, by design.
+const RELEASE_TAIL_MS: u64 = 350;
+
 fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
     let sess = live().lock().unwrap().take();
-    audio::set_recorder(None);
     let Some(sess) = sess else {
+        audio::set_recorder(None);
         if let Some(done) = on_done {
             done();
         }
@@ -2559,63 +2585,72 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
     };
     sess.stop.store(true, Ordering::Relaxed);
     if stale {
+        audio::set_recorder(None);
         return; // replaced, not transcribed
     }
     if BUSY.swap(true, Ordering::SeqCst) {
         eprintln!("[stt] worker busy; dropping overlapping utterance");
+        audio::set_recorder(None);
         if let Some(done) = on_done {
             done();
         }
         return;
     }
-    let on_done = Arc::new(Mutex::new(on_done));
-    let od = on_done.clone();
-    if let Err(e) = crate::runtime::submit("stt-worker", move || {
-        // Dictionary hints for STT bias (fresh read; empty disables):
-        // words plus every snippet trigger, like the reference.
-        let words = crate::store::Store::open(&sess.data_dir.join("state.db"))
-            .ok()
-            .map(|store| {
-                let mut hints = store.load_words().unwrap_or_default();
-                if let Ok(snips) = store.load_snippets() {
-                    for sn in snips {
-                        hints.extend(sn.triggers());
+    // Tail wait off the GTK thread (the pill already shows
+    // Processing); the worker submit below lands after disarm, so
+    // its recorder snapshot includes the headroom audio.
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(RELEASE_TAIL_MS));
+        audio::set_recorder(None);
+        let on_done = Arc::new(Mutex::new(on_done));
+        let od = on_done.clone();
+        if let Err(e) = crate::runtime::submit("stt-worker", move || {
+            // Dictionary hints for STT bias (fresh read; empty disables):
+            // words plus every snippet trigger, like the reference.
+            let words = crate::store::Store::open(&sess.data_dir.join("state.db"))
+                .ok()
+                .map(|store| {
+                    let mut hints = store.load_words().unwrap_or_default();
+                    if let Ok(snips) = store.load_snippets() {
+                        for sn in snips {
+                            hints.extend(sn.triggers());
+                        }
                     }
+                    hints
+                })
+                .unwrap_or_default();
+            let out = finish_session(sess, &words);
+            BUSY.store(false, Ordering::SeqCst);
+            match out {
+                Ok(Some((text, secs, wav))) => {
+                    engine_ok();
+                    deliver(text, secs, wav)
                 }
-                hints
-            })
-            .unwrap_or_default();
-        let out = finish_session(sess, &words);
-        BUSY.store(false, Ordering::SeqCst);
-        match out {
-            Ok(Some((text, secs, wav))) => {
-                engine_ok();
-                deliver(text, secs, wav)
+                Ok(None) => {
+                    engine_ok();
+                }
+                Err(e) => {
+                    engine_failed();
+                    eprintln!("[stt] transcription failed: {e}");
+                }
             }
-            Ok(None) => {
-                engine_ok();
+            if let Ok(mut g) = od.lock() {
+                if let Some(done) = g.take() {
+                    done();
+                }
             }
-            Err(e) => {
-                engine_failed();
-                eprintln!("[stt] transcription failed: {e}");
-            }
-        }
-        if let Ok(mut g) = od.lock() {
-            if let Some(done) = g.take() {
-                done();
-            }
-        }
-    }) {
-        // Saturated: release the guard and hide the pill now; the
-        // utterance is dropped, but the app survives to dictate again.
-        BUSY.store(false, Ordering::SeqCst);
-        eprintln!("[stt] release: {e}");
-        if let Ok(mut g) = on_done.lock() {
-            if let Some(done) = g.take() {
-                done();
+        }) {
+            // Saturated: release the guard and hide the pill now; the
+            // utterance is dropped, but the app survives to dictate again.
+            BUSY.store(false, Ordering::SeqCst);
+            eprintln!("[stt] release: {e}");
+            if let Ok(mut g) = on_done.lock() {
+                if let Some(done) = g.take() {
+                    done();
+                }
             }
         }
-    }
+    });
 }
 
 /// Blocking finalization for one utterance. `Ok(None)` = nothing to
