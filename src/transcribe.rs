@@ -2329,9 +2329,12 @@ pub fn begin_utterance(stt: crate::settings::SttSettings, keep_audio: bool, data
                 Some(rx)
             }
             Err(e) => {
-                eprintln!("[stt] press: online session failed: {e}");
-                audio::set_recorder(None);
-                return;
+                // Server down at press: do NOT abort. Keep recording;
+                // the release worker boots the server (ensure) and
+                // the one-shot fallback transcribes. First cold
+                // press costs model-load latency, never the text.
+                eprintln!("[stt] press: online session failed, recording anyway: {e}");
+                None
             }
         }
     } else {
