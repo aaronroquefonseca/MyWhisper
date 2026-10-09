@@ -1,0 +1,15 @@
+[Unit]
+Description=MyWhisper background dictation engine
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/mywhisper-app --service
+Restart=on-failure
+RestartSec=3
+# The engine is single-instance (flock on engine.lock); a second
+# copy exits non-zero instead of stacking servers.
+
+[Install]
+WantedBy=graphical-session.target
