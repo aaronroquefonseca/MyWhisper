@@ -193,8 +193,8 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         ),
         "settings.cleanup" => ("Text cleanup", "Edición de texto"),
         "settings.cleanup.sub" => (
-            "Polish dictations after transcription. Cloud models send the transcribed text to the selected provider.",
-            "Mejora los dictados después de transcribirlos. Los modelos en la nube envían el texto transcrito al proveedor elegido.",
+            "Polish dictations after transcription.",
+            "Mejora los dictados después de transcribirlos.",
         ),
         "settings.privacy" => ("Privacy & storage", "Privacidad y almacenamiento"),
         "settings.privacy.sub" => (
@@ -342,10 +342,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.lmtype" => ("Type", "Tipo"),
         "group.lmadd" => ("Add a language model", "Añadir un modelo de lenguaje"),
         "group.lmmodels" => ("Configured models", "Modelos configurados"),
-        "group.lmchain" => ("Models for text cleanup", "Modelos para editar texto"),
+        "group.lmchain" => ("Models", "Modelos"),
         "cleanup.priority.note" => (
-            "Enable the models to use for cleanup and arrange their priority. They are tried from top to bottom; if none succeeds, the original text is kept.",
-            "Activa los modelos que quieras usar para editar texto y ordena su prioridad. Se prueban de arriba abajo; si ninguno funciona, se conserva el texto original.",
+            "Try enabled models in order. If none succeeds, keep the original text. Cloud models receive your text.",
+            "Prueba los modelos activos en orden. Si ninguno funciona, conserva el texto original. Los modelos en la nube reciben tu texto.",
         ),
         "cleanup.models.empty" => (
             "Add a language model to use text cleanup.",
@@ -368,14 +368,17 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         ),
         "row.keeploaded" => ("Keep model loaded", "Mantener el modelo cargado"),
         "row.customprompt" => ("Custom prompt", "Prompt personalizado"),
-        "action.expandeditor" => ("Expand editor", "Ampliar editor"),
+        "action.editprompt" => ("Edit prompt", "Editar prompt"),
+        "prompt.edit.title" => ("Edit cleanup prompt", "Editar prompt de limpieza"),
+        "prompt.default" => ("Default prompt", "Prompt predeterminado"),
+        "prompt.custom" => ("Custom prompt", "Prompt personalizado"),
+        "prompt.default.summary" => (
+            "Fix grammar without changing meaning.",
+            "Corrige la gramática sin cambiar el sentido.",
+        ),
+        "action.usedefault" => ("Use default", "Usar predeterminado"),
         "action.fullscreen" => ("Full screen", "Pantalla completa"),
         "action.exitfullscreen" => ("Exit full screen", "Salir de pantalla completa"),
-        "action.done" => ("Done", "Listo"),
-        "prompt.saved" => (
-            "Changes save automatically",
-            "Los cambios se guardan automáticamente",
-        ),
         "row.cleanup" => ("Clean up transcriptions", "Limpiar transcripciones"),
         "row.keepaudio" => ("Keep audio recordings", "Conservar grabaciones de audio"),
         "row.storedaudio" => ("Stored audio", "Audio guardado"),

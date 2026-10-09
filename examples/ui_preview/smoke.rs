@@ -64,6 +64,13 @@ fn named<T: IsA<gtk4::Widget> + gtk4::glib::object::IsClass>(root: &gtk4::Widget
         .unwrap()
 }
 
+fn prompt_editor(app: &gtk4::Application) -> gtk4::Window {
+    app.windows()
+        .into_iter()
+        .find(|window| window.widget_name() == "cleanup-prompt-editor")
+        .unwrap()
+}
+
 fn respond(window: &gtk4::ApplicationWindow, response: &str) {
     let host = window
         .clone()
@@ -247,56 +254,41 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                 );
                 named::<gtk4::Switch>(&root, "cleanup-enabled").set_active(false);
                 assert!(!state.store.load_settings().language_models.cleanup_enabled);
-                let page = named::<gtk4::Stack>(&root, "settings-pages")
-                    .visible_child()
-                    .unwrap();
-                for widget in descendants(&page) {
-                    if let Some(expander) = widget.downcast_ref::<gtk4::Expander>() {
-                        expander.set_expanded(true);
-                    }
-                }
-                named::<gtk4::TextView>(&root, "cleanup-prompt")
-                    .buffer()
-                    .set_text("Fix punctuation only.");
                 assert_eq!(
-                    state.store.load_settings().language_models.cleanup_prompt,
-                    "Fix punctuation only."
+                    named::<gtk4::Label>(&root, "cleanup-prompt-status").text(),
+                    tr("prompt.default")
                 );
-                button(&root, "action.expandeditor").emit_clicked();
+                button(&root, "action.editprompt").emit_clicked();
             }
             17 => {
-                let editor = app
-                    .windows()
-                    .into_iter()
-                    .find(|window| window.widget_name() == "cleanup-prompt-editor")
-                    .unwrap();
+                let editor = prompt_editor(&app);
                 let text: gtk4::TextView = named(editor.upcast_ref(), "expanded-cleanup-prompt");
-                assert_eq!(
-                    text.buffer(),
-                    named::<gtk4::TextView>(&root, "cleanup-prompt").buffer()
-                );
+                let save: gtk4::Button = named(editor.upcast_ref(), "prompt-editor-save");
+                assert!(!save.is_sensitive());
                 assert!(editor.is_resizable());
-                let long = "Keep the speaker’s meaning. Fix punctuation.\n".repeat(100);
-                text.buffer().set_text(&long);
-                assert_eq!(
-                    state.store.load_settings().language_models.cleanup_prompt,
-                    long
+                text.buffer()
+                    .set_text(&"Keep the speaker’s meaning. Fix punctuation.\n".repeat(100));
+                assert!(save.is_sensitive());
+                assert!(
+                    state
+                        .store
+                        .load_settings()
+                        .language_models
+                        .cleanup_prompt
+                        .is_empty()
                 );
-                let restore = descendants(editor.upcast_ref())
-                    .into_iter()
-                    .find_map(|widget| {
-                        widget.downcast::<gtk4::Button>().ok().filter(|button| {
-                            button.label().as_deref() == Some(tr("action.restore"))
-                        })
-                    })
-                    .unwrap();
-                restore.emit_clicked();
-                assert_eq!(
-                    state.store.load_settings().language_models.cleanup_prompt,
-                    mywhisper::transcribe::DEFAULT_CLEANUP_PROMPT
+                named::<gtk4::Button>(editor.upcast_ref(), "prompt-editor-default").emit_clicked();
+                assert!(!save.is_sensitive());
+                assert!(
+                    state
+                        .store
+                        .load_settings()
+                        .language_models
+                        .cleanup_prompt
+                        .is_empty()
                 );
-                text.buffer().set_text(&long);
-                named::<gtk4::Button>(editor.upcast_ref(), "prompt-editor-done").emit_clicked();
+                text.buffer().set_text("This edit must be canceled.");
+                named::<gtk4::Button>(editor.upcast_ref(), "prompt-editor-cancel").emit_clicked();
             }
             18 => {
                 assert!(
@@ -304,25 +296,75 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                         .iter()
                         .any(|window| window.widget_name() == "cleanup-prompt-editor")
                 );
-                let text: gtk4::TextView = named(&root, "cleanup-prompt");
+                assert!(
+                    state
+                        .store
+                        .load_settings()
+                        .language_models
+                        .cleanup_prompt
+                        .is_empty()
+                );
+                assert_eq!(
+                    named::<gtk4::Label>(&root, "cleanup-prompt-status").text(),
+                    tr("prompt.default")
+                );
+                button(&root, "action.editprompt").emit_clicked();
+            }
+            19 => {
+                let editor = prompt_editor(&app);
+                let text: gtk4::TextView = named(editor.upcast_ref(), "expanded-cleanup-prompt");
+                text.buffer()
+                    .set_text(&"Keep the speaker’s meaning. Fix punctuation.\n".repeat(100));
+                named::<gtk4::Button>(editor.upcast_ref(), "prompt-editor-save").emit_clicked();
+            }
+            20 => {
+                assert_eq!(
+                    state.store.load_settings().language_models.cleanup_prompt,
+                    "Keep the speaker’s meaning. Fix punctuation.\n".repeat(100)
+                );
+                assert_eq!(
+                    named::<gtk4::Label>(&root, "cleanup-prompt-status").text(),
+                    tr("prompt.custom")
+                );
+                let preview: gtk4::Label = named(&root, "cleanup-prompt-preview");
+                assert!(preview.text().chars().count() <= 240);
+                button(&root, "action.editprompt").emit_clicked();
+            }
+            21 => {
+                let editor = prompt_editor(&app);
+                let text: gtk4::TextView = named(editor.upcast_ref(), "expanded-cleanup-prompt");
                 let buffer = text.buffer();
                 assert_eq!(
                     buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
                     "Keep the speaker’s meaning. Fix punctuation.\n".repeat(100)
                 );
-                assert!(buffer.char_count() > 4000);
+                named::<gtk4::Button>(editor.upcast_ref(), "prompt-editor-default").emit_clicked();
+                editor.close();
+                assert_eq!(
+                    state.store.load_settings().language_models.cleanup_prompt,
+                    "Keep the speaker’s meaning. Fix punctuation.\n".repeat(100)
+                );
+                button(&root, "action.editprompt").emit_clicked();
             }
-            19 => {
-                button(&root, "action.restore").emit_clicked();
+            22 => {
+                let editor = prompt_editor(&app);
+                named::<gtk4::Button>(editor.upcast_ref(), "prompt-editor-default").emit_clicked();
+                named::<gtk4::Button>(editor.upcast_ref(), "prompt-editor-save").emit_clicked();
+            }
+            23 => {
                 assert_eq!(
                     state.store.load_settings().language_models.cleanup_prompt,
                     mywhisper::transcribe::DEFAULT_CLEANUP_PROMPT
+                );
+                assert_eq!(
+                    named::<gtk4::Label>(&root, "cleanup-prompt-status").text(),
+                    tr("prompt.default")
                 );
                 named::<gtk4::Switch>(&root, "cleanup-enabled").set_active(true);
                 assert!(state.store.load_settings().language_models.cleanup_enabled);
                 button(&root, "action.managelm").emit_clicked();
             }
-            20 => {
+            24 => {
                 let settings: gtk4::Stack = named(&root, "settings-pages");
                 assert_eq!(
                     settings.visible_child_name().as_deref(),
@@ -345,7 +387,7 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                 assert_eq!(state.store.load_settings().language_models.entries.len(), 2);
                 button(&root, "action.cleanupsettings").emit_clicked();
             }
-            21 => {
+            25 => {
                 let list: gtk4::Box = named(&root, "cleanup-models");
                 let switches: Vec<_> = descendants(list.upcast_ref())
                     .into_iter()
@@ -368,7 +410,7 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                 assert!(!saved.language_models.entries[1].enabled);
                 button(&root, "action.managelm").emit_clicked();
             }
-            22 => {
+            26 => {
                 button(&root, "action.edit").emit_clicked();
                 assert_eq!(
                     named::<gtk4::Entry>(&root, "lm-name").text(),
@@ -378,7 +420,7 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                 button(&root, "action.save").emit_clicked();
                 button(&root, "action.cleanupsettings").emit_clicked();
             }
-            23 => {
+            27 => {
                 let list: gtk4::Box = named(&root, "cleanup-models");
                 assert!(descendants(list.upcast_ref()).iter().any(|widget| {
                     widget
@@ -393,12 +435,12 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                 assert!(!saved.language_models.entries[1].enabled);
                 button(&root, "action.managelm").emit_clicked();
             }
-            24 => button(&root, "action.remove").emit_clicked(),
-            25 => {
+            28 => button(&root, "action.remove").emit_clicked(),
+            29 => {
                 respond(&window, "confirm");
                 button(&root, "action.cleanupsettings").emit_clicked();
             }
-            26 => {
+            30 => {
                 let list: gtk4::Box = named(&root, "cleanup-models");
                 assert_eq!(
                     descendants(list.upcast_ref())
@@ -418,21 +460,21 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                 named::<gtk4::Stack>(&root, "settings-pages")
                     .set_visible_child_name("Privacy & Data");
             }
-            27 => button(&root, "action.clearalltranscripts").emit_clicked(),
-            28 => {
+            31 => button(&root, "action.clearalltranscripts").emit_clicked(),
+            32 => {
                 respond(&window, "cancel");
                 assert_eq!(
                     state.store.load_history(200, true).unwrap().len(),
                     original_history
                 );
             }
-            29 => button(&root, "action.clearalltranscripts").emit_clicked(),
-            30 => {
+            33 => button(&root, "action.clearalltranscripts").emit_clicked(),
+            34 => {
                 respond(&window, "confirm");
                 assert!(state.store.load_history(200, true).unwrap().is_empty());
                 named::<gtk4::Stack>(&root, "settings-pages").set_visible_child_name("Preferences");
             }
-            31 => {
+            35 => {
                 let theme: gtk4::DropDown = named(&root, "theme-picker");
                 theme.set_selected(2);
                 assert_eq!(
@@ -451,7 +493,7 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                     2
                 });
             }
-            32 => {
+            36 => {
                 let fresh = app.active_window().unwrap();
                 assert_ne!(fresh, window);
                 assert_eq!(
@@ -467,7 +509,7 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                     Some("Preferences")
                 );
                 println!(
-                    "Native UI smoke passed: validation, draft retention, delete cancel/confirm, multiline snippet creation/editing, alias conflicts, search, deep links, separate model/cleanup settings, cleanup persistence, expanded prompt editing and restoration, model add/edit/remove, priority and selection across pages, bulk history clear, theme persistence, language rebuild."
+                    "Native UI smoke passed: validation, draft retention, delete cancel/confirm, multiline snippet creation/editing, alias conflicts, search, deep links, separate model/cleanup settings, cleanup persistence, prompt draft cancel/close, explicit save, summary refresh, default restoration, model add/edit/remove, priority and selection across pages, bulk history clear, theme persistence, language rebuild."
                 );
                 app.quit();
                 return gtk4::glib::ControlFlow::Break;

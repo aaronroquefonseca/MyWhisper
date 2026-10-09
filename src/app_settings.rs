@@ -3975,15 +3975,31 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     root
 }
 
-fn restore_prompt_button(buffer: &gtk4::TextBuffer) -> Button {
-    let restore = Button::with_label(tr("action.restore"));
-    let buffer = buffer.clone();
-    restore.connect_clicked(move |_| buffer.set_text(crate::transcribe::DEFAULT_CLEANUP_PROMPT));
-    restore
+fn update_prompt_summary(state: &Rc<AppState>, status: &Label, preview: &Label) {
+    let settings = state.settings.borrow();
+    let stored = &settings.language_models.cleanup_prompt;
+    let is_default = stored.trim().is_empty()
+        || stored.trim() == crate::transcribe::DEFAULT_CLEANUP_PROMPT.trim();
+    status.set_text(tr(if is_default {
+        "prompt.default"
+    } else {
+        "prompt.custom"
+    }));
+    preview.set_text(&if is_default {
+        tr("prompt.default.summary").to_string()
+    } else {
+        stored
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(240)
+            .collect()
+    });
 }
 
-/// A focused, resizable editor shares the inline buffer and its persistence handler.
-fn open_prompt_editor(from: &Button, buffer: &gtk4::TextBuffer) {
+/// Editing uses a private draft; only Save updates the persisted prompt.
+fn open_prompt_editor(from: &Button, state: &Rc<AppState>, status: &Label, preview: &Label) {
     use libadwaita::prelude::*;
     let Some(parent) = from
         .root()
@@ -3994,21 +4010,81 @@ fn open_prompt_editor(from: &Button, buffer: &gtk4::TextBuffer) {
     let editor = libadwaita::Window::new();
     editor.set_widget_name("cleanup-prompt-editor");
     editor.add_css_class("mywhisper-app");
-    editor.set_title(Some(tr("row.customprompt")));
+    editor.set_title(Some(tr("prompt.edit.title")));
     editor.set_application(parent.application().as_ref());
     editor.set_transient_for(Some(&parent));
     editor.set_destroy_with_parent(true);
     editor.set_modal(true);
     editor.set_default_size(
-        (parent.width() - 48).clamp(480, 960),
+        (parent.width() - 48).clamp(480, 880),
         (parent.height() - 48).clamp(360, 800),
     );
-
     let layout = GtkBox::new(Orientation::Vertical, 0);
     let header = libadwaita::HeaderBar::new();
-    header.set_title_widget(Some(&Label::new(Some(tr("row.customprompt")))));
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    header.set_title_widget(Some(&Label::new(Some(tr("prompt.edit.title")))));
+    let cancel = Button::with_label(tr("action.cancel"));
+    cancel.set_widget_name("prompt-editor-cancel");
+    let weak_editor = editor.downgrade();
+    cancel.connect_clicked(move |_| {
+        if let Some(editor) = weak_editor.upgrade() {
+            editor.close();
+        }
+    });
+    header.pack_start(&cancel);
+    let save = Button::with_label(tr("action.save"));
+    save.set_widget_name("prompt-editor-save");
+    save.add_css_class("suggested-action");
+    save.set_sensitive(false);
+    header.pack_end(&save);
+    layout.append(&header);
+
+    let content = GtkBox::new(Orientation::Vertical, 16);
+    content.set_margin_top(20);
+    content.set_margin_bottom(20);
+    content.set_margin_start(20);
+    content.set_margin_end(20);
+    content.set_vexpand(true);
+    let scroll = gtk4::ScrolledWindow::new();
+    scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+    scroll.set_vexpand(true);
+    let text = TextView::new();
+    text.set_widget_name("expanded-cleanup-prompt");
+    text.update_property(&[gtk4::accessible::Property::Label(tr("row.customprompt"))]);
+    text.set_wrap_mode(gtk4::WrapMode::WordChar);
+    text.set_pixels_above_lines(3);
+    text.set_pixels_below_lines(3);
+    text.set_pixels_inside_wrap(2);
+    let stored = state
+        .settings
+        .borrow()
+        .language_models
+        .cleanup_prompt
+        .clone();
+    let initial = crate::transcribe::effective_prompt(&stored).to_string();
+    let buffer = text.buffer();
+    buffer.set_text(&initial);
+    buffer.set_enable_undo(true);
+    scroll.set_child(Some(&text));
+    content.append(&scroll);
+    let error = Label::new(None);
+    error.add_css_class("warn");
+    error.set_wrap(true);
+    error.set_xalign(0.0);
+    error.set_visible(false);
+    content.append(&error);
+    let actions = GtkBox::new(Orientation::Horizontal, 12);
+    let use_default = Button::with_label(tr("action.usedefault"));
+    use_default.set_widget_name("prompt-editor-default");
+    use_default.set_visible(initial != crate::transcribe::DEFAULT_CLEANUP_PROMPT);
+    let draft = buffer.clone();
+    use_default.connect_clicked(move |_| draft.set_text(crate::transcribe::DEFAULT_CLEANUP_PROMPT));
+    actions.append(&use_default);
     let full_screen = Button::with_label(tr("action.fullscreen"));
     full_screen.set_widget_name("prompt-editor-fullscreen");
+    full_screen.set_hexpand(true);
+    full_screen.set_halign(gtk4::Align::End);
     let weak_editor = editor.downgrade();
     full_screen.connect_clicked(move |_| {
         if let Some(editor) = weak_editor.upgrade() {
@@ -4029,49 +4105,52 @@ fn open_prompt_editor(from: &Button, buffer: &gtk4::TextBuffer) {
             }));
         }
     });
-    header.pack_end(&full_screen);
-    layout.append(&header);
-    let content = GtkBox::new(Orientation::Vertical, 16);
-    for set_margin in [
-        GtkBox::set_margin_top,
-        GtkBox::set_margin_bottom,
-        GtkBox::set_margin_start,
-        GtkBox::set_margin_end,
-    ] {
-        set_margin(&content, 20);
-    }
-    content.set_vexpand(true);
-    let scroll = gtk4::ScrolledWindow::new();
-    scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-    scroll.set_vexpand(true);
-    let text = TextView::with_buffer(buffer);
-    text.set_widget_name("expanded-cleanup-prompt");
-    text.update_property(&[gtk4::accessible::Property::Label(tr("row.customprompt"))]);
-    text.set_wrap_mode(gtk4::WrapMode::WordChar);
-    text.set_pixels_above_lines(2);
-    text.set_pixels_below_lines(2);
-    scroll.set_child(Some(&text));
-    content.append(&scroll);
-    let actions = GtkBox::new(Orientation::Horizontal, 12);
-    actions.append(&restore_prompt_button(buffer));
-    let note = Label::new(Some(tr("prompt.saved")));
-    note.add_css_class("dim");
-    note.set_wrap(true);
-    note.set_xalign(0.0);
-    note.set_hexpand(true);
-    actions.append(&note);
-    let done = Button::with_label(tr("action.done"));
-    done.set_widget_name("prompt-editor-done");
-    let weak_editor = editor.downgrade();
-    done.connect_clicked(move |_| {
-        if let Some(editor) = weak_editor.upgrade() {
-            editor.close();
+    actions.append(&full_screen);
+    content.append(&actions);
+    let clamp = libadwaita::Clamp::new();
+    clamp.set_maximum_size(760);
+    clamp.set_tightening_threshold(760);
+    clamp.set_vexpand(true);
+    clamp.set_child(Some(&content));
+    layout.append(&clamp);
+    editor.set_content(Some(&layout));
+    let weak_save = save.downgrade();
+    let weak_default = use_default.downgrade();
+    buffer.connect_changed(move |buffer| {
+        let draft = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+        if let Some(save) = weak_save.upgrade() {
+            save.set_sensitive(draft != initial);
+        }
+        if let Some(default) = weak_default.upgrade() {
+            default.set_visible(draft != crate::transcribe::DEFAULT_CLEANUP_PROMPT);
         }
     });
-    actions.append(&done);
-    content.append(&actions);
-    layout.append(&content);
-    editor.set_content(Some(&layout));
+    {
+        let state = state.clone();
+        let status = status.clone();
+        let preview = preview.clone();
+        let weak_editor = editor.downgrade();
+        save.connect_clicked(move |_| {
+            let mut settings = state.settings.borrow().clone();
+            settings.language_models.cleanup_prompt = buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                .to_string();
+            match state.store.save_settings(&settings) {
+                Ok(()) => {
+                    *state.settings.borrow_mut() = settings;
+                    update_prompt_summary(&state, &status, &preview);
+                    if let Some(editor) = weak_editor.upgrade() {
+                        editor.close();
+                    }
+                }
+                Err(failure) => {
+                    eprintln!("[app] prompt save failed: {failure}");
+                    error.set_text(tr("feedback.savefailed"));
+                    error.set_visible(true);
+                }
+            }
+        });
+    }
     let keys = EventControllerKey::new();
     keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
     let weak_editor = editor.downgrade();
@@ -4088,7 +4167,6 @@ fn open_prompt_editor(from: &Button, buffer: &gtk4::TextBuffer) {
     editor.add_controller(keys);
     editor.present();
     text.grab_focus();
-    text.scroll_mark_onscreen(&buffer.get_insert());
 }
 
 fn text_cleanup_page(state: &Rc<AppState>) -> GtkBox {
@@ -4112,55 +4190,36 @@ fn text_cleanup_page(state: &Rc<AppState>) -> GtkBox {
         }
         b.append(&sw);
         rows.append(&b);
-        // Empty stored value uses the default; both editor views share one buffer.
-        let prompt_expander = gtk4::Expander::new(Some(tr("row.customprompt")));
-        let prompt_rows = GtkBox::new(Orientation::Vertical, 10);
-        prompt_rows.set_margin_top(12);
-        prompt_expander.set_child(Some(&prompt_rows));
-        rows.append(&prompt_expander);
-        let scroll = gtk4::ScrolledWindow::new();
-        scroll.set_min_content_height(320);
-        scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-        scroll.set_hexpand(true);
-        scroll.set_vexpand(false);
-        let prompt = TextView::new();
-        prompt.set_widget_name("cleanup-prompt");
-        prompt.update_property(&[gtk4::accessible::Property::Label(tr("row.customprompt"))]);
-        prompt.set_wrap_mode(gtk4::WrapMode::WordChar);
-        let stored = state
-            .settings
-            .borrow()
-            .language_models
-            .cleanup_prompt
-            .clone();
-        prompt.buffer().set_text(if stored.trim().is_empty() {
-            crate::transcribe::DEFAULT_CLEANUP_PROMPT
-        } else {
-            stored.as_str()
-        });
-        prompt.buffer().set_enable_undo(true);
+        let instructions = GtkBox::new(Orientation::Horizontal, 16);
+        let info = GtkBox::new(Orientation::Vertical, 4);
+        info.set_hexpand(true);
+        let status = Label::new(None);
+        status.set_widget_name("cleanup-prompt-status");
+        status.set_xalign(0.0);
+        status.add_css_class("row-label");
+        let preview = Label::new(None);
+        preview.set_widget_name("cleanup-prompt-preview");
+        preview.set_xalign(0.0);
+        preview.set_wrap(true);
+        preview.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
+        preview.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        preview.set_lines(2);
+        preview.set_max_width_chars(48);
+        preview.add_css_class("dim");
+        update_prompt_summary(state, &status, &preview);
+        info.append(&status);
+        info.append(&preview);
+        instructions.append(&info);
+        let edit = Button::with_label(tr("action.editprompt"));
+        edit.set_valign(gtk4::Align::Center);
         {
             let state = state.clone();
-            prompt.buffer().connect_changed(move |buf| {
-                let (start, end) = (buf.start_iter(), buf.end_iter());
-                state.settings.borrow_mut().language_models.cleanup_prompt =
-                    buf.text(&start, &end, false).to_string();
-                persist_prefs(state.clone())();
+            edit.connect_clicked(move |button| {
+                open_prompt_editor(button, &state, &status, &preview)
             });
         }
-        let actions = GtkBox::new(Orientation::Horizontal, 8);
-        actions.append(&restore_prompt_button(&prompt.buffer()));
-        let expand = Button::with_label(tr("action.expandeditor"));
-        expand.set_hexpand(true);
-        expand.set_halign(gtk4::Align::End);
-        {
-            let buffer = prompt.buffer();
-            expand.connect_clicked(move |button| open_prompt_editor(button, &buffer));
-        }
-        actions.append(&expand);
-        prompt_rows.append(&actions);
-        scroll.set_child(Some(&prompt));
-        prompt_rows.append(&scroll);
+        instructions.append(&edit);
+        rows.append(&instructions);
     }
     root.append(&card);
 
