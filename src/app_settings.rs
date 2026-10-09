@@ -3974,6 +3974,55 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
     v.add_css_class("dim");
     b.append(&v);
     rows.append(&b);
+    // Update status, consistent with the Home notice: state from the
+    // startup `gh` check (tri-state), manual re-check on demand.
+    {
+        use crate::update::UpdateState;
+        fn update_text() -> String {
+            match crate::update::update_state() {
+                UpdateState::Newer(v) => trf("sys.update.new", &[("version", &v)]),
+                UpdateState::Current => {
+                    trf("sys.update.current", &[("version", crate::APP_VERSION)])
+                }
+                UpdateState::Unknown => tr("sys.update.unknown").to_string(),
+            }
+        }
+        let (b, _) = row(tr("row.appupdate"));
+        let status = Label::new(Some(update_text().as_str()));
+        status.add_css_class("dim");
+        status.set_xalign(0.0);
+        status.set_hexpand(true);
+        b.append(&status);
+        let check = Button::with_label(tr("action.check"));
+        {
+            let status = status.clone();
+            // Poll the background check; give up as failed after ~12 s.
+            check.connect_clicked(move |_| {
+                crate::update::check_for_updates();
+                status.set_text(tr("sys.update.checking"));
+                let status = status.clone();
+                let tries = std::rc::Rc::new(std::cell::Cell::new(0));
+                gtk4::glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
+                    tries.set(tries.get() + 1);
+                    match crate::update::update_state() {
+                        UpdateState::Unknown if tries.get() < 12 => {
+                            gtk4::glib::ControlFlow::Continue
+                        }
+                        UpdateState::Unknown => {
+                            status.set_text(tr("sys.update.failed"));
+                            gtk4::glib::ControlFlow::Break
+                        }
+                        _ => {
+                            status.set_text(update_text().as_str());
+                            gtk4::glib::ControlFlow::Break
+                        }
+                    }
+                });
+            });
+        }
+        b.append(&check);
+        rows.append(&b);
+    }
     root.append(&card);
 
     // The cache lives here, not configured: models + runtimes under

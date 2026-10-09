@@ -6,10 +6,12 @@
 
 use std::sync::{Mutex, OnceLock};
 
-static LATEST: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+/// None = no check completed yet (or all failed); Some(None) =
+/// checked and current; Some(Some(tag)) = newer release found.
+static STATE: OnceLock<Mutex<Option<Option<String>>>> = OnceLock::new();
 
-fn slot() -> &'static Mutex<Option<String>> {
-    LATEST.get_or_init(|| Mutex::new(None))
+fn slot() -> &'static Mutex<Option<Option<String>>> {
+    STATE.get_or_init(|| Mutex::new(None))
 }
 
 fn parse_ver(v: &str) -> Option<(u64, u64, u64)> {
@@ -48,13 +50,31 @@ pub fn check_for_updates() {
             return;
         };
         if latest > current {
-            *slot().lock().unwrap() = Some(format!("v{}.{}.{}", latest.0, latest.1, latest.2));
+            *slot().lock().unwrap() =
+                Some(Some(format!("v{}.{}.{}", latest.0, latest.1, latest.2)));
             eprintln!("[update] newer release available: {tag}");
+        } else {
+            *slot().lock().unwrap() = Some(None);
         }
     });
 }
 
 /// Newer release tag (e.g. "v0.9.1"), if the startup check found one.
 pub fn available_update() -> Option<String> {
-    slot().lock().unwrap().clone()
+    slot().lock().unwrap().clone().flatten()
+}
+
+/// Tri-state for settings UI.
+pub enum UpdateState {
+    Unknown,
+    Current,
+    Newer(String),
+}
+
+pub fn update_state() -> UpdateState {
+    match slot().lock().unwrap().clone() {
+        None => UpdateState::Unknown,
+        Some(None) => UpdateState::Current,
+        Some(Some(v)) => UpdateState::Newer(v),
+    }
 }

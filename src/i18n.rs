@@ -354,9 +354,24 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Update available: {version} — run update.sh to install it.",
             "Actualización disponible: {version} — ejecuta update.sh para instalarla.",
         ),
-        "stt.lang.locked.tip" => (
+                "stt.lang.locked.tip" => (
             "Single-language model: fixed.",
             "Modelo de un solo idioma: fijo.",
+        ),
+        "row.appupdate" => ("Updates", "Actualizaciones"),
+        "sys.update.new" => (
+            "Update available: {version} — run update.sh to install it.",
+            "Actualización disponible: {version} — ejecuta update.sh para instalarla.",
+        ),
+        "sys.update.current" => (
+            "You're on the latest version ({version}).",
+            "Tienes la última versión ({version}).",
+        ),
+        "sys.update.unknown" => ("Not checked yet.", "Aún no comprobado."),
+        "sys.update.checking" => ("Checking…", "Comprobando…"),
+        "sys.update.failed" => (
+            "Couldn't reach releases (offline?).",
+            "No se pudo contactar (¿sin conexión?).",
         ),        "row.lanexpose.note" => (
             "Except for Sherpa: Sherpa always listens on all interfaces, so disabling this option won't take effect for Sherpa.",
             "Excepto Sherpa: Sherpa siempre escucha en todas las interfaces, así que desactivar esta opción no tendrá efecto en Sherpa.",
