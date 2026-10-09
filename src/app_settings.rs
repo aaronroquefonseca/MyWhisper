@@ -2671,12 +2671,17 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
             };
             let stored = state.settings.borrow().stt.language.clone();
             let shown = if opts.contains(&stored) { stored } else { def };
-            {
+            let corrected = {
                 let mut st = state.settings.borrow_mut();
                 if st.stt.language != shown {
                     st.stt.language = shown.clone();
-                    persist_prefs(state.clone())();
+                    true
+                } else {
+                    false
                 }
+            };
+            if corrected {
+                persist_prefs(state.clone())();
             }
             lang_drop
                 .set_selected(
