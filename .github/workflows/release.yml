@@ -2,6 +2,10 @@ name: release
 
 # Tag a version (v0.9.0) and push: the binary tarball lands on the
 # private GitHub Release. No public repos involved.
+#
+# Builds inside an Arch container (same libs as dev: current gtk4,
+# libadwaita, gtk4-layer-shell). Ubuntu runners ship GTK 4.14, too
+# old for our gtk4 crate (>= 4.21), and have no layer-shell package.
 on:
   push:
     tags: ["v*"]
@@ -12,26 +16,16 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    container:
+      image: archlinux:base-devel
     steps:
-      - uses: actions/checkout@v4
       - name: System deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential pkg-config meson ninja-build \
-            libgtk-4-dev libadwaita-1-dev \
-            libasound2-dev ca-certificates curl \
-            libgirepository1.0-dev gobject-introspection \
-            wayland-protocols valac
-      - name: gtk4-layer-shell (no noble package, build pinned source)
-        run: |
-          curl -sL https://github.com/wmww/gtk4-layer-shell/archive/refs/tags/v1.3.0.tar.gz -o gls.tar.gz
-          tar xzf gls.tar.gz
-          cd gtk4-layer-shell-1.3.0
-          meson setup build --prefix=/usr -Dexamples=false -Ddocs=false
-          ninja -C build
-          sudo ninja -C build install
-          sudo ldconfig
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm \
+            gtk4 libadwaita gtk4-layer-shell alsa-lib \
+            pkgconf curl ca-certificates github-cli
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build
