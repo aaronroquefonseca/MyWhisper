@@ -1,0 +1,4 @@
+
+thread 'main' (3890172) panicked at src/app_sync.rs:52:34:
+end byte index 8 is not a char boundary; it is inside '界' (bytes 6..9 of string)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

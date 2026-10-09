@@ -1,0 +1,46 @@
+[app] palette -> light
+[ui-smoke] step 0
+[ui-smoke] step 1
+[ui-smoke] step 2
+[ui-smoke] step 3
+[ui-smoke] step 4
+[ui-smoke] step 5
+[ui-smoke] step 6
+[ui-smoke] step 7
+[ui-smoke] step 8
+[ui-smoke] step 9
+[ui-smoke] step 10
+[ui-smoke] step 11
+[ui-smoke] step 12
+[ui-smoke] step 13
+[ui-smoke] step 14
+[ui-smoke] step 15
+[ui-smoke] step 16
+[ui-smoke] step 17
+[ui-smoke] step 18
+[ui-smoke] step 19
+[ui-smoke] step 20
+[ui-smoke] step 21
+[ui-smoke] step 22
+[ui-smoke] step 23
+[ui-smoke] step 24
+[ui-smoke] step 25
+[ui-smoke] step 26
+[ui-smoke] step 27
+[ui-smoke] step 28
+[ui-smoke] step 29
+[ui-smoke] step 30
+[ui-smoke] step 31
+[ui-smoke] step 32
+[ui-smoke] step 33
+[ui-smoke] step 34
+[privacy] cleared 4 transcripts
+[ui-smoke] step 35
+[app] palette -> dark
+[app] theme state: dark=true system-supports-color-schemes=true scheme=ForceDark theme-name=Adwaita-empty
+[app] theme -> Dark
+[app] palette -> light
+[app] theme state: dark=false system-supports-color-schemes=true scheme=ForceLight theme-name=Adwaita-empty
+[app] theme -> Light
+[ui-smoke] step 36
+Native UI smoke passed: validation, draft retention, delete cancel/confirm, multiline snippet creation/editing, alias conflicts, search, deep links, separate model/cleanup settings, cleanup persistence, prompt draft cancel/close, explicit save, summary refresh, default restoration, model add/edit/remove, priority and selection across pages, bulk history clear, theme persistence, language rebuild.
