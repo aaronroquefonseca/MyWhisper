@@ -1852,7 +1852,17 @@ fn update_gpu_progress(container: &GtkBox) {
 /// model: "auto" + family list (whisper: full upstream list;
 /// parakeet: per-model list), except Cohere which has no
 /// auto-detect and offers its 14 codes only.
-fn stt_lang_options(state: &Rc<AppState>) -> Vec<String> {
+/// Language list follows the local configuration, plus whether the
+/// dropdown locks (single-language model: greyed out, fixed).
+/// Whisper and Whistle take a language (auto supported); sherpa
+/// servers don't take one, so multi-language sherpa lists offer no
+/// auto (default en) and single-language ones lock.
+struct SttLang {
+    opts: Vec<String>,
+    locked: bool,
+}
+
+fn stt_lang(state: &Rc<AppState>) -> SttLang {
     use crate::settings::LocalSttProvider;
     use crate::stt;
     let s = state.settings.borrow();
@@ -1860,26 +1870,39 @@ fn stt_lang_options(state: &Rc<AppState>) -> Vec<String> {
     // codes; the dropdown keeps the local lists).
     let model_id: &str = match s.stt.local_provider {
         LocalSttProvider::OpenAi => {
-            return {
-                let mut v = vec!["auto".to_string()];
-                v.extend(stt::WHISPER_LANGS.iter().map(|l| l.to_string()));
-                v
+            let mut v = vec!["auto".to_string()];
+            v.extend(stt::WHISPER_LANGS.iter().map(|l| l.to_string()));
+            return SttLang {
+                opts: v,
+                locked: false,
             };
         }
         LocalSttProvider::Nvidia => &s.stt.parakeet_model,
         LocalSttProvider::Oruk => "orukeet-v0.1.0",
         LocalSttProvider::Cohere => "cohere-transcribe-03-2026",
-        LocalSttProvider::Whistle => "whistle-v1",
+        LocalSttProvider::Whistle => {
+            let mut v = vec!["auto".to_string()];
+            v.extend(stt::WHISTLE_LANGS.iter().map(|l| l.to_string()));
+            return SttLang {
+                opts: v,
+                locked: false,
+            };
+        }
     };
-    if matches!(s.stt.local_provider, LocalSttProvider::Cohere) {
-        return stt::model_languages(model_id)
-            .iter()
-            .map(|l| l.to_string())
-            .collect();
+    let langs: Vec<String> = stt::model_languages(model_id)
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    if langs.len() == 1 {
+        return SttLang {
+            opts: langs,
+            locked: true,
+        };
     }
-    let mut v = vec!["auto".to_string()];
-    v.extend(stt::model_languages(model_id).iter().map(|l| l.to_string()));
-    v
+    SttLang {
+        opts: langs,
+        locked: false,
+    }
 }
 
 /// Shared handles of the STT remote form (mirrors LmForm).
@@ -2626,7 +2649,8 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
             while let Some(child) = lang_slot.first_child() {
                 lang_slot.remove(&child);
             }
-            let opts = stt_lang_options(&state);
+            let lang = stt_lang(&state);
+            let opts = lang.opts;
             let (b, _) = row(tr("row.language"));
             let lang_drop = DropDown::new(
                 Some(StringList::new(
@@ -2635,15 +2659,37 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 None::<gtk4::Expression>,
             );
             // STT codes stay untranslated (server contract). A stored
-            // code outside the new list falls back to the first entry.
-            lang_drop.set_selected(idx_of(
-                &opts.iter().map(String::as_str).collect::<Vec<_>>(),
-                &state.settings.borrow().stt.language,
-            ) as u32);
+            // code outside the new list corrects to the model default
+            // (the single language, else en) and persists, so the
+            // list always reflects the current model.
+            let def = if opts.len() == 1 {
+                opts[0].clone()
+            } else if opts.contains(&"en".to_string()) {
+                "en".to_string()
+            } else {
+                opts[0].clone()
+            };
+            let stored = state.settings.borrow().stt.language.clone();
+            let shown = if opts.contains(&stored) { stored } else { def };
+            {
+                let mut st = state.settings.borrow_mut();
+                if st.stt.language != shown {
+                    st.stt.language = shown.clone();
+                    persist_prefs(state.clone())();
+                }
+            }
+            lang_drop
+                .set_selected(
+                    idx_of(&opts.iter().map(String::as_str).collect::<Vec<_>>(), &shown) as u32,
+                );
+            lang_drop.set_sensitive(!lang.locked);
+            if lang.locked {
+                lang_drop.set_tooltip_text(Some(tr("stt.lang.locked.tip")));
+            }
             {
                 let state = state.clone();
                 lang_drop.connect_selected_notify(move |d| {
-                    let opts = stt_lang_options(&state);
+                    let opts = stt_lang(&state).opts;
                     let code = opts
                         .get(d.selected().min(opts.len() as u32 - 1) as usize)
                         .cloned()
