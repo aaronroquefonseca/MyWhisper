@@ -101,6 +101,11 @@ pub enum Plan {
     },
     SherpaOffline {
         model_dir: PathBuf,
+        /// Spoken language (dropdown-validated). Only the Cohere
+        /// server takes it (--cohere-transcribe-language, required);
+        /// other offline models ignore it. Part of the server key so
+        /// a language switch respawns.
+        lang: String,
     },
     WhistleCli {
         engine: PathBuf,
@@ -145,7 +150,7 @@ impl Plan {
             Plan::SherpaOnline { model_dir } => {
                 format!("sherpa-online ({})", model_dir.display())
             }
-            Plan::SherpaOffline { model_dir } => {
+            Plan::SherpaOffline { model_dir, .. } => {
                 format!("sherpa-offline ({})", model_dir.display())
             }
             Plan::WhistleCli { model, .. } => {
@@ -309,14 +314,20 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
             require_transducer_files(&dir, entry.id)?;
             match entry.runtime {
                 Some(stt::ParakeetRuntime::Online) => Ok(Plan::SherpaOnline { model_dir: dir }),
-                _ => Ok(Plan::SherpaOffline { model_dir: dir }),
+                _ => Ok(Plan::SherpaOffline {
+                    model_dir: dir,
+                    lang: s.language.clone(),
+                }),
             }
         }
         LocalSttProvider::Oruk => {
             let entry = stt::find_model("orukeet-v0.1.0").ok_or_else(|| missing("orukeet"))?;
             let dir = stt::model_dir(data_dir, entry);
             require_transducer_files(&dir, entry.id)?;
-            Ok(Plan::SherpaOffline { model_dir: dir })
+            Ok(Plan::SherpaOffline {
+                model_dir: dir,
+                lang: s.language.clone(),
+            })
         }
         LocalSttProvider::Whistle => {
             let entry = stt::find_model("whistle-v1").ok_or_else(|| missing("whistle"))?;
@@ -1073,9 +1084,27 @@ fn ensure_sherpa_offline(
     data_dir: &Path,
     backend: SherpaBackendSetting,
     model_dir: &Path,
+    lang: &str,
     net: &ServerNet,
 ) -> Result<(), String> {
     let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-offline-websocket-server")?;
+    // Cohere is the only offline model taking a language (required:
+    // exactly one of its 14 codes). Detected by model dir; the
+    // dropdown guarantees a valid code, "en" as backstop.
+    let cohere = model_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().contains("cohere"))
+        .unwrap_or(false);
+    let cohere_lang = if cohere {
+        let valid = crate::stt::model_languages("cohere-transcribe-03-2026");
+        Some(if valid.contains(&lang) {
+            lang.to_string()
+        } else {
+            "en".to_string()
+        })
+    } else {
+        None
+    };
     let words = load_hint_words(data_dir);
     let (_hw_file, hw_args) = sherpa_hotwords(data_dir, model_dir, &words);
     let hw_hash = {
@@ -1085,9 +1114,15 @@ fn ensure_sherpa_offline(
         hw_args.join("\n").hash(&mut h);
         format!("{:x}", h.finish())
     };
-    let key = format!("{}|{}|{hw_hash}", bin.display(), model_dir.display());
+    let key = format!(
+        "{}|{}|{hw_hash}|{}",
+        bin.display(),
+        model_dir.display(),
+        cohere_lang.as_deref().unwrap_or("")
+    );
     let (bin_s, dir_s) = (bin.clone(), model_dir.to_path_buf());
     let offline_port = engine_port(net, SHERPA_OFFLINE_PORT);
+    let cohere_arg = cohere_lang.clone();
     ensure_server(
         data_dir,
         "sherpa-offline",
@@ -1116,6 +1151,9 @@ fn ensure_sherpa_offline(
                 format!("--num-threads={}", threads_arg()),
                 "--log-file=/tmp/mywhisper-sherpa-offline.log".to_string(),
             ];
+            if let Some(lang) = cohere_arg {
+                args.push(format!("--cohere-transcribe-language={lang}"));
+            }
             args.extend(hw_args);
             cmd.args(args)
                 .stdin(Stdio::null())
@@ -3018,8 +3056,8 @@ fn ensure_servers(
         Plan::SherpaOnline { model_dir } => {
             ensure_sherpa_online(data_dir, sherpa_backend, model_dir, net)
         }
-        Plan::SherpaOffline { model_dir } => {
-            ensure_sherpa_offline(data_dir, sherpa_backend, model_dir, net)
+        Plan::SherpaOffline { model_dir, lang } => {
+            ensure_sherpa_offline(data_dir, sherpa_backend, model_dir, lang, net)
         }
         // CLI per utterance: nothing to keep running.
         // Self-hosted WS: foreign by definition, never spawned.
@@ -3767,6 +3805,7 @@ mod tests {
             &data_dir,
             crate::settings::SherpaBackendSetting::Cpu,
             &dir,
+            "en",
             &net,
         )
         .expect("spawn+probe");
