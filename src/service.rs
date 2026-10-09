@@ -152,9 +152,17 @@ pub fn start_sync_engine(
                 &saved.sync.device_name.clone(),
                 port,
                 discovered.clone(),
+                saved.sync.advertise,
             ) {
                 Ok(handles) => {
-                    eprintln!("[sync] mdns advertising on :{port}");
+                    eprintln!(
+                        "[sync] mdns browsing on :{port}{}",
+                        if saved.sync.advertise {
+                            " (advertising)"
+                        } else {
+                            ""
+                        }
+                    );
                     Some(handles)
                 }
                 Err(e) => {
@@ -207,9 +215,9 @@ pub fn spawn_sync_watcher(
 ) {
     std::thread::spawn(move || {
         let mut first = true;
-        // Last applied (enabled, port, name): any move restarts the
-        // engine, so port/name edits apply immediately too.
-        let mut applied: Option<(bool, u16, String)> = None;
+        // Last applied (enabled, port, name, advertise): any move
+        // restarts the engine, so all edits apply immediately.
+        let mut applied: Option<(bool, u16, String, bool)> = None;
         loop {
             if !first {
                 std::thread::sleep(Duration::from_secs(2));
@@ -223,6 +231,7 @@ pub fn spawn_sync_watcher(
                 settings.sync.enabled,
                 settings.sync.listen_port,
                 settings.sync.device_name.clone(),
+                settings.sync.advertise,
             );
             if Some(want.clone()) == applied {
                 continue;
@@ -244,7 +253,7 @@ pub fn spawn_sync_watcher(
                 // not in a tight loop.
                 applied = Some(want);
             } else {
-                if applied.as_ref().map(|(on, _, _)| *on).unwrap_or(false) {
+                if applied.as_ref().map(|(on, _, _, _)| *on).unwrap_or(false) {
                     eprintln!("[sync] toggle off: stopping engine now");
                 }
                 stop_sync_engine();

@@ -371,6 +371,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Activado para servidores ws:// o wss:// (protocolo sherpa, p. ej. nuestro sherpa-online). Apagado para http(s), que siempre usa petición/respuesta.",
         ),
         "sync.svc.switch" => ("Sync engine", "Motor de sincronización"),
+        "sync.svc.advertise" => (
+            "Allow nearby autodiscovery",
+            "Permitir autodescubrimiento cercano",
+        ),
         "sync.svc.note" => (
             "systemd owns the service process; this only gates the engine.",
             "systemd gestiona el proceso; esto solo activa el motor.",

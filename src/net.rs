@@ -654,23 +654,26 @@ pub fn start_mdns(
     name: &str,
     port: u16,
     sink: Arc<Mutex<HashMap<String, Discovered>>>,
+    advertise: bool,
 ) -> Result<MdnsHandles, String> {
     let daemon = mdns_sd::ServiceDaemon::new().map_err(|e| format!("mdns: {e}"))?;
-    let short_id = &node_id[..node_id.len().min(8)];
-    let mut txt = std::collections::HashMap::new();
-    txt.insert("node".to_string(), node_id.to_string());
-    txt.insert("name".to_string(), name.to_string());
-    let host = format!("mywhisper-{short_id}.local.");
-    let mut addrs: Vec<IpAddr> = Vec::new();
-    if let Some(ip) = lan_ip() {
-        addrs.push(ip);
+    if advertise {
+        let short_id = &node_id[..node_id.len().min(8)];
+        let mut txt = std::collections::HashMap::new();
+        txt.insert("node".to_string(), node_id.to_string());
+        txt.insert("name".to_string(), name.to_string());
+        let host = format!("mywhisper-{short_id}.local.");
+        let mut addrs: Vec<IpAddr> = Vec::new();
+        if let Some(ip) = lan_ip() {
+            addrs.push(ip);
+        }
+        let info =
+            mdns_sd::ServiceInfo::new(MDNS_SERVICE, short_id, &host, &addrs[..], port, Some(txt))
+                .map_err(|e| format!("mdns service: {e}"))?;
+        daemon
+            .register(info)
+            .map_err(|e| format!("mdns register: {e}"))?;
     }
-    let info =
-        mdns_sd::ServiceInfo::new(MDNS_SERVICE, short_id, &host, &addrs[..], port, Some(txt))
-            .map_err(|e| format!("mdns service: {e}"))?;
-    daemon
-        .register(info)
-        .map_err(|e| format!("mdns register: {e}"))?;
 
     let browser = daemon
         .browse(MDNS_SERVICE)

@@ -438,6 +438,24 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     }
     svc_row.append(&svc_switch);
     svc_card.append(&svc_row);
+    let adv_row = GtkBox::new(Orientation::Horizontal, 8);
+    let adv_label = Label::new(Some(tr("sync.svc.advertise")));
+    adv_label.set_xalign(0.0);
+    adv_label.set_hexpand(true);
+    adv_row.append(&adv_label);
+    let adv_switch = Switch::new();
+    adv_switch.set_active(state.settings.borrow().sync.advertise);
+    adv_switch.set_valign(gtk4::Align::Center);
+    {
+        let state = state.clone();
+        adv_switch.connect_state_set(move |_, active| {
+            state.settings.borrow_mut().sync.advertise = active;
+            persist_prefs(state.clone())();
+            gtk4::glib::Propagation::Proceed
+        });
+    }
+    adv_row.append(&adv_switch);
+    svc_card.append(&adv_row);
     let svc_note = Label::new(Some(tr("sync.svc.note")));
     svc_note.add_css_class("dim");
     svc_note.set_xalign(0.0);

@@ -52,6 +52,10 @@ pub struct SyncSettings {
     pub device_name: String,
     /// TCP port for incoming sync connections (0 = disabled).
     pub listen_port: u16,
+    /// Advertise on mDNS so nearby devices list us. Off = invisible
+    /// (we still browse and see others).
+    #[serde(default = "default_true")]
+    pub advertise: bool,
 }
 
 impl Default for SyncSettings {
@@ -60,6 +64,7 @@ impl Default for SyncSettings {
             enabled: true,
             device_name: String::new(),
             listen_port: DEFAULT_SYNC_PORT,
+            advertise: true,
         }
     }
 }
