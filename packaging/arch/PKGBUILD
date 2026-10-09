@@ -1,6 +1,6 @@
 # Maintainer: you (private package, not for the AUR)
 pkgname=mywhisper
-pkgver=0.9.1
+pkgver=0.9.2
 pkgrel=1
 pkgdesc="Voice dictation with on-device transcription"
 arch=('x86_64')

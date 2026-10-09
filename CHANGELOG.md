@@ -1,6 +1,21 @@
 # Changelog
 
-## 0.9.1
+## 0.9.2
+
+- Exact release-point capture: timestamped mic tap, truncate at
+  release (nothing before cut, nothing after kept); fixed 350 ms
+  headroom removed. Optional extra listening delay in Preferences
+  (default off).
+- Model-aware STT language list (single-language models lock,
+  multi-language sherpa lists drop auto, default en); Cohere
+  offline servers now get their required language flag.
+- Sync engine applies immediately (toggle, port, name,
+  autodiscovery); live listener port in the UI; passwordless
+  automatic reachability check with firewall allow-hints instead of
+  polkit queries; optional mDNS autodiscovery toggle.
+- Settings System page: update status + manual re-check,
+  consistent with the Home update notice.
+- Pill live-preview race fix.
 
 - Home shows an update notice when a newer private release exists
   (checked once per app launch via `gh`; install stays an explicit
