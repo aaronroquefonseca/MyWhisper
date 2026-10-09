@@ -302,6 +302,13 @@ impl Store {
         // Pre-list configs seed one entry from legacy fields.
         settings.language_models.ensure_seed();
         settings.stt.ensure_seed();
+        // Old default left Ollama thinking unset: force off (new
+        // default). Runs every load, so existing installs migrate.
+        for e in &mut settings.language_models.entries {
+            if matches!(e.kind, crate::settings::LlmKind::Ollama) && e.thinking.is_none() {
+                e.thinking = Some(false);
+            }
+        }
         // Typed tables are authoritative for dictionary content.
         settings.dictionary.words = self.load_words().unwrap_or_default();
         settings.dictionary.snippets = self.load_snippets().unwrap_or_default();

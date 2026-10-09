@@ -635,7 +635,7 @@ impl LlmEntry {
             api_key: String::new(),
             keep_alive: String::new(),
             num_ctx: None,
-            thinking: None,
+            thinking: Some(false),
         }
     }
 
