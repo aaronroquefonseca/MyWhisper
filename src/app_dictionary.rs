@@ -63,20 +63,23 @@ fn labeled_entry(text: &str, label: &str) -> Entry {
 }
 
 fn duplicate_word(state: &AppState, value: &str, original: Option<&str>) -> bool {
+    let norm = crate::textnorm::norm_string(value.trim());
     state
         .store
         .load_words()
         .unwrap_or_default()
         .iter()
-        .any(|word| Some(word.as_str()) != original && word.to_lowercase() == value.to_lowercase())
+        .any(|word| Some(word.as_str()) != original && crate::textnorm::norm_string(word) == norm)
 }
 
 fn duplicate_snippet(state: &AppState, value: &str, original: Option<&str>) -> bool {
+    // Same fold as expansion matching: case- and accent-insensitive,
+    // so "Óscar" and "oscar" count as the same trigger.
     let triggers: HashSet<_> = value
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(str::to_lowercase)
+        .map(crate::textnorm::norm_string)
         .collect();
     state
         .store
@@ -88,7 +91,8 @@ fn duplicate_snippet(state: &AppState, value: &str, original: Option<&str>) -> b
                 && snippet
                     .triggers()
                     .iter()
-                    .any(|trigger| triggers.contains(&trigger.to_lowercase()))
+                    .map(|trigger| crate::textnorm::norm_string(trigger))
+                    .any(|trigger| triggers.contains(&trigger))
         })
 }
 
@@ -555,6 +559,14 @@ mod tests {
             .unwrap();
         assert!(duplicate_snippet(&state, "other phrase, MY SIGN OFF", None));
         assert!(!duplicate_snippet(&state, "new phrase", None));
+        // Accents fold too: same trigger in another casing/accent.
+        state
+            .store
+            .upsert_snippet("acción", "ACTION", "test")
+            .unwrap();
+        assert!(duplicate_snippet(&state, "ACCION", None));
+        state.store.upsert_word("camión", "test").unwrap();
+        assert!(duplicate_word(&state, "CAMION", None));
         assert!(!duplicate_snippet(
             &state,
             "SIGNATURE",

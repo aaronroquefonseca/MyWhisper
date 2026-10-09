@@ -3366,9 +3366,10 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
         }
     };
     let settings = store.load_settings();
-    // Snippet expansion BEFORE post-processing: deterministic
-    // trigger rewrites on the STT text. Raw stays pure for the raw
-    // view; final carries expansions into the LLM stage later.
+    // Snippet expansion runs BEFORE the LLM cleanup: deterministic
+    // trigger rewrites on the STT text so the cleanup sees the
+    // intended wording. Raw stays pure for the raw view; the
+    // pre-expanded text goes into the LLM stage.
     let snips: Vec<(String, String)> = settings
         .dictionary
         .snippets
@@ -3377,13 +3378,21 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
         .collect();
     let expanded = crate::textnorm::expand_snippets(&raw, &snips);
     if expanded != raw {
-        eprintln!("[stt] snippets expanded");
+        eprintln!("[stt] snippets expanded (pre-cleanup)");
     }
-    let text = post_process(
+    let cleaned = post_process(
         &expanded,
         &settings.language_models,
         &settings.dictionary.words,
     );
+    // Second pass AFTER cleanup: the cleanup repairs accents/casing
+    // and can normalize a trigger into existence ("O M W" -> "OMW");
+    // anything still matching here inserts literally, untouched by
+    // the LLM. Inserted replacements are never rescanned.
+    let text = crate::textnorm::expand_snippets(&cleaned, &snips);
+    if text != cleaned {
+        eprintln!("[stt] snippets expanded (post-cleanup)");
+    }
     eprintln!("[stt] final: {text}");
     if settings.privacy.keep_audio_recordings && settings.privacy.audio_retention_days > 0 {
         let data_dir = paths
