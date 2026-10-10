@@ -1626,11 +1626,9 @@ impl Store {
                 row.get(0)
             })
             .optional()?;
-        let enabled = match settings {
-            Some(json) => serde_json::from_str::<AppSettings>(&json)
-                .is_ok_and(|settings| settings.sync.enabled),
-            None => AppSettings::default().sync.enabled,
-        };
+        let enabled = settings
+            .and_then(|json| Self::decode_settings_value(&json).ok())
+            .is_some_and(|(value, _)| value["sync"]["enabled"].as_bool() == Some(true));
         let peer = Self::peer_on(conn, peer_id)?;
         let revoked: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM revoked_devices WHERE node_id=?1)",
@@ -2468,6 +2466,102 @@ mod tests {
 #[cfg(test)]
 mod release_regressions {
     use super::*;
+
+    #[test]
+    fn atomic_sync_authorization_rejects_missing_and_unreadable_permissions() {
+        let store = Store::open_memory().unwrap();
+        let peer = crate::device::DeviceIdentity::ephemeral().node_id;
+        store
+            .upsert_peer(&peer, "synthetic trusted peer", "", true)
+            .unwrap();
+        store
+            .add_history(
+                "synthetic private raw",
+                "synthetic private final",
+                3,
+                1,
+                "synthetic",
+            )
+            .unwrap();
+        let epoch = store.sync_epoch();
+        assert_eq!(
+            store.export_authorized(&peer, epoch).unwrap().history.len(),
+            1
+        );
+        let original: String = store
+            .conn
+            .query_row("SELECT value FROM kv WHERE key='settings'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        for variant in 0..6 {
+            let mut value: serde_json::Value = serde_json::from_str(&original).unwrap();
+            match variant {
+                0 => {
+                    value.as_object_mut().unwrap().remove("sync");
+                }
+                1 => {
+                    value["sync"].as_object_mut().unwrap().remove("enabled");
+                }
+                2 => {
+                    value["sync"]["enabled"] = serde_json::Value::Null;
+                }
+                3 => {
+                    value["settings_version"] = serde_json::Value::from(99);
+                }
+                4 => {
+                    value["sync"]["enabled"] = serde_json::Value::Bool(false);
+                }
+                5 => {
+                    store
+                        .conn
+                        .execute("DELETE FROM kv WHERE key='settings'", [])
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            if variant != 5 {
+                store
+                    .conn
+                    .execute(
+                        "UPDATE kv SET value=?1 WHERE key='settings'",
+                        [value.to_string()],
+                    )
+                    .unwrap();
+            }
+            assert_eq!(
+                store.sync_epoch(),
+                epoch,
+                "fixture must preserve the earlier round's generation"
+            );
+            assert!(
+                store.export_authorized(&peer, epoch).is_err(),
+                "missing or unreadable permission exported private speech: {variant}"
+            );
+            let incoming = [WordRecord {
+                word: format!("unauthorized-{variant}"),
+                updated_at: now_ms(),
+                updated_by: peer.clone(),
+                deleted: false,
+            }];
+            assert!(
+                store
+                    .apply_sync_round(&peer, epoch, "synthetic", (&incoming, &[], &[]), &[])
+                    .is_err(),
+                "missing or unreadable permission committed received speech: {variant}"
+            );
+            assert!(
+                !store.load_words().unwrap().contains(&incoming[0].word),
+                "rejected sync round partially wrote records"
+            );
+            store.conn.execute("INSERT INTO kv(key,value) VALUES ('settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[&original]).unwrap();
+            assert_eq!(
+                store.export_authorized(&peer, epoch).unwrap().history.len(),
+                1,
+                "explicit repaired permission must remain supported"
+            );
+        }
+    }
 
     #[test]
     fn stale_authorized_exports_reject_every_privacy_boundary() {

@@ -1,0 +1,41 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "correction": "F02 atomic sync export/import must use conservative versioned permission decoding",
+  "baseline": "5435a9e",
+  "baseline_regression_failed": true,
+  "cases": [
+    "missing sync section",
+    "missing enabled field",
+    "null enabled",
+    "future settings version",
+    "explicit false",
+    "missing settings row"
+  ],
+  "actual_boundaries": [
+    "export_authorized",
+    "apply_sync_round"
+  ],
+  "assertions": [
+    "No private transcript exported",
+    "No incoming records committed or partially written",
+    "Original generation remains unchanged",
+    "Repair with explicit permission preserves existing data and restores supported sync"
+  ],
+  "rust_tests": {
+    "passed": 192,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "compatibility": "No schema or peer protocol change; missing configuration cannot grant permission at an atomic transaction boundary.",
+  "logs_sha256": {
+    "before": "f78319dd69be278328c0d7f1d92fa5725499905614938f3f0a964012b74fc485",
+    "after": "b08ba2e92d74ea48da5963b374de0d3693cd3d980dbdce58f9e469e8504343d0",
+    "tests": "eb43ab0f5cc0f6a50c40c675568e2338fbf451a6a13d9d91de875aedeb20de66",
+    "clippy": "a0e9a93a48fbc64f16c9d15a84eb03d6bda57f40a64eba4aa31e0989fb415db0",
+    "fmt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "release": "0fb0a06fbdf3fce9a2eb0a9361fe4c07c27e1d253daf290268d7843fca578a3c"
+  },
+  "source_sha256": "51228f6ca5cd66b12da94f69541b96316479c2868f294e2b6670b8a3b5e0f7c3",
+  "outstanding": "Other review issues and all original grouped audit/final integration requirements remain open."
+}
