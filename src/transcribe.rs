@@ -52,6 +52,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use crate::audio::{self, ENGINE_RATE, MIN_SAMPLES_16K, Recorder, Resampler, wav_bytes_16k};
+use crate::operation::Operation;
 use crate::settings::{GpuBackendSetting, LocalSttProvider, SherpaBackendSetting, SttSettings};
 use crate::stt;
 
@@ -86,7 +87,7 @@ fn engine_port(net: &ServerNet, def: u16) -> u16 {
     net.port_override.unwrap_or(def)
 }
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(20);
-const INFERENCE_TIMEOUT: Duration = Duration::from_secs(180);
+pub(crate) const INFERENCE_TIMEOUT: Duration = Duration::from_secs(180);
 
 // ---------------------------------------------------------------- plans
 
@@ -587,7 +588,7 @@ pub fn spawn_server_reaper(data_dir: PathBuf) {
     let _ = crate::runtime::spawn_dedicated("server-reaper", move || {
         loop {
             std::thread::sleep(Duration::from_secs(30));
-            let keep = crate::store::Store::open(&data_dir.join("state.db"))
+            let keep = crate::store::Store::open_existing(&data_dir.join("state.db"))
                 .map(|store| store.load_settings().stt.keep_warm.clone())
                 .unwrap_or_default();
             if ACTIVE_SESSIONS.load(Ordering::Acquire) > 0
@@ -989,7 +990,7 @@ fn http_client() -> Result<reqwest::blocking::Client, String> {
 
 /// Provider URLs may contain credentials in userinfo, paths or queries.
 /// Classify failures without formatting the request or a provider body.
-fn http_error(operation: &str, error: &reqwest::Error) -> String {
+pub(crate) fn http_error(operation: &str, error: &reqwest::Error) -> String {
     let category = if error.is_timeout() {
         "deadline exceeded"
     } else if error.is_connect() {
@@ -1004,28 +1005,8 @@ fn http_error(operation: &str, error: &reqwest::Error) -> String {
     format!("{operation}: {category}")
 }
 
+#[cfg(test)]
 const MAX_PROVIDER_REPLY: u64 = 1024 * 1024;
-fn http_reply(response: reqwest::blocking::Response, operation: &str) -> Result<String, String> {
-    use std::io::Read;
-    if !response.status().is_success() {
-        return Err(format!("{operation}: HTTP {}", response.status().as_u16()));
-    }
-    if response
-        .content_length()
-        .is_some_and(|bytes| bytes > MAX_PROVIDER_REPLY)
-    {
-        return Err(format!("{operation}: response size limit exceeded"));
-    }
-    let mut bytes = Vec::new();
-    response
-        .take(MAX_PROVIDER_REPLY + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| format!("{operation}: response transfer failed or timed out"))?;
-    if bytes.len() as u64 > MAX_PROVIDER_REPLY {
-        return Err(format!("{operation}: response size limit exceeded"));
-    }
-    String::from_utf8(bytes).map_err(|_| format!("{operation}: response is not UTF-8"))
-}
 
 fn whisper_load(model: &Path, port: u16) -> Result<(), String> {
     let boundary = "mywhisperload";
@@ -1094,7 +1075,7 @@ fn sherpa_hotwords(
 
 /// Fresh dictionary words for server-side bias (best effort).
 fn load_hint_words(data_dir: &Path) -> Vec<String> {
-    crate::store::Store::open(&data_dir.join("state.db"))
+    crate::store::Store::open_existing(&data_dir.join("state.db"))
         .ok()
         .map(|store| store.load_words().unwrap_or_default())
         .unwrap_or_default()
@@ -1258,6 +1239,7 @@ type RawWs = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net
 /// The socket's owner can interrupt TLS, upgrade, partial frame IO and
 /// completion. Per-read timeouts alone cannot bound a trickling peer.
 struct SocketDeadline {
+    permitted: crate::selection::Guard,
     deadline: Arc<Mutex<Option<Instant>>>,
     done: mpsc::Sender<()>,
     socket: TcpStream,
@@ -1265,19 +1247,24 @@ struct SocketDeadline {
 }
 
 impl SocketDeadline {
-    fn new(socket: &TcpStream, deadline: Instant, cancel: Arc<AtomicBool>) -> Result<Self, String> {
+    fn new(
+        socket: &TcpStream,
+        deadline: Instant,
+        permitted: crate::selection::Guard,
+    ) -> Result<Self, String> {
         let deadline = Arc::new(Mutex::new(Some(deadline)));
         let watched = deadline.clone();
         let socket = socket.try_clone().map_err(|e| e.to_string())?;
         let watchdog = socket.try_clone().map_err(|e| e.to_string())?;
         let (done, receiver) = mpsc::channel();
+        let authority = permitted.clone();
         let task = crate::runtime::spawn_session("ws-socket-owner", move || {
             loop {
                 let expired = watched
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .is_some_and(|limit| Instant::now() >= limit);
-                if expired || cancel.load(Ordering::Acquire) {
+                if expired || !permitted() {
                     let _ = watchdog.shutdown(std::net::Shutdown::Both);
                     return;
                 }
@@ -1288,6 +1275,7 @@ impl SocketDeadline {
             }
         })?;
         Ok(Self {
+            permitted: authority,
             deadline,
             done,
             socket,
@@ -1297,6 +1285,21 @@ impl SocketDeadline {
 
     fn set(&self, deadline: Option<Instant>) {
         *self.deadline.lock().unwrap_or_else(|p| p.into_inner()) = deadline;
+    }
+
+    fn check(&self) -> Result<(), String> {
+        if !(self.permitted)() {
+            return Err("WebSocket capture authority ended".into());
+        }
+        if self
+            .deadline
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err("WebSocket progress deadline exceeded".into());
+        }
+        Ok(())
     }
 }
 
@@ -1359,6 +1362,23 @@ fn ws_connect_owned(
     deadline: Instant,
     cancel: Arc<AtomicBool>,
 ) -> Result<Ws, String> {
+    ws_connect_authorized(
+        url,
+        key,
+        read_timeout,
+        deadline,
+        &Operation::cancellable(cancel),
+    )
+}
+
+fn ws_connect_authorized(
+    url: &str,
+    key: &str,
+    read_timeout: Duration,
+    deadline: Instant,
+    operation: &Operation,
+) -> Result<Ws, String> {
+    operation.check()?;
     use tungstenite::client::IntoClientRequest;
     let parsed = reqwest::Url::parse(url).map_err(|_| "invalid WebSocket URL")?;
     if !matches!(parsed.scheme(), "ws" | "wss")
@@ -1373,7 +1393,7 @@ fn ws_connect_owned(
         .ok_or("WebSocket URL has no port")?;
     let address = format!("{host}:{port}");
     let mut socket = None;
-    for addr in crate::address::resolve(&address, deadline, || !cancel.load(Ordering::Acquire))? {
+    for addr in crate::address::resolve(&address, deadline, || operation.permitted())? {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             break;
@@ -1381,12 +1401,12 @@ fn ws_connect_owned(
         if let Ok(stream) = crate::address::connect(
             addr,
             deadline.min(Instant::now() + Duration::from_secs(2)),
-            || !cancel.load(Ordering::Acquire),
+            || operation.permitted(),
         ) {
             socket = Some(stream);
             break;
         }
-        if cancel.load(Ordering::Acquire) {
+        if !operation.permitted() {
             return Err("WebSocket connection cancelled".into());
         }
     }
@@ -1397,7 +1417,7 @@ fn ws_connect_owned(
     socket
         .set_write_timeout(Some(Duration::from_secs(10)))
         .map_err(|e| e.to_string())?;
-    let owner = SocketDeadline::new(&socket, deadline, cancel.clone())?;
+    let owner = SocketDeadline::new(&socket, deadline, operation.guard())?;
     let mut request = url
         .into_client_request()
         .map_err(|_| "invalid WebSocket upgrade request")?;
@@ -1412,7 +1432,7 @@ fn ws_connect_owned(
     let config = tungstenite::protocol::WebSocketConfig::default()
         .max_message_size(Some(1024 * 1024))
         .max_frame_size(Some(1024 * 1024));
-    if cancel.load(Ordering::Acquire) || Instant::now() >= deadline {
+    if !operation.permitted() || Instant::now() >= deadline {
         return Err("WebSocket startup cancelled or expired".into());
     }
     let (ws, _) = tungstenite::client_tls_with_config(request, socket, Some(config), None)
@@ -1421,7 +1441,7 @@ fn ws_connect_owned(
         transport: ws,
         owner,
     };
-    if cancel.load(Ordering::Acquire) || Instant::now() >= deadline {
+    if !operation.permitted() || Instant::now() >= deadline {
         return Err("WebSocket startup cancelled or expired".into());
     }
     ws_socket(&ws)
@@ -1435,8 +1455,10 @@ fn ws_connect_owned(
 }
 
 fn ws_send_binary(ws: &mut Ws, bytes: &[u8]) -> Result<(), String> {
+    ws.owner.check()?;
     ws.send(tungstenite::Message::binary(bytes.to_vec()))
         .map_err(|e| format!("ws send: {e}"))?;
+    ws.owner.check()?;
     ws.flush().map_err(|e| format!("ws flush: {e}"))
 }
 
@@ -1510,6 +1532,27 @@ fn ws_read_timeout(ws: &mut Ws, timeout: Duration) {
 }
 
 impl OnlineSession {
+    fn open_authorized(
+        url: &str,
+        key: &str,
+        read_timeout: Duration,
+        operation: &Operation,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            ws: Some(ws_connect_authorized(
+                url,
+                key,
+                read_timeout,
+                Instant::now() + Duration::from_secs(10),
+                operation,
+            )?),
+            segments: Vec::new(),
+            current: String::new(),
+            read_timeout,
+            preview: false,
+            generation: 0,
+        })
+    }
     pub fn open() -> Result<Self, String> {
         Self::open_with(SHERPA_ONLINE_PORT, INFERENCE_TIMEOUT)
     }
@@ -1670,9 +1713,11 @@ impl OnlineSession {
         let deadline = Instant::now() + self.read_timeout;
         ws.owner.set(Some(deadline));
         ws_read_timeout(&mut ws, self.read_timeout);
+        ws.owner.check()?;
         ws.send(tungstenite::Message::text("Done"))
             .map_err(|e| format!("ws done: {e}"))?;
         loop {
+            ws.owner.check()?;
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err("online completion deadline exceeded".into());
@@ -1693,6 +1738,7 @@ impl OnlineSession {
             }
         }
         ws.owner.set(Some(Instant::now() + Duration::from_secs(5)));
+        ws.owner.check()?;
         let _ = ws.close(None);
         Ok(self.transcript())
     }
@@ -1737,6 +1783,25 @@ pub fn whistle_transcribe(
     words: &[String],
     lang: &str,
 ) -> Result<String, String> {
+    whistle_transcribe_owned(
+        engine,
+        model,
+        samples_16k,
+        words,
+        lang,
+        &Operation::unrestricted(),
+    )
+}
+
+fn whistle_transcribe_owned(
+    engine: &Path,
+    model: &Path,
+    samples_16k: &[f32],
+    words: &[String],
+    lang: &str,
+    operation: &Operation,
+) -> Result<String, String> {
+    operation.check()?;
     const WINDOW: usize = 30 * 16_000;
     // Keywords file once per utterance (dictionary bias).
     let kw_path = write_keywords_file(words)?;
@@ -1748,6 +1813,7 @@ pub fn whistle_transcribe(
         samples_16k.chunks(WINDOW).collect()
     };
     for chunk in chunks {
+        operation.check()?;
         let wav = wav_bytes_16k(&audio::f32_to_i16(chunk));
         let path = write_tmpfs_wav(&wav)?;
         let text = whistle_pass(
@@ -1756,6 +1822,7 @@ pub fn whistle_transcribe(
             path.path(),
             kw_path.as_ref().map(|f| f.path()),
             lang,
+            operation,
         );
         transcripts.push(text?);
     }
@@ -1780,6 +1847,7 @@ fn whistle_pass(
     wav: &Path,
     keywords: Option<&Path>,
     lang: &str,
+    operation: &Operation,
 ) -> Result<String, String> {
     let mut cmd = Command::new(engine);
     cmd.args([
@@ -1796,7 +1864,9 @@ fn whistle_pass(
         cmd.args(["--audio-language", lang]);
     }
     cmd.env("NEEDLE_TELEMETRY", "0").env("DO_NOT_TRACK", "1");
-    let stdout = crate::child::run(&mut cmd, &[], INFERENCE_TIMEOUT, 1024 * 1024)?;
+    let stdout = crate::child::run_guarded(&mut cmd, &[], INFERENCE_TIMEOUT, 1024 * 1024, || {
+        operation.permitted()
+    })?;
     let stdout = String::from_utf8(stdout).map_err(|_| "needle output is not UTF-8")?;
     whistle_parse_stdout(&stdout).ok_or_else(|| "needle: empty output".to_string())
 }
@@ -1843,6 +1913,7 @@ pub struct WhistleStream {
     committed: String,
     generation: u64,
     cancel: Option<Arc<AtomicBool>>,
+    operation: Option<Operation>,
 }
 
 impl WhistleStream {
@@ -1904,6 +1975,7 @@ impl WhistleStream {
             committed: String::new(),
             generation: 0,
             cancel: None,
+            operation: None,
         })
     }
 
@@ -1912,6 +1984,10 @@ impl WhistleStream {
             .cancel
             .as_ref()
             .is_some_and(|token| token.load(Ordering::Acquire))
+            || self
+                .operation
+                .as_ref()
+                .is_some_and(|operation| !operation.permitted())
         {
             return Err("cancelled".into());
         }
@@ -2086,6 +2162,12 @@ fn pump_whistle(
 ) {
     let mut consumed = 0usize;
     while !stop.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
+        if let Some(operation) = &stream.operation
+            && let Err(error) = operation.check()
+        {
+            let _ = tx.send(Err(error));
+            return;
+        }
         // Catch-up at source rate (see pump_online): burst while over
         // ~1 s behind live so a slow-starting server converges.
         let behind_secs = rec
@@ -2154,7 +2236,22 @@ fn sherpa_offline_transcribe_inner(
     read_timeout: Duration,
     port: u16,
 ) -> Result<String, String> {
-    let mut ws = ws_connect(port, read_timeout)?;
+    sherpa_offline_transcribe_owned(samples_16k, read_timeout, port, &Operation::unrestricted())
+}
+
+fn sherpa_offline_transcribe_owned(
+    samples_16k: &[f32],
+    read_timeout: Duration,
+    port: u16,
+    operation: &Operation,
+) -> Result<String, String> {
+    let mut ws = ws_connect_authorized(
+        &format!("ws://127.0.0.1:{port}"),
+        "",
+        read_timeout,
+        Instant::now() + Duration::from_secs(10),
+        operation,
+    )?;
     ws.owner.set(Some(Instant::now() + read_timeout));
     // [rate u32-LE][BYTE count u32-LE][float32…], ≤10 KiB per message.
     // The count is BYTES (samples*4): the server heap-sizes its buffer
@@ -2164,6 +2261,7 @@ fn sherpa_offline_transcribe_inner(
     buf.extend_from_slice(&((samples_16k.len() * 4) as u32).to_le_bytes());
     buf.extend_from_slice(&f32le(samples_16k));
     for chunk in buf.chunks(10_240) {
+        operation.check()?;
         ws_send_binary(&mut ws, chunk)?;
     }
     let reply = loop {
@@ -2175,7 +2273,9 @@ fn sherpa_offline_transcribe_inner(
             _ => {}
         }
     };
-    let _ = ws.send(tungstenite::Message::text("Done"));
+    ws.owner.check()?;
+    ws.send(tungstenite::Message::text("Done"))
+        .map_err(|_| "offline completion send failed")?;
     let _ = ws.close(None);
     sherpa_text(&reply).map(|t| t.trim().to_string())
 }
@@ -2201,6 +2301,16 @@ fn whisper_json_text(v: &serde_json::Value) -> String {
 }
 
 pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>, port: u16) -> Result<String, String> {
+    whisper_transcribe_owned(wav, prompt, port, &Operation::unrestricted())
+}
+
+fn whisper_transcribe_owned(
+    wav: &[u8],
+    prompt: Option<String>,
+    port: u16,
+    operation: &Operation,
+) -> Result<String, String> {
+    operation.check()?;
     let boundary = "mywhisperwav";
     let mut fields = vec![("temperature", "0.0"), ("response_format", "json")];
     let prompt_owned;
@@ -2215,16 +2325,16 @@ pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>, port: u16) -> Resu
         &fields,
         Some(("file", "audio.wav", "audio/wav", wav)),
     );
-    let res = http_client()?
-        .post(format!("http://127.0.0.1:{port}/inference"))
-        .header(
+    let text = crate::provider_io::post(
+        &format!("http://127.0.0.1:{port}/inference"),
+        &[(
             "Content-Type",
-            format!("multipart/form-data; boundary={boundary}"),
-        )
-        .body(body)
-        .send()
-        .map_err(|e| http_error("whisper /inference", &e))?;
-    let text = http_reply(res, "whisper /inference")?;
+            &format!("multipart/form-data; boundary={boundary}"),
+        )],
+        body,
+        operation,
+        "whisper /inference",
+    )?;
     let v: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("whisper json: {}", crate::diagnostics::json(&e)))?;
     Ok(whisper_json_text(&v))
@@ -2249,7 +2359,9 @@ fn openai_compat_transcribe(
     lang: &str,
     prompt: Option<&str>,
     wav: &[u8],
+    operation: &Operation,
 ) -> Result<String, String> {
+    operation.check()?;
     let base = base.trim_end_matches('/');
     let url = if base.ends_with("transcriptions") {
         base.to_string()
@@ -2274,20 +2386,12 @@ fn openai_compat_transcribe(
         &fields,
         Some(("file", "audio.wav", "audio/wav", wav)),
     );
-    let mut req = http_client()?
-        .post(&url)
-        .header(
-            "Content-Type",
-            format!("multipart/form-data; boundary={boundary}"),
-        )
-        .body(body);
+    let content_type = format!("multipart/form-data; boundary={boundary}");
+    let mut headers = vec![("Content-Type", content_type.as_str())];
     if !key.is_empty() {
-        req = req.bearer_auth(key);
+        headers.push(("authorization-bearer", key));
     }
-    let res = req
-        .send()
-        .map_err(|e| http_error("cloud transcription", &e))?;
-    let text = http_reply(res, "cloud transcription")?;
+    let text = crate::provider_io::post(&url, &headers, body, operation, "cloud transcription")?;
     let v: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("cloud json: {}", crate::diagnostics::json(&e)))?;
     v.get("text")
@@ -2302,7 +2406,9 @@ fn deepgram_transcribe(
     model: &str,
     lang: &str,
     wav: &[u8],
+    operation: &Operation,
 ) -> Result<String, String> {
+    operation.check()?;
     let mut url = format!(
         "{}/v1/listen?model={}&smart_format=true",
         base.trim_end_matches('/'),
@@ -2311,14 +2417,16 @@ fn deepgram_transcribe(
     if let Some(l) = lang_param(lang) {
         url.push_str(&format!("&language={l}"));
     }
-    let res = http_client()?
-        .post(&url)
-        .header("Authorization", format!("Token {key}"))
-        .header("Content-Type", "audio/wav")
-        .body(wav.to_vec())
-        .send()
-        .map_err(|e| http_error("Deepgram transcription", &e))?;
-    let text = http_reply(res, "Deepgram transcription")?;
+    let text = crate::provider_io::post(
+        &url,
+        &[
+            ("Authorization", &format!("Token {key}")),
+            ("Content-Type", "audio/wav"),
+        ],
+        wav.to_vec(),
+        operation,
+        "Deepgram transcription",
+    )?;
     let v: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("deepgram json: {}", crate::diagnostics::json(&e)))?;
     v.pointer("/results/channels/0/alternatives/0/transcript")
@@ -2327,7 +2435,14 @@ fn deepgram_transcribe(
         .ok_or_else(|| "deepgram reply has no transcript".to_string())
 }
 
-fn gemini_transcribe(key: &str, model: &str, lang: &str, wav: &[u8]) -> Result<String, String> {
+fn gemini_transcribe(
+    key: &str,
+    model: &str,
+    lang: &str,
+    wav: &[u8],
+    operation: &Operation,
+) -> Result<String, String> {
+    operation.check()?;
     use base64::Engine as _;
     let url =
         format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
@@ -2348,17 +2463,7 @@ fn gemini_transcribe(key: &str, model: &str, lang: &str, wav: &[u8]) -> Result<S
         }],
         "generationConfig": {"temperature": 0.0},
     });
-    let res = http_client()?
-        .post(&url)
-        .header("x-goog-api-key", key)
-        .header("Content-Type", "application/json")
-        .body(
-            serde_json::to_string(&body)
-                .map_err(|e| format!("gemini body: {}", crate::diagnostics::json(&e)))?,
-        )
-        .send()
-        .map_err(|e| http_error("Gemini transcription", &e))?;
-    let text = http_reply(res, "Gemini transcription")?;
+    let text = http_post_json(&url, &[("x-goog-api-key", key)], &body, operation)?;
     let v: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("gemini json: {}", crate::diagnostics::json(&e)))?;
     crate::provider_contract::gemini_answer(&v).map(|text| text.trim().to_owned())
@@ -2402,6 +2507,7 @@ struct SpecConfig {
     overlap: usize,
     whisper_port: u16,
     settled: Arc<AtomicBool>,
+    operation: Operation,
 }
 fn run_spec(
     rec: Arc<Mutex<Recorder>>,
@@ -2415,11 +2521,22 @@ fn run_spec(
         overlap,
         whisper_port,
         settled,
+        operation,
     } = config;
-    let words = crate::store::Store::open(&data_dir.join("state.db"))
-        .ok()
-        .map(|store| store.load_words().unwrap_or_default())
-        .unwrap_or_default();
+    let words = if operation.permitted() {
+        match crate::store::Store::open_existing(&data_dir.join("state.db"))
+            .and_then(|store| store.load_words())
+        {
+            Ok(words) => words,
+            Err(error) => {
+                eprintln!("[stt] speculative dictionary unavailable: {error}");
+                stop.store(true, Ordering::Release);
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
     let prompt = crate::textnorm::dictionary_prompt(&words, crate::textnorm::WHISPER_PROMPT_CHARS);
     let mut resampler: Option<(u32, Resampler)> = None;
     let mut buffer: Vec<f32> = Vec::new();
@@ -2429,10 +2546,10 @@ fn run_spec(
     let tick = Duration::from_secs_f32(update_secs.max(0.5));
     loop {
         let deadline = Instant::now() + tick;
-        while Instant::now() < deadline && !stop.load(Ordering::Acquire) {
+        while Instant::now() < deadline && !stop.load(Ordering::Acquire) && operation.permitted() {
             std::thread::sleep(Duration::from_millis(10));
         }
-        if stop.load(Ordering::Relaxed) {
+        if stop.load(Ordering::Relaxed) || !operation.permitted() {
             break;
         }
         let (length, snap, rate) = rec
@@ -2453,7 +2570,7 @@ fn run_spec(
         }
         let window = buffer.clone();
         let wav = wav_bytes_16k(&audio::f32_to_i16(&window));
-        match whisper_transcribe(&wav, prompt.clone(), whisper_port) {
+        match whisper_transcribe_owned(&wav, prompt.clone(), whisper_port, &operation) {
             Ok(hyp) => {
                 let agreed = crate::speculative::confirm_prefix(&prev_hyp, &hyp);
                 if agreed.split_whitespace().count() > committed.0.split_whitespace().count() {
@@ -2513,6 +2630,7 @@ impl Drop for SessionLoops {
 
 struct LiveUtterance {
     _loops: SessionLoops,
+    operation: Operation,
     captured_secs: Option<f64>,
     privacy_epoch: i64,
     recorded_at: i64,
@@ -2654,21 +2772,25 @@ pub fn begin_reserved_utterance(
     if INPUT_EPOCH.load(Ordering::Acquire) != epoch {
         return;
     }
+    let cancel = Arc::new(AtomicBool::new(false));
     // Database/keyring/filesystem work cannot hold the lock needed by
     // release, cancellation or reset. Publish only if this input still owns
     // the generation after preparation, including preparation failures.
     let prepared = (|| {
-        let privacy_epoch = crate::store::Store::open_existing(&data_dir.join("state.db"))
-            .and_then(|store| store.capture_epoch())
+        let store = crate::store::Store::open_existing(&data_dir.join("state.db"))
+            .map_err(|error| format!("capture policy unavailable: {error}"))?;
+        let privacy_epoch = store
+            .capture_epoch()
             .map_err(|error| format!("capture policy unavailable: {error}"))?;
         let plans = plans_for(&stt, data_dir)?;
-        Ok::<_, String>((privacy_epoch, plans))
+        let operation = Operation::capture(store, privacy_epoch, cancel.clone())?;
+        Ok::<_, String>((privacy_epoch, plans, operation))
     })();
     let _arm = ARM_LOCK.lock().unwrap();
     if INPUT_EPOCH.load(Ordering::Acquire) != epoch {
         return;
     }
-    let (privacy_epoch, mut plans) = match prepared {
+    let (privacy_epoch, mut plans, operation) = match prepared {
         Ok(prepared) => prepared,
         Err(e) => {
             engine_failed();
@@ -2719,7 +2841,6 @@ pub fn begin_reserved_utterance(
     recorder.lock().unwrap().start(0); // rate learned from first tap
     audio::set_recorder(Some(recorder.clone()));
     let stop = Arc::new(AtomicBool::new(false));
-    let cancel = Arc::new(AtomicBool::new(false));
     let mut tasks = Vec::new();
     // Speculative passes: whisper plans only, opt-in. Everything else
     // either streams natively or decodes after release.
@@ -2731,6 +2852,7 @@ pub fn begin_reserved_utterance(
         let update = stt.spec_update_secs.clamp(0.5, 10.0);
         let overlap = (stt.spec_overlap_secs.clamp(0.0, 5.0) * 16_000.0) as usize;
         let sstop = spec_stop.clone();
+        let spec_operation = operation.with_cancel(sstop.clone());
         let spec_port = engine_port(&server_net(&stt), WHISPER_PORT);
         let spec_settled = settled.clone();
         match crate::runtime::spawn_session("stt-spec", move || {
@@ -2743,6 +2865,7 @@ pub fn begin_reserved_utterance(
                     overlap,
                     whisper_port: spec_port,
                     settled: spec_settled,
+                    operation: spec_operation,
                 },
                 tx,
             );
@@ -2772,22 +2895,20 @@ pub fn begin_reserved_utterance(
         let pump_settled = settled.clone();
         let plan = plan.clone();
         let preview = stt.live_preview;
+        let pump_operation = operation.clone();
         match crate::runtime::spawn_session("stt-pump", move || {
             if cancel_pump.load(Ordering::Acquire) {
                 return;
             }
             let open = match &plan {
-                Plan::SelfHostedWs { url, key } => OnlineSession::open_cancellable(
-                    url,
-                    key,
-                    INFERENCE_TIMEOUT,
-                    cancel_pump.clone(),
-                ),
-                _ => OnlineSession::open_cancellable(
+                Plan::SelfHostedWs { url, key } => {
+                    OnlineSession::open_authorized(url, key, INFERENCE_TIMEOUT, &pump_operation)
+                }
+                _ => OnlineSession::open_authorized(
                     &format!("ws://127.0.0.1:{online_port}"),
                     "",
                     INFERENCE_TIMEOUT,
-                    cancel_pump.clone(),
+                    &pump_operation,
                 ),
             };
             match open {
@@ -2829,8 +2950,9 @@ pub fn begin_reserved_utterance(
         let cancel_pump = cancel.clone();
         let pump_settled = settled.clone();
         let preview = stt.live_preview;
+        let stream_operation = operation.clone();
         match crate::runtime::spawn_session("whistle-pump", move || {
-            if cancel_pump.load(Ordering::Acquire) {
+            if !stream_operation.permitted() {
                 return;
             }
             let words = load_hint_words(&data);
@@ -2841,10 +2963,14 @@ pub fn begin_reserved_utterance(
                     return;
                 }
             };
+            if !stream_operation.permitted() {
+                return;
+            }
             match WhistleStream::open(&engine, &model, kw.as_ref().map(|f| f.path()), &lang) {
                 Ok(mut stream) => {
                     stream.generation = epoch;
                     stream.cancel = Some(cancel_pump.clone());
+                    stream.operation = Some(stream_operation);
                     pump_whistle(
                         stream,
                         rec,
@@ -2874,6 +3000,7 @@ pub fn begin_reserved_utterance(
     };
     ACTIVE_SESSIONS.fetch_add(1, Ordering::AcqRel);
     *live().lock().unwrap() = Some(LiveUtterance {
+        operation,
         _loops: SessionLoops {
             stop: stop.clone(),
             cancel: cancel.clone(),
@@ -3007,6 +3134,7 @@ pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
     let privacy_epoch = sess.privacy_epoch;
     let recorded_at = sess.recorded_at;
     let data_dir = sess.data_dir.clone();
+    let marker_operation = sess.operation.next_phase(Arc::new(AtomicBool::new(false)));
     drop(sess); // result_rx drop unblocks the aborting pump
     let on_done = Arc::new(Mutex::new(Some(
         Box::new(on_done) as Box<dyn FnOnce() + Send>
@@ -3020,13 +3148,17 @@ pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
         }
     };
     if crate::runtime::submit("stt-cancel", move || {
-        match crate::store::Store::open(&data_dir.join("state.db")) {
+        if !marker_operation.permitted() {
+            finish();
+            return;
+        }
+        match crate::store::Store::open_existing(&data_dir.join("state.db")) {
             Ok(store) => {
                 let stt = store.load_settings();
                 let save = stt.privacy.save_discarded_transcriptions
                     && stt.privacy.history_enabled
                     && held_secs >= 1.0;
-                if save {
+                if save && marker_operation.permitted() {
                     // This marker has no transcript or identity payload. Random
                     // UUIDs remain globally unique without provisioning any key.
                     match store.persist_capture(
@@ -3039,7 +3171,7 @@ pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
                             discarded: true,
                             wav: None,
                         },
-                        &AtomicBool::new(false),
+                        marker_operation.cancel_flag(),
                     ) {
                         Ok(true) => eprintln!("[stt] cancel: discarded row kept ({held_secs:.1}s)"),
                         Ok(false) => eprintln!("[stt] cancel: stale capture discarded"),
@@ -3073,6 +3205,15 @@ pub enum FinalizationOutcome {
     Complete,
     Cancelled,
     Failed,
+}
+
+fn stopped_outcome(operation: &Operation) -> FinalizationOutcome {
+    if operation.policy_unavailable() {
+        eprintln!("[stt] capture stopped: {}", operation.check().unwrap_err());
+        FinalizationOutcome::Failed
+    } else {
+        FinalizationOutcome::Cancelled
+    }
 }
 
 pub fn end_utterance(on_done: impl FnOnce() + Send + 'static) {
@@ -3152,6 +3293,9 @@ fn end_utterance_inner(
         sess.settled.store(true, Ordering::Relaxed);
         return; // replaced, not transcribed
     }
+    if let Some(spec) = &sess.spec {
+        spec.stop.store(true, Ordering::Release);
+    }
     // Tail settle off the GTK thread (the pill already shows
     // Processing): wait for in-flight slices to land past release,
     // truncate the recorder AT release (nothing before cut, nothing
@@ -3218,24 +3362,56 @@ fn end_utterance_inner(
             outcome.store(2, Ordering::Release);
             return;
         }
-        let words = crate::store::Store::open(&sess.data_dir.join("state.db"))
-            .ok()
-            .map(|store| {
-                let mut hints = store.load_words().unwrap_or_default();
-                if let Ok(snips) = store.load_snippets() {
-                    for snippet in snips {
-                        hints.extend(snippet.triggers());
-                    }
-                }
-                hints
-            })
-            .unwrap_or_default();
+        let operation = sess.operation.next_phase(cancellation.clone());
+        if !operation.permitted() {
+            outcome.store(
+                if stopped_outcome(&operation) == FinalizationOutcome::Failed {
+                    0
+                } else {
+                    2
+                },
+                Ordering::Release,
+            );
+            return;
+        }
+        let policy_store = match crate::store::Store::open_existing(&sess.data_dir.join("state.db"))
+        {
+            Ok(store) => store,
+            Err(error) => {
+                eprintln!("[stt] capture authority unavailable: {error}");
+                return;
+            }
+        };
+        let mut words = match policy_store.load_words() {
+            Ok(words) => words,
+            Err(error) => {
+                eprintln!("[stt] dictionary unavailable: {error}");
+                return;
+            }
+        };
+        let snippets = match policy_store.load_snippets() {
+            Ok(snippets) => snippets,
+            Err(error) => {
+                eprintln!("[stt] snippets unavailable: {error}");
+                return;
+            }
+        };
+        for snippet in snippets {
+            words.extend(snippet.triggers());
+        }
         let data_dir = sess.data_dir.clone();
         let privacy_epoch = sess.privacy_epoch;
         let recorded_at = sess.recorded_at;
-        let out = finish_session(sess, &words);
-        if cancellation.load(Ordering::Acquire) {
-            outcome.store(2, Ordering::Release);
+        let out = finish_session(sess, &words, &operation);
+        if !operation.permitted() {
+            outcome.store(
+                if stopped_outcome(&operation) == FinalizationOutcome::Failed {
+                    0
+                } else {
+                    2
+                },
+                Ordering::Release,
+            );
             return;
         }
         match out {
@@ -3248,7 +3424,7 @@ fn end_utterance_inner(
                     &data_dir,
                     privacy_epoch,
                     recorded_at,
-                    &cancellation,
+                    &operation,
                 );
                 outcome.store(
                     match result {
@@ -3301,7 +3477,12 @@ impl Drop for FinalizationGuard {
 
 /// Blocking finalization for one utterance. `Ok(None)` = nothing to
 /// paste (too short / empty result).
-fn finish_session(sess: LiveUtterance, words: &[String]) -> Result<Option<Transcription>, String> {
+fn finish_session(
+    sess: LiveUtterance,
+    words: &[String],
+    operation: &Operation,
+) -> Result<Option<Transcription>, String> {
+    operation.check()?;
     if sess.recorder.lock().unwrap().overflowed() {
         return Err("Recording exceeded its capture budget or changed sample rate; retry with the selected microphone".into());
     }
@@ -3319,26 +3500,13 @@ fn finish_session(sess: LiveUtterance, words: &[String]) -> Result<Option<Transc
         &sess.net,
     )
     .ok();
-    for (name, plan) in &sess.fallbacks {
-        if let Err(e) = ensure_servers(
-            plan,
-            &sess.data_dir,
-            sess.backend,
-            sess.sherpa_backend,
-            &sess.net,
-        ) {
-            eprintln!("[stt] fallback {name} not ready: {e}");
-        }
-    }
+    operation.check()?;
     eprintln!("[stt] release: engine ready, transcribing ({secs:.1}s window)");
     if let Some(rx) = sess.result_rx {
         // Streaming: the pump owns the tail; wait for the final.
         // The bounded authoritative recorder also supplies retained audio
         // for streaming engines, subject to current policy at persistence.
-        match rx
-            .recv_timeout(INFERENCE_TIMEOUT + Duration::from_secs(10))
-            .map_err(|_| "online pump failed to complete before deadline".to_string())?
-        {
+        match receive_owned(&rx, operation, INFERENCE_TIMEOUT + Duration::from_secs(10))? {
             Ok(text) => {
                 let (pcm, rate) = sess.recorder.lock().unwrap().finish();
                 let samples = Resampler::resample_all(rate.max(1), &pcm);
@@ -3357,10 +3525,7 @@ fn finish_session(sess: LiveUtterance, words: &[String]) -> Result<Option<Transc
     if let Some(rx) = sess.whistle_rx {
         // Live needle stream: committed text arrives as audio flows;
         // failure falls back to single-file decode below.
-        match rx
-            .recv_timeout(INFERENCE_TIMEOUT + Duration::from_secs(10))
-            .map_err(|_| "whistle pump failed to complete before deadline".to_string())?
-        {
+        match receive_owned(&rx, operation, INFERENCE_TIMEOUT + Duration::from_secs(10))? {
             Ok(text) => {
                 let (pcm, rate) = sess.recorder.lock().unwrap().finish();
                 let samples = Resampler::resample_all(rate.max(1), &pcm);
@@ -3379,9 +3544,11 @@ fn finish_session(sess: LiveUtterance, words: &[String]) -> Result<Option<Transc
         // The speculative result is a preview until a settled complete decode
         // confirms it. Never consume the authoritative recorder before the
         // spec loop has had its final chance to observe release-tail samples.
-        let _ = spec
-            .done_rx
-            .recv_timeout(INFERENCE_TIMEOUT + Duration::from_secs(10));
+        receive_owned(
+            &spec.done_rx,
+            operation,
+            INFERENCE_TIMEOUT + Duration::from_secs(10),
+        )?;
     }
     let (pcm, rate) = sess.recorder.lock().unwrap().finish();
     if rate == 0 || pcm.is_empty() {
@@ -3419,8 +3586,22 @@ fn finish_session(sess: LiveUtterance, words: &[String]) -> Result<Option<Transc
     attempts.extend(sess.fallbacks.iter().map(|(n, p)| (n.clone(), p)));
     let mut last_err = String::new();
     for (name, plan) in attempts {
-        match transcribe_blocking(plan, &f32s, words, &sess.net) {
+        operation.check()?;
+        if let Err(error) = ensure_servers(
+            plan,
+            &sess.data_dir,
+            sess.backend,
+            sess.sherpa_backend,
+            &sess.net,
+        ) {
+            operation.check()?;
+            last_err = error;
+            continue;
+        }
+        operation.check()?;
+        match transcribe_blocking(plan, &f32s, words, &sess.net, operation) {
             Ok(r) => {
+                operation.check()?;
                 eprintln!(
                     "[stt] release: inference took {:.1}s ({name})",
                     t0.elapsed().as_secs_f64()
@@ -3428,12 +3609,38 @@ fn finish_session(sess: LiveUtterance, words: &[String]) -> Result<Option<Transc
                 return Ok(empty_to_none(r).map(|t| (t, secs, wav)));
             }
             Err(e) => {
+                operation.check()?;
                 eprintln!("[stt] {name} failed ({e}); trying next");
                 last_err = e;
             }
         }
     }
     Err(format!("all STT options failed; last: {last_err}"))
+}
+
+fn receive_owned<T>(
+    receiver: &mpsc::Receiver<T>,
+    operation: &Operation,
+    timeout: Duration,
+) -> Result<T, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        operation.check()?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("owned provider completion deadline exceeded".into());
+        }
+        match receiver.recv_timeout(remaining.min(Duration::from_millis(20))) {
+            Ok(result) => {
+                operation.check()?;
+                return Ok(result);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("owned provider worker closed without completion".into());
+            }
+        }
+    }
 }
 
 fn wav_of(buf_16k: &[f32], keep: bool) -> Option<Vec<u8>> {
@@ -3455,35 +3662,45 @@ fn transcribe_blocking(
     f32s: &[f32],
     words: &[String],
     net: &ServerNet,
+    operation: &Operation,
 ) -> Result<String, String> {
+    operation.check()?;
     match plan {
         Plan::WhisperHttp { .. } => {
             let wav = wav_bytes_16k(&audio::f32_to_i16(f32s));
-            whisper_transcribe(
+            whisper_transcribe_owned(
                 &wav,
                 crate::textnorm::dictionary_prompt(words, crate::textnorm::WHISPER_PROMPT_CHARS),
                 engine_port(net, WHISPER_PORT),
+                operation,
             )
         }
-        Plan::SherpaOffline { .. } => {
-            sherpa_offline_transcribe(f32s, engine_port(net, SHERPA_OFFLINE_PORT))
-        }
+        Plan::SherpaOffline { .. } => sherpa_offline_transcribe_owned(
+            f32s,
+            INFERENCE_TIMEOUT,
+            engine_port(net, SHERPA_OFFLINE_PORT),
+            operation,
+        ),
         Plan::WhistleCli {
             engine,
             model,
             lang,
-        } => whistle_transcribe(engine, model, f32s, words, lang),
+        } => whistle_transcribe_owned(engine, model, f32s, words, lang, operation),
         Plan::SherpaOnline { .. } => {
             // Release without a pump (shouldn't happen): one-shot.
-            let mut s =
-                OnlineSession::open_with(engine_port(net, SHERPA_ONLINE_PORT), INFERENCE_TIMEOUT)?;
+            let mut s = OnlineSession::open_authorized(
+                &format!("ws://127.0.0.1:{}", engine_port(net, SHERPA_ONLINE_PORT)),
+                "",
+                INFERENCE_TIMEOUT,
+                operation,
+            )?;
             for chunk in f32s.chunks(8000) {
                 s.send_chunk(chunk)?;
             }
             s.finish()
         }
         Plan::SelfHostedWs { url, key } => {
-            let mut s = OnlineSession::open_authenticated(url, key, INFERENCE_TIMEOUT)?;
+            let mut s = OnlineSession::open_authorized(url, key, INFERENCE_TIMEOUT, operation)?;
             for chunk in f32s.chunks(8000) {
                 s.send_chunk(chunk)?;
             }
@@ -3509,7 +3726,7 @@ fn transcribe_blocking(
                 None
             };
             let prompt = budget.and_then(|b| crate::textnorm::dictionary_prompt(words, b));
-            openai_compat_transcribe(base, key, model, lang, prompt.as_deref(), &wav)
+            openai_compat_transcribe(base, key, model, lang, prompt.as_deref(), &wav, operation)
         }
         Plan::CloudDeepgram {
             base,
@@ -3518,11 +3735,11 @@ fn transcribe_blocking(
             lang,
         } => {
             let wav = wav_bytes_16k(&audio::f32_to_i16(f32s));
-            deepgram_transcribe(base, key, model, lang, &wav)
+            deepgram_transcribe(base, key, model, lang, &wav, operation)
         }
         Plan::CloudGemini { key, model, lang } => {
             let wav = wav_bytes_16k(&audio::f32_to_i16(f32s));
-            gemini_transcribe(key, model, lang, &wav)
+            gemini_transcribe(key, model, lang, &wav, operation)
         }
     }
 }
@@ -3632,30 +3849,35 @@ fn post_process(
     raw: &str,
     lm: &crate::settings::LanguageModelSettings,
     words: &[String],
-) -> String {
+    operation: &Operation,
+) -> Result<String, String> {
+    operation.check()?;
     if !lm.cleanup_enabled {
-        return raw.to_string();
+        return Ok(raw.to_string());
     }
     let chain = lm.chain();
     if chain.is_empty() {
         eprintln!("[llm] cleanup on but no enabled options; passthrough");
-        return raw.to_string();
+        return Ok(raw.to_string());
     }
     let system = match dictionary_suffix(words) {
         Some(suffix) => format!("{}\n\n{suffix}", effective_prompt(&lm.cleanup_prompt)),
         None => effective_prompt(&lm.cleanup_prompt).to_string(),
     };
     for entry in chain {
-        match llm_cleanup(entry, &system, raw) {
+        operation.check()?;
+        match llm_cleanup(entry, &system, raw, operation) {
             Ok(text) => {
                 eprintln!("[llm] cleaned via {}", entry.name);
-                return text.trim().to_string();
+                operation.check()?;
+                return Ok(text.trim().to_string());
             }
             Err(e) => eprintln!("[llm] {} failed ({e}); trying next", entry.name),
         }
     }
+    operation.check()?;
     eprintln!("[llm] chain exhausted; keeping raw");
-    raw.to_string()
+    Ok(raw.to_string())
 }
 
 /// One cleanup call against a configured entry. Local kind has no
@@ -3664,7 +3886,9 @@ fn llm_cleanup(
     entry: &crate::settings::LlmEntry,
     system: &str,
     raw: &str,
+    operation: &Operation,
 ) -> Result<String, String> {
+    operation.check()?;
     use crate::settings::{CloudLlm, LlmKind};
     let user = format!("<transcript>{raw}</transcript>");
     match entry.kind {
@@ -3714,7 +3938,7 @@ fn llm_cleanup(
                 std::slice::from_ref(&bearer)
             };
             let url = format!("{}/api/chat", entry.url.trim_end_matches('/'));
-            let text = http_post_json(&url, headers, &body)?;
+            let text = http_post_json(&url, headers, &body, operation)?;
             let v: serde_json::Value = serde_json::from_str(&text)
                 .map_err(|e| format!("ollama json: {}", crate::diagnostics::json(&e)))?;
             crate::provider_contract::ollama_answer(&v)
@@ -3741,8 +3965,12 @@ fn llm_cleanup(
                     "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
                     entry.model
                 );
-                let text =
-                    http_post_json(&url, &[("x-goog-api-key", entry.api_key.as_str())], &body)?;
+                let text = http_post_json(
+                    &url,
+                    &[("x-goog-api-key", entry.api_key.as_str())],
+                    &body,
+                    operation,
+                )?;
                 let v: serde_json::Value = serde_json::from_str(&text)
                     .map_err(|e| format!("gemini json: {}", crate::diagnostics::json(&e)))?;
                 crate::provider_contract::gemini_answer(&v)
@@ -3761,6 +3989,7 @@ fn llm_cleanup(
                         ("anthropic-version", "2023-06-01"),
                     ],
                     &body,
+                    operation,
                 )?;
                 let v: serde_json::Value = serde_json::from_str(&text)
                     .map_err(|e| format!("claude json: {}", crate::diagnostics::json(&e)))?;
@@ -3782,6 +4011,7 @@ fn llm_cleanup(
                     &format!("{base}/chat/completions"),
                     &[("authorization-bearer", entry.api_key.as_str())],
                     &body,
+                    operation,
                 )?;
                 let v: serde_json::Value = serde_json::from_str(&text)
                     .map_err(|e| format!("chat json: {}", crate::diagnostics::json(&e)))?;
@@ -3797,22 +4027,19 @@ fn http_post_json(
     url: &str,
     headers: &[(&str, &str)],
     body: &serde_json::Value,
+    operation: &Operation,
 ) -> Result<String, String> {
     let text = serde_json::to_string(body)
         .map_err(|e| format!("json body: {}", crate::diagnostics::json(&e)))?;
-    let mut req = http_client()?
-        .post(url)
-        .header("Content-Type", "application/json")
-        .body(text);
-    for (k, v) in headers {
-        req = if *k == "authorization-bearer" {
-            req.bearer_auth(v)
-        } else {
-            req.header(*k, *v)
-        };
-    }
-    let res = req.send().map_err(|e| http_error("cleanup request", &e))?;
-    http_reply(res, "cleanup request")
+    let mut headers = headers.to_vec();
+    headers.push(("Content-Type", "application/json"));
+    crate::provider_io::post(
+        url,
+        &headers,
+        text.into_bytes(),
+        operation,
+        "cleanup request",
+    )
 }
 
 /// Store in history (raw + final text, never audio) and paste the
@@ -3826,17 +4053,20 @@ fn deliver(
     data_dir: &Path,
     privacy_epoch: i64,
     recorded_at: i64,
-    cancel: &Arc<AtomicBool>,
+    operation: &Operation,
 ) -> FinalizationOutcome {
     eprintln!("[stt] raw transcript received (content redacted)");
-    let store = match crate::store::Store::open(&data_dir.join("state.db")) {
+    let store = match crate::store::Store::open_existing(&data_dir.join("state.db")) {
         Ok(store) => store,
         Err(error) => {
             eprintln!("[stt] delivery store: {error}");
             return FinalizationOutcome::Failed;
         }
     };
-    if cancel.load(Ordering::Acquire) || store.capture_epoch().ok() != Some(privacy_epoch) {
+    if !operation.permitted() {
+        return stopped_outcome(operation);
+    }
+    if store.capture_epoch().ok() != Some(privacy_epoch) {
         return FinalizationOutcome::Cancelled;
     }
     let settings = store.load_settings();
@@ -3857,10 +4087,19 @@ fn deliver(
         &expanded,
         &settings.language_models,
         &settings.dictionary.words,
+        operation,
     );
+    let text = match text {
+        Ok(text) => text,
+        Err(_) if !operation.permitted() => return stopped_outcome(operation),
+        Err(error) => {
+            eprintln!("[stt] cleanup failed: {error}");
+            return FinalizationOutcome::Failed;
+        }
+    };
     eprintln!("[stt] final transcript ready (content redacted)");
-    if cancel.load(Ordering::Acquire) {
-        return FinalizationOutcome::Cancelled;
+    if !operation.permitted() {
+        return stopped_outcome(operation);
     }
     if text.trim().is_empty() {
         return FinalizationOutcome::Complete;
@@ -3875,7 +4114,7 @@ fn deliver(
             discarded: false,
             wav: wav.as_deref(),
         },
-        cancel,
+        operation.cancel_flag(),
     ) {
         Ok(true) => {}
         Ok(false) => return FinalizationOutcome::Cancelled,
@@ -3885,13 +4124,13 @@ fn deliver(
         }
     }
     let settings = store.load_settings();
-    if cancel.load(Ordering::Acquire) || store.capture_epoch().ok() != Some(privacy_epoch) {
+    if !operation.permitted() || store.capture_epoch().ok() != Some(privacy_epoch) {
         return FinalizationOutcome::Cancelled;
     }
-    let cancel = cancel.clone();
+    let authority = operation.clone();
     let clipboard_store = Mutex::new(store);
     let guard: crate::selection::Guard = Arc::new(move || {
-        !cancel.load(Ordering::Acquire)
+        authority.permitted()
             && clipboard_store
                 .lock()
                 .ok()
@@ -3941,6 +4180,32 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let log = std::fs::File::create(root.path().join("synthetic-probe.log")).unwrap();
         let mut command = Command::new(std::env::current_exe().unwrap());
+        for (variable, directory) in [
+            ("HOME", "home"),
+            ("XDG_DATA_HOME", "data"),
+            ("XDG_CONFIG_HOME", "config"),
+            ("XDG_CACHE_HOME", "cache"),
+            ("XDG_STATE_HOME", "state"),
+            ("XDG_RUNTIME_DIR", "runtime"),
+        ] {
+            let path = root.path().join(directory);
+            crate::private_fs::directory(&path).unwrap();
+            command.env(variable, path);
+        }
+        for variable in [
+            "DBUS_SESSION_BUS_ADDRESS",
+            "WAYLAND_DISPLAY",
+            "WAYLAND_SOCKET",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ] {
+            command.env_remove(variable);
+        }
+        command.env("NO_PROXY", "*");
         command
             .args([
                 "--exact",
@@ -3973,6 +4238,528 @@ mod tests {
             String::from_utf8_lossy(&log)
         );
         false
+    }
+
+    fn accept_http_fixture(listener: std::net::TcpListener) -> TcpStream {
+        use std::io::Read;
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut socket = loop {
+            match listener.accept() {
+                Ok((socket, _)) => break socket,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "synthetic request never arrived");
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => panic!("synthetic accept: {error}"),
+            }
+        };
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut header = Vec::new();
+        let mut byte = [0];
+        while !header.ends_with(b"\r\n\r\n") {
+            assert!(header.len() < 16 * 1024);
+            socket.read_exact(&mut byte).unwrap();
+            header.push(byte[0]);
+        }
+        let length = String::from_utf8(header)
+            .unwrap()
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+            })
+            .unwrap();
+        assert!(length < 128 * 1024);
+        let mut body = vec![0; length];
+        socket.read_exact(&mut body).unwrap();
+        socket
+    }
+
+    #[test]
+    fn cancelled_or_reset_http_never_discloses_to_fallbacks() {
+        const NAME: &str = "cancelled_or_reset_http_never_discloses_to_fallbacks";
+        if let Some(path) = std::env::var_os("MYWHISPER_POLICY_WRITER_PATH") {
+            let store = crate::store::Store::open(Path::new(&path)).unwrap();
+            match std::env::var("MYWHISPER_POLICY_ACTION").unwrap().as_str() {
+                "1" => store.reset_all_data().unwrap(),
+                "2" => {
+                    let mut settings = store.load_settings();
+                    let old = settings.privacy.history_enabled;
+                    settings.privacy.history_enabled = !old;
+                    store.save_settings(&settings).unwrap();
+                    settings.privacy.history_enabled = old;
+                    store.save_settings(&settings).unwrap();
+                }
+                "3" => {
+                    store.clear_history().unwrap();
+                }
+                "4" => {
+                    let mut settings = store.load_settings();
+                    settings.hotkeys.hotkeys_enabled = false;
+                    store.save_settings(&settings).unwrap();
+                    settings.hotkeys.hotkeys_enabled = true;
+                    store.save_settings(&settings).unwrap();
+                }
+                "5" => {
+                    let connection = rusqlite::Connection::open(Path::new(&path)).unwrap();
+                    connection
+                        .execute_batch(&format!("PRAGMA key = \"x'{}'\"", "2a".repeat(32)))
+                        .unwrap();
+                    connection
+                        .execute_batch("ALTER TABLE sync_meta RENAME TO unavailable_policy")
+                        .unwrap();
+                }
+                _ => panic!("unknown synthetic action"),
+            }
+            return;
+        }
+        if !isolated_capture_probe(NAME) {
+            return;
+        }
+        use std::io::{Read, Write};
+        crate::runtime::init().unwrap();
+        for cleanup in [false, true] {
+            for partial_body in [false, true] {
+                for action in 0..6 {
+                    let root = tempfile::tempdir().unwrap();
+                    let path = root.path().join("state.db");
+                    let store = crate::store::Store::open(&path).unwrap();
+                    let primary = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                    let primary_url = format!("http://{}", primary.local_addr().unwrap());
+                    let fallback = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                    fallback.set_nonblocking(true).unwrap();
+                    let fallback_url = format!("http://{}", fallback.local_addr().unwrap());
+                    let mut settings = store.load_settings();
+                    settings.privacy.history_enabled = true;
+                    settings.privacy.keep_audio_recordings = true;
+                    settings.privacy.save_discarded_transcriptions = false;
+                    settings.stt.entries[0].kind = crate::settings::SttEntryKind::SelfHosted;
+                    settings.stt.entries[0].streaming = false;
+                    settings.stt.entries[0].url = primary_url.clone();
+                    let mut second = settings.stt.entries[0].clone();
+                    second.id = "synthetic-fallback".into();
+                    second.url = fallback_url.clone();
+                    settings.stt.entries.push(second);
+                    settings.language_models.cleanup_enabled = cleanup;
+                    let mut stt_server = None;
+                    if cleanup {
+                        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                        settings.stt.entries[0].url =
+                            format!("http://{}", listener.local_addr().unwrap());
+                        settings.stt.entries.truncate(1);
+                        settings.language_models.entries[0].url = primary_url;
+                        settings.language_models.entries[0].enabled = true;
+                        let mut second = settings.language_models.entries[0].clone();
+                        second.id = "synthetic-cleanup-fallback".into();
+                        second.url = fallback_url;
+                        settings.language_models.entries.push(second);
+                        stt_server = Some(std::thread::spawn(move || {
+                            let mut socket = accept_http_fixture(listener);
+                            let reply = br#"{"text":"synthetic speech"}"#;
+                            write!(socket,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",reply.len()).unwrap();
+                            socket.write_all(reply).unwrap();
+                        }));
+                    }
+                    store.save_settings(&settings).unwrap();
+                    let (ready, barrier) = mpsc::channel();
+                    let server = std::thread::spawn(move || {
+                        let mut socket = accept_http_fixture(primary);
+                        if partial_body {
+                            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\nConnection: close\r\n\r\n{").unwrap();
+                        }
+                        ready.send(()).unwrap();
+                        let mut byte = [0];
+                        match socket.read(&mut byte) {
+                            Ok(0) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                            result => panic!("cancelled provider socket stayed open: {result:?}"),
+                        }
+                    });
+                    begin_utterance(settings.stt, true, root.path(), 0);
+                    audio::tap_samples(&vec![1000; 16000], 16000);
+                    let completions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                    let count = completions.clone();
+                    let (done, result) = mpsc::channel();
+                    end_utterance_with_outcome(move |outcome| {
+                        count.fetch_add(1, Ordering::AcqRel);
+                        done.send(outcome).unwrap();
+                    });
+                    audio::tap_samples(&[0; 320], 16000);
+                    barrier.recv_timeout(Duration::from_secs(3)).unwrap();
+                    if action == 0 {
+                        cancel_utterance(|| {});
+                    } else {
+                        crate::child::run(
+                            Command::new(std::env::current_exe().unwrap())
+                                .args(["--exact", &format!("transcribe::tests::{NAME}")])
+                                .env("MYWHISPER_POLICY_WRITER_PATH", &path)
+                                .env("MYWHISPER_POLICY_ACTION", action.to_string()),
+                            &[],
+                            Duration::from_secs(3),
+                            64 * 1024,
+                        )
+                        .unwrap();
+                    }
+                    assert_eq!(
+                        result.recv_timeout(Duration::from_millis(500)).unwrap(),
+                        if action == 5 {
+                            FinalizationOutcome::Failed
+                        } else {
+                            FinalizationOutcome::Cancelled
+                        },
+                        "cleanup={cleanup}, partial={partial_body}, action={action}"
+                    );
+                    server.join().unwrap();
+                    if let Some(server) = stt_server {
+                        server.join().unwrap();
+                    }
+                    assert_eq!(completions.load(Ordering::Acquire), 1);
+                    assert!(
+                        matches!(fallback.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                        "cancelled operation dialed its fallback"
+                    );
+                    assert!(store.load_history(100, true).unwrap().is_empty());
+                    let vault = audio::audio_vault_dir(root.path());
+                    assert!(!vault.exists() || std::fs::read_dir(vault).unwrap().next().is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn revoked_websocket_authority_rejects_new_audio_and_interrupts_completion() {
+        if !isolated_capture_probe(
+            "revoked_websocket_authority_rejects_new_audio_and_interrupts_completion",
+        ) {
+            return;
+        }
+        for completing in [false, true] {
+            for reset in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let path = root.path().join("state.db");
+                let store = crate::store::Store::open(&path).unwrap();
+                let reader = crate::store::Store::open_existing(&path).unwrap();
+                let cancel = Arc::new(AtomicBool::new(false));
+                let operation =
+                    Operation::capture(reader, store.capture_epoch().unwrap(), cancel.clone())
+                        .unwrap();
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                listener.set_nonblocking(true).unwrap();
+                let url = format!("ws://{}", listener.local_addr().unwrap());
+                let (ready, waiting) = mpsc::channel();
+                let server = std::thread::spawn(move || {
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    let socket = loop {
+                        match listener.accept() {
+                            Ok((socket, _)) => break socket,
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                assert!(Instant::now() < deadline);
+                                std::thread::sleep(Duration::from_millis(2));
+                            }
+                            Err(error) => panic!("synthetic authenticated WS accept: {error}"),
+                        }
+                    };
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    socket
+                        .set_write_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut ws = tungstenite::accept_hdr(socket, SyntheticBearer).unwrap();
+                    if completing {
+                        assert_eq!(ws.read().unwrap(), tungstenite::Message::text("Done"));
+                    }
+                    ready.send(()).unwrap();
+                    assert!(
+                        ws.read().is_err(),
+                        "revoked session disclosed another message"
+                    );
+                });
+                let mut session = Some(
+                    OnlineSession::open_authorized(
+                        &url,
+                        "synthetic token",
+                        INFERENCE_TIMEOUT,
+                        &operation,
+                    )
+                    .unwrap(),
+                );
+                let mut task = None;
+                let mut result = None;
+                if completing {
+                    let session = session.take().unwrap();
+                    let (done, receiver) = mpsc::channel();
+                    task = Some(
+                        crate::runtime::spawn_session("synthetic-owned-ws-completion", move || {
+                            done.send(session.finish()).unwrap();
+                        })
+                        .unwrap(),
+                    );
+                    result = Some(receiver);
+                }
+                waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+                if reset {
+                    store.reset_all_data().unwrap();
+                } else {
+                    cancel.store(true, Ordering::Release);
+                }
+                if let Some(result) = result {
+                    assert!(
+                        result
+                            .recv_timeout(Duration::from_millis(500))
+                            .unwrap()
+                            .is_err()
+                    );
+                    task.unwrap().join();
+                } else {
+                    let mut session = session.take().unwrap();
+                    assert!(session.send_chunk(&[0.1; 1600]).is_err());
+                    drop(session);
+                }
+                server.join().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn cancelled_http_partial_upload_closes_before_sending_the_whole_body() {
+        if !isolated_capture_probe(
+            "cancelled_http_partial_upload_closes_before_sending_the_whole_body",
+        ) {
+            return;
+        }
+        use std::io::Read;
+        const BODY_BYTES: usize = 16 * 1024 * 1024;
+        for reset in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("state.db");
+            let store = crate::store::Store::open(&path).unwrap();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let reader = crate::store::Store::open_existing(&path).unwrap();
+            let operation =
+                Operation::capture(reader, store.capture_epoch().unwrap(), cancel.clone()).unwrap();
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let (ready, blocked) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                let mut socket = loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline);
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(error) => panic!("synthetic partial-upload accept: {error}"),
+                    }
+                };
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut header = Vec::new();
+                let mut byte = [0];
+                while !header.ends_with(b"\r\n\r\n") {
+                    assert!(header.len() < 16 * 1024);
+                    socket.read_exact(&mut byte).unwrap();
+                    header.push(byte[0]);
+                }
+                socket.read_exact(&mut byte).unwrap();
+                ready.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(2)).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                let mut received = 1;
+                let mut chunk = [0; 65536];
+                loop {
+                    assert!(
+                        Instant::now() < deadline,
+                        "cancelled upload peer did not close"
+                    );
+                    match socket.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(length) => received += length,
+                        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+                        Err(error) => panic!("partial-upload closure: {error}"),
+                    }
+                    assert!(
+                        received < BODY_BYTES,
+                        "the cancelled request sent its entire recording"
+                    );
+                }
+            });
+            let (done, result) = mpsc::channel();
+            let task = crate::runtime::spawn_session("synthetic-partial-http", move || {
+                done.send(crate::provider_io::post(
+                    &url,
+                    &[],
+                    vec![1; BODY_BYTES],
+                    &operation,
+                    "synthetic partial upload",
+                ))
+                .unwrap();
+            })
+            .unwrap();
+            blocked.recv_timeout(Duration::from_secs(2)).unwrap();
+            if reset {
+                store.reset_all_data().unwrap();
+            } else {
+                cancel.store(true, Ordering::Release);
+            }
+            assert!(
+                result
+                    .recv_timeout(Duration::from_millis(500))
+                    .unwrap()
+                    .is_err()
+            );
+            release.send(()).unwrap();
+            task.join();
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn queued_discard_markers_keep_the_original_database_authority() {
+        if !isolated_capture_probe("queued_discard_markers_keep_the_original_database_authority") {
+            return;
+        }
+        crate::runtime::init().unwrap();
+        for action in 0..4 {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("state.db");
+            let store = crate::store::Store::open(&path).unwrap();
+            let mut settings = store.load_settings();
+            settings.privacy.history_enabled = true;
+            settings.privacy.save_discarded_transcriptions = true;
+            settings.stt.entries[0].kind = crate::settings::SttEntryKind::SelfHosted;
+            settings.stt.entries[0].streaming = false;
+            settings.stt.entries[0].url = "http://127.0.0.1:1".into();
+            store.save_settings(&settings).unwrap();
+            let (ready, occupied) = mpsc::channel();
+            let mut release_workers = Vec::new();
+            for _ in 0..crate::runtime::POOL_WORKERS {
+                let ready = ready.clone();
+                let (release, barrier) = mpsc::channel();
+                release_workers.push(release);
+                crate::runtime::submit("synthetic-marker-barrier", move || {
+                    ready.send(()).unwrap();
+                    barrier.recv_timeout(Duration::from_secs(3)).unwrap();
+                })
+                .unwrap();
+            }
+            for _ in 0..crate::runtime::POOL_WORKERS {
+                occupied.recv_timeout(Duration::from_secs(1)).unwrap();
+            }
+            begin_utterance(settings.stt.clone(), true, root.path(), 0);
+            live().lock().unwrap().as_mut().unwrap().started =
+                Instant::now() - Duration::from_secs(2);
+            let (done, result) = mpsc::channel();
+            cancel_utterance(move || done.send(()).unwrap());
+            match action {
+                0 => {}
+                1 => store.reset_all_data().unwrap(),
+                2 => std::fs::remove_file(&path).unwrap(),
+                3 => {
+                    store.checkpoint().unwrap();
+                    let replacement = root.path().join("replacement.db");
+                    let fresh = crate::store::Store::open(&replacement).unwrap();
+                    fresh.save_settings(&settings).unwrap();
+                    assert_eq!(
+                        fresh.capture_epoch().unwrap(),
+                        store.capture_epoch().unwrap()
+                    );
+                    fresh.checkpoint().unwrap();
+                    drop(fresh);
+                    std::fs::rename(&path, root.path().join("old.db")).unwrap();
+                    std::fs::rename(replacement, &path).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            for release in release_workers {
+                release.send(()).unwrap();
+            }
+            result.recv_timeout(Duration::from_secs(1)).unwrap();
+            let history = store.load_history(100, true).unwrap();
+            assert_eq!(history.len(), usize::from(action == 0), "action={action}");
+            if action == 0 {
+                assert!(
+                    history[0].discarded
+                        && history[0].text.is_empty()
+                        && history[0].raw_text.is_empty()
+                );
+                assert_eq!(history[0].duration_secs, 2);
+            } else if action == 2 {
+                assert!(!path.exists(), "queued marker recreated a deleted database");
+            }
+            let vault = audio::audio_vault_dir(root.path());
+            assert!(!vault.exists() || std::fs::read_dir(vault).unwrap().next().is_none());
+        }
+    }
+
+    #[test]
+    fn an_authorized_recording_still_uses_its_http_fallback() {
+        if !isolated_capture_probe("an_authorized_recording_still_uses_its_http_fallback") {
+            return;
+        }
+        use std::io::Write;
+        crate::runtime::init().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let mut stt = SttSettings::default();
+        let mut servers = Vec::new();
+        let mut entries = Vec::new();
+        for primary in [true, false] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut entry = stt.entries[0].clone();
+            entry.id = format!("synthetic-{primary}");
+            entry.kind = crate::settings::SttEntryKind::SelfHosted;
+            entry.streaming = false;
+            entry.url = format!("http://{}", listener.local_addr().unwrap());
+            entries.push(entry);
+            servers.push(std::thread::spawn(move || {
+                let mut socket = accept_http_fixture(listener);
+                let body: &[u8] = if primary {
+                    b"synthetic unavailable"
+                } else {
+                    br#"{"text":"synthetic fallback"}"#
+                };
+                write!(
+                    socket,
+                    "HTTP/1.1 {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    if primary { "503 Unavailable" } else { "200 OK" },
+                    body.len()
+                )
+                .unwrap();
+                socket.write_all(body).unwrap();
+            }));
+        }
+        stt.entries = entries;
+        begin_utterance(stt, false, root.path(), 0);
+        audio::tap_samples(&vec![1000; 16000], 16000);
+        let session = live().lock().unwrap().take().unwrap();
+        audio::clear_recorder(&session.recorder);
+        session.stop.store(true, Ordering::Release);
+        session.settled.store(true, Ordering::Release);
+        let operation = session
+            .operation
+            .next_phase(Arc::new(AtomicBool::new(false)));
+        let result = finish_session(session, &[], &operation).unwrap().unwrap();
+        assert_eq!(result.0, "synthetic fallback");
+        assert!(result.2.is_none());
+        assert!(
+            operation.permitted(),
+            "normal capture teardown cannot cancel its delivery phase"
+        );
+        for server in servers {
+            server.join().unwrap();
+        }
     }
 
     #[test]
@@ -4015,6 +4802,22 @@ mod tests {
         assert!(
             start.elapsed() < Duration::from_secs(4),
             "NSS escaped bounded resolution: {:?}",
+            start.elapsed()
+        );
+        let start = Instant::now();
+        assert!(
+            crate::provider_io::post(
+                "http://mywhisper-review.invalid:9",
+                &[],
+                Vec::new(),
+                &Operation::unrestricted(),
+                "synthetic HTTP NSS",
+            )
+            .is_err()
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "HTTP NSS escaped its budget: {:?}",
             start.elapsed()
         );
     }
@@ -4064,6 +4867,38 @@ mod tests {
                 assert!(
                     Instant::now() < deadline,
                     "owned resolver did not reach its barrier"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            cancel.store(true, Ordering::Release);
+            assert!(receiver.recv_timeout(Duration::from_millis(500)).unwrap());
+            task.join();
+            std::fs::remove_file(&marker).unwrap();
+        }
+        for _ in 0..12 {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let operation = Operation::cancellable(cancel.clone());
+            let (result, receiver) = mpsc::channel();
+            let task = crate::runtime::spawn_session("cancelled-http-resolution", move || {
+                result
+                    .send(
+                        crate::provider_io::post(
+                            "http://cancel.invalid:9",
+                            &[],
+                            Vec::new(),
+                            &operation,
+                            "synthetic HTTP DNS",
+                        )
+                        .is_err(),
+                    )
+                    .unwrap();
+            })
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !marker.exists() {
+                assert!(
+                    Instant::now() < deadline,
+                    "HTTP resolver never reached its barrier"
                 );
                 std::thread::sleep(Duration::from_millis(2));
             }
@@ -4441,7 +5276,8 @@ mod tests {
                 llm_cleanup(
                     &saved.language_models.entries[0],
                     "synthetic prompt",
-                    "synthetic speech"
+                    "synthetic speech",
+                    &Operation::unrestricted()
                 )
                 .unwrap(),
                 "synthetic cleaned"
@@ -4535,15 +5371,16 @@ mod tests {
                 "HTTP 429",
             ),
         ];
-        let client = reqwest::blocking::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(2))
-            .build()
-            .unwrap();
         for (wire, expected) in cases {
             let (url, task) = fake_http_reply(wire);
-            let response = client.get(url).send().unwrap();
-            let error = http_reply(response, "synthetic provider").unwrap_err();
+            let error = crate::provider_io::post(
+                &url,
+                &[],
+                Vec::new(),
+                &Operation::unrestricted(),
+                "synthetic provider",
+            )
+            .unwrap_err();
             task.join().unwrap();
             assert!(error.contains(expected), "{error}");
             assert!(
@@ -4615,7 +5452,7 @@ mod tests {
                     &root,
                     store.capture_epoch().unwrap(),
                     crate::store::now_ms() / 1000,
-                    &Arc::new(AtomicBool::new(false)),
+                    &Operation::unrestricted(),
                 );
                 assert_eq!(outcome, FinalizationOutcome::Complete);
                 task.join().unwrap();
@@ -4732,6 +5569,7 @@ mod tests {
                 update_secs: 10.0,
                 overlap: 0,
                 whisper_port: 1,
+                operation: Operation::cancellable(stop.clone()),
                 settled: Arc::new(AtomicBool::new(true)),
             };
             let recorder = rec.clone();
@@ -4768,6 +5606,104 @@ mod tests {
         std::fs::write(&engine, script).unwrap();
         (directory, engine)
     }
+    #[test]
+    fn revoked_cli_operations_reap_children_and_remove_owned_audio() {
+        if !isolated_capture_probe("revoked_cli_operations_reap_children_and_remove_owned_audio") {
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        for streaming in [false, true] {
+            for reset in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let store = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+                let cancel = Arc::new(AtomicBool::new(false));
+                let reader =
+                    crate::store::Store::open_existing(&root.path().join("state.db")).unwrap();
+                let operation =
+                    Operation::capture(reader, store.capture_epoch().unwrap(), cancel.clone())
+                        .unwrap();
+                let marker = root.path().join("owned-child-paths");
+                let marker_literal = serde_json::to_string(&marker.to_string_lossy()).unwrap();
+                let script = format!(
+                    "#!/usr/bin/env python3\nimport sys,time,os\na=sys.argv\np=[a[a.index('--audio')+1]]\nif '--audio-keywords' in a: p.append(a[a.index('--audio-keywords')+1])\nm={marker_literal}\nwith open(m+'.tmp','w') as f: f.write('\\n'.join(p+[str(os.getpid())]))\nos.replace(m+'.tmp',m)\ntime.sleep(60)\n"
+                );
+                let (_engine_dir, engine) = fake_needle(&script);
+                std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o700)).unwrap();
+                let (done, result) = mpsc::channel();
+                let task = crate::runtime::spawn_session("synthetic-owned-cli", move || {
+                    let outcome = if streaming {
+                        let mut stream = WhistleStream::open(
+                            &engine,
+                            Path::new("synthetic-model"),
+                            None,
+                            "auto",
+                        )
+                        .unwrap();
+                        stream.operation = Some(operation);
+                        stream.finish_until(Instant::now() + INFERENCE_TIMEOUT)
+                    } else {
+                        whistle_transcribe_owned(
+                            &engine,
+                            Path::new("synthetic-model"),
+                            &[0.0; 1600],
+                            &["synthetic keyword".into()],
+                            "auto",
+                            &operation,
+                        )
+                    };
+                    done.send(outcome).unwrap();
+                })
+                .unwrap();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while !marker.exists() {
+                    assert!(
+                        Instant::now() < deadline,
+                        "CLI did not reach the owned-file barrier"
+                    );
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                let content = std::fs::read_to_string(&marker).unwrap();
+                let mut lines = content.lines().collect::<Vec<_>>();
+                let pid = lines.pop().unwrap().parse::<u32>().unwrap();
+                assert_eq!(lines.len(), if streaming { 1 } else { 2 });
+                for path in &lines {
+                    assert_eq!(
+                        std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                        0o600
+                    );
+                }
+                if reset {
+                    store.reset_all_data().unwrap();
+                } else {
+                    cancel.store(true, Ordering::Release);
+                }
+                assert!(
+                    result
+                        .recv_timeout(Duration::from_millis(500))
+                        .unwrap()
+                        .is_err()
+                );
+                task.join();
+                assert!(
+                    !Path::new(&format!("/proc/{pid}")).exists(),
+                    "CLI child was not reaped"
+                );
+                for path in lines {
+                    assert!(
+                        !Path::new(path).exists(),
+                        "owned sensitive staging survived cancellation"
+                    );
+                    if streaming {
+                        assert!(
+                            !Path::new(path).parent().unwrap().exists(),
+                            "owned FIFO directory survived cancellation"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn whistle_fifo_start_and_backpressure_have_deadlines_and_reap() {
         for script in [
@@ -5140,6 +6076,7 @@ mod tests {
                     update_secs: 1.0,
                     overlap: 16_000,
                     whisper_port: 8080,
+                    operation: Operation::unrestricted(),
                     settled: Arc::new(AtomicBool::new(true)),
                 },
                 tx,
@@ -5176,7 +6113,17 @@ mod tests {
         let engine = Path::new("needle");
         let model = Path::new("whistle.cact");
         // No engine on disk: error names the failure, no panic.
-        assert!(whistle_pass(engine, model, Path::new("/nonexistent.wav"), None, "auto").is_err());
+        assert!(
+            whistle_pass(
+                engine,
+                model,
+                Path::new("/nonexistent.wav"),
+                None,
+                "auto",
+                &Operation::unrestricted()
+            )
+            .is_err()
+        );
     }
 
     #[test]

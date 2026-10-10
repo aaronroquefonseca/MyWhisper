@@ -18,11 +18,13 @@ mod maintenance;
 pub mod media;
 pub mod mic;
 pub mod net;
+mod operation;
 pub mod overlay;
 pub mod paths;
 mod private_fs;
 mod process_status;
 mod provider_contract;
+mod provider_io;
 pub mod runtime;
 
 /// Single source for the app version (Cargo.toml package

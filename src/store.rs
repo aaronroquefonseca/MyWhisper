@@ -119,6 +119,7 @@ fn bump_gen(conn: &Connection) -> rusqlite::Result<()> {
 
 pub struct Store {
     conn: Connection,
+    file_identity: Option<(u64, u64)>,
     settings_baseline: std::cell::RefCell<Option<serde_json::Value>>,
     settings_warning: std::cell::Cell<Option<&'static str>>,
 }
@@ -356,7 +357,7 @@ impl Store {
         if plaintext {
             migrate_plaintext_to_encrypted(path, key)?;
         }
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -368,6 +369,10 @@ impl Store {
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+        let metadata = file
+            .metadata()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+        let file_identity = Some((metadata.dev(), metadata.ino()));
         drop(file);
         let mut flags =
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
@@ -375,6 +380,13 @@ impl Store {
             flags |= rusqlite::OpenFlags::SQLITE_OPEN_CREATE;
         }
         let conn = Connection::open_with_flags(path, flags)?;
+        let current = std::fs::symlink_metadata(path)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+        if !current.is_file() || Some((current.dev(), current.ino())) != file_identity {
+            return Err(rusqlite::Error::ToSqlConversionFailure(
+                "database changed while opening; retry".into(),
+            ));
+        }
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(&key_pragma(key))?;
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
@@ -392,6 +404,7 @@ impl Store {
         if version == 5 {
             return Ok(Self {
                 conn,
+                file_identity,
                 settings_baseline: std::cell::RefCell::new(None),
                 settings_warning: std::cell::Cell::new(None),
             });
@@ -412,6 +425,7 @@ impl Store {
             tx.commit()?;
             return Ok(Self {
                 conn,
+                file_identity,
                 settings_baseline: std::cell::RefCell::new(None),
                 settings_warning: std::cell::Cell::new(None),
             });
@@ -479,6 +493,7 @@ impl Store {
         tx.commit()?;
         Ok(Self {
             conn,
+            file_identity,
             settings_baseline: std::cell::RefCell::new(None),
             settings_warning: std::cell::Cell::new(None),
         })
@@ -515,6 +530,17 @@ impl Store {
             )
             .optional()?
             .unwrap_or(0))
+    }
+
+    /// A capture authority keeps a dedicated existing connection for quick
+    /// policy checks. It cannot write, migrate or wait behind a busy writer.
+    pub(crate) fn file_identity(&self) -> Option<(u64, u64)> {
+        self.file_identity
+    }
+
+    pub(crate) fn policy_reads_only(&self) -> rusqlite::Result<()> {
+        self.conn.busy_timeout(std::time::Duration::ZERO)?;
+        self.conn.execute_batch("PRAGMA query_only=ON")
     }
 
     fn invalidate_capture(conn: &Connection) -> rusqlite::Result<()> {
@@ -699,6 +725,7 @@ impl Store {
             )
         })?;
         let previous_privacy = current.get("privacy").cloned();
+        let previous_input = current["hotkeys"]["hotkeys_enabled"].clone();
         let next = Self::settings_value(settings)?;
         if let Some(baseline) = self.settings_baseline.borrow().as_ref() {
             Self::patch_changed(baseline, &next, &mut current);
@@ -718,7 +745,9 @@ impl Store {
         let json = serde_json::to_string(&current)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
         tx.execute("INSERT INTO kv(key,value) VALUES ('settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[json])?;
-        if current.get("privacy") != previous_privacy.as_ref() {
+        if current.get("privacy") != previous_privacy.as_ref()
+            || current["hotkeys"]["hotkeys_enabled"] != previous_input
+        {
             Self::invalidate_capture(&tx)?;
         }
         Self::invalidate_sync(&tx)?;
@@ -1662,6 +1691,7 @@ impl Store {
         conn.execute_batch("PRAGMA user_version=5")?;
         Ok(Self {
             conn,
+            file_identity: None,
             settings_baseline: std::cell::RefCell::new(None),
             settings_warning: std::cell::Cell::new(None),
         })
