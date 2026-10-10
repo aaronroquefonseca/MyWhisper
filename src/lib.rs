@@ -1,3 +1,4 @@
+mod address;
 pub mod app;
 pub mod app_dictionary;
 pub mod app_home;
@@ -30,6 +31,7 @@ pub mod sound;
 pub mod speculative;
 pub mod store;
 pub mod stt;
+mod sync_jobs;
 pub mod textnorm;
 pub mod transcribe;
 pub mod update;

@@ -32,20 +32,23 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{IpAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
+use std::net::{IpAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::device::{DeviceIdentity, SyncCreds};
-use crate::store::{HistoryRecord, PeerGossip, SnippetRecord, Store, WordRecord};
+use crate::store::Store;
 
 const PROTOCOL_V: u32 = 1;
 const NOISE_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 const NOISE_BUF: usize = 65535;
 const CHUNK: usize = 60000;
-const FRAME_CAP: usize = 4 * 1024 * 1024;
+const FRAME_CAP: usize = NOISE_BUF;
+const HELLO_CAP: usize = 16 * 1024;
+const CONTENT_CAP: usize = 16 * 1024 * 1024;
+const ROUND_TIMEOUT: Duration = Duration::from_secs(60);
 const IO_TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTO_SYNC_SECS: u64 = 60;
@@ -72,17 +75,7 @@ struct Verdict {
     error: String,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct Payload {
-    #[serde(default)]
-    words: Vec<WordRecord>,
-    #[serde(default)]
-    snippets: Vec<SnippetRecord>,
-    #[serde(default)]
-    history: Vec<HistoryRecord>,
-    #[serde(default)]
-    peers: Vec<PeerGossip>,
-}
+use crate::store::ContentSnapshot as Payload;
 
 #[derive(Debug)]
 pub struct SyncReport {
@@ -104,30 +97,115 @@ pub struct Discovered {
 
 // -- Noise framing --------------------------------------------------------
 
-fn write_frame(stream: &mut TcpStream, bytes: &[u8]) -> Result<(), String> {
-    if bytes.len() > FRAME_CAP {
-        return Err("frame too large".to_string());
+fn transfer_timeout(deadline: std::time::Instant) -> Result<Duration, String> {
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    if remaining.is_zero() {
+        return Err("network progress deadline exceeded".into());
     }
-    stream
-        .write_all(&(bytes.len() as u32).to_be_bytes())
-        .map_err(|e| format!("write: {e}"))?;
-    stream.write_all(bytes).map_err(|e| format!("write: {e}"))
+    Ok(remaining.min(IO_TIMEOUT))
 }
-
-fn read_frame(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
-    let mut len = [0u8; 4];
-    stream
-        .read_exact(&mut len)
-        .map_err(|e| format!("read: {e}"))?;
+fn write_until(
+    stream: &mut TcpStream,
+    mut bytes: &[u8],
+    deadline: std::time::Instant,
+    allowed: &impl Fn() -> bool,
+) -> Result<(), String> {
+    while !bytes.is_empty() {
+        if !allowed() {
+            return Err("sync session cancelled".into());
+        }
+        stream
+            .set_write_timeout(Some(
+                transfer_timeout(deadline)?.min(Duration::from_millis(100)),
+            ))
+            .map_err(|e| e.to_string())?;
+        match stream.write(bytes) {
+            Ok(0) => return Err("connection closed during write".into()),
+            Ok(n) => bytes = &bytes[n..],
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::WouldBlock
+                ) => {}
+            Err(e) => return Err(format!("write: {e}")),
+        }
+    }
+    Ok(())
+}
+fn read_until(
+    stream: &mut TcpStream,
+    mut bytes: &mut [u8],
+    deadline: std::time::Instant,
+    allowed: &impl Fn() -> bool,
+) -> Result<(), String> {
+    while !bytes.is_empty() {
+        if !allowed() {
+            return Err("sync session cancelled".into());
+        }
+        stream
+            .set_read_timeout(Some(
+                transfer_timeout(deadline)?.min(Duration::from_millis(100)),
+            ))
+            .map_err(|e| e.to_string())?;
+        match stream.read(bytes) {
+            Ok(0) => return Err("connection closed during read".into()),
+            Ok(n) => bytes = &mut bytes[n..],
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::WouldBlock
+                ) => {}
+            Err(e) => return Err(format!("read: {e}")),
+        }
+    }
+    Ok(())
+}
+fn write_frame_checked(
+    stream: &mut TcpStream,
+    bytes: &[u8],
+    deadline: std::time::Instant,
+    allowed: &impl Fn() -> bool,
+) -> Result<(), String> {
+    if bytes.is_empty() || bytes.len() > FRAME_CAP {
+        return Err("bad frame length".into());
+    }
+    write_until(
+        stream,
+        &(bytes.len() as u32).to_be_bytes(),
+        deadline,
+        allowed,
+    )?;
+    write_until(stream, bytes, deadline, allowed)
+}
+fn read_frame_checked(
+    stream: &mut TcpStream,
+    deadline: std::time::Instant,
+    allowed: &impl Fn() -> bool,
+) -> Result<Vec<u8>, String> {
+    let mut len = [0; 4];
+    read_until(stream, &mut len, deadline, allowed)?;
     let len = u32::from_be_bytes(len) as usize;
     if len == 0 || len > FRAME_CAP {
-        return Err("bad frame length".to_string());
+        return Err("bad frame length".into());
     }
-    let mut buf = vec![0u8; len];
-    stream
-        .read_exact(&mut buf)
-        .map_err(|e| format!("read: {e}"))?;
-    Ok(buf)
+    let mut bytes = vec![0; len];
+    read_until(stream, &mut bytes, deadline, allowed)?;
+    Ok(bytes)
+}
+
+fn write_frame(
+    stream: &mut TcpStream,
+    bytes: &[u8],
+    deadline: std::time::Instant,
+) -> Result<(), String> {
+    write_frame_checked(stream, bytes, deadline, &|| true)
+}
+fn read_frame(stream: &mut TcpStream, deadline: std::time::Instant) -> Result<Vec<u8>, String> {
+    read_frame_checked(stream, deadline, &|| true)
 }
 
 /// One encrypted session: Noise_XX handshake, then length-framed
@@ -136,6 +214,11 @@ pub struct NoiseStream {
     stream: TcpStream,
     transport: snow::TransportState,
     rbuf: Vec<u8>,
+    cap: usize,
+    deadline: std::time::Instant,
+    policy: Option<SyncPolicy>,
+    authorization_epoch: Option<i64>,
+    owner_stop: Option<Arc<AtomicBool>>,
 }
 
 impl NoiseStream {
@@ -157,13 +240,42 @@ impl NoiseStream {
     /// Run the handshake. Returns the session plus the handshake hash
     /// (signed into hellos) and the peer's proven x25519 static key.
     pub fn handshake(
-        mut stream: TcpStream,
+        stream: TcpStream,
         private_key: &[u8; 32],
         initiator: bool,
     ) -> Result<(Self, Vec<u8>, [u8; 32]), String> {
+        Self::handshake_until(
+            stream,
+            private_key,
+            initiator,
+            std::time::Instant::now() + ROUND_TIMEOUT,
+        )
+    }
+    fn handshake_until(
+        stream: TcpStream,
+        private_key: &[u8; 32],
+        initiator: bool,
+        round_deadline: std::time::Instant,
+    ) -> Result<(Self, Vec<u8>, [u8; 32]), String> {
+        Self::handshake_until_checked(stream, private_key, initiator, round_deadline, &|| true)
+    }
+    fn handshake_until_checked(
+        mut stream: TcpStream,
+        private_key: &[u8; 32],
+        initiator: bool,
+        round_deadline: std::time::Instant,
+        allowed: &impl Fn() -> bool,
+    ) -> Result<(Self, Vec<u8>, [u8; 32]), String> {
+        if !allowed() {
+            return Err("sync handshake cancelled".into());
+        }
         stream
             .set_read_timeout(Some(IO_TIMEOUT))
             .map_err(|e| format!("timeout: {e}"))?;
+        stream
+            .set_write_timeout(Some(IO_TIMEOUT))
+            .map_err(|e| format!("timeout: {e}"))?;
+        let deadline = round_deadline.min(std::time::Instant::now() + IO_TIMEOUT);
         let mut hs = Self::builder(private_key, initiator)?;
         let mut buf = vec![0u8; NOISE_BUF];
         let mut payload = vec![0u8; NOISE_BUF];
@@ -173,20 +285,21 @@ impl NoiseStream {
                 let n = hs
                     .write_message(&[], &mut buf)
                     .map_err(|e| format!("handshake write: {e}"))?;
-                write_frame(&mut stream, &buf[..n])?;
+                write_frame_checked(&mut stream, &buf[..n], deadline, allowed)?;
                 if hs.is_handshake_finished() {
                     break;
                 }
-                let msg = read_frame(&mut stream)?;
+                let msg = read_frame_checked(&mut stream, deadline, allowed)?;
                 hs.read_message(&msg, &mut payload)
                     .map_err(|e| format!("handshake read: {e}"))?;
                 if hs.is_handshake_finished() {
                     break;
                 }
             }
-        } else if {
+        }
+        if !initiator {
             loop {
-                let msg = read_frame(&mut stream)?;
+                let msg = read_frame_checked(&mut stream, deadline, allowed)?;
                 hs.read_message(&msg, &mut payload)
                     .map_err(|e| format!("handshake read: {e}"))?;
                 if hs.is_handshake_finished() {
@@ -195,10 +308,8 @@ impl NoiseStream {
                 let n = hs
                     .write_message(&[], &mut buf)
                     .map_err(|e| format!("handshake write: {e}"))?;
-                write_frame(&mut stream, &buf[..n])?;
+                write_frame_checked(&mut stream, &buf[..n], deadline, allowed)?;
             }
-            false
-        } {
         }
         let hash = hs.get_handshake_hash().to_vec();
         let remote: [u8; 32] = hs
@@ -214,23 +325,59 @@ impl NoiseStream {
                 stream,
                 transport,
                 rbuf: vec![0u8; NOISE_BUF],
+                cap: HELLO_CAP,
+                deadline: round_deadline,
+                policy: None,
+                authorization_epoch: None,
+                owner_stop: None,
             },
             hash,
             remote,
         ))
     }
 
+    fn progress_deadline(&mut self) -> Result<(), String> {
+        if self
+            .owner_stop
+            .as_ref()
+            .is_some_and(|stop| stop.load(Ordering::Acquire))
+        {
+            return Err("sync owner stopped".into());
+        }
+        if let Some(policy) = &self.policy {
+            policy.check()?;
+        }
+        let remaining = self
+            .deadline
+            .saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err("sync round deadline exceeded".into());
+        }
+        let timeout = remaining.min(IO_TIMEOUT);
+        self.stream
+            .set_read_timeout(Some(timeout))
+            .map_err(|e| e.to_string())?;
+        self.stream
+            .set_write_timeout(Some(timeout))
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     fn write_chunk(&mut self, plaintext: &[u8]) -> Result<(), String> {
+        self.progress_deadline()?;
         let mut buf = vec![0u8; plaintext.len() + 32];
         let n = self
             .transport
             .write_message(plaintext, &mut buf)
             .map_err(|e| format!("encrypt: {e}"))?;
-        write_frame(&mut self.stream, &buf[..n])
+        write_frame(&mut self.stream, &buf[..n], self.deadline)
     }
 
     /// Send one logical message (chunked at 60 KiB plaintext).
     pub fn send_msg(&mut self, data: &[u8]) -> Result<(), String> {
+        if data.len() > self.cap {
+            return Err("message too large".into());
+        }
         let total = data.len() as u64;
         self.write_chunk(&total.to_be_bytes())?;
         for chunk in data.chunks(CHUNK) {
@@ -240,12 +387,14 @@ impl NoiseStream {
     }
 
     pub fn send_json(&mut self, value: &impl Serialize) -> Result<(), String> {
-        let bytes = serde_json::to_vec(value).map_err(|e| format!("encode: {e}"))?;
+        let bytes = serde_json::to_vec(value)
+            .map_err(|e| format!("encode: {}", crate::diagnostics::json(&e)))?;
         self.send_msg(&bytes)
     }
 
     fn read_chunk(&mut self) -> Result<Vec<u8>, String> {
-        let frame = read_frame(&mut self.stream)?;
+        self.progress_deadline()?;
+        let frame = read_frame(&mut self.stream, self.deadline)?;
         let n = self
             .transport
             .read_message(&frame, &mut self.rbuf)
@@ -260,12 +409,16 @@ impl NoiseStream {
             return Err("bad message header".to_string());
         }
         let total = u64::from_be_bytes(head[..8].try_into().unwrap()) as usize;
-        if total > 256 * 1024 * 1024 {
+        if total > self.cap {
             return Err("message too large".to_string());
         }
         let mut out = Vec::with_capacity(total.min(1024 * 1024));
         while out.len() < total {
-            out.extend_from_slice(&self.read_chunk()?);
+            let chunk = self.read_chunk()?;
+            if chunk.is_empty() || chunk.len() > total - out.len() {
+                return Err("message made invalid progress".into());
+            }
+            out.extend_from_slice(&chunk);
         }
         if out.len() != total {
             return Err("message truncated".to_string());
@@ -275,20 +428,114 @@ impl NoiseStream {
 
     pub fn recv_json<T: serde::de::DeserializeOwned>(&mut self) -> Result<T, String> {
         let bytes = self.recv_msg()?;
-        serde_json::from_slice(&bytes).map_err(|e| format!("decode: {e}"))
+        serde_json::from_slice(&bytes)
+            .map_err(|e| format!("decode: {}", crate::diagnostics::json(&e)))
+    }
+}
+
+struct SyncPolicy {
+    store: Store,
+    peer: String,
+    epoch: i64,
+    owner_stop: Option<Arc<AtomicBool>>,
+    stop: Arc<AtomicBool>,
+    watcher: Option<std::thread::JoinHandle<()>>,
+}
+
+fn permitted(store: &Store, peer: &str) -> Result<(), String> {
+    if !store.load_settings().sync.enabled {
+        return Err("sync disabled".into());
+    }
+    if store.is_revoked(peer).map_err(|e| e.to_string())? {
+        return Err("peer revoked".into());
+    }
+    if !store
+        .get_peer(peer)
+        .map_err(|e| e.to_string())?
+        .is_some_and(|p| p.trusted)
+    {
+        return Err("peer not trusted locally".into());
+    }
+    Ok(())
+}
+
+impl SyncPolicy {
+    fn check(&self) -> Result<(), String> {
+        if self
+            .owner_stop
+            .as_ref()
+            .is_some_and(|stop| stop.load(Ordering::Acquire))
+        {
+            return Err("sync owner stopped".into());
+        }
+        permitted(&self.store, &self.peer)?;
+        if self.store.sync_epoch() != self.epoch {
+            return Err("sync policy changed during exchange".into());
+        }
+        Ok(())
+    }
+    fn install(
+        session: &mut NoiseStream,
+        store: &Store,
+        peer: &str,
+        epoch: i64,
+    ) -> Result<(), String> {
+        permitted(store, peer)?;
+        if store.sync_epoch() != epoch {
+            return Err("sync authorization changed during setup".into());
+        }
+        if let Some(path) = store.path() {
+            let path = path.to_path_buf();
+            let watch_path = path.clone();
+            let peer = peer.to_string();
+            let watch_peer = peer.clone();
+            let socket = session.stream.try_clone().map_err(|e| e.to_string())?;
+            let stop = Arc::new(AtomicBool::new(false));
+            let done = stop.clone();
+            let owner_stop = session.owner_stop.clone();
+            let watcher_owner = owner_stop.clone();
+            let policy_store = Store::open_existing(&path).map_err(|e| e.to_string())?;
+            let watcher = crate::runtime::spawn_dedicated("sync-policy", move || {
+                let Ok(store) = Store::open_existing(&watch_path) else {
+                    let _ = socket.shutdown(std::net::Shutdown::Both);
+                    return;
+                };
+                while !done.load(Ordering::Acquire) {
+                    if watcher_owner
+                        .as_ref()
+                        .is_some_and(|stop| stop.load(Ordering::Acquire))
+                        || permitted(&store, &watch_peer).is_err()
+                        || store.sync_epoch() != epoch
+                    {
+                        let _ = socket.shutdown(std::net::Shutdown::Both);
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            })?;
+            session.policy = Some(Self {
+                store: policy_store,
+                peer,
+                epoch,
+                owner_stop,
+                stop,
+                watcher: Some(watcher),
+            });
+        }
+        session.cap = CONTENT_CAP;
+        Ok(())
+    }
+}
+impl Drop for SyncPolicy {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.watcher.take() {
+            let _ = worker.join();
+        }
     }
 }
 
 // -- exchange ---------------------------------------------------------------
-
-fn gossip_out(store: &Store, self_id: &str) -> Vec<PeerGossip> {
-    store
-        .export_gossip()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|g| g.node_id != self_id)
-        .collect()
-}
 
 /// Run one side of an exchange over an encrypted session.
 ///
@@ -309,12 +556,15 @@ pub fn exchange(
     expect_node: Option<&str>,
     remote: Option<String>,
 ) -> Result<SyncReport, String> {
+    let policy_epoch = session
+        .authorization_epoch
+        .unwrap_or_else(|| store.sync_epoch());
     let hello = Hello {
         v: PROTOCOL_V,
         node_id: creds.node_id.clone(),
         name: name.to_string(),
         addresses: addresses.to_vec(),
-        introducer: true,
+        introducer: false,
         sig: DeviceIdentity::sign_session_static(&creds.signing, session_hash).to_vec(),
     };
     let peer: Hello = if initiator {
@@ -355,19 +605,19 @@ pub fn exchange(
             return Err("identity proof failed".to_string());
         }
     }
-    if let Some(expected) = expect_node {
-        if peer.node_id != expected {
-            return Err("peer node id mismatch".to_string());
-        }
+    if let Some(expected) = expect_node
+        && peer.node_id != expected
+    {
+        return Err("peer node id mismatch".to_string());
     }
 
     // Contact bookkeeping: unknown nodes become pending requests,
     // known ones refresh addresses.
     let mut contact_addrs: Vec<String> = peer.addresses.clone();
-    if let Some(remote) = remote {
-        if !contact_addrs.contains(&remote) {
-            contact_addrs.push(remote);
-        }
+    if let Some(remote) = remote.filter(|_| initiator)
+        && !contact_addrs.contains(&remote)
+    {
+        contact_addrs.push(remote);
     }
     let is_new = store
         .record_seen(&peer.node_id, &peer.name, &contact_addrs)
@@ -405,15 +655,13 @@ pub fn exchange(
         })?;
     }
 
+    permitted(store, &peer.node_id)?;
+    SyncPolicy::install(session, store, &peer.node_id, policy_epoch)?;
     // Records, strict alternation again.
-    let ours = Payload {
-        words: store.export_words().map_err(|e| format!("export: {e}"))?,
-        snippets: store
-            .export_snippets()
-            .map_err(|e| format!("export: {e}"))?,
-        history: store.export_history().map_err(|e| format!("export: {e}"))?,
-        peers: gossip_out(store, &creds.node_id),
-    };
+    let mut ours = store
+        .export_authorized(&peer.node_id, policy_epoch)
+        .map_err(|e| format!("authorized export: {e}"))?;
+    ours.peers.retain(|peer| peer.node_id != creds.node_id);
     let theirs: Payload = if initiator {
         session.send_json(&ours)?;
         session.recv_json()?
@@ -423,30 +671,17 @@ pub fn exchange(
         theirs
     };
 
-    // Merge content.
-    store
-        .apply_words(&theirs.words)
-        .map_err(|e| format!("merge words: {e}"))?;
-    store
-        .apply_snippets(&theirs.snippets)
-        .map_err(|e| format!("merge snippets: {e}"))?;
-    store
-        .apply_history(&theirs.history)
-        .map_err(|e| format!("merge history: {e}"))?;
-    // Merge introductions: strangers they vouch for join only when we
-    // marked the sender an introducer.
-    let sender_introducer = store
-        .get_peer(&peer.node_id)
-        .map_err(|e| format!("peer lookup: {e}"))?
-        .map(|p| p.introducer)
-        .unwrap_or(false);
+    permitted(store, &peer.node_id)?;
+    session.progress_deadline()?;
     let introduced = store
-        .apply_gossip(&theirs.peers, sender_introducer, &creds.node_id)
-        .map_err(|e| format!("merge peers: {e}"))?;
-
-    store
-        .touch_peer_synced(&peer.node_id, &peer.name)
-        .map_err(|e| format!("record sync: {e}"))?;
+        .apply_sync_round(
+            &peer.node_id,
+            policy_epoch,
+            &creds.node_id,
+            (&theirs.words, &theirs.snippets, &theirs.history),
+            &theirs.peers,
+        )
+        .map_err(|e| format!("merge round: {e}"))?;
     Ok(SyncReport {
         peer_node: peer.node_id,
         peer_name: peer.name,
@@ -458,11 +693,7 @@ pub fn exchange(
 }
 
 fn short(node_id: &str) -> String {
-    if node_id.len() > 12 {
-        format!("{}…{}", &node_id[..8], &node_id[node_id.len() - 4..])
-    } else {
-        node_id.to_string()
-    }
+    crate::device::short_id(node_id)
 }
 
 /// Dial a peer's known addresses in order; first success wins.
@@ -475,44 +706,136 @@ pub fn sync_now(
     name: &str,
     expect_node: &str,
 ) -> Result<SyncReport, String> {
+    sync_now_at_epoch(addresses, db_path, creds, name, expect_node, None)
+}
+
+pub(crate) fn sync_now_at_epoch(
+    addresses: &[String],
+    db_path: &Path,
+    creds: &SyncCreds,
+    name: &str,
+    expect_node: &str,
+    requested_epoch: Option<i64>,
+) -> Result<SyncReport, String> {
+    sync_now_owned(
+        addresses,
+        db_path,
+        creds,
+        name,
+        expect_node,
+        requested_epoch,
+        None,
+    )
+}
+
+fn sync_now_owned(
+    addresses: &[String],
+    db_path: &Path,
+    creds: &SyncCreds,
+    name: &str,
+    expect_node: &str,
+    requested_epoch: Option<i64>,
+    owner_stop: Option<Arc<AtomicBool>>,
+) -> Result<SyncReport, String> {
+    let owner_running = || {
+        !owner_stop
+            .as_ref()
+            .is_some_and(|stop| stop.load(Ordering::Acquire))
+    };
+    if !owner_running() {
+        return Err("sync owner stopped".into());
+    }
+    let initial = Store::open_existing(db_path).map_err(|e| e.to_string())?;
+    if !initial.load_settings().sync.enabled {
+        return Err("sync disabled".into());
+    }
+    let epoch = initial.sync_epoch();
+    if requested_epoch.is_some_and(|requested| requested != epoch) {
+        return Err("queued sync authorization expired".into());
+    }
     if addresses.is_empty() {
         return Err("no known address for peer".to_string());
     }
-    let mut last_err = String::new();
-    for address in addresses {
-        let addr = match address
-            .to_socket_addrs()
-            .map_err(|e| format!("resolve {address}: {e}"))?
-            .next()
-        {
-            Some(a) => a,
-            None => {
-                last_err = format!("no address for {address}");
-                continue;
-            }
-        };
-        let stream = match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
-            Ok(s) => s,
-            Err(e) => {
-                last_err = format!("dial {address}: {e}");
-                continue;
-            }
-        };
-        let (mut session, hash, _remote_static) =
-            NoiseStream::handshake(stream, &creds.noise_static, true)?;
-        let store = Store::open(db_path).map_err(|e| format!("open db: {e}"))?;
-        return exchange(
-            &mut session,
-            &hash,
-            &store,
-            creds,
-            name,
-            &[],
-            true,
-            Some(expect_node),
-            None,
-        );
+    if addresses.len() > 8 {
+        return Err("too many peer addresses".into());
     }
+    let round_deadline = std::time::Instant::now() + ROUND_TIMEOUT;
+    let mut last_err = String::from("no usable address");
+    for address in addresses {
+        if !owner_running()
+            || initial.sync_epoch() != epoch
+            || !initial.load_settings().sync.enabled
+        {
+            return Err("sync authorization changed while dialing".into());
+        }
+        let targets = match crate::address::resolve(address, round_deadline, || {
+            owner_running() && initial.sync_epoch() == epoch && initial.load_settings().sync.enabled
+        }) {
+            Ok(targets) => targets,
+            Err(e) => {
+                last_err = format!("resolve: {e}");
+                continue;
+            }
+        };
+        for addr in targets {
+            let result = (|| {
+                let remaining = round_deadline
+                    .saturating_duration_since(std::time::Instant::now())
+                    .min(CONNECT_TIMEOUT);
+                if remaining.is_zero() {
+                    return Err("sync connection deadline exceeded".into());
+                }
+                if !owner_running()
+                    || initial.sync_epoch() != epoch
+                    || !initial.load_settings().sync.enabled
+                {
+                    return Err("sync authorization changed while dialing".into());
+                }
+                let stream =
+                    crate::address::connect(addr, std::time::Instant::now() + remaining, || {
+                        owner_running()
+                            && initial.sync_epoch() == epoch
+                            && initial.load_settings().sync.enabled
+                    })?;
+                let (mut session, hash, _) = NoiseStream::handshake_until_checked(
+                    stream,
+                    &creds.noise_static,
+                    true,
+                    round_deadline,
+                    &|| {
+                        owner_running()
+                            && initial.sync_epoch() == epoch
+                            && initial.load_settings().sync.enabled
+                    },
+                )?;
+                session.authorization_epoch = Some(epoch);
+                session.owner_stop = owner_stop.clone();
+                let store = Store::open_existing(db_path).map_err(|e| e.to_string())?;
+                let addresses = store.load_settings().sync.listen_port;
+                let ours = lan_ip()
+                    .filter(|_| addresses != 0)
+                    .map(|ip| std::net::SocketAddr::new(ip, addresses).to_string())
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                exchange(
+                    &mut session,
+                    &hash,
+                    &store,
+                    creds,
+                    name,
+                    &ours,
+                    true,
+                    Some(expect_node),
+                    None,
+                )
+            })();
+            match result {
+                Ok(report) => return Ok(report),
+                Err(e) => last_err = e,
+            }
+        }
+    }
+
     Err(last_err)
 }
 
@@ -527,6 +850,11 @@ pub fn serve(
     stop: &AtomicBool,
 ) {
     let _ = listener.set_nonblocking(true);
+    let Ok(accept_store) = Store::open_existing(&db_path) else {
+        eprintln!("[sync] listener database unavailable");
+        return;
+    };
+    let mut workers: Vec<(std::thread::JoinHandle<()>, TcpStream)> = Vec::new();
     for conn in listener.incoming() {
         if stop.load(Ordering::Relaxed) {
             break;
@@ -537,6 +865,22 @@ pub fn serve(
                 continue;
             }
             Ok(stream) => {
+                let mut i = 0;
+                while i < workers.len() {
+                    if workers[i].0.is_finished() {
+                        let (worker, _) = workers.swap_remove(i);
+                        let _ = worker.join();
+                    } else {
+                        i += 1;
+                    }
+                }
+                if workers.len() >= 8 {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    continue;
+                }
+                let Ok(owned_socket) = stream.try_clone() else {
+                    continue;
+                };
                 let remote = stream
                     .peer_addr()
                     .map(|a| a.to_string())
@@ -550,11 +894,14 @@ pub fn serve(
                 let creds = creds.clone();
                 let name = name.clone();
                 let addresses = addresses.clone();
-                std::thread::spawn(move || {
+                let authorization_epoch = accept_store.sync_epoch();
+                let worker = crate::runtime::spawn_dedicated("sync-connection", move || {
                     let res = (|| -> Result<SyncReport, String> {
                         let (mut session, hash, _remote_static) =
                             NoiseStream::handshake(stream, &creds.noise_static, false)?;
-                        let store = Store::open(&db_path).map_err(|e| format!("open db: {e}"))?;
+                        session.authorization_epoch = Some(authorization_epoch);
+                        let store =
+                            Store::open_existing(&db_path).map_err(|e| format!("open db: {e}"))?;
                         exchange(
                             &mut session,
                             &hash,
@@ -577,9 +924,18 @@ pub fn serve(
                         }
                     }
                 });
+                if let Ok(worker) = worker {
+                    workers.push((worker, owned_socket));
+                }
             }
             Err(e) => eprintln!("[sync] accept: {e}"),
         }
+    }
+    for (_, socket) in &workers {
+        let _ = socket.shutdown(std::net::Shutdown::Both);
+    }
+    for (worker, _) in workers {
+        let _ = worker.join();
     }
 }
 
@@ -605,7 +961,7 @@ pub fn lan_ip() -> Option<IpAddr> {
 pub fn self_reachable(port: u16) -> Option<String> {
     let ip = lan_ip()?;
     let addr = format!("{ip}:{port}");
-    let sock = addr.to_socket_addrs().ok()?.next()?;
+    let sock = addr.parse().ok()?;
     match TcpStream::connect_timeout(&sock, CONNECT_TIMEOUT) {
         Ok(_) => Some(addr),
         Err(_) => None,
@@ -637,12 +993,63 @@ pub fn firewall_allow_hint(port: u16) -> Option<String> {
 
 pub struct MdnsHandles {
     _daemon: mdns_sd::ServiceDaemon,
+    stop: Arc<AtomicBool>,
+    browser: Mutex<Option<crate::runtime::SessionTask>>,
 }
 
 impl MdnsHandles {
     /// Unregister + stop the daemon (browser recv ends, threads exit).
     pub fn shutdown(&self) {
-        let _ = self._daemon.shutdown();
+        self.stop.store(true, Ordering::Release);
+        if let Some(browser) = self
+            .browser
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            browser.join();
+        }
+    }
+}
+
+impl Drop for MdnsHandles {
+    fn drop(&mut self) {
+        // GTK owners only signal shutdown. SessionTask transfers joining to
+        // the bounded reaper; engine owners explicitly call shutdown above.
+        if !self.stop.swap(true, Ordering::AcqRel)
+            && self
+                .browser
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_none()
+        {
+            // Initialization failed before the browser took daemon ownership.
+            let _ = self._daemon.shutdown();
+        }
+    }
+}
+
+fn shutdown_mdns(daemon: &mdns_sd::ServiceDaemon) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match daemon.shutdown() {
+            Ok(stopped) => {
+                if stopped
+                    .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                    .is_err()
+                {
+                    eprintln!("[sync] mDNS shutdown acknowledgement unavailable");
+                }
+                return;
+            }
+            Err(mdns_sd::Error::Again) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => {
+                eprintln!("[sync] mDNS shutdown: {error}");
+                return;
+            }
+        }
     }
 }
 
@@ -656,7 +1063,12 @@ pub fn start_mdns(
     sink: Arc<Mutex<HashMap<String, Discovered>>>,
     advertise: bool,
 ) -> Result<MdnsHandles, String> {
-    let daemon = mdns_sd::ServiceDaemon::new().map_err(|e| format!("mdns: {e}"))?;
+    let handles = MdnsHandles {
+        _daemon: mdns_sd::ServiceDaemon::new().map_err(|e| format!("mdns: {e}"))?,
+        stop: Arc::new(AtomicBool::new(false)),
+        browser: Mutex::new(None),
+    };
+    let daemon = &handles._daemon;
     if advertise {
         let short_id = &node_id[..node_id.len().min(8)];
         let mut txt = std::collections::HashMap::new();
@@ -679,15 +1091,23 @@ pub fn start_mdns(
         .browse(MDNS_SERVICE)
         .map_err(|e| format!("mdns browse: {e}"))?;
     let self_id = node_id.to_string();
-    std::thread::spawn(move || {
-        while let Ok(event) = browser.recv() {
+    let stop = handles.stop.clone();
+    let daemon = daemon.clone();
+    let worker = crate::runtime::spawn_session("sync-mdns-browser", move || {
+        let mut service_nodes = HashMap::new();
+        while !stop.load(Ordering::Acquire) {
+            let event = match browser.recv_timeout(Duration::from_millis(100)) {
+                Ok(event) => event,
+                Err(_) if browser.is_disconnected() => break,
+                Err(_) => continue,
+            };
             match event {
                 mdns_sd::ServiceEvent::ServiceResolved(info) => {
                     let node = info
                         .get_property_val_str("node")
                         .map(|s| s.to_string())
                         .unwrap_or_default();
-                    if node.is_empty() || node == self_id {
+                    if !crate::device::valid_node_id(&node) || node == self_id {
                         continue;
                     }
                     let name = info
@@ -695,15 +1115,32 @@ pub fn start_mdns(
                         .map(|s| s.to_string())
                         .unwrap_or_default();
                     let port = info.get_port();
+                    if name.len() > 256 || port == 0 {
+                        continue;
+                    }
                     let addresses: Vec<String> = info
                         .get_addresses()
                         .iter()
-                        .map(|ip| format!("{ip}:{port}"))
+                        .map(|ip| match ip {
+                            mdns_sd::ScopedIp::V6(ip) => std::net::SocketAddrV6::new(
+                                *ip.addr(),
+                                port,
+                                0,
+                                ip.scope_id().index,
+                            )
+                            .to_string(),
+                            _ => std::net::SocketAddr::new(ip.to_ip_addr(), port).to_string(),
+                        })
+                        .take(8)
                         .collect();
                     if addresses.is_empty() {
                         continue;
                     }
-                    eprintln!("[sync] mdns found {name} {addresses:?}");
+                    let full_name = info.get_fullname().to_string();
+                    if service_nodes.len() >= 256 && !service_nodes.contains_key(&full_name) {
+                        continue;
+                    }
+                    service_nodes.insert(full_name, node.clone());
                     sink.lock().unwrap().insert(
                         node.clone(),
                         Discovered {
@@ -714,13 +1151,19 @@ pub fn start_mdns(
                     );
                 }
                 mdns_sd::ServiceEvent::ServiceRemoved(_, full_name) => {
-                    eprintln!("[sync] mdns lost {full_name}");
+                    if let Some(node) = service_nodes.remove(&full_name)
+                        && !service_nodes.values().any(|present| *present == node)
+                    {
+                        sink.lock().unwrap().remove(&node);
+                    }
                 }
                 _ => {}
             }
         }
-    });
-    Ok(MdnsHandles { _daemon: daemon })
+        shutdown_mdns(&daemon);
+    })?;
+    *handles.browser.lock().unwrap_or_else(|p| p.into_inner()) = Some(worker);
+    Ok(handles)
 }
 
 // -- periodic and triggered rounds ------------------------------------------
@@ -730,11 +1173,14 @@ pub fn start_mdns(
 /// peers are simply skipped; the next round (or the next local
 /// change) retries them.
 pub fn sync_all_trusted(db_path: &Path, creds: &SyncCreds) -> Vec<String> {
-    let store = match Store::open(db_path) {
+    let store = match Store::open_existing(db_path) {
         Ok(s) => s,
         Err(e) => return vec![format!("open db: {e}")],
     };
     let settings = store.load_settings();
+    if !settings.sync.enabled {
+        return Vec::new();
+    }
     let name = if settings.sync.device_name.is_empty() {
         creds.node_id.clone()
     } else {
@@ -746,9 +1192,17 @@ pub fn sync_all_trusted(db_path: &Path, creds: &SyncCreds) -> Vec<String> {
         .into_iter()
         .filter(|p| p.trusted && !p.dial_targets().is_empty())
         .collect();
+    let epoch = store.sync_epoch();
     let mut out = Vec::new();
     for peer in peers {
-        match sync_now(&peer.dial_targets(), db_path, creds, &name, &peer.node_id) {
+        match sync_now_at_epoch(
+            &peer.dial_targets(),
+            db_path,
+            creds,
+            &name,
+            &peer.node_id,
+            Some(epoch),
+        ) {
             Ok(r) => out.push(format!(
                 "synced {} ({} words in)",
                 short(&r.peer_node),
@@ -773,8 +1227,14 @@ pub fn auto_sync_loop(db_path: PathBuf, creds: SyncCreds, stop: Arc<AtomicBool>)
         if stop.load(Ordering::Relaxed) {
             return;
         }
-        for line in sync_all_trusted(&db_path, &creds) {
-            eprintln!("[sync] auto: {line}");
+        if let Ok(store) = Store::open_existing(&db_path) {
+            schedule_all(
+                db_path.clone(),
+                creds.clone(),
+                store.sync_epoch(),
+                Duration::ZERO,
+                Some(stop.clone()),
+            );
         }
         for _ in 0..AUTO_SYNC_SECS {
             if stop.load(Ordering::Relaxed) {
@@ -785,25 +1245,219 @@ pub fn auto_sync_loop(db_path: PathBuf, creds: SyncCreds, stop: Arc<AtomicBool>)
     }
 }
 
-/// Fire-and-forget sync round after a local change (dictionary edit,
-/// rename, …). Same best-effort semantics as the periodic loop.
-pub fn sync_after_change(db_path: PathBuf, creds: SyncCreds) {
-    std::thread::spawn(move || {
-        for line in sync_all_trusted(&db_path, &creds) {
-            eprintln!("[sync] on-change: {line}");
+enum BackgroundRequest {
+    Enumerate {
+        db: PathBuf,
+        creds: SyncCreds,
+        epoch: i64,
+        owner_stop: Option<Arc<AtomicBool>>,
+        after: std::time::Instant,
+        offset: usize,
+        budget_reported: bool,
+    },
+    Peer {
+        db: PathBuf,
+        creds: SyncCreds,
+        epoch: i64,
+        owner_stop: Option<Arc<AtomicBool>>,
+        node: String,
+        name: String,
+        addresses: Vec<String>,
+    },
+}
+type BackgroundKey = (PathBuf, String);
+type Outgoing = crate::sync_jobs::Coalescer<BackgroundKey, BackgroundRequest>;
+static OUTGOING: std::sync::OnceLock<Result<Outgoing, String>> = std::sync::OnceLock::new();
+fn outgoing() -> Result<&'static Outgoing, String> {
+    OUTGOING
+        .get_or_init(|| Outgoing::new(4, 64, run_background))
+        .as_ref()
+        .map_err(Clone::clone)
+}
+fn run_background(request: BackgroundRequest) {
+    match request {
+        BackgroundRequest::Enumerate {
+            db,
+            creds,
+            epoch,
+            owner_stop,
+            after,
+            offset,
+            mut budget_reported,
+        } => {
+            if owner_stop
+                .as_ref()
+                .is_some_and(|stop| stop.load(Ordering::Acquire))
+            {
+                return;
+            }
+            if let Some(delay) = after.checked_duration_since(std::time::Instant::now()) {
+                std::thread::sleep(delay.min(Duration::from_secs(3)));
+            }
+            let store = match Store::open_existing(&db) {
+                Ok(store) => store,
+                Err(_) => {
+                    eprintln!("[sync] outgoing database unavailable");
+                    return;
+                }
+            };
+            let settings = store.load_settings();
+            if owner_stop
+                .as_ref()
+                .is_some_and(|stop| stop.load(Ordering::Acquire))
+                || store.sync_epoch() != epoch
+                || !settings.sync.enabled
+            {
+                return;
+            }
+            let name = crate::device::display_name(&settings.sync.device_name, &creds.node_id);
+            let mut peers: Vec<_> = match store.list_peers() {
+                Ok(peers) => peers
+                    .into_iter()
+                    .filter(|peer| peer.trusted && !peer.dial_targets().is_empty())
+                    .collect(),
+                Err(_) => {
+                    eprintln!("[sync] outgoing peer list unavailable");
+                    return;
+                }
+            };
+            peers.sort_unstable_by(|a, b| a.node_id.cmp(&b.node_id));
+            let total = peers.len();
+            let mut next = offset;
+            for peer in peers.into_iter().skip(offset).take(16) {
+                let addresses = peer.dial_targets();
+                if addresses.is_empty() {
+                    continue;
+                }
+                let key = (db.clone(), peer.node_id.clone());
+                let request = BackgroundRequest::Peer {
+                    db: db.clone(),
+                    creds: creds.clone(),
+                    epoch,
+                    owner_stop: owner_stop.clone(),
+                    node: peer.node_id,
+                    name: name.clone(),
+                    addresses,
+                };
+                if let Err(error) = outgoing().and_then(|jobs| jobs.submit(key, request)) {
+                    if !budget_reported {
+                        eprintln!(
+                            "[sync] outgoing admission: {error}; remaining peers retained for retry"
+                        );
+                        budget_reported = true;
+                    }
+                    break;
+                }
+                next += 1;
+            }
+            if next < total {
+                let key = (db.clone(), String::new());
+                let request = BackgroundRequest::Enumerate {
+                    db,
+                    creds,
+                    epoch,
+                    owner_stop: owner_stop.clone(),
+                    after: std::time::Instant::now() + Duration::from_millis(100),
+                    offset: next,
+                    budget_reported,
+                };
+                if let Err(error) = outgoing().and_then(|jobs| jobs.continue_if_clean(key, request))
+                {
+                    eprintln!("[sync] outgoing continuation: {error}");
+                }
+            }
         }
-    });
+        BackgroundRequest::Peer {
+            db,
+            creds,
+            epoch,
+            owner_stop,
+            node,
+            name,
+            addresses,
+        } => match sync_now_owned(
+            &addresses,
+            &db,
+            &creds,
+            &name,
+            &node,
+            Some(epoch),
+            owner_stop,
+        ) {
+            Ok(report) => eprintln!(
+                "[sync] synced {} ({} words in)",
+                short(&report.peer_node),
+                report.words_in
+            ),
+            Err(error) => eprintln!("[sync] {}: {error}", short(&node)),
+        },
+    }
+}
+fn schedule_all(
+    db: PathBuf,
+    creds: SyncCreds,
+    epoch: i64,
+    delay: Duration,
+    owner_stop: Option<Arc<AtomicBool>>,
+) {
+    if db == Path::new(":memory:") {
+        return;
+    }
+    let db = match std::fs::canonicalize(db) {
+        Ok(db) => db,
+        Err(_) => {
+            eprintln!("[sync] outgoing database path unavailable");
+            return;
+        }
+    };
+    let key = (db.clone(), String::new());
+    let request = BackgroundRequest::Enumerate {
+        db,
+        creds,
+        epoch,
+        owner_stop,
+        after: std::time::Instant::now() + delay,
+        offset: 0,
+        budget_reported: false,
+    };
+    if let Err(error) = outgoing().and_then(|jobs| jobs.submit(key, request)) {
+        eprintln!("[sync] outgoing admission: {error}");
+    }
 }
 
-/// One catch-up round shortly after launch, so a fresh start converges
-/// without waiting for the periodic loop.
-pub fn sync_on_startup(db_path: PathBuf, creds: SyncCreds) {
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(3));
-        for line in sync_all_trusted(&db_path, &creds) {
-            eprintln!("[sync] startup: {line}");
-        }
-    });
+/// GUI callers pass the epoch from their already-open writer connection at
+/// the change boundary. Queued work cannot gain permission after off/on.
+pub(crate) fn sync_after_change_at_epoch(db: PathBuf, creds: SyncCreds, epoch: i64) {
+    schedule_all(db, creds, epoch, Duration::ZERO, None);
+}
+/// Compatibility entry point for callers without an existing Store.
+pub fn sync_after_change(db: PathBuf, creds: SyncCreds) {
+    if db == Path::new(":memory:") {
+        return;
+    }
+    if let Ok(store) = Store::open_existing(&db) {
+        sync_after_change_at_epoch(db, creds, store.sync_epoch());
+    }
+}
+pub(crate) fn sync_on_startup_owned(
+    db: PathBuf,
+    creds: SyncCreds,
+    epoch: i64,
+    stop: Arc<AtomicBool>,
+) {
+    schedule_all(db, creds, epoch, Duration::from_secs(3), Some(stop));
+}
+pub(crate) fn sync_on_startup_at_epoch(db: PathBuf, creds: SyncCreds, epoch: i64) {
+    schedule_all(db, creds, epoch, Duration::from_secs(3), None);
+}
+/// One catch-up round shortly after launch, with permission captured now.
+pub fn sync_on_startup(db: PathBuf, creds: SyncCreds) {
+    if db == Path::new(":memory:") {
+        return;
+    }
+    if let Ok(store) = Store::open_existing(&db) {
+        sync_on_startup_at_epoch(db, creds, store.sync_epoch());
+    }
 }
 
 /// Watch mDNS discovery: whenever a *trusted* peer newly appears on
@@ -813,8 +1467,8 @@ pub fn watch_discovered(
     creds: SyncCreds,
     discovered: Arc<Mutex<HashMap<String, Discovered>>>,
     stop: Arc<AtomicBool>,
-) {
-    std::thread::spawn(move || {
+) -> Result<std::thread::JoinHandle<()>, String> {
+    crate::runtime::spawn_dedicated("sync-discovery-watcher", move || {
         let mut known_present: std::collections::HashSet<String> = std::collections::HashSet::new();
         loop {
             for _ in 0..10 {
@@ -823,10 +1477,14 @@ pub fn watch_discovered(
                 }
                 std::thread::sleep(Duration::from_secs(1));
             }
-            let store = match Store::open(&db_path) {
+            let store = match Store::open_existing(&db_path) {
                 Ok(s) => s,
                 Err(_) => continue,
             };
+            let discovered = discovered.lock().unwrap().clone();
+            for peer in discovered.values() {
+                let _ = store.set_peer_addresses(&peer.node_id, &peer.addresses);
+            }
             let trusted: std::collections::HashSet<String> = store
                 .list_peers()
                 .unwrap_or_default()
@@ -835,47 +1493,505 @@ pub fn watch_discovered(
                 .map(|p| p.node_id)
                 .collect();
             let present: std::collections::HashSet<String> = discovered
-                .lock()
-                .unwrap()
                 .keys()
                 .filter(|id| trusted.contains(*id) && !known_present.contains(*id))
                 .cloned()
                 .collect();
             if !present.is_empty() {
                 eprintln!("[sync] peer appeared, syncing now");
-                for line in sync_all_trusted(&db_path, &creds) {
-                    eprintln!("[sync] on-appear: {line}");
-                }
+                schedule_all(
+                    db_path.clone(),
+                    creds.clone(),
+                    store.sync_epoch(),
+                    Duration::ZERO,
+                    Some(stop.clone()),
+                );
             }
             known_present = discovered
-                .lock()
-                .unwrap()
                 .keys()
                 .filter(|id| trusted.contains(*id))
                 .cloned()
                 .collect();
         }
-    });
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::device::DeviceIdentity;
+
+    #[test]
+    fn stopped_engine_cancels_queued_dials_and_an_active_noise_handshake() {
+        use std::sync::mpsc;
+        let db = temp_db("owner-cancellation");
+        let store = Store::open(&db).unwrap();
+        let local = DeviceIdentity::ephemeral().creds();
+        let remote = DeviceIdentity::ephemeral().creds();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        store
+            .upsert_peer(&remote.node_id, "synthetic remote", &address, true)
+            .unwrap();
+        let stop = Arc::new(AtomicBool::new(true));
+        let addresses = vec![address];
+        let error = sync_now_owned(
+            &addresses,
+            &db,
+            &local,
+            "synthetic local",
+            &remote.node_id,
+            Some(store.sync_epoch()),
+            Some(stop.clone()),
+        )
+        .unwrap_err();
+        assert!(error.contains("owner stopped"));
+        listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        listener.set_nonblocking(false).unwrap();
+        stop.store(false, Ordering::Release);
+        let (entered, ready) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            read_frame(
+                &mut socket,
+                std::time::Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            // Framed I/O uses short progress polls. Restore this observer's
+            // bounded EOF wait; cancellation itself must still finish <1s.
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            entered.send(()).unwrap();
+            let mut byte = [0];
+            assert_eq!(
+                socket.read(&mut byte).unwrap(),
+                0,
+                "cancelled handshake retained its socket"
+            );
+        });
+        let dial_db = db.clone();
+        let dial_stop = stop.clone();
+        let epoch = store.sync_epoch();
+        let client = std::thread::spawn(move || {
+            sync_now_owned(
+                &addresses,
+                &dial_db,
+                &local,
+                "synthetic local",
+                &remote.node_id,
+                Some(epoch),
+                Some(dial_stop),
+            )
+        });
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        let cancelled = std::time::Instant::now();
+        stop.store(true, Ordering::Release);
+        assert!(client.join().unwrap().unwrap_err().contains("cancel"));
+        server.join().unwrap();
+        assert!(cancelled.elapsed() < Duration::from_secs(1));
+    }
     use crate::store::Store;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::net::ToSocketAddrs;
+    struct TestDb {
+        path: PathBuf,
+        _directory: tempfile::TempDir,
+    }
+    impl std::ops::Deref for TestDb {
+        type Target = PathBuf;
+        fn deref(&self) -> &PathBuf {
+            &self.path
+        }
+    }
+    impl AsRef<Path> for TestDb {
+        fn as_ref(&self) -> &Path {
+            &self.path
+        }
+    }
+    fn temp_db(tag: &str) -> TestDb {
+        let directory = tempfile::Builder::new()
+            .prefix(&format!("mywhisper-sync-{tag}-"))
+            .tempdir()
+            .unwrap();
+        TestDb {
+            path: directory.path().join("state.db"),
+            _directory: directory,
+        }
+    }
 
-    static TEST_SEQ: AtomicU64 = AtomicU64::new(0);
+    #[test]
+    fn queued_enumeration_cannot_gain_permission_after_disable_and_reenable() {
+        let db = temp_db("queued-epoch");
+        let store = Store::open(&db).unwrap();
+        let local = DeviceIdentity::ephemeral().creds();
+        let remote = DeviceIdentity::ephemeral().creds();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        store
+            .upsert_peer(
+                &remote.node_id,
+                "synthetic peer",
+                &listener.local_addr().unwrap().to_string(),
+                true,
+            )
+            .unwrap();
+        let mut settings = store.load_settings();
+        settings.sync.enabled = true;
+        store.save_settings(&settings).unwrap();
+        let queued_epoch = store.sync_epoch();
+        settings.sync.enabled = false;
+        store.save_settings(&settings).unwrap();
+        settings.sync.enabled = true;
+        store.save_settings(&settings).unwrap();
+        assert_ne!(queued_epoch, store.sync_epoch());
+        run_background(BackgroundRequest::Enumerate {
+            db: db.clone(),
+            creds: local,
+            epoch: queued_epoch,
+            owner_stop: None,
+            after: std::time::Instant::now(),
+            offset: 0,
+            budget_reported: false,
+        });
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "a stale queued trigger attempted network work"
+        );
+    }
 
-    fn temp_db(tag: &str) -> PathBuf {
-        let n = TEST_SEQ.fetch_add(1, Ordering::SeqCst);
-        let pid = std::process::id();
-        std::env::temp_dir().join(format!("mywhisper-sync-test-{pid}-{n}-{tag}.db"))
+    #[test]
+    fn edits_during_an_active_outgoing_job_replay_over_real_encrypted_loopback() {
+        use std::sync::mpsc;
+        let a = DeviceIdentity::ephemeral().creds();
+        let b = DeviceIdentity::ephemeral().creds();
+        let db_a = temp_db("dirty-source");
+        let db_b = temp_db("dirty-target");
+        let store_a = Store::open(&db_a).unwrap();
+        let store_b = Store::open(&db_b).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        store_a
+            .upsert_peer(&b.node_id, "synthetic b", &address, true)
+            .unwrap();
+        store_b
+            .upsert_peer(&a.node_id, "synthetic a", "", true)
+            .unwrap();
+        for store in [&store_a, &store_b] {
+            let mut settings = store.load_settings();
+            settings.sync.enabled = true;
+            store.save_settings(&settings).unwrap();
+        }
+        store_a
+            .upsert_word("synthetic initial", &a.node_id)
+            .unwrap();
+        let server_db = db_b.clone();
+        let server_b = b.clone();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                let stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "replay did not connect"
+                            );
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("synthetic listener: {error}"),
+                    }
+                };
+                let (mut session, hash, _) =
+                    NoiseStream::handshake_until(stream, &server_b.noise_static, false, deadline)
+                        .unwrap();
+                let store = Store::open(&server_db).unwrap();
+                exchange(
+                    &mut session,
+                    &hash,
+                    &store,
+                    &server_b,
+                    "synthetic b",
+                    &[],
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap();
+            }
+        });
+        let (entered, events) = mpsc::channel();
+        let (release, waiting) = mpsc::channel();
+        let waiting = Mutex::new(waiting);
+        let passes = std::sync::atomic::AtomicUsize::new(0);
+        let scheduler = Outgoing::new(1, 2, move |request| {
+            run_background(request);
+            let pass = passes.fetch_add(1, Ordering::AcqRel);
+            entered.send(pass).unwrap();
+            if pass == 0 {
+                waiting
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap();
+            }
+        })
+        .unwrap();
+        let request = || BackgroundRequest::Peer {
+            db: db_a.clone(),
+            creds: a.clone(),
+            epoch: store_a.sync_epoch(),
+            owner_stop: None,
+            node: b.node_id.clone(),
+            name: "synthetic a".into(),
+            addresses: vec![address.clone()],
+        };
+        let key = (db_a.clone(), b.node_id.clone());
+        scheduler.submit(key.clone(), request()).unwrap();
+        assert_eq!(events.recv_timeout(Duration::from_secs(3)).unwrap(), 0);
+        assert_eq!(store_b.load_words().unwrap(), ["synthetic initial"]);
+        store_a.upsert_word("synthetic latest", &a.node_id).unwrap();
+        for _ in 0..100 {
+            scheduler.submit(key.clone(), request()).unwrap();
+        }
+        release.send(()).unwrap();
+        assert_eq!(events.recv_timeout(Duration::from_secs(3)).unwrap(), 1);
+        assert!(events.recv_timeout(Duration::from_millis(50)).is_err());
+        drop(scheduler);
+        server.join().unwrap();
+        assert_eq!(
+            store_b.load_words().unwrap(),
+            ["synthetic initial", "synthetic latest"]
+        );
     }
 
     /// Full client/server round-trip over real loopback TCP with Noise
     /// encryption: B dials A, both sides converge, untrusted dialers
     /// are rejected.
+    #[test]
+    fn disable_and_reenable_during_handshake_never_exports_the_queued_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.db");
+        let local = DeviceIdentity::ephemeral().creds();
+        let remote = DeviceIdentity::ephemeral().creds();
+        let store = Store::open(&path).unwrap();
+        store
+            .upsert_peer(&remote.node_id, "synthetic remote", "", true)
+            .unwrap();
+        store
+            .add_history(
+                "synthetic raw secret",
+                "synthetic queued secret",
+                3,
+                1,
+                &local.node_id,
+            )
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let (reached, ready) = std::sync::mpsc::channel();
+        let (resume, release) = std::sync::mpsc::channel();
+        let remote_id = remote.clone();
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let (mut session, hash, _) =
+                NoiseStream::handshake(socket, &remote_id.noise_static, false).unwrap();
+            let _hello: Hello = session.recv_json().unwrap();
+            session
+                .send_json(&Hello {
+                    v: PROTOCOL_V,
+                    node_id: remote_id.node_id.clone(),
+                    name: "synthetic remote".into(),
+                    addresses: Vec::new(),
+                    introducer: false,
+                    sig: DeviceIdentity::sign_session_static(&remote_id.signing, &hash).to_vec(),
+                })
+                .unwrap();
+            reached.send(()).unwrap();
+            release.recv_timeout(Duration::from_secs(3)).unwrap();
+            session
+                .send_json(&Verdict {
+                    ok: true,
+                    error: String::new(),
+                })
+                .unwrap();
+            assert!(
+                session.recv_json::<Payload>().is_err(),
+                "old authorization must not export content after off/on"
+            );
+        });
+        let client_path = path.clone();
+        let client = std::thread::spawn(move || {
+            sync_now(
+                &[address],
+                &client_path,
+                &local,
+                "synthetic local",
+                &remote.node_id,
+            )
+        });
+        ready.recv_timeout(Duration::from_secs(3)).unwrap();
+        let mut settings = store.load_settings();
+        settings.sync.enabled = false;
+        store.save_settings(&settings).unwrap();
+        settings.sync.enabled = true;
+        store.save_settings(&settings).unwrap();
+        resume.send(()).unwrap();
+        assert!(
+            client
+                .join()
+                .unwrap()
+                .unwrap_err()
+                .contains("authorization changed")
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn disabling_sync_interrupts_an_active_stalled_encrypted_export() {
+        use std::os::fd::AsRawFd;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.db");
+        let local = DeviceIdentity::ephemeral().creds();
+        let remote = DeviceIdentity::ephemeral().creds();
+        let store = Store::open(&path).unwrap();
+        store
+            .upsert_peer(&remote.node_id, "synthetic remote", "", true)
+            .unwrap();
+        let synthetic = "synthetic-".repeat(250_000);
+        store
+            .add_history(&synthetic, &synthetic, 1, 1, &local.node_id)
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (reached, ready) = std::sync::mpsc::channel();
+        let (resume, release) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let (mut session, hash, _) =
+                NoiseStream::handshake(socket, &remote.noise_static, false).unwrap();
+            let _hello: Hello = session.recv_json().unwrap();
+            session
+                .send_json(&Hello {
+                    v: PROTOCOL_V,
+                    node_id: remote.node_id.clone(),
+                    name: "synthetic remote".into(),
+                    addresses: Vec::new(),
+                    introducer: false,
+                    sig: DeviceIdentity::sign_session_static(&remote.signing, &hash).to_vec(),
+                })
+                .unwrap();
+            session
+                .send_json(&Verdict {
+                    ok: true,
+                    error: String::new(),
+                })
+                .unwrap();
+            session.cap = CONTENT_CAP;
+            let header = session.read_chunk().unwrap();
+            let total = u64::from_be_bytes(header.try_into().unwrap()) as usize;
+            assert!(total > 4_000_000);
+            reached.send(()).unwrap();
+            release.recv_timeout(Duration::from_secs(3)).unwrap();
+            let mut received = 0;
+            while let Ok(chunk) = session.read_chunk() {
+                received += chunk.len();
+                if received >= total {
+                    break;
+                }
+            }
+            assert!(
+                received < total,
+                "disabled operation must never deliver a complete content frame"
+            );
+        });
+        let client_path = path.clone();
+        let client = std::thread::spawn(move || {
+            let socket = TcpStream::connect(address).unwrap();
+            let size: libc::c_int = 8192;
+            // SAFETY: set a bounded send buffer on this test's owned TCP socket.
+            assert_eq!(
+                unsafe {
+                    libc::setsockopt(
+                        socket.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_SNDBUF,
+                        (&size as *const libc::c_int).cast(),
+                        std::mem::size_of_val(&size) as libc::socklen_t,
+                    )
+                },
+                0
+            );
+            let (mut session, hash, _) =
+                NoiseStream::handshake(socket, &local.noise_static, true).unwrap();
+            let store = Store::open(&client_path).unwrap();
+            exchange(
+                &mut session,
+                &hash,
+                &store,
+                &local,
+                "synthetic local",
+                &[],
+                true,
+                None,
+                None,
+            )
+        });
+        ready.recv_timeout(Duration::from_secs(3)).unwrap();
+        let mut settings = store.load_settings();
+        settings.sync.enabled = false;
+        store.save_settings(&settings).unwrap();
+        let started = std::time::Instant::now();
+        assert!(client.join().unwrap().is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        resume.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn trickled_frames_obey_whole_frame_deadline_and_reject_lengths() {
+        use std::time::Instant;
+        for length in [0u32, FRAME_CAP as u32 + 1] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut sender = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (mut reader, _) = listener.accept().unwrap();
+            sender.write_all(&length.to_be_bytes()).unwrap();
+            assert_eq!(
+                read_frame(&mut reader, Instant::now() + Duration::from_secs(1)).unwrap_err(),
+                "bad frame length"
+            );
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut sender = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut reader, _) = listener.accept().unwrap();
+        let worker = std::thread::spawn(move || {
+            for byte in 16u32
+                .to_be_bytes()
+                .into_iter()
+                .chain(std::iter::repeat_n(1u8, 16))
+            {
+                if sender.write_all(&[byte]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+        });
+        let started = Instant::now();
+        assert!(read_frame(&mut reader, started + Duration::from_millis(100)).is_err());
+        assert!(started.elapsed() < Duration::from_millis(250));
+        reader.shutdown(std::net::Shutdown::Both).unwrap();
+        worker.join().unwrap();
+    }
+
     #[test]
     fn loopback_sync_converges_and_rejects_untrusted() {
         let id_a = DeviceIdentity::ephemeral();
@@ -1027,7 +2143,8 @@ mod tests {
             let (mut session, hash, _remote) =
                 NoiseStream::handshake(stream, &creds_vk.noise_static, false).unwrap();
             let store = Store::open(&db_v2).unwrap();
-            let res = exchange(
+
+            exchange(
                 &mut session,
                 &hash,
                 &store,
@@ -1037,8 +2154,7 @@ mod tests {
                 false,
                 None,
                 None,
-            );
-            res
+            )
         });
 
         // Attacker crafts a hello claiming the victim id, but can only
