@@ -14,6 +14,7 @@ pub mod mic;
 pub mod net;
 pub mod overlay;
 pub mod paths;
+mod private_fs;
 pub mod runtime;
 
 /// Single source for the app version (Cargo.toml package

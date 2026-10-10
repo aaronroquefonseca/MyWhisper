@@ -9,7 +9,6 @@
 //!   Legacy 32-byte key files gain a fresh x25519 key on first load.
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 pub struct DeviceIdentity {
@@ -29,28 +28,37 @@ pub struct SyncCreds {
 impl DeviceIdentity {
     /// Load the node key, creating and persisting one on first run.
     pub fn load_or_create(path: &Path) -> std::io::Result<Self> {
-        if path.exists() {
-            let bytes = std::fs::read(path)?;
-            if bytes.len() == 32 {
-                // Legacy file: keep the identity, append a fresh
-                // transport key.
-                let mut both = [0u8; 64];
+        let _lock = crate::private_fs::lock(&path.with_extension("key.lock"))?;
+        let bytes = match crate::private_fs::read_bounded(path, 64) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        let mut both = [0u8; 64];
+        match bytes.len() {
+            64 => both.copy_from_slice(&bytes),
+            32 => {
                 both[..32].copy_from_slice(&bytes);
                 getrandom::fill(&mut both[32..])
                     .map_err(|e| std::io::Error::other(format!("rng: {e}")))?;
-                std::fs::write(path, both)?;
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-                return Ok(Self::from_keys(&both));
+                crate::private_fs::replace(path, &both)?;
             }
-            let both: [u8; 64] = bytes.try_into().map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "bad device key length")
-            })?;
-            return Ok(Self::from_keys(&both));
+            0 => {
+                // An existing empty file is corruption, never a new identity.
+                if path.exists() {
+                    return Err(std::io::Error::other("empty device key"));
+                }
+                getrandom::fill(&mut both)
+                    .map_err(|e| std::io::Error::other(format!("rng: {e}")))?;
+                crate::private_fs::replace(path, &both)?;
+            }
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "bad device key length",
+                ));
+            }
         }
-        let mut both = [0u8; 64];
-        getrandom::fill(&mut both).map_err(|e| std::io::Error::other(format!("rng: {e}")))?;
-        std::fs::write(path, both)?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         Ok(Self::from_keys(&both))
     }
 
@@ -251,5 +259,84 @@ pub fn display_name(settings_name: &str, node_id: &str) -> String {
         default_device_name(node_id)
     } else {
         settings_name.to_string()
+    }
+}
+
+/// Canonical identity accepted at discovery and gossip boundaries.
+pub fn valid_node_id(id: &str) -> bool {
+    id.len() == 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub fn short_id(id: &str) -> String {
+    if id.chars().count() <= 16 {
+        return id.to_string();
+    }
+    let head: String = id.chars().take(8).collect();
+    let tail: String = id
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{head}…{tail}")
+}
+
+#[cfg(test)]
+mod provisioning_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, Barrier};
+    #[test]
+    fn concurrent_create_and_legacy_migration_share_one_private_identity() {
+        for legacy in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("device.key");
+            if legacy {
+                std::fs::write(&path, [7u8; 32]).unwrap();
+            }
+            let gate = Arc::new(Barrier::new(12));
+            let workers: Vec<_> = (0..12)
+                .map(|_| {
+                    let gate = gate.clone();
+                    let path = path.clone();
+                    std::thread::spawn(move || {
+                        gate.wait();
+                        DeviceIdentity::load_or_create(&path).unwrap().node_id
+                    })
+                })
+                .collect();
+            let persisted = workers
+                .into_iter()
+                .map(|w| w.join().unwrap())
+                .collect::<Vec<_>>();
+            let winner = DeviceIdentity::load_or_create(&path).unwrap();
+            assert!(persisted.iter().all(|id| id == &winner.node_id));
+            assert_eq!(std::fs::read(&path).unwrap().len(), 64);
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            if legacy {
+                assert_eq!(&std::fs::read(&path).unwrap()[..32], &[7u8; 32]);
+            }
+        }
+    }
+    #[test]
+    fn invalid_identity_is_preserved_and_display_is_unicode_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key");
+        std::fs::write(&path, b"partial").unwrap();
+        assert!(DeviceIdentity::load_or_create(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"partial");
+        assert_eq!(
+            short_id(&"界".repeat(20)),
+            format!("{}…{}", "界".repeat(8), "界".repeat(4))
+        );
+        assert!(!valid_node_id(&"界".repeat(20)));
     }
 }
