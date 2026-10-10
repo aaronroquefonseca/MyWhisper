@@ -150,6 +150,20 @@ impl Operation {
         }
     }
 
+    pub(crate) fn with_permission(&self, guard: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        let previous = self.permitted.clone();
+        let mut operation = self.clone();
+        operation.permitted = Arc::new(move || {
+            previous()?;
+            if guard() {
+                Ok(())
+            } else {
+                Err(Denial::Revoked)
+            }
+        });
+        operation
+    }
+
     pub(crate) fn next_phase(&self, cancel: Arc<AtomicBool>) -> Self {
         Self {
             cancel,

@@ -215,6 +215,7 @@ fn run_headless(
     // first press then only arms capture instead of cold-starting.
     {
         let db_path = paths.db_file();
+        let server_generation = mywhisper::transcribe::server_generation();
         if let Err(e) = mywhisper::runtime::submit("startup-warmup", move || {
             let data_dir = db_path
                 .parent()
@@ -234,12 +235,13 @@ fn run_headless(
                         Ok(plan) => {
                             eprintln!("[stt] startup warmup: {}", plan.describe());
                             let net = mywhisper::transcribe::server_net(&settings.stt);
-                            if let Err(e) = mywhisper::transcribe::ensure_for_plan(
+                            if let Err(e) = mywhisper::transcribe::ensure_for_plan_at_generation(
                                 &plan,
                                 &data_dir,
                                 settings.stt.gpu_backend,
                                 settings.stt.sherpa_backend,
                                 &net,
+                                server_generation,
                             ) {
                                 eprintln!("[stt] startup warmup: {e}");
                             }

@@ -410,11 +410,10 @@ fn require_transducer_files(dir: &Path, id: &str) -> Result<(), String> {
 // ------------------------------------------------------- server lifetime
 
 struct Supervised {
+    instance: u64,
     key: String,
     child: crate::child::OwnedChild,
     ready: bool,
-    /// whisper-server only: model currently loaded (for /load).
-    loaded_model: Option<PathBuf>,
     /// Last use (ensure hit): drives the keep-warm reaper.
     last_used: Instant,
 }
@@ -557,6 +556,8 @@ pub(crate) fn server_status_while(
 /// Stop this process's owned server groups. GUI requests are routed to the
 /// service; persisted PID metadata is never used to signal a process.
 pub fn drop_servers(data_dir: &Path) {
+    SERVER_GENERATION.fetch_add(1, Ordering::AcqRel);
+    WARM_QUEUE.lock().unwrap_or_else(|p| p.into_inner()).pending = None;
     let mut map = match servers().lock() {
         Ok(m) => m,
         Err(_) => return,
@@ -597,6 +598,9 @@ pub fn spawn_server_reaper(data_dir: PathBuf) {
                 continue;
             }
             let Some(timeout) = keep_warm_timeout(&keep) else {
+                continue;
+            };
+            let Ok(_lease) = EngineLease::acquire(&Operation::unrestricted(), false) else {
                 continue;
             };
             let mut map = match servers().lock() {
@@ -657,9 +661,26 @@ fn ensure_server(
     port: u16,
     spawn: impl FnOnce() -> Result<crate::child::OwnedChild, String>,
     probe: impl FnOnce() -> Result<(), String>,
+    operation: &Operation,
 ) -> Result<(), String> {
-    let _startup = SERVER_START_LOCK.lock().map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + SERVER_START_TIMEOUT;
+    let _startup = loop {
+        operation.check()?;
+        match SERVER_START_LOCK.try_lock() {
+            Ok(guard) => break guard,
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err("server startup lock unavailable".into());
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if Instant::now() >= deadline {
+                    return Err("server startup admission deadline exceeded".into());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    };
     let reset_check = || -> Result<(), String> {
+        operation.check()?;
         if crate::reset::requested(data_dir).map_err(|_| "reset status unavailable")? {
             Err("reset cleanup is pending; local server startup is disabled".into())
         } else {
@@ -706,20 +727,21 @@ fn ensure_server(
     reset_check()?;
     let child = spawn()?;
     reset_check()?;
+    let instance = SERVER_INSTANCE.fetch_add(1, Ordering::AcqRel) + 1;
     map.insert(
         name.to_string(),
         Supervised {
+            instance,
             key: key.clone(),
             child,
             ready: false,
-            loaded_model: None,
             last_used: Instant::now(),
         },
     );
     drop(map);
     let mut startup = StartupGuard {
         name: name.to_string(),
-        key,
+        instance,
         ready: false,
     };
     // the wait loop re-locks per iteration (non-reentrant)
@@ -734,9 +756,9 @@ fn ensure_server(
         let exited = {
             let mut map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
             match map.get_mut(name) {
-                Some(s) => s.child.try_status().ok().flatten(),
-                None => {
-                    return Err(format!("{name} vanished during startup"));
+                Some(s) if s.instance == instance => s.child.try_status().ok().flatten(),
+                _ => {
+                    return Err(format!("{name} startup ownership was revoked"));
                 }
             }
         };
@@ -752,18 +774,28 @@ fn ensure_server(
     }
     probe()?;
     reset_check()?;
-    if let Some(server) = servers().lock().map_err(|e| e.to_string())?.get_mut(name) {
+    if let Some(server) = servers().lock().map_err(|e| e.to_string())?.get_mut(name)
+        && server.instance == instance
+    {
         server.ready = true;
         pidfile_record(data_dir, name, server.child.0.id(), port);
+    } else {
+        return Err("server readiness owner was revoked".into());
     }
     startup.ready = true;
     Ok(())
 }
 
 static SERVER_START_LOCK: Mutex<()> = Mutex::new(());
+static SERVER_INSTANCE: AtomicU64 = AtomicU64::new(0);
+static SERVER_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+pub fn server_generation() -> u64 {
+    SERVER_GENERATION.load(Ordering::Acquire)
+}
 struct StartupGuard {
     name: String,
-    key: String,
+    instance: u64,
     ready: bool,
 }
 impl Drop for StartupGuard {
@@ -774,7 +806,7 @@ impl Drop for StartupGuard {
         if let Ok(mut map) = servers().lock()
             && map
                 .get(&self.name)
-                .is_some_and(|server| server.key == self.key)
+                .is_some_and(|server| server.instance == self.instance)
             && let Some(server) = map.remove(&self.name)
         {
             drop(server);
@@ -787,6 +819,43 @@ fn server_logs(_name: &str) -> (Stdio, Stdio) {
     // Runtime output can contain recognized speech or dictionary entries.
     // User-facing startup errors retain status and configuration context.
     (Stdio::null(), Stdio::null())
+}
+
+/// Linux PDEATHSIG follows the creating thread. Long-lived supervised
+/// children must be born on the persistent ownership thread, even when readiness is
+/// owned by a temporary session task. Cancellation owns queued launch too.
+fn spawn_supervised(
+    mut command: Command,
+    operation: &Operation,
+) -> Result<crate::child::OwnedChild, String> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let owner = operation.clone();
+    crate::runtime::submit_process_launch(move || {
+        let result = (|| {
+            owner.check()?;
+            let child = crate::child::OwnedChild::spawn(&mut command)?;
+            owner.check()?;
+            Ok(child)
+        })();
+        // A canceled recipient drops the returned child, including its
+        // process group; it cannot become an unowned background server.
+        let _ = sender.send(result);
+    })?;
+    let deadline = Instant::now() + SERVER_START_TIMEOUT;
+    loop {
+        operation.check()?;
+        match receiver.recv_timeout(Duration::from_millis(10)) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("server launcher exited".into());
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if Instant::now() >= deadline {
+                    return Err("server launch deadline exceeded".into());
+                }
+            }
+        }
+    }
 }
 
 fn whisper_binary(data_dir: &Path, backend: GpuBackendSetting) -> Result<PathBuf, String> {
@@ -905,6 +974,7 @@ fn ensure_whisper(
     model: &Path,
     lang: &str,
     net: &ServerNet,
+    operation: &Operation,
 ) -> Result<(), String> {
     let bin = whisper_binary(data_dir, backend)?;
     let key = format!("{}|{}|{lang}|{}", bin.display(), model.display(), net.host);
@@ -940,24 +1010,11 @@ fn ensure_whisper(
             .stdout(out)
             .stderr(err)
             .env("LD_LIBRARY_PATH", &ld_path);
-            crate::child::OwnedChild::spawn(&mut cmd)
+            spawn_supervised(cmd, operation)
         },
         || Ok(()), // model loads before listen: TCP-ready ≈ serving
+        operation,
     )?;
-    // /load when the running server holds another model.
-    let map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
-    let swap = map
-        .get(&"whisper".to_string())
-        .map(|s| s.loaded_model.as_deref() != Some(model))
-        .unwrap_or(true);
-    if swap {
-        drop(map);
-        whisper_load(model, whisper_port)?;
-        let mut map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
-        if let Some(s) = map.get_mut("whisper") {
-            s.loaded_model = Some(model.to_path_buf());
-        }
-    }
     Ok(())
 }
 
@@ -992,14 +1049,6 @@ fn multipart_body(
     body
 }
 
-fn http_client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(INFERENCE_TIMEOUT)
-        .build()
-        .map_err(|e| http_error("HTTP client initialization", &e))
-}
-
 /// Provider URLs may contain credentials in userinfo, paths or queries.
 /// Classify failures without formatting the request or a provider body.
 pub(crate) fn http_error(operation: &str, error: &reqwest::Error) -> String {
@@ -1019,25 +1068,6 @@ pub(crate) fn http_error(operation: &str, error: &reqwest::Error) -> String {
 
 #[cfg(test)]
 const MAX_PROVIDER_REPLY: u64 = 1024 * 1024;
-
-fn whisper_load(model: &Path, port: u16) -> Result<(), String> {
-    let boundary = "mywhisperload";
-    let body = multipart_body(boundary, &[("model", &model.to_string_lossy())], None);
-    let res = http_client()?
-        .post(format!("http://127.0.0.1:{port}/load"))
-        .header(
-            "Content-Type",
-            format!("multipart/form-data; boundary={boundary}"),
-        )
-        .body(body)
-        .send()
-        .map_err(|e| http_error("whisper /load", &e))?;
-    if res.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!("whisper /load: http {}", res.status()))
-    }
-}
 
 /// Dictionary hotwords for a sherpa model dir. Only when the dir
 /// carries bpe.vocab (BPE modeling unit): raw words, one per line —
@@ -1099,6 +1129,7 @@ fn ensure_sherpa_offline(
     model_dir: &Path,
     lang: &str,
     net: &ServerNet,
+    operation: &Operation,
 ) -> Result<(), String> {
     let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-offline-websocket-server")?;
     // Cohere is the only offline model taking a language (required:
@@ -1176,9 +1207,10 @@ fn ensure_sherpa_offline(
                 .stdout(out)
                 .stderr(err)
                 .env("LD_LIBRARY_PATH", server_ld_path(data_dir, &bin_s));
-            crate::child::OwnedChild::spawn(&mut cmd)
+            spawn_supervised(cmd, operation)
         },
-        move || probe_sherpa_offline(offline_port),
+        move || probe_sherpa_offline(offline_port, operation),
+        operation,
     )
 }
 
@@ -1187,6 +1219,7 @@ fn ensure_sherpa_online(
     backend: SherpaBackendSetting,
     model_dir: &Path,
     net: &ServerNet,
+    operation: &Operation,
 ) -> Result<(), String> {
     let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-online-websocket-server")?;
     let words = load_hint_words(data_dir);
@@ -1238,9 +1271,10 @@ fn ensure_sherpa_online(
                 .stdout(out)
                 .stderr(err)
                 .env("LD_LIBRARY_PATH", server_ld_path(data_dir, &bin_s));
-            crate::child::OwnedChild::spawn(&mut cmd)
+            spawn_supervised(cmd, operation)
         },
-        move || probe_sherpa_online(online_port),
+        move || probe_sherpa_online(online_port, operation),
+        operation,
     )
 }
 
@@ -1506,17 +1540,22 @@ fn sherpa_text(msg: &str) -> Result<String, String> {
 /// Tiny-decode readiness probes: 0.5 s of silence must come back
 /// within 60 s. Catches "port open, model still loading" (sherpa
 /// listens before the recognizer is ready).
-fn probe_sherpa_offline(port: u16) -> Result<(), String> {
+fn probe_sherpa_offline(port: u16, operation: &Operation) -> Result<(), String> {
     let silence = vec![0.0f32; 8000];
     eprintln!("[stt] sherpa-offline probe: 0.5s silence");
-    sherpa_offline_transcribe_inner(&silence, Duration::from_secs(60), port)?;
+    sherpa_offline_transcribe_owned(&silence, Duration::from_secs(60), port, operation)?;
     eprintln!("[stt] sherpa-offline probe ok");
     Ok(())
 }
 
-fn probe_sherpa_online(port: u16) -> Result<(), String> {
+fn probe_sherpa_online(port: u16, operation: &Operation) -> Result<(), String> {
     eprintln!("[stt] sherpa-online probe: 0.5s silence");
-    let mut s = OnlineSession::open_with(port, Duration::from_secs(60))?;
+    let mut s = OnlineSession::open_authorized(
+        &format!("ws://127.0.0.1:{port}"),
+        "",
+        Duration::from_secs(60),
+        operation,
+    )?;
     s.send_chunk(&vec![0.0f32; 8000])?;
     s.finish()?;
     eprintln!("[stt] sherpa-online probe ok");
@@ -1528,6 +1567,7 @@ fn probe_sherpa_online(port: u16) -> Result<(), String> {
 /// accumulated: the server resets its stream on endpoint (is_final),
 /// so each message only covers its own segment.
 pub struct OnlineSession {
+    _engine_lease: Option<EngineLease>,
     ws: Option<Ws>,
     /// Finished segments, in order.
     segments: Vec<String>,
@@ -1551,6 +1591,7 @@ impl OnlineSession {
         operation: &Operation,
     ) -> Result<Self, String> {
         Ok(Self {
+            _engine_lease: None,
             ws: Some(ws_connect_authorized(
                 url,
                 key,
@@ -1584,6 +1625,7 @@ impl OnlineSession {
         cancel: Arc<AtomicBool>,
     ) -> Result<Self, String> {
         Ok(Self {
+            _engine_lease: None,
             ws: Some(ws_connect_owned(
                 url,
                 key,
@@ -1600,6 +1642,7 @@ impl OnlineSession {
     }
     pub fn open_with_url(url: &str, read_timeout: Duration) -> Result<Self, String> {
         Ok(Self {
+            _engine_lease: None,
             ws: Some(ws_connect_url(url, read_timeout)?),
             segments: Vec::new(),
             current: String::new(),
@@ -1610,7 +1653,9 @@ impl OnlineSession {
     }
 
     pub fn open_with(port: u16, read_timeout: Duration) -> Result<Self, String> {
+        let lease = EngineLease::acquire(&Operation::unrestricted(), true)?;
         Ok(Self {
+            _engine_lease: Some(lease),
             ws: Some(ws_connect(port, read_timeout)?),
             segments: Vec::new(),
             current: String::new(),
@@ -2289,15 +2334,9 @@ fn pump_whistle(
 
 /// Offline (whole-utterance) transcription over one WS connection.
 pub fn sherpa_offline_transcribe(samples_16k: &[f32], port: u16) -> Result<String, String> {
-    sherpa_offline_transcribe_inner(samples_16k, INFERENCE_TIMEOUT, port)
-}
-
-fn sherpa_offline_transcribe_inner(
-    samples_16k: &[f32],
-    read_timeout: Duration,
-    port: u16,
-) -> Result<String, String> {
-    sherpa_offline_transcribe_owned(samples_16k, read_timeout, port, &Operation::unrestricted())
+    let operation = Operation::unrestricted();
+    let _lease = EngineLease::acquire(&operation, true)?;
+    sherpa_offline_transcribe_owned(samples_16k, INFERENCE_TIMEOUT, port, &operation)
 }
 
 fn sherpa_offline_transcribe_owned(
@@ -2362,7 +2401,9 @@ fn whisper_json_text(v: &serde_json::Value) -> String {
 }
 
 pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>, port: u16) -> Result<String, String> {
-    whisper_transcribe_owned(wav, prompt, port, &Operation::unrestricted())
+    let operation = Operation::unrestricted();
+    let _lease = EngineLease::acquire(&operation, true)?;
+    whisper_transcribe_owned(wav, prompt, port, &operation)
 }
 
 fn whisper_transcribe_owned(
@@ -2562,7 +2603,16 @@ const SPEC_UNSTABLE_AUDIO: usize = 32_000;
 /// Background speculative loop. Snapshots (never drains) so the
 /// recorder stays whole for fallback; single inference at a time by
 /// construction (next pass only after the previous lands).
+#[derive(Clone)]
+struct EngineConfig {
+    plan: Plan,
+    backend: GpuBackendSetting,
+    sherpa_backend: SherpaBackendSetting,
+    net: ServerNet,
+}
+
 struct SpecConfig {
+    engine: Option<EngineConfig>,
     data_dir: PathBuf,
     update_secs: f32,
     overlap: usize,
@@ -2577,6 +2627,7 @@ fn run_spec(
     tx: mpsc::Sender<(String, usize, Vec<f32>)>,
 ) {
     let SpecConfig {
+        engine,
         data_dir,
         update_secs,
         overlap,
@@ -2631,7 +2682,21 @@ fn run_spec(
         }
         let window = buffer.clone();
         let wav = wav_bytes_16k(&audio::f32_to_i16(&window));
-        match whisper_transcribe_owned(&wav, prompt.clone(), whisper_port, &operation) {
+        let decoded = (|| {
+            let _lease = match &engine {
+                Some(config) => ensure_owned(
+                    &config.plan,
+                    &data_dir,
+                    config.backend,
+                    config.sherpa_backend,
+                    &config.net,
+                    &operation,
+                )?,
+                None => Some(EngineLease::acquire(&operation, true)?),
+            };
+            whisper_transcribe_owned(&wav, prompt.clone(), whisper_port, &operation)
+        })();
+        match decoded {
             Ok(hyp) => {
                 let agreed = crate::speculative::confirm_prefix(&prev_hyp, &hyp);
                 if agreed.split_whitespace().count() > committed.0.split_whitespace().count() {
@@ -2965,11 +3030,20 @@ fn publish_utterance(
     {
         let plan = plan.clone();
         let data_dir = data_dir.clone();
+        let warm_operation = operation.clone();
+        let warm_net = warm_net.clone();
         if let Err(e) = crate::runtime::submit("stt-warmup", move || {
             if INPUT_EPOCH.load(Ordering::Acquire) != epoch {
                 return;
             }
-            if let Err(e) = ensure_servers(&plan, &data_dir, backend, sherpa_backend, &warm_net) {
+            if let Err(e) = warm_plan(
+                &plan,
+                &data_dir,
+                backend,
+                sherpa_backend,
+                &warm_net,
+                &warm_operation,
+            ) {
                 eprintln!("[stt] warmup: {e}");
             }
         }) {
@@ -2996,11 +3070,18 @@ fn publish_utterance(
         let spec_operation = operation.with_cancel(sstop.clone());
         let spec_port = engine_port(&server_net(&stt), WHISPER_PORT);
         let spec_settled = settled.clone();
+        let spec_engine = EngineConfig {
+            plan: plan.clone(),
+            backend,
+            sherpa_backend,
+            net: warm_net.clone(),
+        };
         match crate::runtime::spawn_session("stt-spec", move || {
             run_spec(
                 rec,
                 sstop,
                 SpecConfig {
+                    engine: Some(spec_engine),
                     data_dir: data,
                     update_secs: update,
                     overlap,
@@ -3037,10 +3118,25 @@ fn publish_utterance(
         let plan = plan.clone();
         let preview = stt.live_preview;
         let pump_operation = operation.clone();
+        let pump_data = data_dir.clone();
         match crate::runtime::spawn_session("stt-pump", move || {
             if cancel_pump.load(Ordering::Acquire) {
                 return;
             }
+            let _lease = match ensure_owned(
+                &plan,
+                &pump_data,
+                backend,
+                sherpa_backend,
+                &warm_net,
+                &pump_operation,
+            ) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    let _ = tx.send(Err(error));
+                    return;
+                }
+            };
             let open = match &plan {
                 Plan::SelfHostedWs { url, key } => {
                     OnlineSession::open_authorized(url, key, INFERENCE_TIMEOUT, &pump_operation)
@@ -3631,19 +3727,6 @@ fn finish_session(
     let secs = sess
         .captured_secs
         .unwrap_or_else(|| sess.started.elapsed().as_secs_f64());
-    // Engine warmup finishes here (cold first press waits, later
-    // ones sail through an already-running server). Cloud plans are
-    // no-ops here; failures are per-plan below, not fatal.
-    ensure_servers(
-        &sess.plan,
-        &sess.data_dir,
-        sess.backend,
-        sess.sherpa_backend,
-        &sess.net,
-    )
-    .ok();
-    operation.check()?;
-    eprintln!("[stt] release: engine ready, transcribing ({secs:.1}s window)");
     if let Some(rx) = sess.result_rx {
         // Streaming: the pump owns the tail; wait for the final.
         // The bounded authoritative recorder also supplies retained audio
@@ -3729,17 +3812,21 @@ fn finish_session(
     let mut last_err = String::new();
     for (name, plan) in attempts {
         operation.check()?;
-        if let Err(error) = ensure_servers(
+        let _lease = match ensure_owned(
             plan,
             &sess.data_dir,
             sess.backend,
             sess.sherpa_backend,
             &sess.net,
+            operation,
         ) {
-            operation.check()?;
-            last_err = error;
-            continue;
-        }
+            Ok(lease) => lease,
+            Err(error) => {
+                operation.check()?;
+                last_err = error;
+                continue;
+            }
+        };
         operation.check()?;
         match transcribe_blocking(plan, &f32s, words, &sess.net, operation) {
             Ok(r) => {
@@ -3895,25 +3982,232 @@ pub fn ensure_for_plan(
     sherpa_backend: SherpaBackendSetting,
     net: &ServerNet,
 ) -> Result<(), String> {
-    ensure_servers(plan, data_dir, gpu_backend, sherpa_backend, net)
+    ensure_for_plan_at_generation(
+        plan,
+        data_dir,
+        gpu_backend,
+        sherpa_backend,
+        net,
+        server_generation(),
+    )
 }
 
-fn ensure_servers(
+/// A queued warmup must retain the control generation from its submission.
+pub fn ensure_for_plan_at_generation(
     plan: &Plan,
     data_dir: &Path,
     gpu_backend: GpuBackendSetting,
     sherpa_backend: SherpaBackendSetting,
     net: &ServerNet,
+    generation: u64,
 ) -> Result<(), String> {
+    let operation =
+        Operation::unrestricted().with_permission(move || server_generation() == generation);
+    warm_plan(plan, data_dir, gpu_backend, sherpa_backend, net, &operation)
+}
+
+/// The local runtime slot is leased through readiness and actual inference.
+/// Optional warmup never steals it. Session owners wait with their authority
+/// and the existing inference budget, retaining their recording in RAM.
+struct EngineLease;
+static ENGINE_LEASED: AtomicBool = AtomicBool::new(false);
+impl EngineLease {
+    fn acquire(operation: &Operation, wait: bool) -> Result<Self, String> {
+        let deadline = Instant::now() + INFERENCE_TIMEOUT;
+        loop {
+            operation.check()?;
+            if ENGINE_LEASED
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Ok(Self);
+            }
+            if !wait {
+                return Err("local engine is in use; configuration warmup deferred".into());
+            }
+            if Instant::now() >= deadline {
+                return Err("local engine ownership deadline exceeded".into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+impl Drop for EngineLease {
+    fn drop(&mut self) {
+        ENGINE_LEASED.store(false, Ordering::Release);
+    }
+}
+fn local_server(plan: &Plan) -> bool {
+    matches!(
+        plan,
+        Plan::WhisperHttp { .. } | Plan::SherpaOnline { .. } | Plan::SherpaOffline { .. }
+    )
+}
+fn ensure_owned(
+    plan: &Plan,
+    data_dir: &Path,
+    gpu_backend: GpuBackendSetting,
+    sherpa_backend: SherpaBackendSetting,
+    net: &ServerNet,
+    operation: &Operation,
+) -> Result<Option<EngineLease>, String> {
+    let generation = server_generation();
+    let operation = operation.with_permission(move || server_generation() == generation);
+    let lease = if local_server(plan) {
+        Some(EngineLease::acquire(&operation, true)?)
+    } else {
+        None
+    };
+    ensure_servers_inner(plan, data_dir, gpu_backend, sherpa_backend, net, &operation)?;
+    Ok(lease)
+}
+#[derive(Clone)]
+struct WarmRequest {
+    config: EngineConfig,
+    data_dir: PathBuf,
+    operation: Operation,
+}
+struct WarmQueue {
+    pending: Option<WarmRequest>,
+    running: bool,
+    owner: Option<crate::runtime::SessionTask>,
+    generation: u64,
+}
+static WARM_QUEUE: Mutex<WarmQueue> = Mutex::new(WarmQueue {
+    pending: None,
+    running: false,
+    owner: None,
+    generation: 0,
+});
+
+struct WarmWorker(u64);
+impl Drop for WarmWorker {
+    fn drop(&mut self) {
+        let mut queue = WARM_QUEUE.lock().unwrap_or_else(|p| p.into_inner());
+        if queue.generation == self.0 {
+            queue.running = false;
+            queue.owner.take();
+        }
+    }
+}
+
+fn defer_warmup(request: WarmRequest) -> Result<(), String> {
+    let mut queue = WARM_QUEUE.lock().map_err(|_| "warmup queue unavailable")?;
+    queue.pending = Some(request);
+    if queue.running {
+        return Ok(());
+    }
+    queue.owner.take();
+    queue.running = true;
+    queue.generation = queue.generation.wrapping_add(1);
+    let generation = queue.generation;
+    match crate::runtime::spawn_session("deferred-warmup", move || {
+        let _cleanup = WarmWorker(generation);
+        loop {
+            let request = {
+                let mut queue = WARM_QUEUE.lock().unwrap_or_else(|p| p.into_inner());
+                match queue.pending.take() {
+                    Some(request) => request,
+                    None => {
+                        queue.running = false;
+                        queue.owner.take();
+                        return;
+                    }
+                }
+            };
+            let lease = match EngineLease::acquire(&request.operation, true) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    eprintln!("[stt] deferred warmup: {error}");
+                    continue;
+                }
+            };
+            // Coalesce configuration edits made while the old engine was
+            // occupied. A new request never replaces a server mid-inference.
+            let request = WARM_QUEUE
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .pending
+                .take()
+                .unwrap_or(request);
+            let config = &request.config;
+            if let Err(error) = ensure_servers_inner(
+                &config.plan,
+                &request.data_dir,
+                config.backend,
+                config.sherpa_backend,
+                &config.net,
+                &request.operation,
+            ) {
+                eprintln!("[stt] deferred warmup: {error}");
+            }
+            drop(lease);
+        }
+    }) {
+        Ok(owner) => {
+            queue.owner = Some(owner);
+            Ok(())
+        }
+        Err(error) => {
+            queue.running = false;
+            queue.pending = None;
+            Err(error)
+        }
+    }
+}
+
+fn warm_plan(
+    plan: &Plan,
+    data_dir: &Path,
+    gpu_backend: GpuBackendSetting,
+    sherpa_backend: SherpaBackendSetting,
+    net: &ServerNet,
+    operation: &Operation,
+) -> Result<(), String> {
+    let generation = server_generation();
+    let operation = operation.with_permission(move || server_generation() == generation);
+    operation.check()?;
+    let _lease = if local_server(plan) {
+        match ENGINE_LEASED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => Some(EngineLease),
+            Err(_) => {
+                defer_warmup(WarmRequest {
+                    config: EngineConfig {
+                        plan: plan.clone(),
+                        backend: gpu_backend,
+                        sherpa_backend,
+                        net: net.clone(),
+                    },
+                    data_dir: data_dir.to_owned(),
+                    operation,
+                })?;
+                return Err("local engine is in use; configuration warmup deferred".into());
+            }
+        }
+    } else {
+        None
+    };
+    ensure_servers_inner(plan, data_dir, gpu_backend, sherpa_backend, net, &operation)
+}
+
+fn ensure_servers_inner(
+    plan: &Plan,
+    data_dir: &Path,
+    gpu_backend: GpuBackendSetting,
+    sherpa_backend: SherpaBackendSetting,
+    net: &ServerNet,
+    operation: &Operation,
+) -> Result<(), String> {
+    operation.check()?;
     match plan {
         Plan::WhisperHttp { model_bin, lang } => {
-            ensure_whisper(data_dir, gpu_backend, model_bin, lang, net)
+            ensure_whisper(data_dir, gpu_backend, model_bin, lang, net, operation)
         }
         Plan::SherpaOnline { model_dir } => {
-            ensure_sherpa_online(data_dir, sherpa_backend, model_dir, net)
+            ensure_sherpa_online(data_dir, sherpa_backend, model_dir, net, operation)
         }
         Plan::SherpaOffline { model_dir, lang } => {
-            ensure_sherpa_offline(data_dir, sherpa_backend, model_dir, lang, net)
+            ensure_sherpa_offline(data_dir, sherpa_backend, model_dir, lang, net, operation)
         }
         // CLI per utterance: nothing to keep running.
         // Self-hosted WS: foreign by definition, never spawned.
@@ -5285,6 +5579,495 @@ mod tests {
     }
 
     #[test]
+    fn configuration_warmup_cannot_replace_active_inference() {
+        if !isolated_capture_probe("configuration_warmup_cannot_replace_active_inference") {
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        crate::runtime::init().unwrap();
+        let (occupied, barrier) = mpsc::channel();
+        let mut releases = Vec::new();
+        for _ in 0..crate::runtime::POOL_WORKERS {
+            let (release, wait) = mpsc::channel();
+            let occupied = occupied.clone();
+            crate::runtime::submit("synthetic-busy-worker", move || {
+                occupied.send(()).unwrap();
+                wait.recv().unwrap();
+            })
+            .unwrap();
+            releases.push(release);
+        }
+        for _ in 0..crate::runtime::POOL_WORKERS {
+            barrier.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        let pack = stt::GPU_PACKS
+            .iter()
+            .find(|pack| pack.id == "whisper-cpu")
+            .unwrap();
+        let binary = stt::gpu_bin_dir(root.path(), pack).join("whisper-server");
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::write(
+            &binary,
+            r#"#!/usr/bin/python3
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+import json, sys, time
+model = sys.argv[sys.argv.index('--model') + 1]
+language = sys.argv[sys.argv.index('--language') + 1]
+port = int(sys.argv[sys.argv.index('--port') + 1])
+class Handler(BaseHTTPRequestHandler):
+ def log_message(self, *args): pass
+ def do_POST(self):
+  self.rfile.read(int(self.headers.get('Content-Length', '0')))
+  Path(model + '.started').touch()
+  deadline = time.monotonic() + 10
+  while not Path(model + '.release').exists():
+   if time.monotonic() >= deadline: raise RuntimeError('fixture release missing')
+   time.sleep(.01)
+  body = json.dumps({'text': 'original ' + language}).encode()
+  self.send_response(200)
+  self.send_header('Content-Length', str(len(body)))
+  self.end_headers()
+  self.wfile.write(body)
+ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let model = root.path().join("synthetic-model.bin");
+        std::fs::write(
+            &model,
+            b"fixture model consumed only by the synthetic runtime",
+        )
+        .unwrap();
+        let listen = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let net = ServerNet {
+            host: "127.0.0.1",
+            port_override: Some(listen.local_addr().unwrap().port()),
+        };
+        drop(listen);
+        let plan = Plan::WhisperHttp {
+            model_bin: model.clone(),
+            lang: "en".into(),
+        };
+        ensure_for_plan(
+            &plan,
+            root.path(),
+            GpuBackendSetting::Cpu,
+            SherpaBackendSetting::Cpu,
+            &net,
+        )
+        .unwrap();
+        let (instance, pid) = {
+            let map = servers().lock().unwrap();
+            let server = &map["whisper"];
+            (server.instance, server.child.0.id())
+        };
+        let wav = wav_bytes_16k(&[100; 16000]);
+        let port = net.port_override.unwrap();
+        let inference = std::thread::spawn(move || whisper_transcribe(&wav, None, port));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !model.with_extension("bin.started").exists() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let changed = Plan::WhisperHttp {
+            model_bin: model.clone(),
+            lang: "es".into(),
+        };
+        for (candidate, backend, network) in [
+            (changed.clone(), GpuBackendSetting::Cpu, net.clone()),
+            (
+                Plan::WhisperHttp {
+                    model_bin: root.path().join("other-model.bin"),
+                    lang: "en".into(),
+                },
+                GpuBackendSetting::Cpu,
+                net.clone(),
+            ),
+            (plan.clone(), GpuBackendSetting::Cuda, net.clone()),
+            (
+                plan.clone(),
+                GpuBackendSetting::Cpu,
+                ServerNet {
+                    host: "0.0.0.0",
+                    ..net.clone()
+                },
+            ),
+            (
+                plan.clone(),
+                GpuBackendSetting::Cpu,
+                ServerNet {
+                    port_override: Some(port.checked_add(1).unwrap_or(port - 1)),
+                    ..net.clone()
+                },
+            ),
+            (
+                Plan::SherpaOffline {
+                    model_dir: root.path().join("other-engine"),
+                    lang: "en".into(),
+                },
+                GpuBackendSetting::Cpu,
+                net.clone(),
+            ),
+        ] {
+            let start = Instant::now();
+            let error = ensure_for_plan(
+                &candidate,
+                root.path(),
+                backend,
+                SherpaBackendSetting::Cpu,
+                &network,
+            )
+            .unwrap_err();
+            assert!(error.contains("deferred"), "{error}");
+            assert!(start.elapsed() < Duration::from_millis(100));
+            let mut map = servers().lock().unwrap();
+            let server = map.get_mut("whisper").unwrap();
+            assert_eq!((server.instance, server.child.0.id()), (instance, pid));
+            assert!(server.ready && server.child.try_status().unwrap().is_none());
+        }
+        assert!(
+            ensure_for_plan(
+                &changed,
+                root.path(),
+                GpuBackendSetting::Cpu,
+                SherpaBackendSetting::Cpu,
+                &net
+            )
+            .unwrap_err()
+            .contains("deferred")
+        );
+        std::fs::write(model.with_extension("bin.release"), []).unwrap();
+        assert_eq!(inference.join().unwrap().unwrap(), "original en");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let ready = servers()
+                .lock()
+                .unwrap()
+                .get("whisper")
+                .is_some_and(|server| server.instance != instance && server.ready);
+            if ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "deferred configuration never became ready"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let replacement = servers().lock().unwrap()["whisper"].instance;
+        assert_ne!(replacement, instance);
+        let same_key = servers().lock().unwrap()["whisper"].key.clone();
+        drop_servers(root.path());
+        ensure_for_plan(
+            &changed,
+            root.path(),
+            GpuBackendSetting::Cpu,
+            SherpaBackendSetting::Cpu,
+            &net,
+        )
+        .unwrap();
+        let current = servers().lock().unwrap()["whisper"].instance;
+        assert_ne!(current, replacement);
+        assert_eq!(servers().lock().unwrap()["whisper"].key, same_key);
+        drop(StartupGuard {
+            name: "whisper".into(),
+            instance: replacement,
+            ready: false,
+        });
+        assert_eq!(
+            servers().lock().unwrap()["whisper"].instance,
+            current,
+            "an old startup guard must not remove a newer instance of the same configuration"
+        );
+        assert_eq!(
+            whisper_transcribe(&wav_bytes_16k(&[100; 16000]), None, port).unwrap(),
+            "original es"
+        );
+        // Exercise the real capture/finalization/delivery owner as well as
+        // the public diagnostic entry point above. Only the resolved plan
+        // is injected: the synthetic runtime consumes no real model format.
+        let writer = crate::store::Store::open_existing(&root.path().join("state.db")).unwrap();
+        let mut settings = writer.load_settings();
+        settings.preferences.auto_paste = false;
+        settings.language_models.cleanup_enabled = false;
+        settings.stt.gpu_backend = GpuBackendSetting::Cpu;
+        settings.stt.language = "es".into();
+        settings.stt.server_port = port.to_string();
+        settings.stt.spec_enabled = false;
+        settings.stt.vad_enabled = false;
+        writer.save_settings(&settings).unwrap();
+        let privacy_epoch = writer.capture_epoch().unwrap();
+        let reader = crate::store::Store::open_existing(&root.path().join("state.db")).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let operation = Operation::capture(reader, privacy_epoch, cancel.clone()).unwrap();
+        std::fs::remove_file(model.with_extension("bin.started")).unwrap();
+        std::fs::remove_file(model.with_extension("bin.release")).unwrap();
+        let epoch = reserve_utterance();
+        publish_utterance(
+            epoch,
+            settings.stt,
+            false,
+            root.path(),
+            0,
+            cancel,
+            (
+                privacy_epoch,
+                vec![("synthetic-runtime".into(), changed.clone())],
+                operation,
+            ),
+        )
+        .unwrap();
+        audio::tap_samples(&[1000; 16_000], 16_000);
+        let (finished, result) = mpsc::channel();
+        end_utterance_with_outcome(move |outcome| finished.send(outcome).unwrap());
+        audio::tap_samples(&[0; 320], 16_000);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !model.with_extension("bin.started").exists() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let french = Plan::WhisperHttp {
+            model_bin: model.clone(),
+            lang: "fr".into(),
+        };
+        assert!(
+            ensure_for_plan(
+                &french,
+                root.path(),
+                GpuBackendSetting::Cpu,
+                SherpaBackendSetting::Cpu,
+                &net
+            )
+            .unwrap_err()
+            .contains("deferred")
+        );
+        assert_eq!(servers().lock().unwrap()["whisper"].instance, current);
+        std::fs::write(model.with_extension("bin.release"), []).unwrap();
+        assert_eq!(
+            result.recv_timeout(Duration::from_secs(3)).unwrap(),
+            FinalizationOutcome::Complete
+        );
+        assert!(result.try_recv().is_err());
+        assert_eq!(writer.export_history().unwrap()[0].text, "original es");
+        drop_servers(root.path());
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while WARM_QUEUE.lock().unwrap().running {
+            assert!(
+                Instant::now() < deadline,
+                "deferred startup did not finish cancellation cleanup"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(!ENGINE_LEASED.load(Ordering::Acquire));
+        // Cold launch, deferred replacement and complete capture/inference
+        // all succeeded while the four short workers remained occupied.
+        for release in releases {
+            release.send(()).unwrap();
+        }
+    }
+
+    #[test]
+    fn local_readiness_probe_cancel_reset_and_stop_reap_owned_servers() {
+        if !isolated_capture_probe("local_readiness_probe_cancel_reset_and_stop_reap_owned_servers")
+        {
+            return;
+        }
+        for online in [false, true] {
+            for action in 0..3 {
+                let root = tempfile::tempdir().unwrap();
+                let writer = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+                let epoch = writer.capture_epoch().unwrap();
+                let reader =
+                    crate::store::Store::open_existing(&root.path().join("state.db")).unwrap();
+                let cancel = Arc::new(AtomicBool::new(false));
+                let generation = server_generation();
+                let operation = Operation::capture(reader, epoch, cancel.clone())
+                    .unwrap()
+                    .with_permission(move || server_generation() == generation);
+                let script = root.path().join("stalled-readiness.py");
+                std::fs::write(
+                    &script,
+                    r#"import socket, sys, time
+from pathlib import Path
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(('127.0.0.1', int(sys.argv[1])))
+server.listen(8)
+while True:
+ peer, _ = server.accept()
+ if peer.recv(16):
+  Path(sys.argv[2]).touch()
+  time.sleep(60)
+ peer.close()
+"#,
+                )
+                .unwrap();
+                let marker = root.path().join("probe-started");
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let port = listener.local_addr().unwrap().port();
+                drop(listener);
+                let data = root.path().to_owned();
+                let signal = marker.clone();
+                let startup = std::thread::spawn(move || {
+                    let _lease = EngineLease::acquire(&operation, true)?;
+                    ensure_server(
+                        &data,
+                        "synthetic-readiness",
+                        "same-configuration".into(),
+                        port,
+                        || {
+                            let mut command = Command::new("/usr/bin/python3");
+                            command.arg(script).arg(port.to_string()).arg(signal);
+                            spawn_supervised(command, &operation)
+                        },
+                        || {
+                            if online {
+                                probe_sherpa_online(port, &operation)
+                            } else {
+                                probe_sherpa_offline(port, &operation)
+                            }
+                        },
+                        &operation,
+                    )
+                });
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !marker.exists() {
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                let pid = servers().lock().unwrap()["synthetic-readiness"]
+                    .child
+                    .0
+                    .id();
+                let start = Instant::now();
+                match action {
+                    0 => cancel.store(true, Ordering::Release),
+                    1 => writer.reset_all_data().unwrap(),
+                    _ => drop_servers(root.path()),
+                }
+                assert!(startup.join().unwrap().is_err());
+                assert!(
+                    start.elapsed() < Duration::from_millis(500),
+                    "readiness survived boundary {action}"
+                );
+                assert!(servers().lock().unwrap().is_empty());
+                assert!(!Path::new(&format!("/proc/{pid}")).exists());
+                assert!(!ENGINE_LEASED.load(Ordering::Acquire));
+            }
+        }
+    }
+
+    #[test]
+    fn engine_ownership_wait_and_startup_cancel_without_affecting_another_owner() {
+        if !isolated_capture_probe(
+            "engine_ownership_wait_and_startup_cancel_without_affecting_another_owner",
+        ) {
+            return;
+        }
+        let owner = EngineLease::acquire(&Operation::unrestricted(), true).unwrap();
+        for _ in 0..12 {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let operation = Operation::cancellable(cancel.clone());
+            let (started, ready) = mpsc::channel();
+            let waiter = std::thread::spawn(move || {
+                started.send(()).unwrap();
+                EngineLease::acquire(&operation, true)
+            });
+            ready.recv_timeout(Duration::from_secs(1)).unwrap();
+            cancel.store(true, Ordering::Release);
+            let start = Instant::now();
+            assert!(waiter.join().unwrap().is_err());
+            assert!(start.elapsed() < Duration::from_millis(100));
+            assert!(ENGINE_LEASED.load(Ordering::Acquire));
+        }
+        let root = tempfile::tempdir().unwrap();
+        crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let generation = server_generation();
+        let plan = Plan::WhisperHttp {
+            model_bin: root.path().join("never-started"),
+            lang: "en".into(),
+        };
+        let net = ServerNet {
+            host: "127.0.0.1",
+            port_override: Some(1),
+        };
+        assert!(
+            ensure_for_plan_at_generation(
+                &plan,
+                root.path(),
+                GpuBackendSetting::Cpu,
+                SherpaBackendSetting::Cpu,
+                &net,
+                generation
+            )
+            .unwrap_err()
+            .contains("deferred")
+        );
+        drop_servers(root.path());
+        drop(owner);
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while WARM_QUEUE.lock().unwrap().running {
+            assert!(
+                Instant::now() < deadline,
+                "Stop did not retire deferred warmup"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            ensure_for_plan_at_generation(
+                &plan,
+                root.path(),
+                GpuBackendSetting::Cpu,
+                SherpaBackendSetting::Cpu,
+                &net,
+                generation
+            )
+            .is_err()
+        );
+        assert!(servers().lock().unwrap().is_empty());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let operation = Operation::cancellable(cancel.clone());
+        let data = root.path().to_owned();
+        let startup = std::thread::spawn(move || {
+            let _lease = EngineLease::acquire(&operation, true)?;
+            ensure_server(
+                &data,
+                "synthetic-startup",
+                "never-listens".into(),
+                port,
+                || crate::child::OwnedChild::spawn(Command::new("sleep").arg("60")),
+                || panic!("a never-listening child must not be marked ready"),
+                &operation,
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let pid = loop {
+            if let Some(server) = servers().lock().unwrap().get("synthetic-startup") {
+                break server.child.0.id();
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        let start = Instant::now();
+        cancel.store(true, Ordering::Release);
+        assert!(startup.join().unwrap().is_err());
+        assert!(start.elapsed() < Duration::from_millis(500));
+        assert!(
+            !Path::new(&format!("/proc/{pid}")).exists(),
+            "startup child was not reaped"
+        );
+        assert!(servers().lock().unwrap().is_empty());
+        assert!(!ENGINE_LEASED.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn short_worker_pressure_preserves_capture_and_completion() {
         if !isolated_capture_probe("short_worker_pressure_preserves_capture_and_completion") {
             return;
@@ -5824,6 +6607,7 @@ mod tests {
             let stop = Arc::new(AtomicBool::new(false));
             let (tx, rx) = mpsc::channel();
             let config = SpecConfig {
+                engine: None,
                 data_dir: directory.path().to_owned(),
                 update_secs: 10.0,
                 overlap: 0,
@@ -6181,6 +6965,7 @@ mod tests {
             port,
             || panic!("foreign port must not launch or adopt a child"),
             || panic!("foreign port must not invoke an inference probe"),
+            &Operation::unrestricted(),
         )
         .unwrap_err();
         assert!(error.contains("owned by another process"));
@@ -6262,6 +7047,7 @@ mod tests {
         // Two endpointed segments + trailing partial: the 2-minute
         // bug was keeping only the last message.
         let mut sess = OnlineSession {
+            _engine_lease: None,
             preview: false,
             generation: 0,
             ws: None,
@@ -6397,6 +7183,7 @@ mod tests {
                 r,
                 s,
                 SpecConfig {
+                    engine: None,
                     data_dir: data,
                     update_secs: 1.0,
                     overlap: 16_000,
@@ -6692,6 +7479,7 @@ mod tests {
             &dir,
             "en",
             &net,
+            &Operation::unrestricted(),
         )
         .expect("spawn+probe");
         let text =

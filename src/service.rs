@@ -377,6 +377,8 @@ pub fn spawn_hotkey_watcher(
                 match cmd.as_str() {
                     "stop" => {
                         eprintln!("[service] GUI stop-servers command");
+                        crate::transcribe::invalidate_all_capture();
+                        cancel();
                         crate::transcribe::drop_servers(&data_dir);
                     }
                     "start" => {

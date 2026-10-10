@@ -106,22 +106,70 @@ pub struct SessionTask {
 }
 static SESSION_TASKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 const SESSION_TASK_LIMIT: usize = 8;
-static SESSION_REAPER: OnceLock<Result<mpsc::Sender<std::thread::JoinHandle<()>>, String>> =
-    OnceLock::new();
+enum ReaperMessage {
+    Join(std::thread::JoinHandle<()>),
+    Launch(Job),
+}
+static SESSION_REAPER: OnceLock<Result<mpsc::Sender<ReaperMessage>, String>> = OnceLock::new();
+static PROCESS_LAUNCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-fn session_reaper() -> Result<&'static mpsc::Sender<std::thread::JoinHandle<()>>, String> {
+struct LaunchPermit;
+impl Drop for LaunchPermit {
+    fn drop(&mut self) {
+        PROCESS_LAUNCH.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// The existing persistent ownership thread creates supervised processes.
+/// One launch may be queued/active, independently of the short-job pool.
+pub(crate) fn submit_process_launch(job: impl FnOnce() + Send + 'static) -> Result<(), String> {
+    let owner = session_reaper()?;
+    PROCESS_LAUNCH
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .map_err(|_| "a supervised process launch is already pending")?;
+    let permit = LaunchPermit;
+    owner
+        .send(ReaperMessage::Launch(Box::new(move || {
+            let _permit = permit;
+            job();
+        })))
+        .map_err(|_| "process ownership thread unavailable".into())
+}
+
+fn receive_owned_work(message: ReaperMessage, pending: &mut Vec<std::thread::JoinHandle<()>>) {
+    match message {
+        ReaperMessage::Join(handle) => pending.push(handle),
+        ReaperMessage::Launch(job) => {
+            if catch_unwind(AssertUnwindSafe(job)).is_err() {
+                eprintln!("[runtime] supervised process launch panicked");
+            }
+        }
+    }
+}
+
+fn session_reaper() -> Result<&'static mpsc::Sender<ReaperMessage>, String> {
     SESSION_REAPER
         .get_or_init(|| {
-            let (tx, rx) = mpsc::channel::<std::thread::JoinHandle<()>>();
+            let (tx, rx) = mpsc::channel::<ReaperMessage>();
             std::thread::Builder::new()
                 .name("session-reaper".into())
                 .spawn(move || {
                     let mut pending = Vec::new();
                     loop {
-                        if let Ok(handle) = rx.recv_timeout(std::time::Duration::from_millis(20)) {
-                            pending.push(handle);
+                        if let Ok(message) = rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                            receive_owned_work(message, &mut pending);
                         }
-                        pending.extend(rx.try_iter());
+                        // The channel contains at most the eight owned joins
+                        // and the single launch permit. Reaping never waits
+                        // for a live session thread to exit.
+                        for message in rx.try_iter() {
+                            receive_owned_work(message, &mut pending);
+                        }
                         let mut i = 0;
                         while i < pending.len() {
                             if pending[i].is_finished() {
@@ -182,7 +230,7 @@ impl Drop for SessionTask {
         if let Some(handle) = self.handle.take()
             && let Ok(reaper) = session_reaper()
         {
-            let _ = reaper.send(handle);
+            let _ = reaper.send(ReaperMessage::Join(handle));
         }
     }
 }
@@ -192,6 +240,32 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
+
+    #[test]
+    fn supervised_launch_admission_recovers_after_owned_job_panics() {
+        let (started, ready) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        submit_process_launch(move || {
+            started.send(()).unwrap();
+            wait.recv().unwrap();
+            panic!("synthetic launch failure");
+        })
+        .unwrap();
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(submit_process_launch(|| panic!("excess launch must not execute")).is_err());
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while PROCESS_LAUNCH.load(std::sync::atomic::Ordering::Acquire) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "launch permit leaked after panic"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let (finished, completion) = mpsc::channel();
+        submit_process_launch(move || finished.send(()).unwrap()).unwrap();
+        completion.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
 
     #[test]
     fn pool_runs_jobs() {
