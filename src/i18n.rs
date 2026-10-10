@@ -291,6 +291,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Not all models support dictionary hinting and live streaming (lower latency).",
             "No todos los modelos admiten sugerencias del diccionario ni streaming en directo (menor latencia).",
         ),
+        "stt.models.coherelanguage" => (
+            "Cohere Transcribe requires one of its 14 supported languages. Automatic language detection is unavailable.",
+            "Cohere Transcribe requiere uno de sus 14 idiomas compatibles. La detección automática de idioma no está disponible.",
+        ),
         "stt.models.full" => ("Fully supported", "Totalmente compatible"),
         "stt.models.nostream" => ("No live streaming", "Sin streaming en directo"),
         "stt.models.neither" => (
@@ -390,6 +394,14 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.keepwarm" => ("Keep server ready", "Mantener el servidor preparado"),
         "row.serverstatus" => ("Server status", "Estado del servidor"),
         "server.none" => ("No server running", "Ningún servidor en marcha"),
+        "server.checking" => (
+            "Checking server status…",
+            "Comprobando el estado del servidor…",
+        ),
+        "server.unavailable" => (
+            "Server status unavailable; retrying",
+            "Estado del servidor no disponible; reintentando",
+        ),
         "server.running" => ("Running", "En marcha"),
         "server.external" => ("external, not managed", "externo, no gestionado"),
         "servers.note" => (
@@ -522,6 +534,7 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "opt.older30" => ("Older than 30 days", "Anteriores a 30 días"),
         "opt.older60" => ("Older than 60 days", "Anteriores a 60 días"),
         "opt.older90" => ("Older than 90 days", "Anteriores a 90 días"),
+        "opt.oldercustom" => ("Older than {n} days", "Anteriores a {n} días"),
         "opt.day7" => ("7 days", "7 días"),
         "opt.day14" => ("14 days", "14 días"),
         "opt.day30" => ("30 days", "30 días"),
@@ -540,6 +553,14 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "opt.silhouette" => ("Silhouette", "Silueta"),
         "opt.calm" => ("Calm", "Calma"),
         // Hotkeys capture UI
+        "hotkeys.suspending" => (
+            "Waiting for dictation to stop…",
+            "Esperando a que se detenga el dictado…",
+        ),
+        "hotkeys.suspendfailed" => (
+            "Could not pause the dictation service. Retry capture when the service responds.",
+            "No se pudo pausar el servicio de dictado. Vuelve a intentarlo cuando responda.",
+        ),
         "hotkeys.record" => ("Capture keys", "Capturar teclas"),
         "hotkeys.recording" => ("Press keys… (Esc cancels)", "Pulsa teclas… (Esc cancela)"),
         "hotkeys.presskeys" => ("Press keys", "Pulsa teclas"),
@@ -556,6 +577,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "hotkeys.recordhint" => (
             "Click, then press the key combo",
             "Clic y pulsa la combinación",
+        ),
+        "hotkeys.physical" => (
+            "Shortcuts keep the same key positions when the keyboard layout changes. Punctuation names include Semicolon, Slash and Equal; use Shift+Equal for the US + position.",
+            "Los atajos mantienen la posición de las teclas al cambiar la distribución. Los nombres de signos incluyen Semicolon, Slash y Equal; usa Shift+Equal para la posición estadounidense de +.",
         ),
         "hotkeys.behavior" => (
             "Behavior for the new binding",
@@ -644,6 +669,14 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "sync.ago.d" => ("{n} d ago", "hace {n} d"),
         "sync.noaddr" => ("no address", "sin dirección"),
         "sync.lastsync" => ("last sync {ago}", "última sincronización {ago}"),
+        "sync.introducer" => (
+            "Allow this device to introduce trusted devices",
+            "Permitir que este dispositivo presente dispositivos de confianza",
+        ),
+        "sync.introducer.tip" => (
+            "Off by default. Granting this permission can automatically trust devices vouched for by this peer. Revoked devices remain blocked.",
+            "Desactivado por defecto. Este permiso permite confiar automáticamente en los dispositivos presentados por este equipo. Los dispositivos revocados siguen bloqueados.",
+        ),
         "sync.trusted" => ("Trusted device", "Dispositivo de confianza"),
         "sync.syncing" => ("Syncing with {id}…", "Sincronizando con {id}…"),
         "sync.synced" => (
@@ -788,6 +821,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "dict.snippets.create" => ("Create snippet", "Crear fragmento"),
         "feedback.saved" => ("Saved", "Guardado"),
         "feedback.deleted" => ("Deleted", "Eliminado"),
+        "capture.failed" => (
+            "Dictation failed. Check the microphone and transcription settings, then retry. Escape dismisses this message.",
+            "Falló el dictado. Revisa el micrófono y los ajustes de transcripción e inténtalo de nuevo. Escape cierra este mensaje.",
+        ),
         "feedback.copied" => ("Copied to clipboard", "Copiado al portapapeles"),
         "feedback.copyretry" => ("Copy failed. Retry", "Error al copiar. Reintentar"),
         "lm.applying" => ("Applying…", "Aplicando…"),

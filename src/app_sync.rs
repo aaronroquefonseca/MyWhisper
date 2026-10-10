@@ -48,11 +48,7 @@ fn list_signature(state: &AppState) -> String {
 }
 
 fn short_id(node_id: &str) -> String {
-    if node_id.len() > 16 {
-        format!("{}…{}", &node_id[..8], &node_id[node_id.len() - 4..])
-    } else {
-        node_id.to_string()
-    }
+    crate::device::short_id(node_id)
 }
 
 fn ago(epoch_secs: i64) -> String {
@@ -90,7 +86,7 @@ fn clear_list(list: &ListBox) {
 }
 
 fn fill_peers(list: &ListBox, state: &Rc<AppState>, status: &Label) {
-    // Owned clones: rows outlive this call through button closures.
+    // Rows never own the list that owns them.
     let list = list.clone();
     let status = status.clone();
     clear_list(&list);
@@ -104,7 +100,7 @@ fn fill_peers(list: &ListBox, state: &Rc<AppState>, status: &Label) {
         return;
     }
     for p in peers {
-        let list_remove = list.clone();
+        let list_remove = list.downgrade();
         let card = GtkBox::new(Orientation::Vertical, 4);
         let top = GtkBox::new(Orientation::Horizontal, 8);
         let display_name = if p.name.is_empty() {
@@ -145,6 +141,42 @@ fn fill_peers(list: &ListBox, state: &Rc<AppState>, status: &Label) {
         }
         top.append(&trust);
 
+        let introduction_row = GtkBox::new(Orientation::Horizontal, 8);
+        let explanation = Label::new(Some(tr("sync.introducer")));
+        explanation.set_wrap(true);
+        explanation.set_hexpand(true);
+        explanation.set_xalign(0.0);
+        introduction_row.append(&explanation);
+        let introduce = Switch::new();
+        introduce.set_active(p.introducer);
+        introduce.set_sensitive(p.trusted);
+        introduce.set_tooltip_text(Some(tr("sync.introducer.tip")));
+        introduce.update_property(&[gtk4::accessible::Property::Label(tr("sync.introducer"))]);
+        {
+            let state = state.clone();
+            let id = p.node_id.clone();
+            introduce.connect_state_set(move |_, enabled| {
+                if state.store.set_peer_introducer(&id, enabled).is_err() {
+                    super::app::notify(tr("feedback.savefailed"));
+                    return gtk4::glib::Propagation::Stop;
+                }
+                gtk4::glib::Propagation::Proceed
+            });
+        }
+        {
+            let weak = introduce.downgrade();
+            trust.connect_active_notify(move |trust| {
+                if let Some(introduce) = weak.upgrade() {
+                    introduce.set_sensitive(trust.is_active());
+                    if !trust.is_active() {
+                        introduce.set_active(false);
+                    }
+                }
+            });
+        }
+        introduction_row.append(&introduce);
+        card.append(&introduction_row);
+
         let syncing = BUSY.with(|busy| busy.borrow().contains(&p.node_id));
         let sync_now = Button::with_label(if syncing {
             tr("sync.working")
@@ -174,6 +206,9 @@ fn fill_peers(list: &ListBox, state: &Rc<AppState>, status: &Label) {
                 tr("sync.remove.body"),
                 tr("action.remove"),
                 move |_| {
+                    let Some(list) = list.upgrade() else {
+                        return;
+                    };
                     if state.store.remove_peer(&node_id).is_err() {
                         super::app::notify(tr("feedback.deletefailed"));
                         return;
@@ -669,14 +704,18 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     card.append(&port_row);
 
     let listen = Label::new(Some(listen_text(live_sync_port()).as_str()));
+    listen.set_widget_name("sync-listener-status");
     listen.add_css_class("dim");
     listen.set_xalign(0.0);
     card.append(&listen);
     // The service owns the listener: refresh its real port on a
     // timer while the service applies settings changes.
     {
-        let listen = listen.clone();
+        let listen = listen.downgrade();
         gtk4::glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
+            let Some(listen) = listen.upgrade() else {
+                return gtk4::glib::ControlFlow::Break;
+            };
             listen.set_text(listen_text(live_sync_port()).as_str());
             gtk4::glib::ControlFlow::Continue
         });
@@ -687,6 +726,7 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     // thread (a filtered port can block up to the dial timeout).
     let reach_row = GtkBox::new(Orientation::Horizontal, 8);
     let reach = Label::new(Some(tr("sync.reach.unknown")));
+    reach.set_widget_name("sync-reachability-status");
     reach.add_css_class("dim");
     reach.set_xalign(0.0);
     reach.set_wrap(true);
@@ -694,21 +734,43 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     reach_row.append(&reach);
     card.append(&reach_row);
     let run_probe: Rc<dyn Fn()> = Rc::new({
-        let reach = reach.clone();
+        let reach = reach.downgrade();
+        let pending = Rc::new(std::cell::Cell::new(false));
         move || {
-            let result: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-            let result_tx = result.clone();
-            std::thread::spawn(move || {
-                *result_tx.lock().unwrap() = Some(probe_msg());
-            });
+            if reach.upgrade().is_none() || pending.replace(true) {
+                return;
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let task = match crate::runtime::spawn_session("sync-reachability", move || {
+                let result = std::panic::catch_unwind(probe_msg)
+                    .unwrap_or_else(|_| tr("sync.reach.unknown").into());
+                let _ = tx.send(result);
+            }) {
+                Ok(task) => task,
+                Err(_) => {
+                    pending.set(false);
+                    return;
+                }
+            };
             let reach = reach.clone();
+            let pending = pending.clone();
             gtk4::glib::timeout_add_local(Duration::from_millis(300), move || {
-                match result.lock().unwrap().take() {
-                    Some(msg) => {
+                let _owned_task = &task;
+                let Some(reach) = reach.upgrade() else {
+                    pending.set(false);
+                    return gtk4::glib::ControlFlow::Break;
+                };
+                match rx.try_recv() {
+                    Ok(msg) => {
+                        pending.set(false);
                         reach.set_text(&msg);
                         gtk4::glib::ControlFlow::Break
                     }
-                    None => gtk4::glib::ControlFlow::Continue,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => gtk4::glib::ControlFlow::Continue,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        pending.set(false);
+                        gtk4::glib::ControlFlow::Break
+                    }
                 }
             });
         }
@@ -716,7 +778,11 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     run_probe();
     {
         let run_probe = run_probe.clone();
+        let reach = reach.downgrade();
         gtk4::glib::timeout_add_local(Duration::from_secs(15), move || {
+            if reach.upgrade().is_none() {
+                return gtk4::glib::ControlFlow::Break;
+            }
             run_probe();
             gtk4::glib::ControlFlow::Continue
         });
@@ -817,8 +883,11 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     // One refresh pass for every live list.
     let refresh_all = Rc::new({
         let state = state.clone();
-        let status = status.clone();
+        let status = status.downgrade();
         move |nearby: &ListBox, reqs: &ListBox, peers: &ListBox| {
+            let Some(status) = status.upgrade() else {
+                return;
+            };
             fill_nearby(nearby, &state, &status);
             fill_requests(reqs, &state, &status);
             fill_peers(peers, &state, &status);
@@ -829,20 +898,23 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     // Background discovery + incoming requests repaint the lists.
     {
         let refresh_all = refresh_all.clone();
-        let nearby_list = nearby_list.clone();
-        let req_list = req_list.clone();
-        let list = list.clone();
+        let nearby_list = nearby_list.downgrade();
+        let req_list = req_list.downgrade();
+        let list = list.downgrade();
         let state = state.clone();
         let mut seen = list_signature(&state);
         let weak_root = root.downgrade();
         let mut discovery: Option<crate::net::MdnsHandles> = None;
         gtk4::glib::timeout_add_local(Duration::from_secs(2), move || {
             if weak_root.upgrade().is_none() {
-                if let Some(handles) = discovery.take() {
-                    handles.shutdown();
-                }
+                drop(discovery.take());
                 return gtk4::glib::ControlFlow::Break;
             }
+            let (Some(nearby_list), Some(req_list), Some(list)) =
+                (nearby_list.upgrade(), req_list.upgrade(), list.upgrade())
+            else {
+                return gtk4::glib::ControlFlow::Break;
+            };
             if state.settings.borrow().sync.enabled {
                 if discovery.is_none() {
                     discovery = crate::net::start_mdns(
@@ -855,7 +927,7 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
                     .ok();
                 }
             } else if let Some(handles) = discovery.take() {
-                handles.shutdown();
+                drop(handles);
                 state.discovered.lock().unwrap().clear();
             }
             let signature = list_signature(&state);

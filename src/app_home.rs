@@ -180,15 +180,15 @@ fn entry_card(
     let copy = Button::with_label(tr("home.copy"));
     {
         let text = entry.text.clone();
-        copy.connect_clicked(
-            move |button| match crate::clipboard::copy_text(&text, false) {
+        copy.connect_clicked(move |button| {
+            super::app::copy_from_button(button, &text, |button, result| match result {
                 Ok(()) => super::app::toast(button, tr("feedback.copied")),
                 Err(e) => {
                     eprintln!("[home] copy: {e}");
                     super::app::toast(button, tr("feedback.copyfailed"));
                 }
-            },
-        );
+            })
+        });
     }
     head.append(&copy);
     let more = Button::from_icon_name("view-more-symbolic");
@@ -239,7 +239,11 @@ fn entry_card(
                         if let Some(card) = &card {
                             card.set_visible(false);
                         }
-                        crate::net::sync_after_change(state.db_path.clone(), state.creds.clone());
+                        crate::net::sync_after_change_at_epoch(
+                            state.db_path.clone(),
+                            state.creds.clone(),
+                            state.store.sync_epoch(),
+                        );
                     }
                     Err(e) => {
                         eprintln!("[home] delete: {e}");
@@ -342,7 +346,11 @@ fn discarded_card(state: &Rc<AppState>, entry: &HistoryEntry) -> GtkBox {
                         if let Some(card) = &card {
                             card.set_visible(false);
                         }
-                        crate::net::sync_after_change(state.db_path.clone(), state.creds.clone());
+                        crate::net::sync_after_change_at_epoch(
+                            state.db_path.clone(),
+                            state.creds.clone(),
+                            state.store.sync_epoch(),
+                        );
                     }
                     Err(e) => {
                         eprintln!("[home] delete: {e}");
