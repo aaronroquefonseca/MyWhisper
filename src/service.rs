@@ -1,16 +1,13 @@
 //! Background engine ownership: sync listener, hotkey loop, pill.
 //!
 //! Exactly one process owns the engine at a time, decided by an
-//! `flock`'d lockfile (`engine.lock`). The `--service` process (or a
-//! standalone GUI when no service runs) holds the lock and runs
-//! everything; a GUI started while the lock is held runs frontend
-//! only -- it reads the shared `state.db` (WAL, concurrent reads are
-//! fine) and never binds ports or grabs hotkeys.
+//! `flock`'d lockfile (`engine.lock`). The `--service` process holds
+//! the lock. The GUI is a frontend: it reads shared local state and
+//! never takes capture ownership or binds an incoming sync listener.
 //!
-//! Cross-process change propagation is poll-based, no IPC (yet):
-//! every engine/GUI polls `PRAGMA data_version` and reloads when it
-//! moves. Settings writes from the GUI are picked up by the
-//! service's settings watcher the same way.
+//! The engine polls current settings and authorization epochs; pages
+//! poll the explicit database generation counter. Capture suspension
+//! additionally uses a process lock and nonce-bound request/acknowledgement.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -35,6 +32,7 @@ fn try_acquire(paths: &AppPaths, loud: bool) -> Option<std::fs::File> {
     let path = paths.engine_lock_file();
     let file = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .write(true)
         .open(&path)
         .ok()?;
@@ -66,6 +64,7 @@ pub fn engine_running_paths(lock_path: &std::path::Path) -> bool {
     use fs2::FileExt;
     let Ok(file) = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .write(true)
         .open(lock_path)
     else {
@@ -95,11 +94,14 @@ pub fn set_sync_port(port: u16) {
 }
 
 /// Running sync stack. Drop stops everything: the listener loop
-/// polls the flag, the periodic threads exit within a second, the
-/// mDNS daemon unregisters. In-flight syncs finish on their own.
+/// polls the flag; periodic/discovery tasks and mDNS acknowledge shutdown.
+/// Active incoming sockets are closed and their workers joined. Outgoing
+/// jobs retain their original database authorization epoch.
 pub struct SyncEngine {
     stop: Arc<AtomicBool>,
     mdns: Option<crate::net::MdnsHandles>,
+    listener: Option<std::thread::JoinHandle<()>>,
+    watchers: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for SyncEngine {
@@ -107,6 +109,12 @@ impl Drop for SyncEngine {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Some(m) = self.mdns.take() {
             m.shutdown();
+        }
+        if let Some(listener) = self.listener.take() {
+            let _ = listener.join();
+        }
+        for watcher in self.watchers.drain(..) {
+            let _ = watcher.join();
         }
         set_sync_port(0);
         eprintln!("[sync] engine stopped");
@@ -125,75 +133,88 @@ pub fn start_sync_engine(
     identity: &DeviceIdentity,
     discovered: Arc<Mutex<HashMap<String, Discovered>>>,
 ) -> u16 {
+    // Serialize replacement and release the old listener before rebinding.
+    let mut owner = SYNC_ENGINE.lock().unwrap_or_else(|p| p.into_inner());
+    drop(owner.take());
     let saved = store.load_settings();
-    let device_name = crate::device::display_name(&saved.sync.device_name, &identity.node_id);
+    if !saved.sync.enabled {
+        return 0;
+    }
     let stop = Arc::new(AtomicBool::new(false));
-    let port: u16 = match crate::net::listen(saved.sync.listen_port) {
-        Ok(Some(listener)) => {
-            let port = listener
-                .local_addr()
-                .map(|a| a.port())
-                .unwrap_or(saved.sync.listen_port);
-            eprintln!("[sync] listening on port {port}");
-            let db_path = paths.db_file();
-            let creds = identity.creds();
-            let mut hello_addrs = Vec::new();
-            if let Some(ip) = crate::net::lan_ip() {
-                hello_addrs.push(format!("{ip}:{port}"));
-            }
-            {
-                let stop = stop.clone();
-                std::thread::spawn(move || {
-                    crate::net::serve(listener, db_path, creds, device_name, hello_addrs, &stop)
-                });
-            }
-            let mdns = match crate::net::start_mdns(
-                &identity.node_id,
-                &saved.sync.device_name.clone(),
-                port,
-                discovered.clone(),
-                saved.sync.advertise,
-            ) {
-                Ok(handles) => {
-                    eprintln!(
-                        "[sync] mdns browsing on :{port}{}",
-                        if saved.sync.advertise {
-                            " (advertising)"
-                        } else {
-                            ""
-                        }
-                    );
-                    Some(handles)
-                }
-                Err(e) => {
-                    eprintln!("[sync] mdns off: {e}");
-                    None
-                }
-            };
-            {
-                let db_path = paths.db_file();
-                let creds = identity.creds();
-                let stop = stop.clone();
-                std::thread::spawn(move || crate::net::auto_sync_loop(db_path, creds, stop));
-            }
-            {
-                let db_path = paths.db_file();
-                crate::net::sync_on_startup(db_path, identity.creds());
-            }
-            {
-                let db_path = paths.db_file();
-                let stop = stop.clone();
-                crate::net::watch_discovered(db_path, identity.creds(), discovered.clone(), stop);
-            }
-            *SYNC_ENGINE.lock().unwrap() = Some(SyncEngine { stop, mdns });
-            port
-        }
-        Ok(None) => 0,
-        Err(e) => {
-            eprintln!("[sync] listener off: {e}");
-            0
+    let mut engine = SyncEngine {
+        stop: stop.clone(),
+        mdns: None,
+        listener: None,
+        watchers: Vec::new(),
+    };
+    let listener = match crate::net::listen(saved.sync.listen_port) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("[sync] listener unavailable: {error}");
+            return 0;
         }
     };
+    let port = listener
+        .as_ref()
+        .and_then(|listener| listener.local_addr().ok())
+        .map(|address| address.port())
+        .unwrap_or(0);
+    if let Some(listener) = listener {
+        let db_path = paths.db_file();
+        let creds = identity.creds();
+        let device_name = crate::device::display_name(&saved.sync.device_name, &identity.node_id);
+        let hello_addrs = crate::net::lan_ip()
+            .map(|ip| std::net::SocketAddr::new(ip, port).to_string())
+            .into_iter()
+            .collect();
+        let stop = stop.clone();
+        match crate::runtime::spawn_dedicated("sync-listener", move || {
+            crate::net::serve(listener, db_path, creds, device_name, hello_addrs, &stop)
+        }) {
+            Ok(listener) => engine.listener = Some(listener),
+            Err(error) => {
+                eprintln!("[sync] listener worker unavailable: {error}");
+                return 0;
+            }
+        }
+    }
+    // A zero listen port disables incoming connections/advertising, while
+    // browsing and outbound synchronization remain available.
+    engine.mdns = match crate::net::start_mdns(
+        &identity.node_id,
+        &saved.sync.device_name,
+        port,
+        discovered.clone(),
+        saved.sync.advertise && port != 0,
+    ) {
+        Ok(handles) => Some(handles),
+        Err(error) => {
+            eprintln!("[sync] discovery unavailable: {error}");
+            None
+        }
+    };
+    let db_path = paths.db_file();
+    let creds = identity.creds();
+    let periodic_stop = stop.clone();
+    match crate::runtime::spawn_dedicated("sync-periodic", move || {
+        crate::net::auto_sync_loop(db_path, creds, periodic_stop)
+    }) {
+        Ok(watcher) => engine.watchers.push(watcher),
+        Err(error) => {
+            eprintln!("[sync] periodic worker unavailable: {error}");
+            return 0;
+        }
+    }
+    match crate::net::watch_discovered(paths.db_file(), identity.creds(), discovered, stop.clone())
+    {
+        Ok(watcher) => engine.watchers.push(watcher),
+        Err(error) => {
+            eprintln!("[sync] discovery watcher unavailable: {error}");
+            return 0;
+        }
+    }
+    crate::net::sync_on_startup_owned(paths.db_file(), identity.creds(), store.sync_epoch(), stop);
+    *owner = Some(engine);
     set_sync_port(port);
     port
 }
@@ -223,7 +244,7 @@ pub fn spawn_sync_watcher(
                 std::thread::sleep(Duration::from_secs(2));
             }
             first = false;
-            let Ok(store) = Store::open(&db_file) else {
+            let Ok(store) = Store::open_existing(&db_file) else {
                 continue;
             };
             let settings = store.load_settings();
@@ -245,12 +266,20 @@ pub fn spawn_sync_watcher(
                 let Ok(paths) = AppPaths::create() else {
                     continue;
                 };
-                let Ok(store) = Store::open(&db_file) else {
+                let Ok(store) = Store::open_existing(&db_file) else {
                     continue;
                 };
-                start_sync_engine(&paths, &store, &identity, discovered.clone());
-                // If the listener failed, retry on the next change,
-                // not in a tight loop.
+                let bound = start_sync_engine(&paths, &store, &identity, discovered.clone());
+                if bound == 0
+                    && SYNC_ENGINE
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .is_none()
+                {
+                    continue;
+                }
+                // Failed startup retries on the next poll, even with the
+                // listener disabled; only a running owner is applied.
                 applied = Some(want);
             } else {
                 if applied.as_ref().map(|(on, _, _, _)| *on).unwrap_or(false) {
@@ -271,18 +300,46 @@ pub fn spawn_hotkey_watcher(
     up: DictationHook,
     cancel: DictationHook,
 ) {
+    if let Some(data) = db_path.parent() {
+        crate::hotkey::configure_capture_suspend(data);
+    }
     std::thread::spawn(move || {
         let mut last: (Vec<(String, crate::settings::ActivationMode)>, u64) = (Vec::new(), 0);
         let mut first = true;
+        let mut capture_epoch = Store::open_existing(&db_path)
+            .ok()
+            .and_then(|store| store.capture_epoch().ok());
+        let mut retention = std::time::Instant::now() - Duration::from_secs(60);
         // Stale GUI commands from before this boot die unrun.
-        if let Ok(store) = Store::open(&db_path) {
-            let _ = store.take_server_cmd();
+        if let Ok(store) = Store::open_existing(&db_path)
+            && let Err(e) = store.take_server_cmd()
+        {
+            eprintln!("[service] stale command cleanup failed: {e}");
         }
         loop {
             std::thread::sleep(Duration::from_secs(2));
-            let Ok(store) = Store::open(&db_path) else {
+            let Ok(store) = Store::open_existing(&db_path) else {
                 continue;
             };
+            match store.capture_epoch() {
+                Ok(current) => {
+                    if capture_epoch.is_some_and(|old| old != current) {
+                        crate::transcribe::invalidate_all_capture();
+                        cancel();
+                    }
+                    capture_epoch = Some(current);
+                }
+                Err(error) => {
+                    crate::transcribe::invalidate_all_capture();
+                    eprintln!("[service] capture policy unavailable: {error}");
+                }
+            }
+            if retention.elapsed() >= Duration::from_secs(60) {
+                retention = std::time::Instant::now();
+                if let Err(error) = store.maintain_retention_at(crate::store::now_ms() / 1000) {
+                    eprintln!("[service] retention failed: {error}");
+                }
+            }
             // One-shot GUI commands: Stop / Cold-start the STT server.
             let command = match store.take_server_cmd() {
                 Ok(cmd) => cmd,
@@ -363,8 +420,10 @@ pub enum PillCmd {
     Hide,
     /// Escape midway: hide at once, discard worker lands the row.
     Cancel,
+    SuspendCapture([u8; 16]),
     /// Worker finished (success/empty/fail): hide if generation matches.
     Done(u64),
+    Error(u64),
     Apply(crate::settings::PillPrefs),
 }
 
@@ -375,7 +434,7 @@ pub fn spawn_pill_watcher(db_path: PathBuf, tx: std::sync::mpsc::Sender<PillCmd>
         let mut last: Option<crate::settings::PillPrefs> = None;
         loop {
             std::thread::sleep(Duration::from_secs(2));
-            let Ok(store) = Store::open(&db_path) else {
+            let Ok(store) = Store::open_existing(&db_path) else {
                 continue;
             };
             let current = store.load_settings().preferences.pill;
@@ -400,25 +459,27 @@ pub fn spawn_heartbeat(state_dir: PathBuf) {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let pid = std::process::id();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(5));
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        let body = serde_json::json!({
-            "pid": pid,
-            "version": crate::APP_VERSION,
-            "boot": boot,
-            "beat": now,
-                "engine_failures": crate::transcribe::engine_failures(),
-                "hotkeys_listening": crate::transcribe::hotkeys_listening(),
-                "sync_port": SYNC_PORT.load(std::sync::atomic::Ordering::SeqCst),
-        });
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(5));
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let body = serde_json::json!({
+                "pid": pid,
+                "version": crate::APP_VERSION,
+                "boot": boot,
+                "beat": now,
+                    "engine_failures": crate::transcribe::engine_failures(),
+                    "hotkeys_listening": crate::transcribe::hotkeys_listening(),
+                    "sync_port": SYNC_PORT.load(std::sync::atomic::Ordering::SeqCst),
+            });
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&path, body.to_string());
         }
-        let _ = std::fs::write(&path, body.to_string());
     });
 }
 

@@ -136,6 +136,12 @@ impl SimMic {
     }
 }
 
+impl Default for SimMic {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LevelSource for SimMic {
     fn sample(&mut self, dt: f32) -> f32 {
         self.t += dt;
@@ -284,9 +290,12 @@ impl Visualizer {
 
         // Frame clock.
         {
-            let s = state.clone();
-            let a = area.clone();
+            let s = Rc::downgrade(&state);
+            let a = area.downgrade();
             glib::timeout_add_local(Duration::from_millis(TICK_MS), move || {
+                let (Some(s), Some(a)) = (s.upgrade(), a.upgrade()) else {
+                    return glib::ControlFlow::Break;
+                };
                 tick(&mut s.borrow_mut());
                 a.queue_draw();
                 glib::ControlFlow::Continue
@@ -369,13 +378,13 @@ impl Visualizer {
     /// first use; returns false (stays on sim) if none is available.
     pub fn set_mic_source(&self, real: bool) -> bool {
         let mut st = self.state.borrow_mut();
-        let ok = if real {
+
+        if real {
             st.mic.use_real()
         } else {
             st.mic.use_sim();
             true
-        };
-        ok
+        }
     }
 
     pub fn burst(&self) {
@@ -416,6 +425,16 @@ impl Visualizer {
     /// it the moment it hides.
     pub fn set_mic_active(&self, active: bool) {
         self.state.borrow_mut().mic.set_active(active);
+    }
+
+    pub fn capture_error(&self) -> Option<String> {
+        self.state.borrow().mic.capture_error().map(str::to_owned)
+    }
+}
+
+impl Default for Visualizer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -523,7 +542,7 @@ fn tick(st: &mut VizState) {
     }
 
     // Sample history/tape buffers at ~100 ms.
-    if st.ticks % HISTORY_EVERY_N_TICKS == 0 {
+    if st.ticks.is_multiple_of(HISTORY_EVERY_N_TICKS) {
         st.hist.push_front(level);
         st.hist.truncate(32);
     }

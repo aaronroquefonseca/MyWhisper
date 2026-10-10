@@ -724,7 +724,7 @@ fn clipboard_page(state: &Rc<AppState>) -> GtkBox {
         rows.append(&dep_note(&format!(
             "{} — {}",
             copy_backend_deps(),
-            avail(status.wl_copy)
+            avail(status.wayland)
         )));
     }
     {

@@ -16,10 +16,22 @@ const SERVICE_APP_ID: &str = "com.mywhisper.Service";
 /// GUI is always a pure frontend reading the shared database. If the
 /// service isn't running, the GUI says so and offers to start it.
 fn main() -> gtk4::glib::ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("mywhisper {}", mywhisper::APP_VERSION);
+        return gtk4::glib::ExitCode::SUCCESS;
+    }
     let paths = mywhisper::paths::AppPaths::create().expect("create app dirs");
     let _log_guard = mywhisper::paths::init_file_logging(&paths.state_dir);
-    let store =
-        std::rc::Rc::new(mywhisper::store::Store::open(&paths.db_file()).expect("open state.db"));
+    let store = match mywhisper::store::Store::open(&paths.db_file()) {
+        Ok(store) => std::rc::Rc::new(store),
+        Err(e) => {
+            eprintln!(
+                "Unable to open MyWhisper data: {e}. Check the keyring; existing data has been preserved."
+            );
+            return gtk4::glib::ExitCode::FAILURE;
+        }
+    };
     let identity = mywhisper::device::DeviceIdentity::load_or_create(&paths.device_key_file())
         .expect("node identity");
     tracing::info!(
@@ -28,11 +40,6 @@ fn main() -> gtk4::glib::ExitCode {
         "mywhisper starting"
     );
 
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("mywhisper {}", mywhisper::APP_VERSION);
-        return gtk4::glib::ExitCode::SUCCESS;
-    }
     let service_mode = args.iter().any(|a| a == "--service");
 
     if service_mode {
@@ -126,6 +133,13 @@ fn run_headless(
     use mywhisper::service::PillCmd;
     let (tx, rx) = std::sync::mpsc::channel::<PillCmd>();
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+    mywhisper::hotkey::configure_capture_suspend(&paths.data_dir);
+    mywhisper::hotkey::register_capture_suspend({
+        let tx = tx.clone();
+        move |nonce| {
+            let _ = tx.send(PillCmd::SuspendCapture(nonce));
+        }
+    });
     let down: mywhisper::hotkey::DictationHook = std::sync::Arc::new({
         let tx = tx.clone();
         move || {
@@ -243,10 +257,19 @@ fn run_headless(
         gtk4::glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
             // Live preview drain: pump-published partials reach the
             // pill here (option-gated at the pumps; silent otherwise).
-            if let Some(text) = mywhisper::transcribe::take_live_text() {
-                if !text.trim().is_empty() {
-                    overlay.set_live_text(&text);
-                }
+            if let Some(text) = mywhisper::transcribe::take_live_text()
+                && !text.trim().is_empty()
+            {
+                overlay.set_live_text(&text);
+            }
+            if overlay.state() == mywhisper::overlay::OverlayState::Listening
+                && overlay.capture_error().is_some()
+            {
+                gen_show.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                mywhisper::transcribe::abort_failed_capture();
+                mywhisper::hotkey::reset_activation();
+                mywhisper::media::resume(&paused.borrow_mut().drain(..).collect::<Vec<_>>());
+                overlay.show_error();
             }
             if let Ok(rx) = rx.lock() {
                 while let Ok(cmd) = rx.try_recv() {
@@ -261,7 +284,8 @@ fn run_headless(
                             // realtime). Prefs read fresh so UI edits
                             // apply to the very next utterance. Pooled:
                             // saturation drops the press, never the app.
-                            if let Err(e) = mywhisper::runtime::submit("press-arm", || {
+                            let epoch = mywhisper::transcribe::reserve_utterance();
+                            if let Err(e) = mywhisper::runtime::submit("press-arm", move || {
                                 let paths = match mywhisper::paths::AppPaths::create() {
                                     Ok(p) => p,
                                     Err(e) => {
@@ -273,7 +297,8 @@ fn run_headless(
                                 match mywhisper::store::Store::open(&paths.db_file()) {
                                     Ok(store) => {
                                         let settings = store.load_settings();
-                                        mywhisper::transcribe::begin_utterance(
+                                        mywhisper::transcribe::begin_reserved_utterance(
+                                            epoch,
                                             settings.stt,
                                             settings.privacy.keep_audio_recordings,
                                             &data_dir,
@@ -290,7 +315,9 @@ fn run_headless(
                             // Release after an Escape cancel: the pill
                             // already hid, no flash, no second cue.
                             if mywhisper::transcribe::take_cancelled() {
-                                overlay.hide();
+                                if overlay.state() != mywhisper::overlay::OverlayState::Error {
+                                    overlay.hide();
+                                }
                                 return gtk4::glib::ControlFlow::Continue;
                             }
                             mywhisper::sound::play(mywhisper::sound::UiSound::Stop);
@@ -304,7 +331,7 @@ fn run_headless(
                             let tx_done = tx_done.clone();
                             let gen_at_release = gen_hide.load(std::sync::atomic::Ordering::SeqCst);
                             let gen_hide = gen_hide.clone();
-                            mywhisper::transcribe::end_utterance(move || {
+                            mywhisper::transcribe::end_utterance_with_outcome(move |outcome| {
                                 // Stale completion (new press meanwhile):
                                 // leave the newer pill alone.
                                 if gen_hide.load(std::sync::atomic::Ordering::SeqCst)
@@ -312,7 +339,14 @@ fn run_headless(
                                 {
                                     return;
                                 }
-                                let _ = tx_done.send(PillCmd::Done(gen_at_release));
+                                let message = if outcome
+                                    == mywhisper::transcribe::FinalizationOutcome::Failed
+                                {
+                                    PillCmd::Error(gen_at_release)
+                                } else {
+                                    PillCmd::Done(gen_at_release)
+                                };
+                                let _ = tx_done.send(message);
                             });
                         }
                         PillCmd::Cancel => {
@@ -336,6 +370,23 @@ fn run_headless(
                                 let _ = tx_done.send(PillCmd::Done(gen_at_cancel));
                             });
                         }
+                        PillCmd::SuspendCapture(nonce) => {
+                            if !mywhisper::hotkey::capture_suspend_pending(nonce) {
+                                continue;
+                            }
+                            gen_show.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            mywhisper::transcribe::abort_failed_capture();
+                            mywhisper::hotkey::reset_activation();
+                            overlay.hide();
+                            mywhisper::media::resume(
+                                &paused.borrow_mut().drain(..).collect::<Vec<_>>(),
+                            );
+                            if let Err(error) =
+                                mywhisper::hotkey::acknowledge_capture_suspend(nonce)
+                            {
+                                eprintln!("[hotkey] capture acknowledgement: {error}");
+                            }
+                        }
                         PillCmd::Done(gen_at_release) => {
                             // Completion race (Show arrived after send):
                             // only hide our own generation.
@@ -344,6 +395,11 @@ fn run_headless(
                                 return gtk4::glib::ControlFlow::Continue;
                             }
                             overlay.hide();
+                        }
+                        PillCmd::Error(generation) => {
+                            if gen_hide.load(std::sync::atomic::Ordering::SeqCst) == generation {
+                                overlay.show_error();
+                            }
                         }
                         PillCmd::Apply(prefs) => overlay.apply_prefs(&prefs),
                     }

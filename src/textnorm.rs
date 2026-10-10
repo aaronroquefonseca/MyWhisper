@@ -38,7 +38,11 @@ pub fn dictionary_prompt(words: &[String], max_chars: usize) -> Option<String> {
     if full.len() <= max_chars {
         return Some(full);
     }
-    let head = &full[..max_chars];
+    let mut end = max_chars.min(full.len());
+    while !full.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &full[..end];
     match head.rfind(',') {
         Some(i) => Some(head[..i].to_string()),
         None => Some(head.to_string()),
@@ -76,15 +80,13 @@ fn compile_trigger(trigger: &str, replacement: &str) -> Option<Trigger> {
     // Walk raw and lowered in lockstep (to_lowercase may expand İ,
     // already folded above, so lengths match for our purposes; fall
     // back to plain lowered on mismatch).
-    let mut ri = 0;
     let raws: Vec<char> = raw;
-    for c in lowered {
+    for (ri, c) in lowered.into_iter().enumerate() {
         let r = raws.get(ri).copied().unwrap_or('?');
         pattern.push(c);
         dotless_ok.push(r == 'i' || r == 'I');
         // Advance raw once per lowered char (approximate for
         // expansions; exact for ASCII + pre-folded text).
-        ri += 1;
     }
     Some(Trigger {
         pattern,
@@ -124,7 +126,7 @@ pub fn expand_snippets(text: &str, snippets: &[(String, String)]) -> String {
         return text.to_string();
     }
     // Longest-first so "investor ask" wins over "ask".
-    triggers.sort_by(|a, b| b.pattern.len().cmp(&a.pattern.len()));
+    triggers.sort_by_key(|tr| std::cmp::Reverse(tr.pattern.len()));
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -209,5 +211,19 @@ mod tests {
     #[test]
     fn snippets_empty_is_passthrough() {
         assert_eq!(expand_snippets("hello world", &[]), "hello world");
+    }
+}
+
+#[cfg(test)]
+mod unicode_budget_tests {
+    #[test]
+    fn dictionary_utf8_never_exceeds_provider_byte_budget() {
+        for word in ["界".repeat(400), "👩🏽‍💻".repeat(200), "é".repeat(600)] {
+            for budget in 0..=901 {
+                let result = super::dictionary_prompt(std::slice::from_ref(&word), budget).unwrap();
+                assert!(result.len() <= budget);
+                assert!(word.starts_with(&result));
+            }
+        }
     }
 }

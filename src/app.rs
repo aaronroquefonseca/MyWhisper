@@ -30,6 +30,8 @@ pub struct AppState {
     /// mDNS-discovered LAN peers, refreshed by the browser thread.
     pub discovered:
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, crate::net::Discovered>>>,
+    /// Shared across window/language rebuilds; preview state does not start it.
+    _retention: Option<crate::maintenance::RetentionMaintenance>,
 }
 
 impl AppState {
@@ -45,6 +47,7 @@ impl AppState {
             sync_port: std::cell::Cell::new(0),
             service_alive: std::cell::Cell::new(false),
             discovered: Default::default(),
+            _retention: None,
         })
     }
 
@@ -69,6 +72,17 @@ impl AppState {
         let history = store.load_history(200, false).unwrap_or_default();
         let mut stats = store.usage_stats().unwrap_or_default();
         stats.streak_days = streak(&store.active_days().unwrap_or_default());
+        let retention = if db_path == std::path::Path::new(":memory:") {
+            None
+        } else {
+            match crate::maintenance::RetentionMaintenance::start(db_path.to_path_buf()) {
+                Ok(worker) => Some(worker),
+                Err(error) => {
+                    eprintln!("[app] idle retention could not start: {error}");
+                    None
+                }
+            }
+        };
         Rc::new(Self {
             settings: std::cell::RefCell::new(settings),
             history,
@@ -80,6 +94,7 @@ impl AppState {
             sync_port: std::cell::Cell::new(0),
             service_alive: std::cell::Cell::new(false),
             discovered,
+            _retention: retention,
         })
     }
 }
@@ -314,12 +329,11 @@ pub fn navigate(from: &impl IsA<gtk4::Widget>, page: &str, section: &str) {
     if let Some(stack) = find_named(&root, "main-pages").and_then(|w| w.downcast::<Stack>().ok()) {
         stack.set_visible_child_name(page);
     }
-    if page == "settings" {
-        if let Some(stack) =
+    if page == "settings"
+        && let Some(stack) =
             find_named(&root, "settings-pages").and_then(|w| w.downcast::<Stack>().ok())
-        {
-            stack.set_visible_child_name(section);
-        }
+    {
+        stack.set_visible_child_name(section);
     }
 }
 
@@ -334,6 +348,39 @@ pub fn toast(from: &impl IsA<gtk4::Widget>, message: &str) {
         }
         widget = current.parent();
     }
+}
+
+/// Clipboard IO stays on its owned worker. Removing a page drops its pending
+/// copy and the weak completion cannot update a later widget/window.
+pub(crate) fn copy_from_button(
+    button: &Button,
+    text: &str,
+    completed: impl Fn(&Button, Result<(), String>) + 'static,
+) {
+    if !button.is_sensitive() {
+        return;
+    }
+    let task = match crate::clipboard::copy_text_async(text, false) {
+        Ok(task) => task,
+        Err(error) => {
+            completed(button, Err(error));
+            return;
+        }
+    };
+    button.set_sensitive(false);
+    let button = button.downgrade();
+    gtk4::glib::timeout_add_local(std::time::Duration::from_millis(20), move || {
+        let Some(button) = button.upgrade().filter(|button| button.root().is_some()) else {
+            return gtk4::glib::ControlFlow::Break;
+        };
+        if let Some(result) = task.poll() {
+            button.set_sensitive(true);
+            completed(&button, result);
+            gtk4::glib::ControlFlow::Break
+        } else {
+            gtk4::glib::ControlFlow::Continue
+        }
+    });
 }
 
 /// Native modal confirmation: Escape and the default response cancel.

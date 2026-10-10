@@ -17,15 +17,15 @@
 //! - Local / NVIDIA offline-or-unmarked (parakeet TDT) and Local /
 //!   Oruk (orukeet) → `sherpa-onnx-offline-websocket-server`, whole
 //!   utterance after release.
-//! - Local / Cohere → unsupported: `offline-websocket-server`
-//!   v1.13.8 exposes no `cohere-transcribe-*` flags (library-only
-//!   model). Clear error, revisit when the server grows flags.
+//! - Local / Cohere → offline websocket with its dedicated encoder/decoder
+//!   flags and one explicitly selected language from its fourteen codes.
 //! - Cloud OpenAI / Groq / Mistral → OpenAI-compatible
 //!   `POST {base}/audio/transcriptions` after release. (Mistral's
 //!   endpoint mirrors the OpenAI shape for its transcription model;
 //!   if upstream drifts, the server error surfaces in the log.)
 //! - Cloud Deepgram → `POST {base}/v1/listen` (pre-recorded REST).
 //! - Cloud Gemini → `generateContent` with inline WAV (REST).
+//!
 //! Language: whisper-server gets `-l` at spawn; OpenAI-compatible
 //! endpoints get the `language` field, Deepgram a `&language=`
 //! query, Gemini a prompt hint ("auto" omits everywhere). The
@@ -43,14 +43,15 @@
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{
+    Arc, Mutex, OnceLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
-    mpsc, Arc, Mutex, OnceLock,
+    mpsc,
 };
 use std::time::{Duration, Instant};
 
-use crate::audio::{self, wav_bytes_16k, Recorder, Resampler, ENGINE_RATE, MIN_SAMPLES_16K};
+use crate::audio::{self, ENGINE_RATE, MIN_SAMPLES_16K, Recorder, Resampler, wav_bytes_16k};
 use crate::settings::{GpuBackendSetting, LocalSttProvider, SherpaBackendSetting, SttSettings};
 use crate::stt;
 
@@ -67,7 +68,7 @@ const SHERPA_OFFLINE_PORT: u16 = 6007;
 /// Clients always dial loopback; only the whisper bind follows
 /// lan_expose — the sherpa binaries have no bind flag and always
 /// listen on 0.0.0.0 (upstream limitation, surfaced in the UI).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerNet {
     pub host: &'static str,
     pub port_override: Option<u16>,
@@ -90,7 +91,7 @@ const INFERENCE_TIMEOUT: Duration = Duration::from_secs(180);
 // ---------------------------------------------------------------- plans
 
 /// Fully resolved transcription target for one utterance.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Plan {
     WhisperHttp {
         model_bin: PathBuf,
@@ -123,6 +124,7 @@ pub enum Plan {
     /// definition); streaming like SherpaOnline.
     SelfHostedWs {
         url: String,
+        key: String,
     },
     CloudDeepgram {
         base: String,
@@ -137,6 +139,12 @@ pub enum Plan {
     },
 }
 
+impl std::fmt::Debug for Plan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.describe())
+    }
+}
+
 impl Plan {
     pub fn streaming(&self) -> bool {
         matches!(self, Plan::SherpaOnline { .. } | Plan::SelfHostedWs { .. })
@@ -144,27 +152,16 @@ impl Plan {
 
     pub fn describe(&self) -> String {
         match self {
-            Plan::WhisperHttp { model_bin, .. } => {
-                format!("whisper-server ({})", model_bin.display())
-            }
-            Plan::SherpaOnline { model_dir } => {
-                format!("sherpa-online ({})", model_dir.display())
-            }
-            Plan::SherpaOffline { model_dir, .. } => {
-                format!("sherpa-offline ({})", model_dir.display())
-            }
-            Plan::WhistleCli { model, .. } => {
-                format!("whistle ({})", model.display())
-            }
-            Plan::CloudOpenAiCompat { base, model, .. } => {
-                format!("cloud {base} ({model})")
-            }
-            Plan::SelfHostedWs { url } => {
-                format!("self-hosted ws {url}")
-            }
-            Plan::CloudDeepgram { model, .. } => format!("deepgram ({model})"),
-            Plan::CloudGemini { model, .. } => format!("gemini ({model})"),
+            Plan::WhisperHttp { .. } => "whisper-server",
+            Plan::SherpaOnline { .. } => "sherpa-online",
+            Plan::SherpaOffline { .. } => "sherpa-offline",
+            Plan::WhistleCli { .. } => "whistle",
+            Plan::CloudOpenAiCompat { .. } => "OpenAI-compatible transcription",
+            Plan::SelfHostedWs { .. } => "self-hosted WebSocket transcription",
+            Plan::CloudDeepgram { .. } => "Deepgram transcription",
+            Plan::CloudGemini { .. } => "Gemini transcription",
         }
+        .to_owned()
     }
 }
 
@@ -205,7 +202,14 @@ pub fn plans_for(s: &SttSettings, data_dir: &Path) -> Result<Vec<(String, Plan)>
                     // Streaming sherpa protocol (our sherpa-online
                     // servers speak it, including spawned ones).
                     // Never spawned here: foreign by definition.
-                    Ok(Plan::SelfHostedWs { url })
+                    Ok(Plan::SelfHostedWs {
+                        url,
+                        key: entry.api_key.trim().to_string(),
+                    })
+                } else if is_ws_url(&url) {
+                    Err("WebSocket endpoints require streaming; use an http(s) endpoint for file transcription".into())
+                } else if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    Err("self-hosted endpoint must use http(s) or ws(s)".into())
                 } else {
                     Ok(Plan::CloudOpenAiCompat {
                         base: url,
@@ -297,6 +301,7 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
         LocalSttProvider::OpenAi => {
             let entry = stt::find_model(&s.whisper_model)
                 .ok_or_else(|| format!("unknown whisper model {:?}", s.whisper_model))?;
+            validate_local_language(entry.id, &s.language)?;
             let dir = stt::model_dir(data_dir, entry);
             let bin = dir.join(format!("ggml-{}.bin", stt::whisper_file_stem(entry.id)));
             if !bin.exists() {
@@ -310,6 +315,7 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
         LocalSttProvider::Nvidia => {
             let entry = stt::find_model(&s.parakeet_model)
                 .ok_or_else(|| format!("unknown parakeet model {:?}", s.parakeet_model))?;
+            validate_local_language(entry.id, &s.language)?;
             let dir = stt::model_dir(data_dir, entry);
             require_transducer_files(&dir, entry.id)?;
             match entry.runtime {
@@ -322,6 +328,7 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
         }
         LocalSttProvider::Oruk => {
             let entry = stt::find_model("orukeet-v0.1.0").ok_or_else(|| missing("orukeet"))?;
+            validate_local_language(entry.id, &s.language)?;
             let dir = stt::model_dir(data_dir, entry);
             require_transducer_files(&dir, entry.id)?;
             Ok(Plan::SherpaOffline {
@@ -331,13 +338,14 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
         }
         LocalSttProvider::Whistle => {
             let entry = stt::find_model("whistle-v1").ok_or_else(|| missing("whistle"))?;
+            validate_local_language(entry.id, &s.language)?;
             let dir = stt::model_dir(data_dir, entry);
             let model = dir.join("whistle.cact");
             if !model.exists() {
                 return Err(missing("whistle model (download it in Language Models)"));
             }
-            // The `needle` engine is user-placed (no verified upstream
-            // binary URL yet): `<data>/bin/needle/needle`, executable.
+            // The pinned verified engine is installed at bin/needle/needle;
+            // existing manually placed engines remain supported.
             let engine = needle_engine_path(data_dir);
             if !engine.exists() {
                 return Err(missing(
@@ -350,11 +358,37 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
                 lang: s.language.clone(),
             })
         }
-        LocalSttProvider::Cohere => Err(
-            "Cohere Transcribe has no websocket-server flags in sherpa-onnx v1.13.8 \
-             (library-only model); pick another local provider for now"
-                .to_string(),
-        ),
+        LocalSttProvider::Cohere => {
+            validate_cohere_language(&s.language)?;
+            let entry = stt::find_model("cohere-transcribe-03-2026").unwrap();
+            let model_dir = stt::model_dir(data_dir, entry);
+            if !stt::is_installed(data_dir, entry) {
+                return Err(missing("Cohere Transcribe model"));
+            }
+            Ok(Plan::SherpaOffline {
+                model_dir,
+                lang: s.language.clone(),
+            })
+        }
+    }
+}
+
+fn validate_local_language(model: &str, language: &str) -> Result<(), String> {
+    if lang_param(language).is_none() || stt::model_languages(model).contains(&language) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Local model {model} does not support the configured transcription language; \
+             select a supported language or another model in Speech to Text"
+        ))
+    }
+}
+
+fn validate_cohere_language(language: &str) -> Result<(), String> {
+    if stt::model_languages("cohere-transcribe-03-2026").contains(&language) {
+        Ok(())
+    } else {
+        Err("Cohere Transcribe requires a specific supported language; select one of its fourteen languages in Settings".into())
     }
 }
 
@@ -376,7 +410,8 @@ fn require_transducer_files(dir: &Path, id: &str) -> Result<(), String> {
 
 struct Supervised {
     key: String,
-    child: Child,
+    child: crate::child::OwnedChild,
+    ready: bool,
     /// whisper-server only: model currently loaded (for /load).
     loaded_model: Option<PathBuf>,
     /// Last use (ensure hit): drives the keep-warm reaper.
@@ -410,211 +445,127 @@ pub fn hotkeys_listening() -> bool {
     HOTKEYS_LISTENING.load(Ordering::SeqCst)
 }
 
-/// Server children die with the service (Linux prctl PDEATHSIG):
-/// no orphans on any exit path, including SIGKILL (which no handler
-/// could catch). Applied to every server spawn below.
-fn kill_on_parent_death(cmd: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    const PR_SET_PDEATHSIG: std::os::raw::c_int = 1;
-    const SIGTERM: std::os::raw::c_ulong = 15;
-    unsafe extern "C" {
-        fn prctl(
-            option: std::os::raw::c_int,
-            arg2: std::os::raw::c_ulong,
-            arg3: std::os::raw::c_ulong,
-            arg4: std::os::raw::c_ulong,
-            arg5: std::os::raw::c_ulong,
-        ) -> std::os::raw::c_int;
-    }
-    unsafe {
-        cmd.pre_exec(move || {
-            if prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-}
-
-/// Supervised PIDs on disk: crash orphans are identifiable (cmdline
-/// match) and reaped at next boot. Written on spawn, cleared on
-/// clean replace; stale entries die here, never accumulate.
+/// Status metadata identifies this service's supervised servers. It never
+/// authorizes signalling a PID: only an owned child can be stopped.
 fn pidfile(data_dir: &Path) -> PathBuf {
     data_dir.join("servers.json")
 }
 
-fn pidfile_record(data_dir: &Path, name: &str, pid: u32) {
-    let path = pidfile(data_dir);
-    let mut map: HashMap<String, u32> = std::fs::read_to_string(&path)
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ServerRecord {
+    pid: u32,
+    start_ticks: u64,
+    port: u16,
+}
+
+fn pidfile_records(data_dir: &Path) -> HashMap<String, ServerRecord> {
+    crate::private_fs::read_bounded(&pidfile(data_dir), 16 * 1024)
         .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
-    map.insert(name.to_string(), pid);
-    let _ = std::fs::write(&path, serde_json::to_string(&map).unwrap_or_default());
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn pidfile_record(data_dir: &Path, name: &str, pid: u32, port: u16) {
+    let path = pidfile(data_dir);
+    let Some(start_ticks) = crate::process_status::start_ticks(pid) else {
+        return;
+    };
+    let mut map = pidfile_records(data_dir);
+    map.insert(
+        name.to_string(),
+        ServerRecord {
+            pid,
+            start_ticks,
+            port,
+        },
+    );
+    if let Ok(bytes) = serde_json::to_vec(&map) {
+        let _ = crate::private_fs::replace(&path, &bytes);
+    }
 }
 
 fn pidfile_remove(data_dir: &Path, name: &str) {
     let path = pidfile(data_dir);
-    let mut map: HashMap<String, u32> = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
-    if map.remove(name).is_some() {
-        let _ = std::fs::write(&path, serde_json::to_string(&map).unwrap_or_default());
+    let mut map = pidfile_records(data_dir);
+    if map.remove(name).is_some()
+        && let Ok(bytes) = serde_json::to_vec(&map)
+    {
+        let _ = crate::private_fs::replace(&path, &bytes);
     }
 }
 
-/// Reap stale supervised children from a dead service run: PID in
-/// the pidfile whose cmdline still names our server binary. Then a
-/// /proc sweep for our EXACT server binaries: anything still alive
-/// here is untracked (predates pid tracking or hand-started) and —
-/// single-instance engine, so it cannot be another run's — dies.
-/// Exact binary names only: the packs' CLI tools are never touched.
+/// Discard stale status metadata. Owned children have parent-death signals;
+/// no PID-file or command-line match grants process ownership.
 pub fn reap_stale_servers(data_dir: &Path) {
-    let path = pidfile(data_dir);
-    let map: HashMap<String, u32> = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
-    if map.is_empty() {
-        return;
-    }
-    for (name, pid) in &map {
-        let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        if cmdline.contains("whisper-server") || cmdline.contains("sherpa-onnx") {
-            eprintln!("[stt] reaping stale {name} (pid {pid})");
-            unsafe {
-                libc_kill(*pid);
-            }
-        }
-    }
-    let _ = std::fs::remove_file(&path);
-    // Untracked strays: exact server binaries alive at boot that no
-    // pidfile named. Single-instance engine ⇒ not another run's.
-    for name in ["whisper", "sherpa-offline", "sherpa-online"] {
-        for pid in find_server_pids(server_binary_marker(name)) {
-            eprintln!("[stt] boot: killing untracked {name} (pid {pid})");
-            unsafe {
-                libc_kill(pid);
-            }
-        }
-    }
+    // PID files are status metadata, never authority to kill a process.
+    // Children have parent-death signals; stale metadata can be discarded.
+    let _ = std::fs::remove_file(pidfile(data_dir));
 }
 
-/// Exact server binary per supervised name. Exact match matters:
-/// the packs ship dozens of `sherpa-onnx-*` CLI tools that must
-/// never be mistaken for servers (adopt/reap/scan).
-fn server_binary_marker(name: &str) -> &str {
-    match name {
-        "whisper" => "whisper-server",
-        "sherpa-offline" => "sherpa-onnx-offline-websocket-server",
-        "sherpa-online" => "sherpa-onnx-online-websocket-server",
-        other => other,
-    }
-}
-
-/// Pids whose cmdline names this server binary (ours or foreign).
-fn find_server_pids(marker: &str) -> Vec<u32> {
-    let own = std::process::id();
-    let mut out = Vec::new();
-    let Ok(proc) = std::fs::read_dir("/proc") else {
-        return out;
-    };
-    for entry in proc.flatten() {
-        let name = entry.file_name();
-        let Some(pid) = name.to_str().and_then(|n| n.parse::<u32>().ok()) else {
-            continue;
-        };
-        if pid == own {
-            continue;
-        }
-        let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        if cmdline.contains(marker) {
-            out.push(pid);
-        }
-    }
-    out
-}
-
-unsafe fn libc_kill(pid: u32) {
-    unsafe extern "C" {
-        fn kill(pid: i32, sig: i32) -> i32;
-    }
-    unsafe {
-        kill(pid as i32, 15);
-    }
-}
-
-/// Live servers: (name, managed) for every server whose port
-/// answers. `managed` = our supervised child (pidfile or live map);
-/// otherwise the port is held by a foreign process (started by hand
-/// or a dead service run) that we reuse but never kill.
-/// GUI-side status reads this cross-process: the GUI never owns the
-/// children, and a foreign server still serves traffic — reporting
-/// "none" while dictation works would be a lie.
+/// Live listening ports and whether a ready supervised process owns their
+/// socket. Cross-process status checks both recorded start time and socket
+/// ownership; legacy PID-only records cannot establish managed status.
 pub fn server_status(data_dir: &Path, net: &ServerNet) -> Vec<(String, bool)> {
-    let path = data_dir.join("servers.json");
-    let map: HashMap<String, u32> = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
+    server_status_while(data_dir, net, &|| true)
+}
+
+pub(crate) fn server_status_while(
+    data_dir: &Path,
+    net: &ServerNet,
+    active: &impl Fn() -> bool,
+) -> Vec<(String, bool)> {
+    if !active() {
+        return Vec::new();
+    }
+    let map = pidfile_records(data_dir);
     let mut out = Vec::new();
     for (name, port) in [
         ("whisper", engine_port(net, WHISPER_PORT)),
         ("sherpa-offline", engine_port(net, SHERPA_OFFLINE_PORT)),
         ("sherpa-online", engine_port(net, SHERPA_ONLINE_PORT)),
     ] {
+        if !active() {
+            break;
+        }
         if !port_open(port) {
             continue;
         }
-        let pid_alive = map.get(name).map(|pid| {
-            let cmdline =
-                std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-            cmdline.contains("whisper-server") || cmdline.contains("sherpa-onnx")
+        let pid_alive = map.get(name).map(|record| {
+            record.port == port
+                && crate::process_status::listening_on(record.pid, record.start_ticks, port)
         });
         // Local map (same process) is authoritative when present.
         let local = servers().lock().ok().and_then(|mut m| {
-            m.get_mut(name)
-                .map(|s| s.child.try_wait().map(|s| s.is_none()).unwrap_or(false))
+            m.get_mut(name).map(|s| {
+                s.ready
+                    && s.child.try_status().map(|s| s.is_none()).unwrap_or(false)
+                    && crate::process_status::start_ticks(s.child.0.id()).is_some_and(|started| {
+                        crate::process_status::listening_on(s.child.0.id(), started, port)
+                    })
+            })
         });
+        if !active() {
+            break;
+        }
         let managed = local.or(pid_alive).unwrap_or(false);
         out.push((name.to_string(), managed));
     }
     out
 }
 
-/// Stop every supervised server now (Stop button). Kills same-process
-/// children AND pidfile pids (cross-process: the GUI never owns
-/// these), clears the map + pidfile; next utterance respawns lazily.
+/// Stop this process's owned server groups. GUI requests are routed to the
+/// service; persisted PID metadata is never used to signal a process.
 pub fn drop_servers(data_dir: &Path) {
     let mut map = match servers().lock() {
         Ok(m) => m,
         Err(_) => return,
     };
-    for (name, s) in map.iter_mut() {
-        let _ = s.child.kill();
-        let _ = s.child.wait();
+    for name in map.keys() {
         pidfile_remove(data_dir, name);
         eprintln!("[stt] stopped {name}");
     }
     map.clear();
-    // Pids the pidfile still names (other process's children, e.g.
-    // the service's when Stop is pressed in the GUI): SIGTERM those
-    // whose cmdline still names our server binaries.
-    let leftovers: HashMap<String, u32> = std::fs::read_to_string(pidfile(data_dir))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
-    for (name, pid) in &leftovers {
-        let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        if cmdline.contains("whisper-server") || cmdline.contains("sherpa-onnx") {
-            unsafe {
-                libc_kill(*pid);
-            }
-            eprintln!("[stt] stopped {name} (pid {pid})");
-        }
-        pidfile_remove(data_dir, name);
-    }
+    let _ = std::fs::remove_file(pidfile(data_dir));
 }
 
 /// Parse keep-warm values («»/forever/never = none, else minutes).
@@ -633,36 +584,42 @@ pub fn keep_warm_timeout(value: &str) -> Option<Duration> {
 /// Background reaper: every 30 s, stop servers idle past keep-warm.
 /// No-op when unset (forever). Started once at service boot.
 pub fn spawn_server_reaper(data_dir: PathBuf) {
-    let _ = crate::runtime::spawn_dedicated("server-reaper", move || loop {
-        std::thread::sleep(Duration::from_secs(30));
-        let keep = crate::store::Store::open(&data_dir.join("state.db"))
-            .map(|store| store.load_settings().stt.keep_warm.clone())
-            .unwrap_or_default();
-        let Some(timeout) = keep_warm_timeout(&keep) else {
-            continue;
-        };
-        let mut map = match servers().lock() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let mut dead = Vec::new();
-        for (name, s) in map.iter_mut() {
-            if s.last_used.elapsed() < timeout {
+    let _ = crate::runtime::spawn_dedicated("server-reaper", move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(30));
+            let keep = crate::store::Store::open(&data_dir.join("state.db"))
+                .map(|store| store.load_settings().stt.keep_warm.clone())
+                .unwrap_or_default();
+            if ACTIVE_SESSIONS.load(Ordering::Acquire) > 0
+                || FINAL_COUNT.load(Ordering::Acquire) > 0
+            {
                 continue;
             }
-            let alive = s.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
-            if !alive {
+            let Some(timeout) = keep_warm_timeout(&keep) else {
+                continue;
+            };
+            let mut map = match servers().lock() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let mut dead = Vec::new();
+            for (name, s) in map.iter_mut() {
+                if !s.ready || s.last_used.elapsed() < timeout {
+                    continue;
+                }
+                let alive = s.child.try_status().map(|s| s.is_none()).unwrap_or(false);
+                if !alive {
+                    dead.push(name.clone());
+                    continue;
+                }
+                eprintln!("[stt] keep-warm expired for {name}; stopping");
+
+                pidfile_remove(&data_dir, name);
                 dead.push(name.clone());
-                continue;
             }
-            eprintln!("[stt] keep-warm expired for {name}; stopping");
-            let _ = s.child.kill();
-            let _ = s.child.wait();
-            pidfile_remove(&data_dir, name);
-            dead.push(name.clone());
-        }
-        for name in dead {
-            map.remove(&name);
+            for name in dead {
+                map.remove(&name);
+            }
         }
     });
 }
@@ -697,9 +654,12 @@ fn ensure_server(
     name: &str,
     key: String,
     port: u16,
-    spawn: impl FnOnce() -> Result<Child, String>,
+    spawn: impl FnOnce() -> Result<crate::child::OwnedChild, String>,
     probe: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
+    let _startup = SERVER_START_LOCK.lock().map_err(|e| e.to_string())?;
+    let mut key = key;
+    key.push_str(&format!("|port={port}"));
     let mut map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
     // Single STT server at a time (one local configuration): any
     // OTHER supervised server dies here, on every ensure — reuse or
@@ -707,88 +667,53 @@ fn ensure_server(
     // its own server when tried).
     let others: Vec<String> = map.keys().filter(|k| k.as_str() != name).cloned().collect();
     for other in others {
-        if let Some(mut o) = map.remove(&other) {
-            let _ = o.child.kill();
-            let _ = o.child.wait();
+        if let Some(o) = map.remove(&other) {
+            drop(o);
+
             eprintln!("[stt] single-server rule: stopped {other} for {name}");
         }
     }
-    // Adopted/leftover pidfile entries for OTHER servers are ours
-    // too (spawned or adopted): SIGTERM those whose cmdline still
-    // names their server binary, then forget them.
-    let tracked: HashMap<String, u32> = std::fs::read_to_string(pidfile(data_dir))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
-    for (other, pid) in &tracked {
-        if other == name {
-            continue;
-        }
-        let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        if cmdline.contains(server_binary_marker(other)) {
-            unsafe {
-                libc_kill(*pid);
-            }
-            eprintln!("[stt] single-server rule: stopped {other} (pid {pid}) for {name}");
-        }
-        pidfile_remove(data_dir, other);
-    }
     if let Some(s) = map.get_mut(name) {
-        let alive = s.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
-        if alive && s.key == key {
+        let alive = s.child.try_status().map(|s| s.is_none()).unwrap_or(false);
+        if alive && s.ready && s.key == key {
             s.last_used = Instant::now();
             return Ok(());
         }
-        match s.child.try_wait() {
+        match s.child.try_status() {
             Ok(Some(status)) => {
                 eprintln!("[stt] {name} died ({status}); respawning")
             }
             _ => eprintln!("[stt] {name} key changed; replacing"),
         }
-        let _ = s.child.kill();
-        let _ = s.child.wait();
+
         map.remove(name);
-        // pidfile refreshed on insert below; drop the stale entry now
-        // (data_dir captured via the callers' scope trick below is
-        // unavailable here — record() overwrites unconditionally).
-        let _ = name;
+        pidfile_remove(data_dir, name);
     }
     if port_open(port) {
-        // Ours died but something answers: reuse it — and adopt it
-        // when it is unambiguously our server binary (exactly one
-        // match): from then on it is managed (Stop / keep-warm /
-        // boot-reap apply), never a silent foreigner again.
-        // (Model mismatch risk is logged, not fatal.)
-        eprintln!("[stt] port {port} already answers; reusing foreign {name}");
-        let marker = server_binary_marker(name);
-        match find_server_pids(marker).as_slice() {
-            [pid] => {
-                pidfile_record(data_dir, name, *pid);
-                eprintln!("[stt] adopted foreign {name} (pid {pid}) as managed");
-            }
-            pids => {
-                eprintln!(
-                    "[stt] foreign {name}: {} {marker} matches, not adopting",
-                    pids.len()
-                );
-            }
-        }
-        return Ok(());
+        return Err(format!(
+            "port {port} is owned by another process; choose a free local port or configure a self-hosted endpoint"
+        ));
     }
     let child = spawn()?;
-    pidfile_record(data_dir, name, child.id());
     map.insert(
         name.to_string(),
         Supervised {
-            key,
+            key: key.clone(),
             child,
+            ready: false,
             loaded_model: None,
             last_used: Instant::now(),
         },
     );
-    drop(map); // the wait loop re-locks per iteration (non-reentrant)
-               // Wait for listen, but fail fast when the child dies first (e.g.
-               // cuda binary with no CUDA libs exits 127 in ms — no 20 s mystery).
+    drop(map);
+    let mut startup = StartupGuard {
+        name: name.to_string(),
+        key,
+        ready: false,
+    };
+    // the wait loop re-locks per iteration (non-reentrant)
+    // Wait for listen, but fail fast when the child dies first (e.g.
+    // cuda binary with no CUDA libs exits 127 in ms — no 20 s mystery).
     let start = Instant::now();
     loop {
         if port_open(port) {
@@ -797,7 +722,7 @@ fn ensure_server(
         let exited = {
             let mut map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
             match map.get_mut(name) {
-                Some(s) => s.child.try_wait().ok().flatten(),
+                Some(s) => s.child.try_status().ok().flatten(),
                 None => {
                     return Err(format!("{name} vanished during startup"));
                 }
@@ -805,8 +730,7 @@ fn ensure_server(
         };
         if let Some(status) = exited {
             return Err(format!(
-                "{name} exited during startup ({status}); \
-                 see /tmp/mywhisper-{name}.log (missing shared libs?)"
+                "{name} exited during startup ({status}); check the selected runtime and its system library dependencies"
             ));
         }
         if start.elapsed() >= SERVER_START_TIMEOUT {
@@ -814,25 +738,42 @@ fn ensure_server(
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    probe()
+    probe()?;
+    if let Some(server) = servers().lock().map_err(|e| e.to_string())?.get_mut(name) {
+        server.ready = true;
+        pidfile_record(data_dir, name, server.child.0.id(), port);
+    }
+    startup.ready = true;
+    Ok(())
 }
 
-/// Server stdout/stderr go here, not null: the next crash leaves a
-/// trace instead of a mystery reset.
-fn server_logs(name: &str) -> (Stdio, Stdio) {
-    use std::fs::OpenOptions;
-    let path = format!("/tmp/mywhisper-{name}.log");
-    let open = || {
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .ok()
-    };
-    match (open(), open()) {
-        (Some(o), Some(e)) => (Stdio::from(o), Stdio::from(e)),
-        _ => (Stdio::null(), Stdio::null()),
+static SERVER_START_LOCK: Mutex<()> = Mutex::new(());
+struct StartupGuard {
+    name: String,
+    key: String,
+    ready: bool,
+}
+impl Drop for StartupGuard {
+    fn drop(&mut self) {
+        if self.ready {
+            return;
+        }
+        if let Ok(mut map) = servers().lock()
+            && map
+                .get(&self.name)
+                .is_some_and(|server| server.key == self.key)
+            && let Some(server) = map.remove(&self.name)
+        {
+            drop(server);
+        }
     }
+}
+
+/// Runtime output may include speech and hotwords; it is never persisted.
+fn server_logs(_name: &str) -> (Stdio, Stdio) {
+    // Runtime output can contain recognized speech or dictionary entries.
+    // User-facing startup errors retain status and configuration context.
+    (Stdio::null(), Stdio::null())
 }
 
 fn whisper_binary(data_dir: &Path, backend: GpuBackendSetting) -> Result<PathBuf, String> {
@@ -887,6 +828,9 @@ fn sherpa_binary(
 /// present.
 fn server_ld_path(data_dir: &Path, bin: &Path) -> String {
     let mut parts = vec![data_dir.join("lib").display().to_string()];
+    if let Some(parent) = bin.parent() {
+        parts.push(parent.display().to_string());
+    }
     if let Some(lib) = bin.parent().map(|b| b.join("..").join("lib")) {
         parts.push(lib.display().to_string());
     }
@@ -903,6 +847,40 @@ fn server_ld_path(data_dir: &Path, bin: &Path) -> String {
     }
 }
 
+/// Diagnose dependencies without storing runtime stderr (which may contain
+/// speech). Library names are bounded and validated before reaching a log/UI.
+fn require_runtime_dependencies(binary: &Path, loader_path: &str) -> Result<(), String> {
+    let output = crate::child::run(
+        Command::new("ldd")
+            .arg(binary)
+            .env("LD_LIBRARY_PATH", loader_path),
+        &[],
+        Duration::from_secs(3),
+        1024 * 1024,
+    )?;
+    let missing = String::from_utf8_lossy(&output)
+        .lines()
+        .filter(|line| line.contains("=> not found"))
+        .filter_map(|line| line.split_ascii_whitespace().next())
+        .filter(|library| {
+            library.len() <= 128
+                && library
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+        })
+        .take(16)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Selected CUDA runtime needs {}. Install its runtime libraries or select another backend.",
+            missing.join(", ")
+        ))
+    }
+}
+
 /// User-placed Whistle engine binary (`<data>/bin/needle/needle`).
 pub fn needle_engine_path(data_dir: &Path) -> PathBuf {
     data_dir.join("bin").join("needle").join("needle")
@@ -916,10 +894,13 @@ fn ensure_whisper(
     net: &ServerNet,
 ) -> Result<(), String> {
     let bin = whisper_binary(data_dir, backend)?;
-    let key = format!("{}|{}|{lang}", bin.display(), model.display());
+    let key = format!("{}|{}|{lang}|{}", bin.display(), model.display(), net.host);
     let model_arg = model.to_string_lossy().to_string();
     let lang_arg = lang.to_string();
     let ld_path = server_ld_path(data_dir, &bin);
+    if backend == GpuBackendSetting::Cuda {
+        require_runtime_dependencies(&bin, &ld_path)?;
+    }
     let whisper_port = engine_port(net, WHISPER_PORT);
     let whisper_host = net.host;
     ensure_server(
@@ -930,7 +911,6 @@ fn ensure_whisper(
         || {
             let (out, err) = server_logs("whisper-server");
             let mut cmd = Command::new(&bin);
-            kill_on_parent_death(&mut cmd);
             cmd.args([
                 "--model",
                 &model_arg,
@@ -946,9 +926,8 @@ fn ensure_whisper(
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err)
-            .env("LD_LIBRARY_PATH", &ld_path)
-            .spawn()
-            .map_err(|e| format!("spawn whisper-server: {e}"))
+            .env("LD_LIBRARY_PATH", &ld_path);
+            crate::child::OwnedChild::spawn(&mut cmd)
         },
         || Ok(()), // model loads before listen: TCP-ready ≈ serving
     )?;
@@ -1002,9 +981,50 @@ fn multipart_body(
 
 fn http_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
         .timeout(INFERENCE_TIMEOUT)
         .build()
-        .map_err(|e| format!("http client: {e}"))
+        .map_err(|e| http_error("HTTP client initialization", &e))
+}
+
+/// Provider URLs may contain credentials in userinfo, paths or queries.
+/// Classify failures without formatting the request or a provider body.
+fn http_error(operation: &str, error: &reqwest::Error) -> String {
+    let category = if error.is_timeout() {
+        "deadline exceeded"
+    } else if error.is_connect() {
+        "connection failed (check endpoint, network and TLS configuration)"
+    } else if error.is_builder() || error.is_request() {
+        "invalid request (check endpoint and authentication configuration)"
+    } else if error.is_body() || error.is_decode() {
+        "response transfer failed"
+    } else {
+        "transport failed"
+    };
+    format!("{operation}: {category}")
+}
+
+const MAX_PROVIDER_REPLY: u64 = 1024 * 1024;
+fn http_reply(response: reqwest::blocking::Response, operation: &str) -> Result<String, String> {
+    use std::io::Read;
+    if !response.status().is_success() {
+        return Err(format!("{operation}: HTTP {}", response.status().as_u16()));
+    }
+    if response
+        .content_length()
+        .is_some_and(|bytes| bytes > MAX_PROVIDER_REPLY)
+    {
+        return Err(format!("{operation}: response size limit exceeded"));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_PROVIDER_REPLY + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| format!("{operation}: response transfer failed or timed out"))?;
+    if bytes.len() as u64 > MAX_PROVIDER_REPLY {
+        return Err(format!("{operation}: response size limit exceeded"));
+    }
+    String::from_utf8(bytes).map_err(|_| format!("{operation}: response is not UTF-8"))
 }
 
 fn whisper_load(model: &Path, port: u16) -> Result<(), String> {
@@ -1018,7 +1038,7 @@ fn whisper_load(model: &Path, port: u16) -> Result<(), String> {
         )
         .body(body)
         .send()
-        .map_err(|e| format!("whisper /load: {e}"))?;
+        .map_err(|e| http_error("whisper /load", &e))?;
     if res.status().is_success() {
         Ok(())
     } else {
@@ -1090,18 +1110,14 @@ fn ensure_sherpa_offline(
     let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-offline-websocket-server")?;
     // Cohere is the only offline model taking a language (required:
     // exactly one of its 14 codes). Detected by model dir; the
-    // dropdown guarantees a valid code, "en" as backstop.
+    // validate callers too; never substitute another spoken language.
     let cohere = model_dir
         .file_name()
         .map(|n| n.to_string_lossy().contains("cohere"))
         .unwrap_or(false);
     let cohere_lang = if cohere {
-        let valid = crate::stt::model_languages("cohere-transcribe-03-2026");
-        Some(if valid.contains(&lang) {
-            lang.to_string()
-        } else {
-            "en".to_string()
-        })
+        validate_cohere_language(lang)?;
+        Some(lang.to_string())
     } else {
         None
     };
@@ -1115,10 +1131,11 @@ fn ensure_sherpa_offline(
         format!("{:x}", h.finish())
     };
     let key = format!(
-        "{}|{}|{hw_hash}|{}",
+        "{}|{}|{hw_hash}|{}|{}|{backend:?}",
         bin.display(),
         model_dir.display(),
-        cohere_lang.as_deref().unwrap_or("")
+        cohere_lang.as_deref().unwrap_or(""),
+        net.host
     );
     let (bin_s, dir_s) = (bin.clone(), model_dir.to_path_buf());
     let offline_port = engine_port(net, SHERPA_OFFLINE_PORT);
@@ -1132,7 +1149,6 @@ fn ensure_sherpa_offline(
             let f = |n: &str| dir_s.join(n).to_string_lossy().to_string();
             let (out, err) = server_logs("sherpa-offline-server");
             let mut cmd = Command::new(&bin_s);
-            kill_on_parent_death(&mut cmd);
             // The binary defaults to CPU inference even from the CUDA
             // pack: the provider flag is what actually engages the GPU.
             let provider_flag = match backend {
@@ -1145,23 +1161,29 @@ fn ensure_sherpa_offline(
                 format!("--port={offline_port}"),
                 provider_flag,
                 format!("--tokens={}", f("tokens.txt")),
-                format!("--encoder={}", f("encoder.int8.onnx")),
-                format!("--decoder={}", f("decoder.int8.onnx")),
-                format!("--joiner={}", f("joiner.int8.onnx")),
                 format!("--num-threads={}", threads_arg()),
-                "--log-file=/tmp/mywhisper-sherpa-offline.log".to_string(),
+                "--log-file=/dev/null".to_string(),
             ];
             if let Some(lang) = cohere_arg {
-                args.push(format!("--cohere-transcribe-language={lang}"));
+                args.extend([
+                    format!("--cohere-transcribe-encoder={}", f("encoder.int8.onnx")),
+                    format!("--cohere-transcribe-decoder={}", f("decoder.int8.onnx")),
+                    format!("--cohere-transcribe-language={lang}"),
+                ]);
+            } else {
+                args.extend([
+                    format!("--encoder={}", f("encoder.int8.onnx")),
+                    format!("--decoder={}", f("decoder.int8.onnx")),
+                    format!("--joiner={}", f("joiner.int8.onnx")),
+                ]);
             }
             args.extend(hw_args);
             cmd.args(args)
                 .stdin(Stdio::null())
                 .stdout(out)
                 .stderr(err)
-                .env("LD_LIBRARY_PATH", server_ld_path(data_dir, &bin_s))
-                .spawn()
-                .map_err(|e| format!("spawn sherpa offline server: {e}"))
+                .env("LD_LIBRARY_PATH", server_ld_path(data_dir, &bin_s));
+            crate::child::OwnedChild::spawn(&mut cmd)
         },
         move || probe_sherpa_offline(offline_port),
     )
@@ -1183,7 +1205,12 @@ fn ensure_sherpa_online(
         hw_args.join("\n").hash(&mut h);
         format!("{:x}", h.finish())
     };
-    let key = format!("{}|{}|{hw_hash}", bin.display(), model_dir.display());
+    let key = format!(
+        "{}|{}|{hw_hash}|{}|{backend:?}",
+        bin.display(),
+        model_dir.display(),
+        net.host
+    );
     let (bin_s, dir_s) = (bin.clone(), model_dir.to_path_buf());
     let online_port = engine_port(net, SHERPA_ONLINE_PORT);
     ensure_server(
@@ -1195,7 +1222,6 @@ fn ensure_sherpa_online(
             let f = |n: &str| dir_s.join(n).to_string_lossy().to_string();
             let (out, err) = server_logs("sherpa-online-server");
             let mut cmd = Command::new(&bin_s);
-            kill_on_parent_death(&mut cmd);
             // See offline: the pack binary alone doesn't engage CUDA.
             let provider_flag = match backend {
                 SherpaBackendSetting::Cuda => "--provider=cuda",
@@ -1211,16 +1237,15 @@ fn ensure_sherpa_online(
                 format!("--decoder={}", f("decoder.int8.onnx")),
                 format!("--joiner={}", f("joiner.int8.onnx")),
                 format!("--num-threads={}", threads_arg()),
-                "--log-file=/tmp/mywhisper-sherpa-online.log".to_string(),
+                "--log-file=/dev/null".to_string(),
             ];
             args.extend(hw_args);
             cmd.args(args)
                 .stdin(Stdio::null())
                 .stdout(out)
                 .stderr(err)
-                .env("LD_LIBRARY_PATH", server_ld_path(data_dir, &bin_s))
-                .spawn()
-                .map_err(|e| format!("spawn sherpa online server: {e}"))
+                .env("LD_LIBRARY_PATH", server_ld_path(data_dir, &bin_s));
+            crate::child::OwnedChild::spawn(&mut cmd)
         },
         move || probe_sherpa_online(online_port),
     )
@@ -1235,12 +1260,93 @@ fn ws_connect(port: u16, read_timeout: Duration) -> Result<Ws, String> {
 }
 
 fn ws_connect_url(url: &str, read_timeout: Duration) -> Result<Ws, String> {
-    let (ws, _) = tungstenite::connect(url).map_err(|e| format!("ws connect {url}: {e}"))?;
-    if let tungstenite::stream::MaybeTlsStream::Plain(s) = ws.get_ref() {
-        let _ = s.set_read_timeout(Some(read_timeout));
-        let _ = s.set_write_timeout(Some(Duration::from_secs(30)));
+    ws_connect_authenticated(url, "", read_timeout)
+}
+
+fn ws_socket(ws: &Ws) -> &TcpStream {
+    match ws.get_ref() {
+        tungstenite::stream::MaybeTlsStream::Plain(s) => s,
+        tungstenite::stream::MaybeTlsStream::Rustls(s) => &s.sock,
+        _ => unreachable!("only plain and rustls transports are built"),
     }
-    Ok(ws)
+}
+
+fn ws_connect_authenticated(url: &str, key: &str, read_timeout: Duration) -> Result<Ws, String> {
+    use std::net::ToSocketAddrs;
+    use tungstenite::client::IntoClientRequest;
+    let parsed = reqwest::Url::parse(url).map_err(|_| "invalid WebSocket URL")?;
+    if !matches!(parsed.scheme(), "ws" | "wss")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err("WebSocket URL must use ws(s), with credentials in the API key field".into());
+    }
+    let host = parsed.host_str().ok_or("WebSocket URL has no host")?;
+    let port = parsed
+        .port_or_known_default()
+        .ok_or("WebSocket URL has no port")?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut socket = None;
+    for addr in (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("ws resolve: {e}"))?
+    {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        if let Ok(stream) = TcpStream::connect_timeout(&addr, remaining) {
+            socket = Some(stream);
+            break;
+        }
+    }
+    let socket = socket.ok_or("WebSocket connect deadline exceeded or endpoint refused")?;
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| e.to_string())?;
+    socket
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| e.to_string())?;
+    // Socket shutdown imposes a total deadline even if a peer trickles
+    // individual TLS/upgrade bytes inside each per-read timeout.
+    let timer_socket = socket.try_clone().map_err(|e| e.to_string())?;
+    let (finish, wait) = mpsc::channel();
+    let timer = crate::runtime::spawn_dedicated("ws-upgrade-deadline", move || {
+        if wait
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .is_err()
+        {
+            let _ = timer_socket.shutdown(std::net::Shutdown::Both);
+        }
+    })?;
+    let result = (|| {
+        let mut request = url
+            .into_client_request()
+            .map_err(|_| "invalid WebSocket upgrade request")?;
+        if !key.is_empty() {
+            request.headers_mut().insert(
+                "authorization",
+                format!("Bearer {key}")
+                    .parse()
+                    .map_err(|_| "invalid bearer key")?,
+            );
+        }
+        let config = tungstenite::protocol::WebSocketConfig::default()
+            .max_message_size(Some(1024 * 1024))
+            .max_frame_size(Some(1024 * 1024));
+        let (ws, _) = tungstenite::client_tls_with_config(request, socket, Some(config), None)
+            .map_err(|_| "WebSocket TLS/upgrade failed or timed out")?;
+        ws_socket(&ws)
+            .set_read_timeout(Some(read_timeout))
+            .map_err(|e| e.to_string())?;
+        ws_socket(&ws)
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .map_err(|e| e.to_string())?;
+        Ok(ws)
+    })();
+    let _ = finish.send(());
+    let _ = timer.join();
+    result
 }
 
 fn ws_send_binary(ws: &mut Ws, bytes: &[u8]) -> Result<(), String> {
@@ -1262,13 +1368,13 @@ fn f32le(samples: &[f32]) -> Vec<u8> {
 /// endpoint boundaries arrive as is_final (the server resets its
 /// stream there, so each message only covers its own segment).
 fn sherpa_message(msg: &str) -> Result<(String, bool), String> {
-    let v: serde_json::Value =
-        serde_json::from_str(msg).map_err(|e| format!("sherpa json: {e}"))?;
+    let v: serde_json::Value = serde_json::from_str(msg)
+        .map_err(|e| format!("sherpa json: {}", crate::diagnostics::json(&e)))?;
     let text = v
         .get("text")
         .and_then(|t| t.as_str())
         .map(|t| t.to_string())
-        .ok_or_else(|| format!("sherpa reply has no text: {msg}"))?;
+        .ok_or_else(|| "sherpa reply has no text".to_string())?;
     let is_final = v.get("is_final").and_then(|f| f.as_bool()).unwrap_or(false);
     Ok((text, is_final))
 }
@@ -1284,8 +1390,8 @@ fn sherpa_text(msg: &str) -> Result<String, String> {
 fn probe_sherpa_offline(port: u16) -> Result<(), String> {
     let silence = vec![0.0f32; 8000];
     eprintln!("[stt] sherpa-offline probe: 0.5s silence");
-    let text = sherpa_offline_transcribe_inner(&silence, Duration::from_secs(60), port)?;
-    eprintln!("[stt] sherpa-offline probe ok (reply: {text:?})");
+    sherpa_offline_transcribe_inner(&silence, Duration::from_secs(60), port)?;
+    eprintln!("[stt] sherpa-offline probe ok");
     Ok(())
 }
 
@@ -1293,8 +1399,8 @@ fn probe_sherpa_online(port: u16) -> Result<(), String> {
     eprintln!("[stt] sherpa-online probe: 0.5s silence");
     let mut s = OnlineSession::open_with(port, Duration::from_secs(60))?;
     s.send_chunk(&vec![0.0f32; 8000])?;
-    let text = s.finish()?;
-    eprintln!("[stt] sherpa-online probe ok (reply: {text:?})");
+    s.finish()?;
+    eprintln!("[stt] sherpa-online probe ok");
     Ok(())
 }
 
@@ -1311,12 +1417,11 @@ pub struct OnlineSession {
     read_timeout: Duration,
     /// Live pill preview: publish transcript() on change.
     pub preview: bool,
+    generation: u64,
 }
 
 fn ws_read_timeout(ws: &mut Ws, timeout: Duration) {
-    if let tungstenite::stream::MaybeTlsStream::Plain(s) = ws.get_ref() {
-        let _ = s.set_read_timeout(Some(timeout));
-    }
+    let _ = ws_socket(ws).set_read_timeout(Some(timeout));
 }
 
 impl OnlineSession {
@@ -1324,6 +1429,20 @@ impl OnlineSession {
         Self::open_with(SHERPA_ONLINE_PORT, INFERENCE_TIMEOUT)
     }
 
+    pub fn open_authenticated(
+        url: &str,
+        key: &str,
+        read_timeout: Duration,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            ws: Some(ws_connect_authenticated(url, key, read_timeout)?),
+            segments: Vec::new(),
+            current: String::new(),
+            read_timeout,
+            preview: false,
+            generation: 0,
+        })
+    }
     pub fn open_with_url(url: &str, read_timeout: Duration) -> Result<Self, String> {
         Ok(Self {
             ws: Some(ws_connect_url(url, read_timeout)?),
@@ -1331,6 +1450,7 @@ impl OnlineSession {
             current: String::new(),
             read_timeout,
             preview: false,
+            generation: 0,
         })
     }
 
@@ -1341,6 +1461,7 @@ impl OnlineSession {
             current: String::new(),
             read_timeout,
             preview: false,
+            generation: 0,
         })
     }
 
@@ -1385,7 +1506,8 @@ impl OnlineSession {
         }
         // Drain pending partials without blocking: anything the
         // server already emitted updates the live text.
-        loop {
+        let deadline = Instant::now() + Duration::from_millis(100);
+        while Instant::now() < deadline {
             let msg = {
                 let ws = self.ws.as_mut().ok_or("online session closed")?;
                 ws.read()
@@ -1400,11 +1522,11 @@ impl OnlineSession {
                         Ok(_) => {
                             let before = self.current.clone();
                             if self.ingest(s) {
-                                if let Some(seg) = self.segments.last() {
-                                    eprintln!("[stt] segment: {seg}");
+                                if !self.segments.is_empty() {
+                                    eprintln!("[stt] segment received");
                                 }
                             } else if self.current != before && !self.current.is_empty() {
-                                eprintln!("[stt] partial: {}", self.current);
+                                eprintln!("[stt] partial received");
                             }
                         }
                         Err(e) => eprintln!("[stt] {e}"),
@@ -1412,7 +1534,7 @@ impl OnlineSession {
                     if self.preview {
                         let full = self.transcript();
                         if !full.trim().is_empty() {
-                            set_live_text(full);
+                            set_session_preview(self.generation, full);
                         }
                     }
                     continue;
@@ -1437,7 +1559,13 @@ impl OnlineSession {
         ws_read_timeout(&mut ws, self.read_timeout);
         ws.send(tungstenite::Message::text("Done"))
             .map_err(|e| format!("ws done: {e}"))?;
+        let deadline = Instant::now() + self.read_timeout;
         loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("online completion deadline exceeded".into());
+            }
+            ws_read_timeout(&mut ws, remaining);
             match ws.read().map_err(|e| format!("ws read: {e}"))? {
                 tungstenite::Message::Text(t) => {
                     let s: &str = &t;
@@ -1446,7 +1574,9 @@ impl OnlineSession {
                     }
                     self.ingest(s);
                 }
-                tungstenite::Message::Close(_) => break,
+                tungstenite::Message::Close(_) => {
+                    return Err("online stream closed before completion".into());
+                }
                 _ => {}
             }
         }
@@ -1467,27 +1597,24 @@ impl OnlineSession {
 /// off in the child environment (on-device posture).
 /// Dictionary keywords file for needle (`--audio-keywords`, plain
 /// words one per line). /dev/shm: RAM, removed after the utterance.
-fn write_keywords_file(words: &[String]) -> Option<PathBuf> {
+fn write_keywords_file(words: &[String]) -> Result<Option<tempfile::NamedTempFile>, String> {
+    use std::io::Write;
     if !words.iter().any(|w| !w.trim().is_empty()) {
-        return None;
+        return Ok(None);
     }
-    let path = PathBuf::from(format!(
-        "/dev/shm/mywhisper-whistle-kw-{}",
-        std::process::id()
-    ));
+    let mut file = tempfile::Builder::new()
+        .prefix("mywhisper-keywords-")
+        .tempfile_in("/dev/shm")
+        .map_err(|e| format!("private keywords file: {e}"))?;
     let content = words
         .iter()
         .map(|w| w.trim())
         .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    match std::fs::write(&path, content) {
-        Ok(()) => Some(path),
-        Err(e) => {
-            eprintln!("[stt] whistle keywords: {e}");
-            None
-        }
-    }
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("keywords write: {e}"))?;
+    Ok(Some(file))
 }
 
 pub fn whistle_transcribe(
@@ -1499,7 +1626,7 @@ pub fn whistle_transcribe(
 ) -> Result<String, String> {
     const WINDOW: usize = 30 * 16_000;
     // Keywords file once per utterance (dictionary bias).
-    let kw_path = write_keywords_file(words);
+    let kw_path = write_keywords_file(words)?;
     let mut transcripts = Vec::new();
     // Empty slice still decodes once (keeps behavior uniform).
     let chunks: Vec<&[f32]> = if samples_16k.is_empty() {
@@ -1507,30 +1634,31 @@ pub fn whistle_transcribe(
     } else {
         samples_16k.chunks(WINDOW).collect()
     };
-    for (i, chunk) in chunks.iter().enumerate() {
+    for chunk in chunks {
         let wav = wav_bytes_16k(&audio::f32_to_i16(chunk));
-        let path = write_tmpfs_wav(&wav, i)?;
-        let text = whistle_pass(engine, model, &path, kw_path.as_deref(), lang);
-        let _ = std::fs::remove_file(&path);
+        let path = write_tmpfs_wav(&wav)?;
+        let text = whistle_pass(
+            engine,
+            model,
+            path.path(),
+            kw_path.as_ref().map(|f| f.path()),
+            lang,
+        );
         transcripts.push(text?);
-    }
-    if let Some(kw) = kw_path {
-        let _ = std::fs::remove_file(kw);
     }
     Ok(transcripts.join(" ").trim().to_string())
 }
 
-fn write_tmpfs_wav(wav: &[u8], idx: usize) -> Result<PathBuf, String> {
-    let dir = Path::new("/dev/shm");
-    if !dir.is_dir() {
-        return Err("whistle needs /dev/shm (tmpfs) for CLI staging".to_string());
-    }
-    let path = dir.join(format!(
-        "mywhisper-whistle-{}-{idx}.wav",
-        std::process::id()
-    ));
-    std::fs::write(&path, wav).map_err(|e| format!("stage whistle wav: {e}"))?;
-    Ok(path)
+fn write_tmpfs_wav(wav: &[u8]) -> Result<tempfile::NamedTempFile, String> {
+    use std::io::Write;
+    let mut file = tempfile::Builder::new()
+        .prefix("mywhisper-audio-")
+        .suffix(".wav")
+        .tempfile_in("/dev/shm")
+        .map_err(|e| format!("private audio staging: {e}"))?;
+    file.write_all(wav)
+        .map_err(|e| format!("stage whistle wav: {e}"))?;
+    Ok(file)
 }
 
 fn whistle_pass(
@@ -1554,22 +1682,9 @@ fn whistle_pass(
     if lang != "auto" && !lang.is_empty() {
         cmd.args(["--audio-language", lang]);
     }
-    let out = cmd
-        .env("NEEDLE_TELEMETRY", "0")
-        .env("DO_NOT_TRACK", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("spawn needle: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "needle: exit {}: {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    cmd.env("NEEDLE_TELEMETRY", "0").env("DO_NOT_TRACK", "1");
+    let stdout = crate::child::run(&mut cmd, &[], INFERENCE_TIMEOUT, 1024 * 1024)?;
+    let stdout = String::from_utf8(stdout).map_err(|_| "needle output is not UTF-8")?;
     whistle_parse_stdout(&stdout).ok_or_else(|| "needle: empty output".to_string())
 }
 
@@ -1580,19 +1695,18 @@ fn whistle_parse_stdout(stdout: &str) -> Option<String> {
     if stdout.is_empty() {
         return None;
     }
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(stdout) {
-        if let Some(t) = v
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(stdout)
+        && let Some(t) = v
             .get("text")
             .or_else(|| v.get("audio_text"))
             .and_then(|t| t.as_str())
-        {
-            let t = t.trim();
-            return if t.is_empty() {
-                None
-            } else {
-                Some(t.to_string())
-            };
-        }
+    {
+        let t = t.trim();
+        return if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        };
     }
     Some(stdout.to_string())
 }
@@ -1603,12 +1717,19 @@ fn whistle_parse_stdout(stdout: &str) -> Option<String> {
 /// FIFO + /dev/shm staging never touch disk. On any setup failure
 /// the caller falls back to single-file decode.
 pub struct WhistleStream {
-    child: std::process::Child,
+    child: crate::child::OwnedChild,
+    // The directory owns the FIFO and removes it on every exit.
+    _directory: tempfile::TempDir,
     fifo: PathBuf,
     writer: Option<std::fs::File>,
+    stdout: std::process::ChildStdout,
+    output: Vec<u8>,
+    eof: bool,
     header_sent: bool,
     rate: u32,
-    committed: Arc<Mutex<String>>,
+    committed: String,
+    generation: u64,
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl WhistleStream {
@@ -1618,177 +1739,223 @@ impl WhistleStream {
         keywords: Option<&Path>,
         lang: &str,
     ) -> Result<Self, String> {
-        let fifo = PathBuf::from(format!(
-            "/dev/shm/mywhisper-whistle-{}-{}.wav",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0)
-        ));
-        let status = Command::new("mkfifo")
+        Self::open_command(&mut Command::new(engine), model, keywords, lang)
+    }
+    fn open_command(
+        cmd: &mut Command,
+        model: &Path,
+        keywords: Option<&Path>,
+        lang: &str,
+    ) -> Result<Self, String> {
+        use std::os::unix::ffi::OsStrExt;
+        let directory = tempfile::Builder::new()
+            .prefix("mywhisper-stream-")
+            .tempdir_in("/dev/shm")
+            .map_err(|e| format!("private FIFO directory: {e}"))?;
+        let fifo = directory.path().join("audio.wav");
+        let name =
+            std::ffi::CString::new(fifo.as_os_str().as_bytes()).map_err(|_| "invalid FIFO path")?;
+        // SAFETY: the path is a NUL-terminated string in an exclusively owned directory.
+        if unsafe { libc::mkfifo(name.as_ptr(), 0o600) } < 0 {
+            return Err(format!("mkfifo: {}", std::io::Error::last_os_error()));
+        }
+        cmd.arg("--model")
+            .arg(model)
+            .arg("--audio")
             .arg(&fifo)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|e| format!("mkfifo: {e}"))?;
-        if !status.success() {
-            return Err("mkfifo failed".to_string());
-        }
-        let mut cmd = Command::new(engine);
-        cmd.args([
-            "--model",
-            &model.to_string_lossy(),
-            "--audio",
-            &fifo.to_string_lossy(),
-            "--audio-stream",
-            "--audio-chunk",
-            "1",
-        ]);
+            .args(["--audio-stream", "--audio-chunk", "1"]);
         if let Some(kw) = keywords {
-            cmd.args(["--audio-keywords", &kw.to_string_lossy()]);
+            cmd.arg("--audio-keywords").arg(kw);
         }
-        if lang != "auto" && !lang.is_empty() {
+        if !lang.is_empty() && lang != "auto" {
             cmd.args(["--audio-language", lang]);
         }
-        let mut child = cmd
-            .env("NEEDLE_TELEMETRY", "0")
+        cmd.env("NEEDLE_TELEMETRY", "0")
             .env("DO_NOT_TRACK", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("spawn needle stream: {e}"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "needle stdout unavailable".to_string())?;
-        let committed = Arc::new(Mutex::new(String::new()));
-        // Reader: last committed text wins; NDJSON lines.
-        let committed_r = committed.clone();
-        if crate::runtime::submit("whistle-read", move || {
-            use std::io::BufRead;
-            let reader = std::io::BufReader::new(stdout);
-            for line in reader.lines().map_while(Result::ok) {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                    if let Some(t) = v.get("text").and_then(|t| t.as_str()) {
-                        let t = t.trim();
-                        if !t.is_empty() {
-                            if let Ok(mut c) = committed_r.lock() {
-                                *c = t.to_string();
-                            }
-                        }
-                    }
-                }
-            }
-        })
-        .is_err()
-        {
-            let _ = child.kill();
-            let _ = std::fs::remove_file(&fifo);
-            return Err("whistle stream: runtime saturated".to_string());
-        }
+            .stderr(Stdio::null());
+        let mut child = crate::child::OwnedChild::spawn(cmd)?;
+        let stdout = child.0.stdout.take().ok_or("needle stdout unavailable")?;
+        crate::child::nonblocking(&stdout).map_err(|e| e.to_string())?;
         Ok(Self {
             child,
+            _directory: directory,
             fifo,
             writer: None,
+            stdout,
+            output: Vec::new(),
+            eof: false,
             header_sent: false,
             rate: 0,
-            committed,
+            committed: String::new(),
+            generation: 0,
+            cancel: None,
         })
     }
 
-    /// Feed source-rate s16 mono. Opens the FIFO on first call (the
-    /// reader side is already waiting); unknown-length WAV header
-    /// convention (0xFFFFFFFF), verified against the binary.
+    fn drain(&mut self) -> Result<(), String> {
+        if self
+            .cancel
+            .as_ref()
+            .is_some_and(|token| token.load(Ordering::Acquire))
+        {
+            return Err("cancelled".into());
+        }
+        use std::io::Read;
+        // Bound work per invocation as well as total pending line size.
+        for _ in 0..32 {
+            let mut bytes = [0u8; 4096];
+            match self.stdout.read(&mut bytes) {
+                Ok(0) => {
+                    self.eof = true;
+                    break;
+                }
+                Ok(n) => {
+                    self.output.extend_from_slice(&bytes[..n]);
+                    if self.output.len() > 1024 * 1024 {
+                        return Err("needle output limit exceeded".into());
+                    }
+                    while let Some(end) = self.output.iter().position(|b| *b == b'\n') {
+                        let line: Vec<_> = self.output.drain(..=end).collect();
+                        self.parse_line(&line)?;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(format!("needle output: {e}")),
+            }
+        }
+        if self.eof && !self.output.is_empty() {
+            let last = std::mem::take(&mut self.output);
+            self.parse_line(&last)?;
+        }
+        Ok(())
+    }
+    fn parse_line(&mut self, line: &[u8]) -> Result<(), String> {
+        let value: serde_json::Value =
+            serde_json::from_slice(line).map_err(|_| "malformed needle stream output")?;
+        if let Some(text) = value.get("text").and_then(|v| v.as_str()) {
+            if text.len() > 1024 * 1024 {
+                return Err("needle transcript limit exceeded".into());
+            }
+            self.committed = text.trim().to_owned();
+        }
+        Ok(())
+    }
+    fn write_bytes(&mut self, mut bytes: &[u8], deadline: Instant) -> Result<(), String> {
+        use std::io::Write;
+        while !bytes.is_empty() {
+            self.drain()?;
+            if self
+                .child
+                .try_status()
+                .map_err(|e| e.to_string())?
+                .is_some()
+            {
+                return Err("needle stream exited during input".into());
+            }
+            if Instant::now() >= deadline {
+                return Err("needle FIFO write deadline exceeded".into());
+            }
+            match self.writer.as_mut().ok_or("FIFO unavailable")?.write(bytes) {
+                Ok(0) => return Err("needle FIFO closed".into()),
+                Ok(n) => bytes = &bytes[n..],
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(format!("needle FIFO write: {e}")),
+            }
+        }
+        Ok(())
+    }
     pub fn feed(&mut self, pcm: &[i16], rate: u32) -> Result<(), String> {
+        self.feed_until(pcm, rate, Instant::now() + Duration::from_secs(5))
+    }
+    fn feed_until(&mut self, pcm: &[i16], rate: u32, deadline: Instant) -> Result<(), String> {
+        use std::os::unix::fs::OpenOptionsExt;
         if pcm.is_empty() {
             return Ok(());
         }
-        if self.writer.is_none() {
-            // Child must be alive, else open() blocks forever.
-            match self.child.try_wait() {
-                Ok(None) => {}
-                _ => return Err("needle stream died at open".to_string()),
-            }
-            let w = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&self.fifo)
-                .map_err(|e| format!("fifo open: {e}"))?;
-            self.writer = Some(w);
-            self.rate = rate;
+        if !(8000..=192000).contains(&rate) {
+            return Err("unsupported microphone sample rate".into());
         }
-        use std::io::Write;
-        let w = self.writer.as_mut().unwrap();
+        if self.writer.is_none() {
+            loop {
+                self.drain()?;
+                if self
+                    .child
+                    .try_status()
+                    .map_err(|e| e.to_string())?
+                    .is_some()
+                {
+                    return Err("needle stream exited before opening FIFO".into());
+                }
+                match std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+                    .open(&self.fifo)
+                {
+                    Ok(writer) => {
+                        self.writer = Some(writer);
+                        self.rate = rate;
+                        break;
+                    }
+                    Err(e) if e.raw_os_error() == Some(libc::ENXIO) => {}
+                    Err(e) => return Err(format!("FIFO open: {e}")),
+                }
+                if Instant::now() >= deadline {
+                    return Err("needle FIFO open deadline exceeded".into());
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        if rate != self.rate {
+            return Err("microphone sample rate changed during stream".into());
+        }
         if !self.header_sent {
-            // RIFF/WAVE, 16-bit mono; lengths unknown (stream).
-            let mut hdr = [0u8; 44];
-            hdr[0..4].copy_from_slice(b"RIFF");
-            hdr[4..8].copy_from_slice(&0xFFFFFFFFu32.to_le_bytes());
-            hdr[8..12].copy_from_slice(b"WAVE");
-            hdr[12..16].copy_from_slice(b"fmt ");
-            hdr[16..20].copy_from_slice(&16u32.to_le_bytes());
-            hdr[20..22].copy_from_slice(&1u16.to_le_bytes());
-            hdr[22..24].copy_from_slice(&1u16.to_le_bytes());
-            hdr[24..28].copy_from_slice(&self.rate.to_le_bytes());
-            hdr[28..32].copy_from_slice(&(self.rate * 2).to_le_bytes());
-            hdr[32..34].copy_from_slice(&2u16.to_le_bytes());
-            hdr[34..36].copy_from_slice(&16u16.to_le_bytes());
-            hdr[36..40].copy_from_slice(b"data");
-            hdr[40..44].copy_from_slice(&0xFFFFFF00u32.to_le_bytes());
-            w.write_all(&hdr).map_err(|e| format!("fifo header: {e}"))?;
+            let mut header = wav_bytes_16k(&[]);
+            header[24..28].copy_from_slice(&rate.to_le_bytes());
+            header[28..32].copy_from_slice(&(rate * 2).to_le_bytes());
+            header[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+            header[40..44].copy_from_slice(&0xFFFF_FF00u32.to_le_bytes());
+            self.write_bytes(&header, deadline)?;
             self.header_sent = true;
         }
-        let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
-        w.write_all(&bytes)
-            .map_err(|e| format!("fifo write: {e}"))?;
+        for chunk in pcm.chunks(8192) {
+            let bytes: Vec<_> = chunk.iter().flat_map(|s| s.to_le_bytes()).collect();
+            self.write_bytes(&bytes, deadline)?;
+        }
         Ok(())
     }
-
-    /// End the stream: close the FIFO (EOF), wait for the decoder
-    /// (bounded), return the last committed text.
-    pub fn finish(mut self) -> Result<String, String> {
-        drop(self.writer.take());
-        // Bounded wait: the tail is short, the decoder streams.
-        let mut waited = 0;
-        let status = loop {
-            match self.child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) => {
-                    waited += 1;
-                    if waited >= 300 {
-                        break None;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(e) => return Err(format!("needle wait: {e}")),
-            }
-        };
-        match status {
-            None => {
-                let _ = self.child.kill();
-                eprintln!("[stt] needle stream hung; killed, using committed text");
-            }
-            Some(status) if !status.success() => {
-                eprintln!("[stt] needle stream exit: {status}");
-            }
-            _ => {}
-        }
-        let _ = std::fs::remove_file(&self.fifo);
-        let text = self.committed.lock().map(|c| c.clone()).unwrap_or_default();
-        let text = text.trim().to_string();
-        if text.is_empty() {
-            return Err("whistle stream produced nothing".to_string());
-        }
-        Ok(text)
+    pub fn finish(self) -> Result<String, String> {
+        self.finish_until(Instant::now() + Duration::from_secs(30))
     }
-}
-
-impl Drop for WhistleStream {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = std::fs::remove_file(&self.fifo);
+    fn finish_until(mut self, deadline: Instant) -> Result<String, String> {
+        self.writer.take();
+        let mut status = None;
+        loop {
+            self.drain()?;
+            if status.is_none() {
+                status = self.child.try_status().map_err(|e| e.to_string())?;
+            }
+            if let Some(status) = status
+                && self.eof
+            {
+                if !status.success() {
+                    return Err(format!("needle stream failed: {status}"));
+                }
+                if self.committed.is_empty() {
+                    return Err("whistle stream produced nothing".into());
+                }
+                return Ok(std::mem::take(&mut self.committed));
+            }
+            if Instant::now() >= deadline {
+                return Err("needle stream completion deadline exceeded".into());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 
@@ -1822,15 +1989,7 @@ fn pump_whistle(
         // engines with the whole utterance intact.
         let (snap_len, chunk, rate) = rec
             .lock()
-            .map(|r| {
-                let snap = r.snapshot();
-                let chunk = if snap.len() > consumed {
-                    snap[consumed..].to_vec()
-                } else {
-                    Vec::new()
-                };
-                (snap.len(), chunk, r.rate())
-            })
+            .map(|r| (r.len(), r.samples_since(consumed), r.rate()))
             .unwrap_or_default();
         if chunk.is_empty() || rate == 0 {
             // Nothing new, or tap hasn't reported a rate yet: keep
@@ -1842,12 +2001,11 @@ fn pump_whistle(
             let _ = tx.send(Err(e));
             return;
         }
-        if preview {
-            if let Ok(c) = stream.committed.lock() {
-                if !c.trim().is_empty() {
-                    set_live_text(c.clone());
-                }
-            }
+        if preview
+            && INPUT_EPOCH.load(Ordering::Acquire) == stream.generation
+            && !stream.committed.is_empty()
+        {
+            set_session_preview(stream.generation, stream.committed.clone());
         }
     }
     if cancel.load(Ordering::Relaxed) {
@@ -1860,18 +2018,14 @@ fn pump_whistle(
     {
         let (chunk, rate) = rec
             .lock()
-            .map(|r| {
-                let snap = r.snapshot();
-                let chunk = if snap.len() > consumed {
-                    snap[consumed..].to_vec()
-                } else {
-                    Vec::new()
-                };
-                (chunk, r.rate())
-            })
+            .map(|r| (r.samples_since(consumed), r.rate()))
             .unwrap_or_default();
-        if !chunk.is_empty() && rate != 0 {
-            let _ = stream.feed(&chunk, rate);
+        if !chunk.is_empty()
+            && rate != 0
+            && let Err(e) = stream.feed(&chunk, rate)
+        {
+            let _ = tx.send(Err(e));
+            return;
         }
     }
     let _ = tx.send(stream.finish());
@@ -1936,11 +2090,11 @@ pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>, port: u16) -> Resu
     let boundary = "mywhisperwav";
     let mut fields = vec![("temperature", "0.0"), ("response_format", "json")];
     let prompt_owned;
-    if let Some(p) = prompt.as_ref() {
-        if !p.is_empty() {
-            prompt_owned = p.clone();
-            fields.push(("prompt", prompt_owned.as_str()));
-        }
+    if let Some(p) = prompt.as_ref()
+        && !p.is_empty()
+    {
+        prompt_owned = p.clone();
+        fields.push(("prompt", prompt_owned.as_str()));
     }
     let body = multipart_body(
         boundary,
@@ -1955,13 +2109,10 @@ pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>, port: u16) -> Resu
         )
         .body(body)
         .send()
-        .map_err(|e| format!("whisper /inference: {e}"))?;
-    if !res.status().is_success() {
-        return Err(format!("whisper /inference: http {}", res.status()));
-    }
-    let text = res.text().map_err(|e| format!("whisper body: {e}"))?;
-    let v: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("whisper json: {e}"))?;
+        .map_err(|e| http_error("whisper /inference", &e))?;
+    let text = http_reply(res, "whisper /inference")?;
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("whisper json: {}", crate::diagnostics::json(&e)))?;
     Ok(whisper_json_text(&v))
 }
 
@@ -1999,10 +2150,10 @@ fn openai_compat_transcribe(
     if let Some(l) = lang_param(lang) {
         fields.push(("language", l));
     }
-    if let Some(p) = prompt {
-        if !p.is_empty() {
-            fields.push(("prompt", p));
-        }
+    if let Some(p) = prompt
+        && !p.is_empty()
+    {
+        fields.push(("prompt", p));
     }
     let body = multipart_body(
         boundary,
@@ -2019,13 +2170,12 @@ fn openai_compat_transcribe(
     if !key.is_empty() {
         req = req.bearer_auth(key);
     }
-    let res = req.send().map_err(|e| format!("cloud transcribe: {e}"))?;
-    if !res.status().is_success() {
-        return Err(format!("cloud transcribe: http {}", res.status()));
-    }
-    let text = res.text().map_err(|e| format!("cloud body: {e}"))?;
-    let v: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("cloud json: {e}"))?;
+    let res = req
+        .send()
+        .map_err(|e| http_error("cloud transcription", &e))?;
+    let text = http_reply(res, "cloud transcription")?;
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("cloud json: {}", crate::diagnostics::json(&e)))?;
     v.get("text")
         .and_then(|t| t.as_str())
         .map(|t| t.trim().to_string())
@@ -2053,13 +2203,10 @@ fn deepgram_transcribe(
         .header("Content-Type", "audio/wav")
         .body(wav.to_vec())
         .send()
-        .map_err(|e| format!("deepgram: {e}"))?;
-    if !res.status().is_success() {
-        return Err(format!("deepgram: http {}", res.status()));
-    }
-    let text = res.text().map_err(|e| format!("deepgram body: {e}"))?;
-    let v: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("deepgram json: {e}"))?;
+        .map_err(|e| http_error("Deepgram transcription", &e))?;
+    let text = http_reply(res, "Deepgram transcription")?;
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("deepgram json: {}", crate::diagnostics::json(&e)))?;
     v.pointer("/results/channels/0/alternatives/0/transcript")
         .and_then(|t| t.as_str())
         .map(|t| t.trim().to_string())
@@ -2091,27 +2238,16 @@ fn gemini_transcribe(key: &str, model: &str, lang: &str, wav: &[u8]) -> Result<S
         .post(&url)
         .header("x-goog-api-key", key)
         .header("Content-Type", "application/json")
-        .body(serde_json::to_string(&body).map_err(|e| format!("gemini body: {e}"))?)
+        .body(
+            serde_json::to_string(&body)
+                .map_err(|e| format!("gemini body: {}", crate::diagnostics::json(&e)))?,
+        )
         .send()
-        .map_err(|e| format!("gemini: {e}"))?;
-    if !res.status().is_success() {
-        return Err(format!("gemini: http {}", res.status()));
-    }
-    let text = res.text().map_err(|e| format!("gemini body: {e}"))?;
-    let v: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("gemini json: {e}"))?;
-    let text = v
-        .pointer("/candidates/0/content/parts")
-        .and_then(|p| p.as_array())
-        .map(|parts| {
-            parts
-                .iter()
-                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .unwrap_or_default();
-    Ok(text.trim().to_string())
+        .map_err(|e| http_error("Gemini transcription", &e))?;
+    let text = http_reply(res, "Gemini transcription")?;
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("gemini json: {}", crate::diagnostics::json(&e)))?;
+    crate::provider_contract::gemini_answer(&v).map(|text| text.trim().to_owned())
 }
 
 // ----------------------------------------------------------- orchestration
@@ -2146,16 +2282,26 @@ const SPEC_UNSTABLE_AUDIO: usize = 32_000;
 /// Background speculative loop. Snapshots (never drains) so the
 /// recorder stays whole for fallback; single inference at a time by
 /// construction (next pass only after the previous lands).
-fn run_spec(
-    rec: Arc<Mutex<Recorder>>,
-    stop: Arc<AtomicBool>,
+struct SpecConfig {
     data_dir: PathBuf,
     update_secs: f32,
     overlap: usize,
-    tx: mpsc::Sender<(String, usize, Vec<f32>)>,
     whisper_port: u16,
     settled: Arc<AtomicBool>,
+}
+fn run_spec(
+    rec: Arc<Mutex<Recorder>>,
+    stop: Arc<AtomicBool>,
+    config: SpecConfig,
+    tx: mpsc::Sender<(String, usize, Vec<f32>)>,
 ) {
+    let SpecConfig {
+        data_dir,
+        update_secs,
+        overlap,
+        whisper_port,
+        settled,
+    } = config;
     let words = crate::store::Store::open(&data_dir.join("state.db"))
         .ok()
         .map(|store| store.load_words().unwrap_or_default())
@@ -2168,25 +2314,30 @@ fn run_spec(
     let mut committed = (String::new(), 0usize);
     let tick = Duration::from_secs_f32(update_secs.max(0.5));
     loop {
-        std::thread::sleep(tick);
+        let deadline = Instant::now() + tick;
+        while Instant::now() < deadline && !stop.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        let snap = rec.lock().map(|r| r.snapshot()).unwrap_or_default();
-        if snap.len() <= consumed {
+        let (length, snap, rate) = rec
+            .lock()
+            .map(|r| (r.len(), r.samples_since(consumed), r.rate()))
+            .unwrap_or_default();
+        if snap.is_empty() {
             continue;
         }
-        let rate = rec.lock().map(|r| r.rate()).unwrap_or(0);
         if resampler.as_ref().map(|(r, _)| *r) != Some(rate) {
             resampler = Some((rate, Resampler::new(rate.max(1))));
         }
-        let fresh = resampler.as_mut().unwrap().1.process(&snap[consumed..]);
-        consumed = snap.len();
+        let fresh = resampler.as_mut().unwrap().1.process(&snap);
+        consumed = length;
         buffer.extend_from_slice(&fresh);
         if buffer.len() < SPEC_FIRST_PASS {
             continue;
         }
-        let window = crate::speculative::unconfirmed_window(&buffer, committed.1, overlap);
+        let window = buffer.clone();
         let wav = wav_bytes_16k(&audio::f32_to_i16(&window));
         match whisper_transcribe(&wav, prompt.clone(), whisper_port) {
             Ok(hyp) => {
@@ -2196,7 +2347,7 @@ fn run_spec(
                         agreed,
                         buffer.len().saturating_sub(overlap + SPEC_UNSTABLE_AUDIO),
                     );
-                    eprintln!("[stt] spec committed: {}", committed.0);
+                    eprintln!("[stt] speculative preview updated (content redacted)");
                 }
                 prev_hyp = hyp;
             }
@@ -2207,21 +2358,50 @@ fn run_spec(
     // the utterance exactly up to release.
     wait_settled(&settled);
     {
-        let snap = rec.lock().map(|r| r.snapshot()).unwrap_or_default();
-        if snap.len() > consumed {
-            let rate = rec.lock().map(|r| r.rate()).unwrap_or(0);
+        let (snap, rate) = rec
+            .lock()
+            .map(|r| (r.samples_since(consumed), r.rate()))
+            .unwrap_or_default();
+        if !snap.is_empty() {
             if resampler.as_ref().map(|(r, _)| *r) != Some(rate) {
                 resampler = Some((rate, Resampler::new(rate.max(1))));
             }
             if let Some(rs) = resampler.as_mut() {
-                buffer.extend_from_slice(&rs.1.process(&snap[consumed..]));
+                buffer.extend_from_slice(&rs.1.process(&snap));
             }
         }
     }
     let _ = tx.send((committed.0, committed.1, buffer));
 }
 
+static ACTIVE_SESSIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+struct SessionLoops {
+    stop: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+    settled: Arc<AtomicBool>,
+    spec_stop: Option<Arc<AtomicBool>>,
+    tasks: Vec<crate::runtime::SessionTask>,
+}
+impl Drop for SessionLoops {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+        self.stop.store(true, Ordering::Release);
+        self.settled.store(true, Ordering::Release);
+        if let Some(stop) = &self.spec_stop {
+            stop.store(true, Ordering::Release);
+        }
+        // SessionTask transfers the still-owned handles to the bounded reaper.
+        self.tasks.clear();
+        ACTIVE_SESSIONS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 struct LiveUtterance {
+    _loops: SessionLoops,
+    captured_secs: Option<f64>,
+    privacy_epoch: i64,
+    recorded_at: i64,
     recorder: Arc<Mutex<Recorder>>,
     stop: Arc<AtomicBool>,
     /// Cancel (Escape): pump aborts without finishing (no Done, no
@@ -2251,7 +2431,6 @@ struct LiveUtterance {
     keep_audio: bool,
     /// Overlap (16 kHz samples) for the speculative tail window.
     /// Zero when speculative passes are off.
-    spec_overlap: usize,
     /// Release settle flag: the tail thread sets it once the
     /// recorder holds exactly the utterance up to release (flushed
     /// + truncated + disarmed). Pumps/spec snapshot only after it.
@@ -2263,8 +2442,44 @@ struct LiveUtterance {
     net: ServerNet,
 }
 
+static INPUT_EPOCH: AtomicU64 = AtomicU64::new(0);
+static ARM_LOCK: Mutex<()> = Mutex::new(());
+
+/// Reserve ownership synchronously at the input edge, before any queued IO.
+pub fn reserve_utterance() -> u64 {
+    let _arm = ARM_LOCK.lock().unwrap();
+    let epoch = INPUT_EPOCH.fetch_add(1, Ordering::AcqRel) + 1;
+    if let Some(old) = live().lock().unwrap().take() {
+        audio::clear_recorder(&old.recorder);
+        drop(old);
+    }
+    *live_slot().lock().unwrap() = None;
+    epoch
+}
+
 static LIVE: OnceLock<Mutex<Option<LiveUtterance>>> = OnceLock::new();
-static BUSY: AtomicBool = AtomicBool::new(false);
+static FINAL_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static FINAL_CANCEL: Mutex<Vec<std::sync::Weak<AtomicBool>>> = Mutex::new(Vec::new());
+
+/// A privacy/reset boundary owns cancellation of capture and queued delivery.
+/// It never records a discarded marker, which would repopulate a reset store.
+pub(crate) fn invalidate_all_capture() {
+    let _arm = ARM_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    INPUT_EPOCH.fetch_add(1, Ordering::AcqRel);
+    if let Some(session) = live().lock().unwrap_or_else(|p| p.into_inner()).take() {
+        audio::clear_recorder(&session.recorder);
+        drop(session);
+    }
+    for token in FINAL_CANCEL
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+    {
+        token.store(true, Ordering::Release);
+    }
+    *live_slot().lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
 
 /// Latest live-preview text for the pill drain loop. Pumps overwrite
 /// on change; the drain takes (clears). Empty = nothing new.
@@ -2276,10 +2491,17 @@ fn live_slot() -> &'static Mutex<Option<String>> {
 
 /// Publish a preview update (streaming pumps, option-gated by them).
 pub fn set_live_text(text: String) {
-    if let Ok(mut slot) = live_slot().lock() {
-        if slot.as_ref() != Some(&text) {
-            *slot = Some(text);
-        }
+    if let Ok(mut slot) = live_slot().lock()
+        && slot.as_ref() != Some(&text)
+    {
+        *slot = Some(text);
+    }
+}
+
+fn set_session_preview(generation: u64, text: String) {
+    let _arm = ARM_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    if generation != 0 && INPUT_EPOCH.load(Ordering::Acquire) == generation {
+        set_live_text(text);
     }
 }
 
@@ -2304,7 +2526,32 @@ pub fn begin_utterance(
     data_dir: &Path,
     release_delay_ms: u64,
 ) {
-    end_stale();
+    let epoch = reserve_utterance();
+    begin_reserved_utterance(epoch, stt, keep_audio, data_dir, release_delay_ms);
+}
+
+pub fn begin_reserved_utterance(
+    epoch: u64,
+    stt: crate::settings::SttSettings,
+    keep_audio: bool,
+    data_dir: &Path,
+    release_delay_ms: u64,
+) {
+    let _arm = ARM_LOCK.lock().unwrap();
+    if INPUT_EPOCH.load(Ordering::Acquire) != epoch {
+        return;
+    }
+    let privacy_epoch = match crate::store::Store::open(&data_dir.join("state.db"))
+        .and_then(|store| store.capture_epoch())
+    {
+        Ok(epoch) => epoch,
+        Err(error) => {
+            engine_failed();
+            eprintln!("[stt] capture policy unavailable: {error}");
+            return;
+        }
+    };
+    let recorded_at = crate::store::now_ms() / 1000;
     CANCELLED.store(false, Ordering::Relaxed);
     let mut plans = match plans_for(&stt, data_dir) {
         Ok(v) => v,
@@ -2330,6 +2577,7 @@ pub fn begin_utterance(
     let backend = stt.gpu_backend;
     let sherpa_backend = stt.sherpa_backend;
     let warm_net = server_net(&stt);
+    let started = Instant::now();
     // Background warmup; the release worker re-ensures anyway.
     // Pool-submitted: a saturated system skips warmup instead of
     // dying (the worker will still try when the utterance ends).
@@ -2337,6 +2585,9 @@ pub fn begin_utterance(
         let plan = plan.clone();
         let data_dir = data_dir.clone();
         if let Err(e) = crate::runtime::submit("stt-warmup", move || {
+            if INPUT_EPOCH.load(Ordering::Acquire) != epoch {
+                return;
+            }
             if let Err(e) = ensure_servers(&plan, &data_dir, backend, sherpa_backend, &warm_net) {
                 eprintln!("[stt] warmup: {e}");
             }
@@ -2351,6 +2602,7 @@ pub fn begin_utterance(
     audio::set_recorder(Some(recorder.clone()));
     let stop = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
+    let mut tasks = Vec::new();
     // Speculative passes: whisper plans only, opt-in. Everything else
     // either streams natively or decodes after release.
     let spec: Option<SpecHandle> = if matches!(plan, Plan::WhisperHttp { .. }) && stt.spec_enabled {
@@ -2363,117 +2615,149 @@ pub fn begin_utterance(
         let sstop = spec_stop.clone();
         let spec_port = engine_port(&server_net(&stt), WHISPER_PORT);
         let spec_settled = settled.clone();
-        if let Err(e) = crate::runtime::submit("stt-spec", move || {
+        match crate::runtime::spawn_session("stt-spec", move || {
             run_spec(
                 rec,
                 sstop,
-                data,
-                update,
-                overlap,
+                SpecConfig {
+                    data_dir: data,
+                    update_secs: update,
+                    overlap,
+                    whisper_port: spec_port,
+                    settled: spec_settled,
+                },
                 tx,
-                spec_port,
-                spec_settled,
             );
         }) {
-            eprintln!("[stt] press: {e}");
-            None
-        } else {
-            eprintln!("[stt] speculative passes on (every {update:.1}s)");
-            Some(SpecHandle {
-                stop: spec_stop,
-                done_rx: rx,
-            })
+            Err(e) => {
+                eprintln!("[stt] press: {e}");
+                None
+            }
+            Ok(task) => {
+                tasks.push(task);
+                eprintln!("[stt] speculative passes on (every {update:.1}s)");
+                Some(SpecHandle {
+                    stop: spec_stop,
+                    done_rx: rx,
+                })
+            }
         }
     } else {
         None
     };
     let result_rx = if plan.streaming() {
         let online_port = engine_port(&server_net(&stt), SHERPA_ONLINE_PORT);
-        let open = match &plan {
-            Plan::SelfHostedWs { url } => OnlineSession::open_with_url(url, INFERENCE_TIMEOUT),
-            _ => OnlineSession::open_with(online_port, INFERENCE_TIMEOUT),
-        };
-        match open.map(|mut session| {
-            session.preview = stt.live_preview;
-            session
-        }) {
-            Ok(session) => {
-                let (tx, rx) = mpsc::channel();
-                let rec = recorder.clone();
-                let stop_pump = stop.clone();
-                let cancel_pump = cancel.clone();
-                let pump_settled = settled.clone();
-                if let Err(e) = crate::runtime::submit("stt-pump", move || {
-                    pump_online(session, rec, stop_pump, cancel_pump, pump_settled, tx);
-                }) {
-                    eprintln!("[stt] press: {e}");
-                    audio::set_recorder(None);
-                    return;
+        let (tx, rx) = mpsc::channel();
+        let rec = recorder.clone();
+        let stop_pump = stop.clone();
+        let cancel_pump = cancel.clone();
+        let pump_settled = settled.clone();
+        let plan = plan.clone();
+        let preview = stt.live_preview;
+        match crate::runtime::spawn_session("stt-pump", move || {
+            if cancel_pump.load(Ordering::Acquire) {
+                return;
+            }
+            let open = match &plan {
+                Plan::SelfHostedWs { url, key } => {
+                    OnlineSession::open_authenticated(url, key, INFERENCE_TIMEOUT)
                 }
+                _ => OnlineSession::open_with(online_port, INFERENCE_TIMEOUT),
+            };
+            match open {
+                Ok(mut session) => {
+                    session.preview = preview;
+                    session.generation = epoch;
+                    pump_online(session, rec, stop_pump, cancel_pump, pump_settled, tx);
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                }
+            }
+        }) {
+            Ok(task) => {
+                tasks.push(task);
                 Some(rx)
             }
             Err(e) => {
-                // Server down at press: do NOT abort. Keep recording;
-                // the release worker boots the server (ensure) and
-                // the one-shot fallback transcribes. First cold
-                // press costs model-load latency, never the text.
-                eprintln!("[stt] press: online session failed, recording anyway: {e}");
+                eprintln!("[stt] pump: {e}");
                 None
             }
         }
     } else {
         None
     };
-    // Whistle live stream (FIFO + --audio-stream): decode overlaps the
-    // hold; the pump below feeds source-rate PCM as tapped. Setup
-    // failure falls back to single-file decode in the worker.
-    let whistle_rx = match &plan {
-        Plan::WhistleCli {
-            engine,
-            model,
-            lang,
-        } => {
-            let words = load_hint_words(&data_dir);
-            let kw = write_keywords_file(&words);
-            let kw_cleanup = kw.clone();
-            match WhistleStream::open(engine, model, kw.as_deref(), lang) {
-                Ok(stream) => {
-                    let (tx, rx) = mpsc::channel();
-                    let rec = recorder.clone();
-                    let stop_pump = stop.clone();
-                    let cancel_pump = cancel.clone();
-                    let preview = stt.live_preview;
-                    let whistle_settled = settled.clone();
-                    if let Err(e) = crate::runtime::submit("whistle-pump", move || {
-                        pump_whistle(
-                            stream,
-                            rec,
-                            stop_pump,
-                            cancel_pump,
-                            preview,
-                            whistle_settled,
-                            tx,
-                        );
-                        if let Some(kw) = kw_cleanup {
-                            let _ = std::fs::remove_file(kw);
-                        }
-                    }) {
-                        eprintln!("[stt] press: {e}");
-                    }
-                    Some(rx)
+    let whistle_rx = if let Plan::WhistleCli {
+        engine,
+        model,
+        lang,
+    } = &plan
+    {
+        let (tx, rx) = mpsc::channel();
+        let engine = engine.clone();
+        let model = model.clone();
+        let lang = lang.clone();
+        let data = data_dir.clone();
+        let rec = recorder.clone();
+        let stop_pump = stop.clone();
+        let cancel_pump = cancel.clone();
+        let pump_settled = settled.clone();
+        let preview = stt.live_preview;
+        match crate::runtime::spawn_session("whistle-pump", move || {
+            if cancel_pump.load(Ordering::Acquire) {
+                return;
+            }
+            let words = load_hint_words(&data);
+            let kw = match write_keywords_file(&words) {
+                Ok(file) => file,
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    return;
+                }
+            };
+            match WhistleStream::open(&engine, &model, kw.as_ref().map(|f| f.path()), &lang) {
+                Ok(mut stream) => {
+                    stream.generation = epoch;
+                    stream.cancel = Some(cancel_pump.clone());
+                    pump_whistle(
+                        stream,
+                        rec,
+                        stop_pump,
+                        cancel_pump,
+                        preview,
+                        pump_settled,
+                        tx,
+                    )
                 }
                 Err(e) => {
-                    eprintln!("[stt] whistle stream unavailable ({e}); file fallback");
-                    if let Some(kw) = kw {
-                        let _ = std::fs::remove_file(kw);
-                    }
-                    None
+                    let _ = tx.send(Err(e));
                 }
             }
+        }) {
+            Ok(task) => {
+                tasks.push(task);
+                Some(rx)
+            }
+            Err(e) => {
+                eprintln!("[stt] whistle pump: {e}");
+                None
+            }
         }
-        _ => None,
+    } else {
+        None
     };
+    ACTIVE_SESSIONS.fetch_add(1, Ordering::AcqRel);
     *live().lock().unwrap() = Some(LiveUtterance {
+        _loops: SessionLoops {
+            stop: stop.clone(),
+            cancel: cancel.clone(),
+            settled: settled.clone(),
+            spec_stop: spec.as_ref().map(|s| s.stop.clone()),
+            tasks,
+        },
+        captured_secs: None,
+        privacy_epoch,
+        recorded_at,
         recorder,
         stop,
         cancel,
@@ -2482,14 +2766,13 @@ pub fn begin_utterance(
         whistle_rx,
         plan,
         fallbacks,
-        started: Instant::now(),
+        started,
         data_dir,
         backend,
         sherpa_backend,
         vad_enabled: stt.vad_enabled,
         vad_gate: stt.vad_threshold,
         keep_audio,
-        spec_overlap: (stt.spec_overlap_secs.clamp(0.0, 5.0) * 16_000.0) as usize,
         net: server_net(&stt),
         settled: settled.clone(),
         release_delay_ms,
@@ -2538,13 +2821,11 @@ fn pump_online(
         }
         // Snapshot, not drain: a failed stream falls back to file
         // engines with the whole utterance intact.
-        let snap = rec.lock().map(|r| r.snapshot()).unwrap_or_default();
-        let chunk = if snap.len() > consumed {
-            snap[consumed..].to_vec()
-        } else {
-            Vec::new()
-        };
-        consumed = snap.len();
+        let (length, chunk) = rec
+            .lock()
+            .map(|r| (r.len(), r.samples_since(consumed)))
+            .unwrap_or_default();
+        consumed = length;
         if let Err(e) = feed(chunk) {
             let _ = tx.send(Err(e));
             return;
@@ -2563,14 +2844,7 @@ fn pump_online(
     wait_settled(&settled);
     let tail = rec
         .lock()
-        .map(|r| {
-            let snap = r.snapshot();
-            if snap.len() > consumed {
-                snap[consumed..].to_vec()
-            } else {
-                Vec::new()
-            }
-        })
+        .map(|r| r.samples_since(consumed))
         .unwrap_or_default();
     if let Err(e) = feed(tail) {
         let _ = tx.send(Err(e));
@@ -2584,9 +2858,18 @@ fn pump_online(
 /// row (setting-gated, see below). The pill hides immediately; the
 /// row lands via the normal home refresh.
 pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
+    let _arm = ARM_LOCK.lock().unwrap();
+    INPUT_EPOCH.fetch_add(1, Ordering::AcqRel);
     let sess = live().lock().unwrap().take();
-    audio::set_recorder(None);
+    if let Some(sess) = &sess {
+        audio::clear_recorder(&sess.recorder);
+    }
     let Some(sess) = sess else {
+        let pending = FINAL_CANCEL.lock().unwrap_or_else(|p| p.into_inner());
+        for token in pending.iter().filter_map(std::sync::Weak::upgrade) {
+            token.store(true, Ordering::Release);
+        }
+        CANCELLED.store(true, Ordering::Release);
         on_done();
         return;
     };
@@ -2595,40 +2878,45 @@ pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
     sess.settled.store(true, Ordering::Relaxed);
     CANCELLED.store(true, Ordering::Relaxed);
     let held_secs = sess.started.elapsed().as_secs_f64();
+    let privacy_epoch = sess.privacy_epoch;
+    let recorded_at = sess.recorded_at;
+    let data_dir = sess.data_dir.clone();
     drop(sess); // result_rx drop unblocks the aborting pump
     let on_done = Arc::new(Mutex::new(Some(
         Box::new(on_done) as Box<dyn FnOnce() + Send>
     )));
     let od = on_done.clone();
     let finish = move || {
-        if let Ok(mut g) = od.lock() {
-            if let Some(done) = g.take() {
-                done();
-            }
+        if let Ok(mut g) = od.lock()
+            && let Some(done) = g.take()
+        {
+            done();
         }
     };
     if crate::runtime::submit("stt-cancel", move || {
-        let paths = match crate::paths::AppPaths::create() {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("[stt] cancel: paths: {e}");
-                finish();
-                return;
-            }
-        };
-        let keep = match crate::store::Store::open(&paths.db_file()) {
+        match crate::store::Store::open(&data_dir.join("state.db")) {
             Ok(store) => {
                 let stt = store.load_settings();
                 let save = stt.privacy.save_discarded_transcriptions
                     && stt.privacy.history_enabled
                     && held_secs >= 1.0;
                 if save {
-                    let node =
-                        crate::device::DeviceIdentity::load_or_create(&paths.device_key_file())
-                            .map(|i| i.node_id)
-                            .unwrap_or_else(|_| "unknown".to_string());
-                    match store.add_discarded(held_secs.round() as i64, &node) {
-                        Ok(_) => eprintln!("[stt] cancel: discarded row kept ({held_secs:.1}s)"),
+                    // This marker has no transcript or identity payload. Random
+                    // UUIDs remain globally unique without provisioning any key.
+                    match store.persist_capture(
+                        privacy_epoch,
+                        crate::store::CapturedUtterance {
+                            raw: "",
+                            text: "",
+                            duration_secs: held_secs.round() as i64,
+                            recorded_at,
+                            discarded: true,
+                            wav: None,
+                        },
+                        &AtomicBool::new(false),
+                    ) {
+                        Ok(true) => eprintln!("[stt] cancel: discarded row kept ({held_secs:.1}s)"),
+                        Ok(false) => eprintln!("[stt] cancel: stale capture discarded"),
                         Err(e) => eprintln!("[stt] cancel: discard store: {e}"),
                     }
                 } else {
@@ -2637,25 +2925,16 @@ pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
             }
             Err(e) => eprintln!("[stt] cancel: store: {e}"),
         };
-        let _ = keep;
         finish();
     })
     .is_err()
     {
         eprintln!("[stt] cancel: runtime saturated");
-        if let Ok(mut g) = on_done.lock() {
-            if let Some(done) = g.take() {
-                done();
-            }
+        if let Ok(mut g) = on_done.lock()
+            && let Some(done) = g.take()
+        {
+            done();
         }
-    }
-}
-
-/// Drop an orphaned live session (new press while one is open).
-fn end_stale() {
-    if live().lock().unwrap().is_some() {
-        eprintln!("[stt] previous utterance never ended; closing it");
-        end_utterance_inner(true, None);
     }
 }
 
@@ -2663,8 +2942,46 @@ fn end_stale() {
 /// lag behind realtime), then paste + history. Never blocks the GTK
 /// thread: returns immediately. `on_done` fires on the worker when the
 /// pill may hide (success, empty, or failure alike).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinalizationOutcome {
+    Complete,
+    Cancelled,
+    Failed,
+}
+
 pub fn end_utterance(on_done: impl FnOnce() + Send + 'static) {
-    end_utterance_inner(false, Some(Box::new(on_done)));
+    end_utterance_with_outcome(move |_| on_done());
+}
+
+/// Completion belongs to this release, including failures and cancellation.
+pub fn end_utterance_with_outcome(on_done: impl FnOnce(FinalizationOutcome) + Send + 'static) {
+    let outcome = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let final_outcome = outcome.clone();
+    end_utterance_inner(
+        false,
+        Some(Box::new(move || {
+            let result = match final_outcome.load(Ordering::Acquire) {
+                1 => FinalizationOutcome::Complete,
+                2 => FinalizationOutcome::Cancelled,
+                _ => FinalizationOutcome::Failed,
+            };
+            on_done(result);
+        })),
+        outcome,
+    );
+}
+
+/// Device failure cancels this capture without keeping a discarded marker.
+/// Earlier queued utterances retain their separate cancellation ownership.
+pub fn abort_failed_capture() {
+    let _arm = ARM_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    INPUT_EPOCH.fetch_add(1, Ordering::AcqRel);
+    if let Some(session) = live().lock().unwrap_or_else(|p| p.into_inner()).take() {
+        audio::clear_recorder(&session.recorder);
+        drop(session);
+    }
+    CANCELLED.store(true, Ordering::Release);
+    *live_slot().lock().unwrap_or_else(|p| p.into_inner()) = None;
 }
 
 /// Release settle: bound on waiting for in-flight slices to land
@@ -2675,7 +2992,7 @@ pub fn end_utterance(on_done: impl FnOnce() + Send + 'static) {
 const RELEASE_FLUSH_MS: u64 = 400;
 /// Settle-wait cap for consumers (pumps/spec): the release tail
 /// thread always settles, so this only trips on pathology.
-const SETTLE_WAIT_MS: u64 = 1500;
+const SETTLE_WAIT_MS: u64 = RELEASE_FLUSH_MS + 2000 + 100;
 
 /// Block until the release tail thread settles the recorder (or the
 /// cap trips). Consumers snapshot only settled audio: exactly the
@@ -2688,10 +3005,16 @@ fn wait_settled(settled: &AtomicBool) {
     }
 }
 
-fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
+fn end_utterance_inner(
+    stale: bool,
+    on_done: Option<Box<dyn FnOnce() + Send>>,
+    outcome: Arc<std::sync::atomic::AtomicU8>,
+) {
+    let _arm = ARM_LOCK.lock().unwrap();
+    INPUT_EPOCH.fetch_add(1, Ordering::AcqRel);
     let sess = live().lock().unwrap().take();
-    let Some(sess) = sess else {
-        audio::set_recorder(None);
+    let Some(mut sess) = sess else {
+        outcome.store(2, Ordering::Release);
         if let Some(done) = on_done {
             done();
         }
@@ -2699,18 +3022,9 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
     };
     sess.stop.store(true, Ordering::Relaxed);
     if stale {
-        audio::set_recorder(None);
+        audio::clear_recorder(&sess.recorder);
         sess.settled.store(true, Ordering::Relaxed);
         return; // replaced, not transcribed
-    }
-    if BUSY.swap(true, Ordering::SeqCst) {
-        eprintln!("[stt] worker busy; dropping overlapping utterance");
-        audio::set_recorder(None);
-        sess.settled.store(true, Ordering::Relaxed);
-        if let Some(done) = on_done {
-            done();
-        }
-        return;
     }
     // Tail settle off the GTK thread (the pill already shows
     // Processing): wait for in-flight slices to land past release,
@@ -2718,12 +3032,13 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
     // after kept), disarm, then hand the settled audio to the
     // worker. Pumps/spec wait on the same flag before snapshotting.
     let t_release = std::time::Instant::now();
-    let delay_ms = sess.release_delay_ms;
+    sess.captured_secs = Some(t_release.duration_since(sess.started).as_secs_f64());
+    let delay_ms = sess.release_delay_ms.min(2000);
     let t_cut = t_release + Duration::from_millis(delay_ms);
     let cap_ms = RELEASE_FLUSH_MS + delay_ms;
     let settled = sess.settled.clone();
     let recorder = sess.recorder.clone();
-    std::thread::spawn(move || {
+    let tail = crate::runtime::spawn_session("release-tail", move || {
         let mut waited = 0u64;
         loop {
             let past = recorder
@@ -2740,66 +3055,133 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
             .lock()
             .map(|mut r| r.settle_release(t_cut))
             .unwrap_or_default();
-        audio::set_recorder(None);
+        audio::clear_recorder(&recorder);
         settled.store(true, Ordering::Relaxed);
-        let on_done = Arc::new(Mutex::new(on_done));
-        let od = on_done.clone();
-        if let Err(e) = crate::runtime::submit("stt-worker", move || {
-            // Dictionary hints for STT bias (fresh read; empty disables):
-            // words plus every snippet trigger, like the reference.
-            let words = crate::store::Store::open(&sess.data_dir.join("state.db"))
-                .ok()
-                .map(|store| {
-                    let mut hints = store.load_words().unwrap_or_default();
-                    if let Ok(snips) = store.load_snippets() {
-                        for sn in snips {
-                            hints.extend(sn.triggers());
-                        }
+    });
+    match tail {
+        Ok(task) => sess._loops.tasks.push(task),
+        Err(e) => {
+            audio::clear_recorder(&sess.recorder);
+            sess.settled.store(true, Ordering::Release);
+            engine_failed();
+            eprintln!("[stt] release tail could not start: {e}");
+            if let Some(done) = on_done {
+                done();
+            }
+            return;
+        }
+    }
+    let cancellation = Arc::new(AtomicBool::new(false));
+    {
+        let mut pending = FINAL_CANCEL.lock().unwrap_or_else(|p| p.into_inner());
+        pending.retain(|token| token.strong_count() > 0);
+        pending.push(Arc::downgrade(&cancellation));
+        pending.push(Arc::downgrade(&sess.cancel));
+    }
+    let completion = FinalizationGuard::new(Arc::new(Mutex::new(on_done)));
+    let settled = sess.settled.clone();
+    if let Err(e) = crate::runtime::submit_finalization(move || {
+        let _completion = completion;
+        wait_settled(&settled);
+        if !settled.load(Ordering::Acquire) {
+            engine_failed();
+            eprintln!("[stt] release audio did not settle before deadline");
+            return;
+        }
+        if cancellation.load(Ordering::Acquire) {
+            outcome.store(2, Ordering::Release);
+            return;
+        }
+        let words = crate::store::Store::open(&sess.data_dir.join("state.db"))
+            .ok()
+            .map(|store| {
+                let mut hints = store.load_words().unwrap_or_default();
+                if let Ok(snips) = store.load_snippets() {
+                    for snippet in snips {
+                        hints.extend(snippet.triggers());
                     }
-                    hints
-                })
-                .unwrap_or_default();
-            let out = finish_session(sess, &words);
-            BUSY.store(false, Ordering::SeqCst);
-            match out {
-                Ok(Some((text, secs, wav))) => {
-                    engine_ok();
-                    deliver(text, secs, wav)
                 }
-                Ok(None) => {
-                    engine_ok();
-                }
-                Err(e) => {
-                    engine_failed();
-                    eprintln!("[stt] transcription failed: {e}");
-                }
+                hints
+            })
+            .unwrap_or_default();
+        let data_dir = sess.data_dir.clone();
+        let privacy_epoch = sess.privacy_epoch;
+        let recorded_at = sess.recorded_at;
+        let out = finish_session(sess, &words);
+        if cancellation.load(Ordering::Acquire) {
+            outcome.store(2, Ordering::Release);
+            return;
+        }
+        match out {
+            Ok(Some((text, secs, wav))) => {
+                engine_ok();
+                let result = deliver(
+                    text,
+                    secs,
+                    wav,
+                    &data_dir,
+                    privacy_epoch,
+                    recorded_at,
+                    &cancellation,
+                );
+                outcome.store(
+                    match result {
+                        FinalizationOutcome::Complete => 1,
+                        FinalizationOutcome::Cancelled => 2,
+                        FinalizationOutcome::Failed => 0,
+                    },
+                    Ordering::Release,
+                );
             }
-            if let Ok(mut g) = od.lock() {
-                if let Some(done) = g.take() {
-                    done();
-                }
+            Ok(None) => {
+                engine_ok();
+                outcome.store(1, Ordering::Release);
             }
-        }) {
-            // Saturated: release the guard and hide the pill now; the
-            // utterance is dropped, but the app survives to dictate again.
-            BUSY.store(false, Ordering::SeqCst);
-            eprintln!("[stt] release: {e}");
-            if let Ok(mut g) = on_done.lock() {
-                if let Some(done) = g.take() {
-                    done();
-                }
+            Err(e) => {
+                engine_failed();
+                eprintln!("[stt] transcription failed: {e}");
             }
         }
-    });
+    }) {
+        engine_failed();
+        eprintln!("[stt] release: {e}");
+    }
+}
+
+type Completion = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
+type Transcription = (String, f64, Option<Vec<u8>>);
+
+struct FinalizationGuard {
+    done: Completion,
+}
+impl FinalizationGuard {
+    fn new(done: Completion) -> Self {
+        FINAL_COUNT.fetch_add(1, Ordering::AcqRel);
+        Self { done }
+    }
+}
+impl Drop for FinalizationGuard {
+    fn drop(&mut self) {
+        FINAL_COUNT.fetch_sub(1, Ordering::AcqRel);
+        let done = self.done.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(done) = done
+            && std::panic::catch_unwind(std::panic::AssertUnwindSafe(done)).is_err()
+        {
+            engine_failed();
+            eprintln!("[stt] completion callback panicked");
+        }
+    }
 }
 
 /// Blocking finalization for one utterance. `Ok(None)` = nothing to
 /// paste (too short / empty result).
-fn finish_session(
-    sess: LiveUtterance,
-    words: &[String],
-) -> Result<Option<(String, f64, Option<Vec<u8>>)>, String> {
-    let secs = sess.started.elapsed().as_secs_f64();
+fn finish_session(sess: LiveUtterance, words: &[String]) -> Result<Option<Transcription>, String> {
+    if sess.recorder.lock().unwrap().overflowed() {
+        return Err("Recording exceeded its capture budget or changed sample rate; retry with the selected microphone".into());
+    }
+    let secs = sess
+        .captured_secs
+        .unwrap_or_else(|| sess.started.elapsed().as_secs_f64());
     // Engine warmup finishes here (cold first press waits, later
     // ones sail through an already-running server). Cloud plans are
     // no-ops here; failures are per-plan below, not fatal.
@@ -2825,13 +3207,19 @@ fn finish_session(
     eprintln!("[stt] release: engine ready, transcribing ({secs:.1}s window)");
     if let Some(rx) = sess.result_rx {
         // Streaming: the pump owns the tail; wait for the final.
-        // Audio retention skips streaming utterances (chunks live in
-        // the pump, never materialize here).
-        if sess.keep_audio {
-            eprintln!("[stt] release: audio retention skips streaming utterances");
-        }
-        match rx.recv().map_err(|_| "online pump died".to_string())? {
-            Ok(text) => return Ok(empty_to_none(text).map(|t| (t, secs, None))),
+        // The bounded authoritative recorder also supplies retained audio
+        // for streaming engines, subject to current policy at persistence.
+        match rx
+            .recv_timeout(INFERENCE_TIMEOUT + Duration::from_secs(10))
+            .map_err(|_| "online pump failed to complete before deadline".to_string())?
+        {
+            Ok(text) => {
+                let (pcm, rate) = sess.recorder.lock().unwrap().finish();
+                let samples = Resampler::resample_all(rate.max(1), &pcm);
+                return Ok(
+                    empty_to_none(text).map(|t| (t, secs, wav_of(&samples, sess.keep_audio)))
+                );
+            }
             Err(e) if e == "cancelled" => return Ok(None),
             Err(e) => {
                 // Stream failed mid-hold: the recorder is intact
@@ -2843,52 +3231,35 @@ fn finish_session(
     if let Some(rx) = sess.whistle_rx {
         // Live needle stream: committed text arrives as audio flows;
         // failure falls back to single-file decode below.
-        match rx.recv().map_err(|_| "whistle pump died".to_string())? {
-            Ok(text) => return Ok(empty_to_none(text).map(|t| (t, secs, None))),
+        match rx
+            .recv_timeout(INFERENCE_TIMEOUT + Duration::from_secs(10))
+            .map_err(|_| "whistle pump failed to complete before deadline".to_string())?
+        {
+            Ok(text) => {
+                let (pcm, rate) = sess.recorder.lock().unwrap().finish();
+                let samples = Resampler::resample_all(rate.max(1), &pcm);
+                return Ok(
+                    empty_to_none(text).map(|t| (t, secs, wav_of(&samples, sess.keep_audio)))
+                );
+            }
             Err(e) if e == "cancelled" => return Ok(None),
             Err(e) => {
                 eprintln!("[stt] whistle stream failed ({e}); file fallback");
             }
         }
     }
+    if let Some(spec) = &sess.spec {
+        spec.stop.store(true, Ordering::Release);
+        // The speculative result is a preview until a settled complete decode
+        // confirms it. Never consume the authoritative recorder before the
+        // spec loop has had its final chance to observe release-tail samples.
+        let _ = spec
+            .done_rx
+            .recv_timeout(INFERENCE_TIMEOUT + Duration::from_secs(10));
+    }
     let (pcm, rate) = sess.recorder.lock().unwrap().finish();
     if rate == 0 || pcm.is_empty() {
-        eprintln!("[stt] release: no audio captured (mic unavailable or sim source)");
-        return Ok(None);
-    }
-    // Speculative path: the spec thread owns a resampled buffer and
-    // internal agreement; finalize only the unconfirmed tail.
-    if let Some(spec) = sess.spec {
-        spec.stop.store(true, Ordering::Relaxed);
-        let (committed, committed_len, buf) = spec
-            .done_rx
-            .recv()
-            .map_err(|_| "spec thread died".to_string())?;
-        eprintln!(
-            "[stt] release: spec agreed on {} words, tail from {:.1}s",
-            committed.split_whitespace().count(),
-            committed_len as f64 / 16_000.0
-        );
-        let tail = crate::speculative::unconfirmed_window(&buf, committed_len, sess.spec_overlap);
-        if tail.len() < MIN_SAMPLES_16K / 2 {
-            // Nothing (much) left: committed text is the answer.
-            return Ok(empty_to_none(committed).map(|t| (t, secs, wav_of(&buf, sess.keep_audio))));
-        }
-        let t0 = Instant::now();
-        let tail_wav = wav_bytes_16k(&audio::f32_to_i16(&tail));
-        let prompt =
-            crate::textnorm::dictionary_prompt(words, crate::textnorm::WHISPER_PROMPT_CHARS);
-        let out = whisper_transcribe(&tail_wav, prompt, engine_port(&sess.net, WHISPER_PORT)).map(
-            |tail_text| {
-                let merged = crate::speculative::merge_tail(&committed, &tail_text);
-                eprintln!(
-                    "[stt] release: tail decode took {:.1}s",
-                    t0.elapsed().as_secs_f64()
-                );
-                empty_to_none(merged).map(|t| (t, secs, wav_of(&buf, sess.keep_audio)))
-            },
-        );
-        return out;
+        return Err("no audio captured; select an available microphone".into());
     }
     eprintln!("[stt] release: {} samples @ {} Hz", pcm.len(), rate);
     let mut f32s = Resampler::resample_all(rate, &pcm);
@@ -2985,8 +3356,8 @@ fn transcribe_blocking(
             }
             s.finish()
         }
-        Plan::SelfHostedWs { url } => {
-            let mut s = OnlineSession::open_with_url(url, INFERENCE_TIMEOUT)?;
+        Plan::SelfHostedWs { url, key } => {
+            let mut s = OnlineSession::open_authenticated(url, key, INFERENCE_TIMEOUT)?;
             for chunk in f32s.chunks(8000) {
                 s.send_chunk(chunk)?;
             }
@@ -3150,11 +3521,10 @@ fn post_process(
     };
     for entry in chain {
         match llm_cleanup(entry, &system, raw) {
-            Ok(text) if !text.trim().is_empty() => {
+            Ok(text) => {
                 eprintln!("[llm] cleaned via {}", entry.name);
                 return text.trim().to_string();
             }
-            Ok(_) => eprintln!("[llm] {} returned empty; trying next", entry.name),
             Err(e) => eprintln!("[llm] {} failed ({e}); trying next", entry.name),
         }
     }
@@ -3219,12 +3589,9 @@ fn llm_cleanup(
             };
             let url = format!("{}/api/chat", entry.url.trim_end_matches('/'));
             let text = http_post_json(&url, headers, &body)?;
-            let v: serde_json::Value =
-                serde_json::from_str(&text).map_err(|e| format!("ollama json: {e}"))?;
-            v.pointer("/message/content")
-                .and_then(|t| t.as_str())
-                .map(|t| t.to_string())
-                .ok_or_else(|| "ollama reply has no message.content".to_string())
+            let v: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|e| format!("ollama json: {}", crate::diagnostics::json(&e)))?;
+            crate::provider_contract::ollama_answer(&v)
         }
         LlmKind::Cloud => match entry.provider {
             CloudLlm::Google => {
@@ -3250,32 +3617,17 @@ fn llm_cleanup(
                 );
                 let text =
                     http_post_json(&url, &[("x-goog-api-key", entry.api_key.as_str())], &body)?;
-                let v: serde_json::Value =
-                    serde_json::from_str(&text).map_err(|e| format!("gemini json: {e}"))?;
-                Ok(v.pointer("/candidates/0/content/parts")
-                    .and_then(|p| p.as_array())
-                    .map(|parts| {
-                        parts
-                            .iter()
-                            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-                            .collect::<Vec<_>>()
-                            .join("")
-                    })
-                    .unwrap_or_default())
+                let v: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|e| format!("gemini json: {}", crate::diagnostics::json(&e)))?;
+                crate::provider_contract::gemini_answer(&v)
             }
             CloudLlm::Claude => {
-                let mut body = serde_json::json!({
-                    "model": entry.model,
-                    "max_tokens": 1024,
-                    "system": system,
-                    "messages": [{"role": "user", "content": user}],
-                });
-                // Extended thinking is opt-in with a fixed budget;
-                // None/False omit it (API default off).
-                if entry.thinking == Some(true) {
-                    body["thinking"] =
-                        serde_json::json!({"type": "enabled", "budget_tokens": 10000});
-                }
+                let body = crate::provider_contract::claude_request(
+                    &entry.model,
+                    entry.thinking,
+                    system,
+                    &user,
+                )?;
                 let text = http_post_json(
                     "https://api.anthropic.com/v1/messages",
                     &[
@@ -3284,12 +3636,9 @@ fn llm_cleanup(
                     ],
                     &body,
                 )?;
-                let v: serde_json::Value =
-                    serde_json::from_str(&text).map_err(|e| format!("claude json: {e}"))?;
-                Ok(v.pointer("/content/0/text")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or_default()
-                    .to_string())
+                let v: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|e| format!("claude json: {}", crate::diagnostics::json(&e)))?;
+                crate::provider_contract::claude_answer(&v)
             }
             _ => {
                 // OpenAI-compatible (OpenAI/Groq/OpenRouter/Mistral):
@@ -3308,12 +3657,9 @@ fn llm_cleanup(
                     &[("authorization-bearer", entry.api_key.as_str())],
                     &body,
                 )?;
-                let v: serde_json::Value =
-                    serde_json::from_str(&text).map_err(|e| format!("chat json: {e}"))?;
-                v.pointer("/choices/0/message/content")
-                    .and_then(|t| t.as_str())
-                    .map(|t| t.to_string())
-                    .ok_or_else(|| "chat reply has no content".to_string())
+                let v: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|e| format!("chat json: {}", crate::diagnostics::json(&e)))?;
+                crate::provider_contract::chat_answer(&v)
             }
         },
     }
@@ -3326,7 +3672,8 @@ fn http_post_json(
     headers: &[(&str, &str)],
     body: &serde_json::Value,
 ) -> Result<String, String> {
-    let text = serde_json::to_string(body).map_err(|e| format!("json body: {e}"))?;
+    let text = serde_json::to_string(body)
+        .map_err(|e| format!("json body: {}", crate::diagnostics::json(&e)))?;
     let mut req = http_client()?
         .post(url)
         .header("Content-Type", "application/json")
@@ -3338,33 +3685,34 @@ fn http_post_json(
             req.header(*k, *v)
         };
     }
-    let res = req.send().map_err(|e| format!("llm post: {e}"))?;
-    if !res.status().is_success() {
-        return Err(format!("llm http {}", res.status()));
-    }
-    res.text().map_err(|e| format!("llm body: {e}"))
+    let res = req.send().map_err(|e| http_error("cleanup request", &e))?;
+    http_reply(res, "cleanup request")
 }
 
 /// Store in history (raw + final text, never audio) and paste the
 /// FINAL transcript via the configured clipboard pipeline.
 /// Retention: history off pastes without storing; auto-delete purges
 /// old rows first (tombstones survive).
-fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
-    eprintln!("[stt] raw: {raw}");
-    let paths = match crate::paths::AppPaths::create() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("[stt] paths: {e}");
-            return;
+fn deliver(
+    raw: String,
+    secs: f64,
+    wav: Option<Vec<u8>>,
+    data_dir: &Path,
+    privacy_epoch: i64,
+    recorded_at: i64,
+    cancel: &Arc<AtomicBool>,
+) -> FinalizationOutcome {
+    eprintln!("[stt] raw transcript received (content redacted)");
+    let store = match crate::store::Store::open(&data_dir.join("state.db")) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("[stt] delivery store: {error}");
+            return FinalizationOutcome::Failed;
         }
     };
-    let store = match crate::store::Store::open(&paths.db_file()) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[stt] store: {e}");
-            return;
-        }
-    };
+    if cancel.load(Ordering::Acquire) || store.capture_epoch().ok() != Some(privacy_epoch) {
+        return FinalizationOutcome::Cancelled;
+    }
     let settings = store.load_settings();
     // Snippet expansion BEFORE post-processing: deterministic
     // trigger rewrites on the STT text. Raw stays pure for the raw
@@ -3384,56 +3732,574 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
         &settings.language_models,
         &settings.dictionary.words,
     );
-    eprintln!("[stt] final: {text}");
-    if settings.privacy.keep_audio_recordings && settings.privacy.audio_retention_days > 0 {
-        let data_dir = paths
-            .db_file()
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
-        let n = crate::audio::purge_old_audio(&data_dir, settings.privacy.audio_retention_days);
-        if n > 0 {
-            eprintln!("[stt] audio auto-delete: {n} files");
+    eprintln!("[stt] final transcript ready (content redacted)");
+    if cancel.load(Ordering::Acquire) {
+        return FinalizationOutcome::Cancelled;
+    }
+    if text.trim().is_empty() {
+        return FinalizationOutcome::Complete;
+    }
+    match store.persist_capture(
+        privacy_epoch,
+        crate::store::CapturedUtterance {
+            raw: &raw,
+            text: &text,
+            duration_secs: secs.round() as i64,
+            recorded_at,
+            discarded: false,
+            wav: wav.as_deref(),
+        },
+        cancel,
+    ) {
+        Ok(true) => {}
+        Ok(false) => return FinalizationOutcome::Cancelled,
+        Err(error) => {
+            eprintln!("[stt] capture persistence: {error}");
+            return FinalizationOutcome::Failed;
         }
     }
-    if settings.privacy.transcript_auto_delete_days > 0 {
-        if let Err(e) = store.purge_old_history(settings.privacy.transcript_auto_delete_days) {
-            eprintln!("[stt] auto-delete: {e}");
-        }
+    let settings = store.load_settings();
+    if cancel.load(Ordering::Acquire) || store.capture_epoch().ok() != Some(privacy_epoch) {
+        return FinalizationOutcome::Cancelled;
     }
-    if settings.privacy.history_enabled {
-        let words = text.split_whitespace().count() as u32;
-        let node = crate::device::DeviceIdentity::load_or_create(&paths.device_key_file())
-            .map(|i| i.node_id)
-            .unwrap_or_else(|_| "unknown".to_string());
-        match store.add_history(&raw, &text, words, secs.round() as i64, &node) {
-            Ok(uuid) => {
-                if let Some(wav) = wav {
-                    let data_dir = paths
-                        .db_file()
-                        .parent()
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_default();
-                    let dir = crate::audio::audio_vault_dir(&data_dir);
-                    match std::fs::create_dir_all(&dir)
-                        .and_then(|_| std::fs::write(dir.join(format!("{uuid}.wav")), wav))
-                    {
-                        Ok(()) => eprintln!("[stt] audio kept: {uuid}.wav"),
-                        Err(e) => eprintln!("[stt] audio vault write: {e}"),
-                    }
-                }
+    let cancel = cancel.clone();
+    let clipboard_store = Mutex::new(store);
+    let guard: crate::selection::Guard = Arc::new(move || {
+        !cancel.load(Ordering::Acquire)
+            && clipboard_store
+                .lock()
+                .ok()
+                .and_then(|store| store.capture_epoch().ok())
+                == Some(privacy_epoch)
+    });
+    match crate::clipboard::run_pipeline(&text, &settings.preferences, guard.clone()) {
+        Ok(()) => FinalizationOutcome::Complete,
+        Err(error) => {
+            eprintln!("[stt] clipboard delivery: {error}");
+            if guard() {
+                FinalizationOutcome::Failed
+            } else {
+                FinalizationOutcome::Cancelled
             }
-            Err(e) => eprintln!("[stt] history: {e}"),
         }
-    } else {
-        eprintln!("[stt] history disabled: pasting without storing");
     }
-    crate::clipboard::run_pipeline(&text, &settings.preferences);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fake_http_reply(wire: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "fake provider was never contacted"
+                        );
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("fake provider accept: {error}"),
+                }
+            };
+            socket
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut headers = Vec::new();
+            let mut byte = [0];
+            while !headers.ends_with(b"\r\n\r\n") {
+                assert!(headers.len() < 16 * 1024);
+                socket.read_exact(&mut byte).unwrap();
+                headers.push(byte[0]);
+            }
+            let length = String::from_utf8(headers)
+                .unwrap()
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|value| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            assert!(length <= 1024 * 1024);
+            socket.read_exact(&mut vec![0; length]).unwrap();
+            // A bounded consumer may close before this deliberately oversized
+            // reply is sent completely. Its refusal is the expected behavior.
+            let _ = socket.write_all(&wire);
+        });
+        (format!("http://{address}"), task)
+    }
+
+    #[test]
+    fn provider_replies_are_bounded_complete_and_utf8() {
+        let mut chunked = format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n",
+            MAX_PROVIDER_REPLY + 1
+        )
+        .into_bytes();
+        chunked.extend(vec![b'x'; MAX_PROVIDER_REPLY as usize + 1]);
+        chunked.extend_from_slice(b"\r\n0\r\n\r\n");
+        let cases = [
+            (
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                    MAX_PROVIDER_REPLY + 1
+                )
+                .into_bytes(),
+                "size limit",
+            ),
+            (chunked, "size limit"),
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n\xff".to_vec(),
+                "not UTF-8",
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 1024\r\n\r\npartial sensitive response"
+                    .to_vec(),
+                "transfer failed",
+            ),
+            (
+                b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 16\r\n\r\nsensitive reply!"
+                    .to_vec(),
+                "HTTP 429",
+            ),
+        ];
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        for (wire, expected) in cases {
+            let (url, task) = fake_http_reply(wire);
+            let response = client.get(url).send().unwrap();
+            let error = http_reply(response, "synthetic provider").unwrap_err();
+            task.join().unwrap();
+            assert!(error.contains(expected), "{error}");
+            assert!(
+                !error.contains("sensitive"),
+                "provider content leaked into diagnostic"
+            );
+        }
+    }
+
+    #[test]
+    fn privacy_diagnostics_omit_speech_credentials_and_provider_content() {
+        use std::os::unix::fs::PermissionsExt;
+        const ROOT: &str = "MYWHISPER_PRIVACY_DIAGNOSTIC_CHILD";
+        const RAW: &str = "SYNTHETIC_RAW_VIOLET_LANTERN";
+        const FINAL: &str = "SYNTHETIC_FINAL_AMBER_LANTERN";
+        const BODY: &str = "SYNTHETIC_PROVIDER_PRIVATE_BODY";
+        const TOKEN: &str = "SYNTHETIC_PROVIDER_PRIVATE_TOKEN";
+        const URL_SECRET: &str = "SYNTHETIC_ENDPOINT_PRIVATE_QUERY";
+        const JSON_SECRET: &str = "SYNTHETIC_MALFORMED_SETTINGS_OR_PEER_SECRET";
+        if let Some(root) = std::env::var_os(ROOT) {
+            let root = PathBuf::from(root);
+            assert!(
+                root.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("mywhisper-privacy-diagnostic-")
+            );
+            assert!(root.join(".disposable").is_file());
+            assert_eq!(root.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+            let store = crate::store::Store::open(&root.join("state.db")).unwrap();
+            let mut settings = store.load_settings();
+            settings.privacy.history_enabled = false;
+            settings.privacy.keep_audio_recordings = false;
+            settings.preferences.auto_paste = false;
+            settings.preferences.keep_transcription_in_clipboard = false;
+            for body in [
+                format!(
+                    r#"{{"done":true,"done_reason":"stop","message":{{"content":"{FINAL}"}}}}"#
+                ),
+                BODY.into(),
+            ] {
+                let status = if body == BODY {
+                    "429 Too Many Requests"
+                } else {
+                    "200 OK"
+                };
+                let wire = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .into_bytes();
+                let (base, task) = fake_http_reply(wire);
+                let url = format!("{base}/{URL_SECRET}?token={TOKEN}");
+                settings.language_models.entries =
+                    vec![crate::settings::LlmEntry::ollama(&url, "synthetic-model")];
+                store.save_settings(&settings).unwrap();
+                let plan = Plan::CloudOpenAiCompat {
+                    base: url,
+                    key: TOKEN.into(),
+                    model: "synthetic-model".into(),
+                    lang: "en".into(),
+                };
+                eprintln!("[stt] press: armed ({})", plan.describe());
+                eprintln!("[stt] plan diagnostic: {plan:?}");
+                let outcome = deliver(
+                    RAW.into(),
+                    1.0,
+                    None,
+                    &root,
+                    store.capture_epoch().unwrap(),
+                    crate::store::now_ms() / 1000,
+                    &Arc::new(AtomicBool::new(false)),
+                );
+                assert_eq!(outcome, FinalizationOutcome::Complete);
+                task.join().unwrap();
+                assert!(store.export_history().unwrap().is_empty());
+            }
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!(
+                "http://user:{TOKEN}@{}/{URL_SECRET}?token={TOKEN}",
+                listener.local_addr().unwrap()
+            );
+            drop(listener);
+            let error = reqwest::blocking::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_millis(200))
+                .build()
+                .unwrap()
+                .get(url)
+                .send()
+                .unwrap_err();
+            eprintln!("[stt] {}", http_error("synthetic failed endpoint", &error));
+            // A typed serde error can contain the offending value even if
+            // nobody explicitly logs the settings or peer payload itself.
+            let invalid = format!(r#"{{"preferences":{{"theme":"{JSON_SECRET}"}}}}"#);
+            let connection = rusqlite::Connection::open(root.join("state.db")).unwrap();
+            connection
+                .execute_batch(&format!("PRAGMA key=\"x'{}'\";", "2a".repeat(32)))
+                .unwrap();
+            connection
+                .execute("UPDATE kv SET value=?1 WHERE key='settings'", [&invalid])
+                .unwrap();
+            let safe = store.load_settings();
+            assert!(!safe.sync.enabled && !safe.privacy.history_enabled);
+            eprintln!("[store] {}", store.save_settings(&safe).unwrap_err());
+            assert_eq!(
+                connection
+                    .query_row("SELECT value FROM kv WHERE key='settings'", [], |row| {
+                        row.get::<_, String>(0)
+                    })
+                    .unwrap(),
+                invalid,
+                "failed settings parsing/saving changed the original"
+            );
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (socket, _) = listener.accept().unwrap();
+                let (mut noise, _, _) =
+                    crate::net::NoiseStream::handshake(socket, &[7; 32], false).unwrap();
+                noise.send_msg(invalid.as_bytes()).unwrap();
+            });
+            let socket = std::net::TcpStream::connect(address).unwrap();
+            let (mut noise, _, _) =
+                crate::net::NoiseStream::handshake(socket, &[9; 32], true).unwrap();
+            eprintln!(
+                "[sync] {}",
+                noise
+                    .recv_json::<crate::settings::AppSettings>()
+                    .unwrap_err()
+            );
+            server.join().unwrap();
+            return;
+        }
+        let root = tempfile::Builder::new()
+            .prefix("mywhisper-privacy-diagnostic-")
+            .tempdir()
+            .unwrap();
+        crate::private_fs::directory(root.path()).unwrap();
+        crate::private_fs::replace(&root.path().join(".disposable"), b"owned").unwrap();
+        let log = std::fs::File::create(root.path().join("child.log")).unwrap();
+        log.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        let child = crate::child::OwnedChild::spawn(Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "transcribe::tests::privacy_diagnostics_omit_speech_credentials_and_provider_content", "--test-threads=1", "--nocapture"])
+            .env(ROOT, root.path()).env("MYWHISPER_DB_KEY", "01".repeat(32)).env("HOME", root.path())
+            .env("XDG_DATA_HOME", root.path().join("data")).env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env_remove("DBUS_SESSION_BUS_ADDRESS").env_remove("WAYLAND_DISPLAY").env_remove("WAYLAND_SOCKET")
+            .stdin(Stdio::null()).stdout(log.try_clone().unwrap()).stderr(log)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.try_status().unwrap() {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "privacy child failed to finish");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        drop(child);
+        let log = std::fs::read_to_string(root.path().join("child.log")).unwrap();
+        assert!(status.success(), "privacy child failed: {log}");
+        assert!(log.contains("raw transcript received"));
+        assert!(log.contains("final transcript ready"));
+        assert!(log.contains("HTTP 429"));
+        assert!(log.contains("connection failed"));
+        for secret in [RAW, FINAL, BODY, TOKEN, URL_SECRET, JSON_SECRET] {
+            assert!(
+                !log.contains(secret),
+                "sensitive content leaked into captured diagnostics"
+            );
+        }
+        assert!(log.contains("original settings preserved, sync disabled"));
+        assert!(log.contains("repair the preserved original before saving"));
+    }
+
+    #[test]
+    fn repeated_speculative_cancellation_preserves_settled_tail_without_waiting_for_tick() {
+        for _ in 0..12 {
+            let directory = tempfile::tempdir().unwrap();
+            let rec = Arc::new(Mutex::new(Recorder::default()));
+            rec.lock().unwrap().start(16_000);
+            rec.lock().unwrap().push(&[1; 200]);
+            let stop = Arc::new(AtomicBool::new(false));
+            let (tx, rx) = mpsc::channel();
+            let config = SpecConfig {
+                data_dir: directory.path().to_owned(),
+                update_secs: 10.0,
+                overlap: 0,
+                whisper_port: 1,
+                settled: Arc::new(AtomicBool::new(true)),
+            };
+            let recorder = rec.clone();
+            let stopping = stop.clone();
+            let worker = std::thread::spawn(move || run_spec(recorder, stopping, config, tx));
+            rec.lock().unwrap().push(&[2; 300]);
+            stop.store(true, Ordering::Release);
+            let (_, _, buffer) = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!(buffer.len(), 500);
+            assert_eq!(buffer[499], 2.0 / 32768.0);
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn finalization_and_completion_panics_release_ownership_once() {
+        let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let done = callbacks.clone();
+        let result = std::panic::catch_unwind(|| {
+            let _guard = FinalizationGuard::new(Arc::new(Mutex::new(Some(Box::new(move || {
+                done.fetch_add(1, Ordering::AcqRel);
+                panic!("injected completion failure");
+            })))));
+            panic!("injected finalization failure");
+        });
+        assert!(result.is_err());
+        assert_eq!(callbacks.load(Ordering::Acquire), 1);
+        assert_eq!(FINAL_COUNT.load(Ordering::Acquire), 0);
+    }
+
+    fn fake_needle(script: &str) -> (tempfile::TempDir, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let engine = directory.path().join("needle.py");
+        std::fs::write(&engine, script).unwrap();
+        (directory, engine)
+    }
+    #[test]
+    fn whistle_fifo_start_and_backpressure_have_deadlines_and_reap() {
+        for script in [
+            "import time; time.sleep(30)\n",
+            "import sys,time\nf=open(sys.argv[sys.argv.index('--audio')+1],'rb',buffering=0)\nf.read(44)\ntime.sleep(30)\n",
+        ] {
+            let (_dir, engine) = fake_needle(script);
+            let mut stream = WhistleStream::open_command(
+                Command::new("python3").arg(&engine),
+                Path::new("fake-model"),
+                None,
+                "auto",
+            )
+            .unwrap();
+            let pid = stream.child.0.id();
+            let fifo = stream.fifo.clone();
+            let deadline = Instant::now() + Duration::from_millis(100);
+            assert!(
+                stream
+                    .feed_until(&vec![0; 4_000_000], 16_000, deadline)
+                    .unwrap_err()
+                    .contains("deadline")
+            );
+            drop(stream);
+            assert!(!fifo.exists());
+            assert!(!Path::new(&format!("/proc/{pid}")).exists());
+        }
+    }
+    #[test]
+    fn whistle_drains_last_line_and_rejects_partial_failure() {
+        for (exit, expected) in [(0, true), (3, false)] {
+            let (_dir, engine) = fake_needle(&format!(
+                "import sys\nf=open(sys.argv[sys.argv.index('--audio')+1],'rb')\nf.read()\nprint('{{\"text\":\"partial\"}}',flush=True)\nprint('{{\"text\":\"Complete 世界\"}}',end='',flush=True)\nsys.exit({exit})\n"
+            ));
+            let mut stream = WhistleStream::open_command(
+                Command::new("python3").arg(&engine),
+                Path::new("fake-model"),
+                None,
+                "auto",
+            )
+            .unwrap();
+            stream.feed(&[0; 1600], 16_000).unwrap();
+            let result = stream.finish_until(Instant::now() + Duration::from_secs(2));
+            if expected {
+                assert_eq!(result.unwrap(), "Complete 世界");
+            } else {
+                assert!(result.unwrap_err().contains("failed"));
+            }
+        }
+    }
+    #[test]
+    fn whistle_staging_is_unique_private_and_removed_on_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let first = write_tmpfs_wav(b"synthetic audio").unwrap();
+        let second = write_tmpfs_wav(b"synthetic audio").unwrap();
+        assert_ne!(first.path(), second.path());
+        assert_eq!(
+            first.as_file().metadata().unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let path = first.path().to_owned();
+        drop(first);
+        assert!(!path.exists());
+        let kw = write_keywords_file(&["synthetic keyword".into()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            kw.as_file().metadata().unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn cancelled_server_status_stops_before_connecting_or_advancing() {
+        let root = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let net = ServerNet {
+            host: "127.0.0.1",
+            port_override: Some(listener.local_addr().unwrap().port()),
+        };
+        assert!(server_status_while(root.path(), &net, &|| false).is_empty());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        let checks = std::cell::Cell::new(0);
+        let status = server_status_while(root.path(), &net, &|| {
+            checks.set(checks.get() + 1);
+            checks.get() <= 3
+        });
+        assert_eq!(status, vec![("whisper".into(), false)]);
+        let (stream, _) = listener.accept().unwrap();
+        drop(stream);
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn foreign_server_markers_and_stale_pid_metadata_never_grant_ownership() {
+        let root = tempfile::tempdir().unwrap();
+        let ready = root.path().join("foreign-listener.port");
+        // Deliberate marker arguments reproduce the old substring predicate.
+        // This process belongs solely to the test, never to the STT supervisor.
+        let child = crate::child::OwnedChild::spawn(
+            Command::new("python3")
+                .args(["-c", "import socket,sys,time\ns=socket.socket()\ns.bind(('127.0.0.1',0))\ns.listen(16)\nopen(sys.argv[1],'w').write(str(s.getsockname()[1]))\ntime.sleep(20)"])
+                .arg(&ready)
+                .args(["whisper-server", "sherpa-onnx", "--model=synthetic-marker"])
+                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()),
+        ).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let port = loop {
+            if let Some(port) = std::fs::read_to_string(&ready)
+                .ok()
+                .and_then(|text| text.parse::<u16>().ok())
+            {
+                break port;
+            }
+            assert!(child.try_status().unwrap().is_none());
+            assert!(Instant::now() < deadline, "foreign fixture failed to bind");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let pid = child.0.id();
+        let command = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap();
+        assert!(command.contains("whisper-server") && command.contains("sherpa-onnx"));
+        let net = ServerNet {
+            host: "127.0.0.1",
+            port_override: Some(port),
+        };
+        crate::private_fs::replace(
+            &pidfile(root.path()),
+            format!(r#"{{"whisper":{pid}}}"#).as_bytes(),
+        )
+        .unwrap();
+        assert!(
+            server_status(root.path(), &net)
+                .iter()
+                .all(|(_, managed)| !managed)
+        );
+        reap_stale_servers(root.path());
+        assert!(child.try_status().unwrap().is_none());
+        assert!(port_open(port));
+        let error = ensure_server(
+            root.path(),
+            "whisper",
+            "synthetic".into(),
+            port,
+            || panic!("foreign port must not launch or adopt a child"),
+            || panic!("foreign port must not invoke an inference probe"),
+        )
+        .unwrap_err();
+        assert!(error.contains("owned by another process"));
+        drop_servers(root.path());
+        assert!(
+            child.try_status().unwrap().is_none(),
+            "unrelated process was signalled"
+        );
+        assert!(port_open(port));
+        // New metadata is tied to the actual listener and start time. A stale
+        // start time or a different port must never report it as managed.
+        let started = crate::process_status::start_ticks(pid).unwrap();
+        let records = |start_ticks, recorded_port| {
+            HashMap::from([(
+                "whisper",
+                ServerRecord {
+                    pid,
+                    start_ticks,
+                    port: recorded_port,
+                },
+            )])
+        };
+        for (start, recorded_port, expected) in [
+            (started, port, true),
+            (started + 1, port, false),
+            (started, 0, false),
+        ] {
+            crate::private_fs::replace(
+                &pidfile(root.path()),
+                &serde_json::to_vec(&records(start, recorded_port)).unwrap(),
+            )
+            .unwrap();
+            let status = server_status(root.path(), &net);
+            assert_eq!(
+                status.iter().find(|(name, _)| name == "whisper").unwrap().1,
+                expected
+            );
+        }
+        drop(child);
+        assert!(!Path::new(&format!("/proc/{pid}")).exists());
+    }
 
     #[test]
     fn server_net_defaults_and_overrides() {
@@ -3475,6 +4341,7 @@ mod tests {
         // bug was keeping only the last message.
         let mut sess = OnlineSession {
             preview: false,
+            generation: 0,
             ws: None,
             segments: Vec::new(),
             current: String::new(),
@@ -3536,9 +4403,46 @@ mod tests {
     }
 
     #[test]
+    fn incompatible_local_language_is_rejected_without_changing_remote_fallback() {
+        use crate::settings::{SttChainEntry, SttEntryKind};
+        let mut s = SttSettings {
+            local_provider: LocalSttProvider::Nvidia,
+            parakeet_model: "nemotron-speech-streaming-en-0.6b".into(),
+            language: "es".into(),
+            ..SttSettings::default()
+        };
+        let error = local_plan(&s, Path::new("/nonexistent")).unwrap_err();
+        assert!(error.contains("does not support"), "{error}");
+        assert!(error.contains("Speech to Text"), "{error}");
+        for language in ["auto", "", "en"] {
+            assert!(validate_local_language(&s.parakeet_model, language).is_ok());
+        }
+        assert!(validate_local_language("parakeet-tdt-0.6b-v3", "es").is_ok());
+        assert!(validate_local_language("whistle-v1", "uk").is_err());
+        s.entries.push(SttChainEntry {
+            id: "synthetic-remote".into(),
+            name: "Synthetic Spanish remote".into(),
+            kind: SttEntryKind::SelfHosted,
+            enabled: true,
+            provider: String::new(),
+            url: "http://127.0.0.1:1".into(),
+            model: "test".into(),
+            api_key: String::new(),
+            streaming: false,
+        });
+        let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].0, "Synthetic Spanish remote");
+        assert!(matches!(&plans[0].1, Plan::CloudOpenAiCompat { lang, .. } if lang == "es"));
+        assert_eq!(s.language, "es");
+    }
+
+    #[test]
     fn whistle_plan_needs_files() {
-        let mut s = SttSettings::default();
-        s.local_provider = LocalSttProvider::Whistle;
+        let s = SttSettings {
+            local_provider: LocalSttProvider::Whistle,
+            ..SttSettings::default()
+        };
         let err = plan_for(&s, Path::new("/nonexistent")).unwrap_err();
         assert!(err.contains("whistle"), "{err}");
     }
@@ -3564,17 +4468,20 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let r = rec.clone();
         let s = stop.clone();
-        let data = crate::paths::AppPaths::create().unwrap().data_dir;
+        let disposable = tempfile::tempdir().unwrap();
+        let data = disposable.path().to_owned();
         std::thread::spawn(move || {
             run_spec(
                 r,
                 s,
-                data,
-                1.0,
-                16_000,
+                SpecConfig {
+                    data_dir: data,
+                    update_secs: 1.0,
+                    overlap: 16_000,
+                    whisper_port: 8080,
+                    settled: Arc::new(AtomicBool::new(true)),
+                },
                 tx,
-                8080,
-                Arc::new(AtomicBool::new(true)),
             )
         });
         std::thread::sleep(Duration::from_secs(5));
@@ -3625,18 +4532,49 @@ mod tests {
     }
 
     #[test]
-    fn plan_cohere_unsupported() {
-        let mut s = SttSettings::default();
-        s.local_provider = LocalSttProvider::Cohere;
-        let err = plan_for(&s, Path::new("/nonexistent")).unwrap_err();
+    fn plan_cohere_requires_complete_model_and_an_explicit_supported_language() {
+        let mut s = SttSettings {
+            local_provider: LocalSttProvider::Cohere,
+            language: "en".into(),
+            ..SttSettings::default()
+        };
+        let root = tempfile::tempdir().unwrap();
+        let err = plan_for(&s, root.path()).unwrap_err();
         assert!(err.contains("Cohere"), "{err}");
+        let entry = stt::find_model("cohere-transcribe-03-2026").unwrap();
+        let dir = stt::model_dir(root.path(), entry);
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in entry.required_files {
+            std::fs::write(dir.join(file), b"synthetic plan fixture").unwrap();
+        }
+        for language in stt::model_languages(entry.id) {
+            s.language = (*language).into();
+            let Plan::SherpaOffline { model_dir, lang } = plan_for(&s, root.path()).unwrap() else {
+                panic!("Cohere must use its offline runtime");
+            };
+            assert_eq!(model_dir, dir);
+            assert_eq!(lang, *language);
+        }
+        for language in ["auto", "", "uk", "界"] {
+            s.language = language.into();
+            assert!(
+                plan_for(&s, root.path())
+                    .unwrap_err()
+                    .contains("specific supported language")
+            );
+        }
+        s.language = "es".into();
+        std::fs::remove_file(dir.join("encoder.int8.onnx.data")).unwrap();
+        assert!(plan_for(&s, root.path()).unwrap_err().contains("Cohere"));
     }
 
     #[test]
     fn plan_routing_needs_files() {
         // Whisper tiny not under /nonexistent → actionable missing error.
-        let mut s = SttSettings::default();
-        s.local_provider = LocalSttProvider::OpenAi;
+        let mut s = SttSettings {
+            local_provider: LocalSttProvider::OpenAi,
+            ..SttSettings::default()
+        };
         s.whisper_model = "tiny".to_string();
         let err = plan_for(&s, Path::new("/nonexistent")).unwrap_err();
         assert!(err.contains("whisper model tiny"), "{err}");
@@ -3666,48 +4604,58 @@ mod tests {
             streaming,
         };
         // ws:// + streaming = sherpa-protocol plan (never spawned).
-        let mut s = SttSettings::default();
-        s.entries = vec![entry("ws://127.0.0.1:6006", true, "")];
+        let s = SttSettings {
+            entries: vec![entry("ws://127.0.0.1:6006", true, "")],
+            ..SttSettings::default()
+        };
         let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
         assert!(matches!(plans[0].1, Plan::SelfHostedWs { .. }));
         assert!(plans[0].1.streaming());
         // wss:// resolves the same (TLS at connect time).
-        let mut s = SttSettings::default();
-        s.entries = vec![entry("wss://example.com:6006", true, "")];
+        let s = SttSettings {
+            entries: vec![entry("wss://example.com:6006", true, "")],
+            ..SttSettings::default()
+        };
         let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
         assert!(matches!(plans[0].1, Plan::SelfHostedWs { .. }));
         // http + token = OpenAI-compat with bearer key; streaming
         // toggle inert for http.
-        let mut s = SttSettings::default();
-        s.entries = vec![entry("http://127.0.0.1:8080", true, "tok")];
+        let s = SttSettings {
+            entries: vec![entry("http://127.0.0.1:8080", true, "tok")],
+            ..SttSettings::default()
+        };
         let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
         match &plans[0].1 {
             Plan::CloudOpenAiCompat { key, .. } => assert_eq!(key, "tok"),
             p => panic!("expected compat, got {}", p.describe()),
         }
         assert!(!plans[0].1.streaming());
-        // ws:// + streaming off = compat fallback.
-        let mut s = SttSettings::default();
-        s.entries = vec![entry("ws://127.0.0.1:6006", false, "")];
-        let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
-        assert!(matches!(plans[0].1, Plan::CloudOpenAiCompat { .. }));
+        // A WebSocket endpoint cannot route to an HTTP file API.
+        let s = SttSettings {
+            entries: vec![entry("ws://127.0.0.1:6006", false, "")],
+            ..SttSettings::default()
+        };
+        let error = plans_for(&s, Path::new("/nonexistent")).unwrap_err();
+        assert!(error.contains("require streaming"));
     }
 
     #[test]
     fn plan_cloud_needs_key() {
         use crate::settings::{SttChainEntry, SttEntryKind};
-        let mut s = SttSettings::default();
-        s.entries = vec![SttChainEntry {
-            id: "t".to_string(),
-            name: "t".to_string(),
-            kind: SttEntryKind::Cloud,
-            enabled: true,
-            provider: "OpenAI".to_string(),
-            url: String::new(),
-            model: "whisper-1".to_string(),
-            api_key: String::new(),
-            streaming: true,
-        }];
+        let s = SttSettings {
+            entries: vec![SttChainEntry {
+                id: "t".to_string(),
+                name: "t".to_string(),
+                kind: SttEntryKind::Cloud,
+                enabled: true,
+                provider: "OpenAI".to_string(),
+                url: String::new(),
+                model: "whisper-1".to_string(),
+                api_key: String::new(),
+                streaming: true,
+            }],
+            ..SttSettings::default()
+        };
         let err = plan_for(&s, Path::new("/nonexistent")).unwrap_err();
         assert!(err.contains("API key"), "{err}");
     }
@@ -3717,31 +4665,33 @@ mod tests {
         use crate::settings::{SttChainEntry, SttEntryKind};
         // First entry unresolvable (missing files), second fine is
         // covered by plans_for collecting only Ok plans.
-        let mut s = SttSettings::default();
-        s.entries = vec![
-            SttChainEntry {
-                id: "bad".to_string(),
-                name: "bad-local".to_string(),
-                kind: SttEntryKind::Local,
-                enabled: true,
-                provider: String::new(),
-                url: String::new(),
-                model: String::new(),
-                api_key: String::new(),
-                streaming: true,
-            },
-            SttChainEntry {
-                id: "ok".to_string(),
-                name: "ok-cloud".to_string(),
-                kind: SttEntryKind::Cloud,
-                enabled: true,
-                provider: "OpenAI".to_string(),
-                url: String::new(),
-                model: "whisper-1".to_string(),
-                api_key: "k".to_string(),
-                streaming: true,
-            },
-        ];
+        let s = SttSettings {
+            entries: vec![
+                SttChainEntry {
+                    id: "bad".to_string(),
+                    name: "bad-local".to_string(),
+                    kind: SttEntryKind::Local,
+                    enabled: true,
+                    provider: String::new(),
+                    url: String::new(),
+                    model: String::new(),
+                    api_key: String::new(),
+                    streaming: true,
+                },
+                SttChainEntry {
+                    id: "ok".to_string(),
+                    name: "ok-cloud".to_string(),
+                    kind: SttEntryKind::Cloud,
+                    enabled: true,
+                    provider: "OpenAI".to_string(),
+                    url: String::new(),
+                    model: "whisper-1".to_string(),
+                    api_key: "k".to_string(),
+                    streaming: true,
+                },
+            ],
+            ..SttSettings::default()
+        };
         // Local default provider with missing model dir fails; the
         // cloud entry resolves: plans_for returns just it.
         let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
@@ -3770,7 +4720,9 @@ mod tests {
             let raw = std::fs::read("/tmp/wtest16k.wav").expect("harness wav");
             assert!(raw.len() > 44);
             raw[44..]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| i16::from_le_bytes([c[0], c[1]]))
                 .collect()
         };
