@@ -1,0 +1,29 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "correction": "F04: remove IO from capture ownership lock",
+  "before_fix_regression_failed": true,
+  "before_fix_release_latency_ms": 311,
+  "asserted_corrected_callback_latency_ms": 100,
+  "rust_tests": {
+    "passed": 178,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "checks": [
+    "release under blocked initialization",
+    "cancel under blocked initialization",
+    "reset invalidation under blocked initialization",
+    "no late live recorder",
+    "no stale preview"
+  ],
+  "logs_sha256": {
+    "before": "055e3061089459e8187ace0fb827183e49a9d4c5985085e6cca07475f0405108",
+    "after": "dc0e3ca730ff055dcf0bba9f4f5addef46c76415ff7825a45f0c9e099333754a",
+    "tests": "826f6a3cf70cbb89b9005eeb6d8829c30906d90d8f1c1da7de3e9f0e0fd04690",
+    "clippy": "cc3dcff47b69e379e099017e63f38f873a93e344ce9623415d8e9c0055fa5249"
+  },
+  "source_diff_sha256": "fc627f8eef451661c1d8dae557886c1f5e859e67db6a5856c853f7b66331455e",
+  "compatibility": "No format change. Background arming requires the existing database and cannot recreate removed user state.",
+  "outstanding": "Stalled live Secret Service and F03 capture ownership, other findings and final gates remain open."
+}

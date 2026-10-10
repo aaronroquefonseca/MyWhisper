@@ -2537,29 +2537,33 @@ pub fn begin_reserved_utterance(
     data_dir: &Path,
     release_delay_ms: u64,
 ) {
+    if INPUT_EPOCH.load(Ordering::Acquire) != epoch {
+        return;
+    }
+    // Database/keyring/filesystem work cannot hold the lock needed by
+    // release, cancellation or reset. Publish only if this input still owns
+    // the generation after preparation, including preparation failures.
+    let prepared = (|| {
+        let privacy_epoch = crate::store::Store::open_existing(&data_dir.join("state.db"))
+            .and_then(|store| store.capture_epoch())
+            .map_err(|error| format!("capture policy unavailable: {error}"))?;
+        let plans = plans_for(&stt, data_dir)?;
+        Ok::<_, String>((privacy_epoch, plans))
+    })();
     let _arm = ARM_LOCK.lock().unwrap();
     if INPUT_EPOCH.load(Ordering::Acquire) != epoch {
         return;
     }
-    let privacy_epoch = match crate::store::Store::open(&data_dir.join("state.db"))
-        .and_then(|store| store.capture_epoch())
-    {
-        Ok(epoch) => epoch,
-        Err(error) => {
+    let (privacy_epoch, mut plans) = match prepared {
+        Ok(prepared) => prepared,
+        Err(e) => {
             engine_failed();
-            eprintln!("[stt] capture policy unavailable: {error}");
+            eprintln!("[stt] press: cannot start: {e}");
             return;
         }
     };
     let recorded_at = crate::store::now_ms() / 1000;
     CANCELLED.store(false, Ordering::Relaxed);
-    let mut plans = match plans_for(&stt, data_dir) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("[stt] press: cannot start: {e}");
-            return;
-        }
-    };
     let (first_name, plan) = plans.remove(0);
     let fallbacks = plans;
     if !fallbacks.is_empty() {
@@ -3788,6 +3792,114 @@ fn deliver(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn isolated_capture_probe(name: &str) -> bool {
+        if std::env::var("MYWHISPER_CAPTURE_PROBE").ok().as_deref() == Some(name) {
+            return true;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let log = std::fs::File::create(root.path().join("synthetic-probe.log")).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                &format!("transcribe::tests::{name}"),
+                "--nocapture",
+            ])
+            .env("MYWHISPER_CAPTURE_PROBE", name)
+            .env("MYWHISPER_DB_KEY", "21".repeat(32))
+            .stdout(Stdio::from(log.try_clone().unwrap()))
+            .stderr(Stdio::from(log));
+        let child = crate::child::OwnedChild::spawn(&mut command).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = child.try_status().unwrap() {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "isolated capture probe timed out: {name}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let log =
+            crate::private_fs::read_bounded(&root.path().join("synthetic-probe.log"), 1024 * 1024)
+                .unwrap();
+        assert!(
+            status.success(),
+            "capture probe {name} failed: {}",
+            String::from_utf8_lossy(&log)
+        );
+        false
+    }
+
+    #[test]
+    fn arming_database_stall_never_blocks_release_or_cancel() {
+        if !isolated_capture_probe("arming_database_stall_never_blocks_release_or_cancel") {
+            return;
+        }
+        use fs2::FileExt;
+        let root = tempfile::tempdir().unwrap();
+        crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let lock_path = root.path().join("state.db.init.lock");
+        for action in 0..3 {
+            let lock = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+                .unwrap();
+            lock.lock_exclusive().unwrap();
+            let epoch = reserve_utterance();
+            let data = root.path().to_owned();
+            let mut stt = crate::settings::SttSettings::default();
+            stt.entries[0].kind = crate::settings::SttEntryKind::SelfHosted;
+            stt.entries[0].url = "http://127.0.0.1:1".into();
+            stt.entries[0].streaming = false;
+            let worker =
+                std::thread::spawn(move || begin_reserved_utterance(epoch, stt, false, &data, 0));
+            // Wait for the database opener's lock descriptor, not an assumed
+            // thread scheduling delay, before exercising the GTK-facing call.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let descriptors = std::fs::read_dir("/proc/self/fd")
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .filter(|entry| {
+                        std::fs::read_link(entry.path()).ok().as_ref() == Some(&lock_path)
+                    })
+                    .count();
+                if descriptors >= 2 {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "database opener never reached held lock"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let unlock = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                FileExt::unlock(&lock).unwrap();
+            });
+            let start = Instant::now();
+            match action {
+                0 => end_utterance(|| {}),
+                1 => cancel_utterance(|| {}),
+                _ => invalidate_all_capture(),
+            }
+            let elapsed = start.elapsed();
+            unlock.join().unwrap();
+            worker.join().unwrap();
+            assert!(
+                elapsed < Duration::from_millis(100),
+                "input action {action} blocked on database IO for {elapsed:?}"
+            );
+            assert!(!has_live());
+            assert!(audio::callback_recorder().unwrap().is_none());
+            set_session_preview(epoch, "stale synthetic preview".into());
+            assert!(take_live_text().is_none());
+        }
+    }
 
     #[test]
     fn persisted_ollama_thinking_choices_reach_the_actual_request() {
