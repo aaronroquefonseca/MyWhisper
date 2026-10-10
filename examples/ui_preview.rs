@@ -7,16 +7,22 @@ use mywhisper::app::{AppState, apply_theme, build_app_window};
 mod smoke;
 
 fn main() -> gtk4::glib::ExitCode {
+    // This executable contains synthetic data only. File-action callbacks
+    // must never provision or read a real user's Secret Service key.
+    // SAFETY: process startup, before GTK or any worker threads exist.
+    unsafe {
+        std::env::set_var("MYWHISPER_DB_KEY", "00".repeat(32));
+    }
     let args: Vec<String> = std::env::args().collect();
     let app = gtk4::Application::builder()
         .application_id("com.mywhisper.UIPreview")
         .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
         .build();
+    let disposable = tempfile::tempdir().expect("disposable preview directory");
     app.connect_activate(move |app| {
         let mut state = AppState::fresh();
         state.settings.borrow_mut().sync.enabled = false;
-        std::rc::Rc::get_mut(&mut state).unwrap().db_path =
-            std::env::temp_dir().join("mywhisper-ui-preview/state.db");
+        std::rc::Rc::get_mut(&mut state).unwrap().db_path = disposable.path().join("state.db");
         if !args.iter().any(|a| a == "empty") {
             for (raw, text) in [
                 (
@@ -77,6 +83,9 @@ fn main() -> gtk4::glib::ExitCode {
         window.present();
         if args.iter().any(|a| a == "--expanded") {
             smoke::expand(&window, args.get(4).map(String::as_str) == Some("Snippets"));
+        }
+        if args.iter().any(|a| a == "--toast-proof") {
+            smoke::toast_proof(app, &window, theme == mywhisper::settings::Theme::Dark);
         }
         if args.iter().any(|a| a == "--smoke") {
             smoke::run(app, &state, &window);
