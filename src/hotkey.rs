@@ -1208,6 +1208,120 @@ mod tests {
         }
     }
 
+    #[test]
+    fn saved_startup_mute_and_feedback_apply_before_first_input() {
+        // Process isolation gives this check the real startup globals without
+        // racing other tests or reading a user's configuration/keyring.
+        if std::env::var_os("MYWHISPER_STARTUP_MUTE_CHILD").is_none() {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "hotkey::tests::saved_startup_mute_and_feedback_apply_before_first_input",
+                    "--nocapture",
+                ])
+                .env("MYWHISPER_STARTUP_MUTE_CHILD", "1");
+            let child = crate::child::OwnedChild::spawn(&mut command).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(status) = child.try_status().unwrap() {
+                    assert!(status.success(), "isolated startup gate failed: {status}");
+                    return;
+                }
+                assert!(Instant::now() < deadline, "startup gate exceeded deadline");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("synthetic.db");
+        let store = crate::store::Store::open_with_key(&path, &[17; 32]).unwrap();
+        let mut saved = store.load_settings();
+        saved.hotkeys.hotkeys_enabled = false;
+        saved.preferences.dictation_sounds = false;
+        saved.preferences.pause_media_on_dictation = true;
+        store.save_settings(&saved).unwrap();
+        drop(store);
+        let store = crate::store::Store::open_with_key(&path, &[17; 32]).unwrap();
+        assert!(crate::transcribe::hotkeys_listening());
+        assert!(crate::sound::enabled());
+        assert!(!crate::media::enabled());
+        crate::service::apply_input_preferences(&store.try_load_settings().unwrap());
+        assert!(!crate::transcribe::hotkeys_listening());
+        assert!(!crate::sound::enabled());
+        assert!(crate::media::enabled());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let callback: OwnedCallback = Arc::new(move |event, _| sink.lock().unwrap().push(event));
+        let mut watched = [Watched {
+            binding_id: 0,
+            press_device: None,
+            action: HotkeyAction::DictationToggle,
+            combo: parse_combo("F13").unwrap(),
+            mode: crate::settings::ActivationMode::Push,
+            active: false,
+            active_since: None,
+        }];
+        let mut held = HeldKeys::default();
+        let press = evdev::InputEvent::new(EventType::KEY.0, KeyCode::KEY_F13.0, 1);
+        let release = evdev::InputEvent::new(EventType::KEY.0, KeyCode::KEY_F13.0, 0);
+        let mut devices = vec![(
+            "synthetic-keyboard".into(),
+            SyntheticKeyboard(std::collections::VecDeque::from([
+                vec![press],
+                vec![release],
+            ])),
+        )];
+        poll_events(&mut devices, &mut held, &mut watched, &callback);
+        poll_events(&mut devices, &mut held, &mut watched, &callback);
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "muted startup emitted input"
+        );
+        if std::env::var_os("MYWHISPER_NATIVE_HOTKEY_GATE").is_some() {
+            let (mut keyboard, path, device) = native_keyboard();
+            let mut devices = vec![(path.clone(), device)];
+            for event in [press, release] {
+                keyboard.emit(&[event]).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    poll_events(&mut devices, &mut held, &mut watched, &callback);
+                    let pressed = held
+                        .devices
+                        .get(&path)
+                        .is_some_and(|keys| keys.contains(&KeyCode::KEY_F13));
+                    if pressed == (event.value() == 1) {
+                        break;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "owned native input was not consumed"
+                    );
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                assert!(
+                    seen.lock().unwrap().is_empty(),
+                    "native muted startup emitted input"
+                );
+            }
+        }
+        saved.hotkeys.hotkeys_enabled = true;
+        saved.preferences.dictation_sounds = true;
+        saved.preferences.pause_media_on_dictation = false;
+        store.save_settings(&saved).unwrap();
+        crate::service::apply_input_preferences(&store.try_load_settings().unwrap());
+        assert!(crate::sound::enabled() && !crate::media::enabled());
+        let mut devices = vec![(
+            "synthetic-keyboard".into(),
+            SyntheticKeyboard(std::collections::VecDeque::from([
+                vec![press],
+                vec![release],
+            ])),
+        )];
+        poll_events(&mut devices, &mut held, &mut watched, &callback);
+        poll_events(&mut devices, &mut held, &mut watched, &callback);
+        assert_edges(&seen.lock().unwrap());
+    }
+
     fn assert_edges(seen: &[HotkeyEvent]) {
         let down = HotkeyEvent::Down(
             HotkeyAction::DictationToggle,

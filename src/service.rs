@@ -292,8 +292,15 @@ pub fn spawn_sync_watcher(
     });
 }
 
-/// Watch the database for hotkey changes (written by any frontend)
-/// and restart the listener with pill hooks when they move.
+/// Apply the persisted input gate and feedback preferences before accepting
+/// any listener event. Also used for later settings changes.
+pub fn apply_input_preferences(settings: &crate::settings::AppSettings) {
+    crate::transcribe::set_hotkeys_listening(settings.hotkeys.hotkeys_enabled);
+    crate::sound::set_enabled(settings.preferences.dictation_sounds);
+    crate::media::set_enabled(settings.preferences.pause_media_on_dictation);
+}
+
+/// Watch for changes after the initial preferences have been applied.
 pub fn spawn_hotkey_watcher(
     db_path: PathBuf,
     down: DictationHook,
@@ -316,8 +323,12 @@ pub fn spawn_hotkey_watcher(
         {
             eprintln!("[service] stale command cleanup failed: {e}");
         }
+        let mut next = std::time::Instant::now();
         loop {
-            std::thread::sleep(Duration::from_secs(2));
+            std::thread::sleep(next.saturating_duration_since(std::time::Instant::now()));
+            // Schedule before IO so an unavailable database cannot make
+            // any continue path spin. The first pass has no initial delay.
+            next = std::time::Instant::now() + Duration::from_secs(2);
             let Ok(store) = Store::open_existing(&db_path) else {
                 continue;
             };
@@ -381,10 +392,8 @@ pub fn spawn_hotkey_watcher(
                 }
             }
             let settings = store.load_settings();
+            apply_input_preferences(&settings);
             let hotkeys = settings.hotkeys;
-            crate::transcribe::set_hotkeys_listening(hotkeys.hotkeys_enabled);
-            crate::sound::set_enabled(settings.preferences.dictation_sounds);
-            crate::media::set_enabled(settings.preferences.pause_media_on_dictation);
             let current = (
                 hotkeys
                     .effective_hotkeys()

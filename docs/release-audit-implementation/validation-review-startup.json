@@ -1,0 +1,20 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "correction": "F11: apply saved input preferences before listener publication",
+  "classification": "inspected code-path defect",
+  "rust_tests": {
+    "passed": 177,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "native_hotkey_checks": 7,
+  "verified": "Isolated process saves and reopens an encrypted configuration, applies persisted mute/sound/media preferences and consumes first key frames with the production poller. Native mode uses only an exclusively owned uinput device. Explicit re-enable restores input.",
+  "logs_sha256": {
+    "tests": "2674fd103efc62e70b784bd44815a40e04f15f19a1de28b7f8957d6fb7f7128c",
+    "clippy": "9171879a715e094bd124593730785725d28fc82d4a3401726edb7f62edcc7085",
+    "native": "b539a9733b9a5759fb960a7c830225fd670f9c6d99f0e8aba49512960473de91"
+  },
+  "source_diff_sha256": "7822e22dd1135b95b19cf6a15e7ea2b63299d39b0949c0501903f364ebca8247",
+  "outstanding": "Full headless-service startup timing, actual sound/MPRIS contracts and all original/final gates remain open."
+}
