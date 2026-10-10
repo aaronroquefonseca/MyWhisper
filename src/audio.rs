@@ -325,7 +325,12 @@ pub fn audio_vault_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
 pub fn clear_audio(data_dir: &std::path::Path) -> std::io::Result<usize> {
     let dir = audio_vault_dir(data_dir);
     let entries = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries.collect::<std::io::Result<Vec<_>>>()?.len(),
+        Ok(mut entries) => entries.try_fold(0usize, |count, entry| {
+            entry?;
+            count
+                .checked_add(1)
+                .ok_or_else(|| std::io::Error::other("audio file count overflow"))
+        })?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
         Err(e) => return Err(e),
     };

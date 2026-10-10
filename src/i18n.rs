@@ -394,6 +394,20 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.keepwarm" => ("Keep server ready", "Mantener el servidor preparado"),
         "row.serverstatus" => ("Server status", "Estado del servidor"),
         "server.none" => ("No server running", "Ningún servidor en marcha"),
+        "settings.reset.pending" => ("Resetting…", "Restableciendo…"),
+        "settings.reset.retry" => ("Retry reset cleanup", "Reintentar limpieza"),
+        "settings.reset.retry.body" => (
+            "Finish the interrupted model and audio cleanup. Changes saved after the reset transaction will be preserved.",
+            "Completa la limpieza interrumpida de modelos y audio. Se conservarán los cambios guardados después del restablecimiento.",
+        ),
+        "settings.reset.incomplete" => (
+            "Reset cleanup is incomplete. Recording shortcuts and sync stay disabled. Retry cleanup in Settings → System; changes saved after the reset will be preserved.",
+            "La limpieza del restablecimiento está incompleta. Los atajos de grabación y la sincronización siguen desactivados. Reintenta la limpieza en Ajustes → Sistema; se conservarán los cambios guardados después del restablecimiento.",
+        ),
+        "settings.reset.failed" => (
+            "Reset could not finish. Existing data and the recovery record are preserved; retry in Settings → System.",
+            "No se pudo completar el restablecimiento. Se conservan los datos existentes y el registro de recuperación; reintenta en Ajustes → Sistema.",
+        ),
         "settings.recovery.incomplete" => (
             "Stored settings are incomplete. Missing privacy and sync permissions are disabled. Review Settings before saving; the original configuration is preserved.",
             "La configuración guardada está incompleta. Los permisos de privacidad y sincronización que faltan están desactivados. Revisa Ajustes antes de guardar; la configuración original se conserva.",

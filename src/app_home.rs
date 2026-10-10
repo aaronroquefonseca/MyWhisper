@@ -433,6 +433,8 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     hk_label.add_css_class("dim");
     banner.append(&hk_label);
     let hk_switch = Switch::new();
+    hk_switch.set_widget_name("hotkeys-master");
+    hk_switch.set_sensitive(state.store.settings_warning() != Some("settings.reset.incomplete"));
     hk_switch.set_active(state.settings.borrow().hotkeys.hotkeys_enabled);
     hk_switch.set_valign(gtk4::Align::Center);
     hk_switch.update_property(&[gtk4::accessible::Property::Label(tr("home.hotkeys"))]);

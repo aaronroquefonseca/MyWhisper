@@ -323,6 +323,7 @@ pub fn spawn_hotkey_watcher(
         {
             eprintln!("[service] stale command cleanup failed: {e}");
         }
+        let mut reset_recovery = crate::reset::Recovery::default();
         let mut next = std::time::Instant::now();
         loop {
             std::thread::sleep(next.saturating_duration_since(std::time::Instant::now()));
@@ -332,6 +333,7 @@ pub fn spawn_hotkey_watcher(
             let Ok(store) = Store::open_existing(&db_path) else {
                 continue;
             };
+            reset_recovery.tick(&db_path, &store);
             match store.capture_epoch() {
                 Ok(current) => {
                     if capture_epoch.is_some_and(|old| old != current) {
@@ -350,6 +352,14 @@ pub fn spawn_hotkey_watcher(
                 if let Err(error) = store.maintain_retention_at(crate::store::now_ms() / 1000) {
                     eprintln!("[service] retention failed: {error}");
                 }
+            }
+            if store.reset_pending().unwrap_or(true) {
+                crate::transcribe::invalidate_all_capture();
+                crate::transcribe::set_hotkeys_listening(false);
+                crate::transcribe::drop_servers(
+                    db_path.parent().unwrap_or(std::path::Path::new(".")),
+                );
+                continue;
             }
             // One-shot GUI commands: Stop / Cold-start the STT server.
             let command = match store.take_server_cmd() {

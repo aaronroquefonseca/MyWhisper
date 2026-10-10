@@ -1,0 +1,27 @@
+   Compiling mywhisper v0.9.3 (/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.40s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 8 tests
+test reset::tests::intent_revokes_active_capture_and_prevents_installer_promotion_before_commit ... ok
+test reset::tests::database_replacement_after_commit_denies_old_reset_filesystem_cleanup ... ok
+test reset::tests::malformed_or_foreign_recovery_records_never_authorize_a_new_database_reset ... ok
+test reset::tests::schema_five_upgrade_preserves_records_and_conservatively_restores_pending_reset ... ok
+test reset::tests::cleanup_failure_reports_committed_settings_and_retry_preserves_new_edits ... ok
+test reset::tests::interrupted_reset_recovers_each_durable_phase_without_wiping_later_edits ... ok
+test reset::tests::admission_and_state_notifications_do_not_wait_for_database_or_installer_locks ... ok
+test reset::tests::reset_owns_cleanup_across_installer_processes_and_killed_coordinators ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 197 filtered out; finished in 0.15s
+
+     Running unittests src/bin/mywhisper.rs (target/debug/deps/mywhisper-dae779376b5a589f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/pill.rs (target/debug/deps/pill-00f4c97698747eeb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

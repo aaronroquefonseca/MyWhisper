@@ -4,7 +4,7 @@ use libadwaita::prelude::*;
 use mywhisper::{app::AppState, i18n::tr};
 use std::rc::Rc;
 
-fn descendants(root: &gtk4::Widget) -> Vec<gtk4::Widget> {
+pub(super) fn descendants(root: &gtk4::Widget) -> Vec<gtk4::Widget> {
     let mut all = vec![root.clone()];
     let mut child = root.first_child();
     while let Some(widget) = child {
@@ -52,7 +52,10 @@ fn button(root: &gtk4::Widget, tag: &str) -> gtk4::Button {
     button
 }
 
-fn named<T: IsA<gtk4::Widget> + gtk4::glib::object::IsClass>(root: &gtk4::Widget, name: &str) -> T {
+pub(super) fn named<T: IsA<gtk4::Widget> + gtk4::glib::object::IsClass>(
+    root: &gtk4::Widget,
+    name: &str,
+) -> T {
     descendants(root)
         .into_iter()
         .find(|widget| widget.widget_name() == name)
@@ -69,7 +72,7 @@ fn prompt_editor(app: &gtk4::Application) -> gtk4::Window {
         .unwrap()
 }
 
-fn respond(window: &gtk4::ApplicationWindow, response: &str) {
+pub(super) fn respond(window: &gtk4::ApplicationWindow, response: &str) {
     let host = window
         .clone()
         .downcast::<libadwaita::ApplicationWindow>()

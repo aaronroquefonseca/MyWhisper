@@ -1,0 +1,99 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "correction": "F12: owned background reset with durable intent, transactional pending/completed ownership and recoverable cleanup",
+  "baseline": "21c7da7bb16255583574aa577a4d7e4e15050226",
+  "baseline_native_gtk_block_seconds": 5.005691826,
+  "before_regression_failed": true,
+  "rust_tests": {
+    "passed": 200,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "new_reset_regressions": 8,
+  "native_ui": [
+    "light/en",
+    "dark/es"
+  ],
+  "native_cases_per_configuration": [
+    "full settings/widget signals",
+    "settings recovery",
+    "reset with independent-process DB/installer locks, active GTK heartbeat, partial file failure and preserving retry",
+    "startup recovery after committed pending reset"
+  ],
+  "native_hotkey_checks": 7,
+  "packaging_checks": 14,
+  "security": {
+    "vulnerabilities": 0,
+    "warnings": 0,
+    "database": {
+      "advisory-count": 1296,
+      "last-commit": "7eebec69c352c7191b1f13eb95dd510eeca5d1de",
+      "last-updated": "2026-10-09T10:12:02+02:00"
+    }
+  },
+  "real_keyring": "Eight concurrent private identities; missing, ambiguous, locked, stalled and restart handling; encrypted sync lifecycle passed",
+  "recovery_cases": [
+    "intent before DB commit",
+    "pending commit before cleanup",
+    "missing intent file with committed pending ownership",
+    "completed DB state before intent unlink",
+    "independent installer cancellation/admission denial",
+    "killed independent coordinators and service recovery",
+    "malformed/foreign recovery record",
+    "replacement after commit stops old cleanup",
+    "settings/dictionary edits after partial failure are preserved",
+    "old-generation atomic export/import and capture denied before reset commit"
+  ],
+  "compatibility": "Schema 6 preserves encrypted records and unknown settings during schema-5 upgrade. An actual schema-5 build refuses schema 6 without changing the encrypted database; current reopen preserves data. This prevents older software ignoring pending-reset semantics. No key or device identity rotation and no peer protocol change.",
+  "verification_harness_notes": [
+    "The first compatibility harness reused a baseline Cargo artifact under the shared target directory. The corrected harness assigns distinct fixture package identities and asserts the actual schema number; both variants were compiled and the three actual before/after operations passed.",
+    "Overlapping UI reruns produced a log with holes. The final native UI gate was rerun alone into ui-final.log; its exit status is zero and all eight expected completion markers are present. No test or assertion was weakened.",
+    "Committed core/test logs omit only the terminal empty line so git diff --check passes; raw log hashes are retained separately."
+  ],
+  "source_sha256": {
+    "src/reset.rs": "5805bbd4f5d737cfd126081e8693d0891b31814852d23a4ce4b018a5a2eecc77",
+    "src/store.rs": "fe5046c53c4de5713bf89a2504b24f6b205652ca98c5139f4ec260f75470f55b",
+    "src/operation.rs": "b9570c6f040b5c3fac8f9b2faa9d5daf8cd18925dd7229ab378cb82397ab5009",
+    "src/artifact.rs": "030d44508e5ea6275ab2c88d82272764c87a5566365c2da2897b0c8677dab6a0",
+    "src/transcribe.rs": "92cf6afd0d91ebd81097b7624c718297de34d6419ece0dcd94a47d6bc86182b3",
+    "src/service.rs": "52323cbf275b9dde1f5e05d7b51693a145a19a118c0f3dabb27608d236861d90",
+    "src/app.rs": "6f906cce41537a8ffbf3488e4971baf8a4759e2ed53b068a679f1f7f5a61f0ba",
+    "src/app_home.rs": "b1d9497c319d01a2b58546c94197ddf71f42d860270afbe79607f322b46f6d70",
+    "src/app_sync.rs": "7f641347457d04ab4f136bab2588351d38d03b5317f61229bfb7ec5e27c76f6d",
+    "src/app_settings.rs": "f84ed7956304d90353cbca86e724c54fb5a5cec2de0bc652877b59091f2bbb81",
+    "src/bin/mywhisper.rs": "5f9e5b453c5f850f2eed73cae8f953b8ec2061d03263dec190b666a7c5646273",
+    "src/audio.rs": "032ba879835b3035b9b3c83a4e856f878d93be6bd8e8c38fb12f6637b853cfeb",
+    "src/i18n.rs": "98df9f354dbcacaa3b27cca036eb3d89c0ec842868946e3700a8b7289b464b5a",
+    "src/lib.rs": "551790f5f1c22b43ec13d47dcc0dee54faff62d03af780ed7431d688e07754a9",
+    "examples/ui_preview.rs": "3a475ca21c26f11dce1625d60611bf9b31e991ce7390125fb399e361cd63b390",
+    "examples/ui_preview/reset_smoke.rs": "e53e6d1c7e3de673f700f1a96702bbcd57f49a91e154650c313cec794ba91363",
+    "examples/ui_preview/smoke.rs": "300a4e9de4cf5134d69c072ffce0a07cb267ee433b1922d4402f181036ced197",
+    "scripts/ui-smoke.sh": "1b96e63e2445ef08db7a6457e4bbeabcf5c53d8077336247fd8928370ef6bf12"
+  },
+  "outstanding": "Queued capture admission, engine leases/cancellable warmup, large-history sync and corrupt assets remain open review issues. Final filesystem/privacy/cleanup review, live integration prerequisites and packaged-artifact checks remain; all original finding groups retain their complete requirements.",
+  "raw_logs_sha256": {
+    "before": "9b24f5ff2131e0c02aaa51ad96107889c301d29218d3304ce2d3e55dd5420103",
+    "core": "7986712dca76cd0a4d5af833f04f0e114f36902a3e3d053cc7d932fcea7933f2",
+    "tests": "bceebc08bb118b2a6ed8263aca765b884e55291f07d148c41359edbffcdae2ea",
+    "clippy": "fea598e952caea2e09d678135fac04508a9c1d73197a7ac78f704d671ba6f5a4",
+    "fmt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "release": "44cd8410aaf4f9c367b3a7b933e2fdd8e1ff6061c802c76df0cb7515e343498f",
+    "ui": "90eed2bf727b18cce478ab6a1469c3f4209cce4d47b3da5e75a23353070c2208",
+    "native": "6c89b2c79c75eb344f7976216cda18248e0914089a2e3a9b79b8cbc498a3b944",
+    "keyring": "01d9f1d60f7fe1da3108772655f051f1192942578d6b1c78ac274ff492eb121b",
+    "packaging": "de51e00e48117ad65406744bfece65aea98ce6ca66d9e82f3f239c00eed32a7e",
+    "upgrade": "6e3a509cb0a642bd463d6e2189004b6893cf269c09c507ad7300ec1c38e3befc",
+    "compatibility": "e71816969b477cfd55fa4e7aa1b594d7138fa4e37a9c74fa6536d1ed8a3ff1c5",
+    "compatibility_build": "4fd85dbc8ee639247181d6ba1cc578297d48f0f46013972c7c2cc73f34d23f99"
+  },
+  "committed_logs_sha256": {
+    "before.log": "9b24f5ff2131e0c02aaa51ad96107889c301d29218d3304ce2d3e55dd5420103",
+    "compatibility.log": "e71816969b477cfd55fa4e7aa1b594d7138fa4e37a9c74fa6536d1ed8a3ff1c5",
+    "compatibility_build.log": "4fd85dbc8ee639247181d6ba1cc578297d48f0f46013972c7c2cc73f34d23f99",
+    "core.log": "c9296a2a521c43445d535ecc4af847140fd95d266ba6eafbb69ba1665ee7c83b",
+    "keyring.log": "01d9f1d60f7fe1da3108772655f051f1192942578d6b1c78ac274ff492eb121b",
+    "tests.log": "aa9cdbe501baf46fd786e1e21f28e5092558f8633e33b5e96f3f3c6e46872fcb",
+    "ui.log": "90eed2bf727b18cce478ab6a1469c3f4209cce4d47b3da5e75a23353070c2208"
+  }
+}

@@ -558,6 +558,8 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     svc_label.set_hexpand(true);
     svc_row.append(&svc_label);
     let svc_switch = Switch::new();
+    svc_switch.set_widget_name("sync-master");
+    svc_switch.set_sensitive(state.store.settings_warning() != Some("settings.reset.incomplete"));
     svc_switch.update_property(&[gtk4::accessible::Property::Label(tr("sync.svc.switch"))]);
     svc_switch.set_active(state.settings.borrow().sync.enabled);
     svc_switch.set_valign(gtk4::Align::Center);

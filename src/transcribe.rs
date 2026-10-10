@@ -659,6 +659,14 @@ fn ensure_server(
     probe: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     let _startup = SERVER_START_LOCK.lock().map_err(|e| e.to_string())?;
+    let reset_check = || -> Result<(), String> {
+        if crate::reset::requested(data_dir).map_err(|_| "reset status unavailable")? {
+            Err("reset cleanup is pending; local server startup is disabled".into())
+        } else {
+            Ok(())
+        }
+    };
+    reset_check()?;
     let mut key = key;
     key.push_str(&format!("|port={port}"));
     let mut map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
@@ -695,7 +703,9 @@ fn ensure_server(
             "port {port} is owned by another process; choose a free local port or configure a self-hosted endpoint"
         ));
     }
+    reset_check()?;
     let child = spawn()?;
+    reset_check()?;
     map.insert(
         name.to_string(),
         Supervised {
@@ -717,6 +727,7 @@ fn ensure_server(
     // cuda binary with no CUDA libs exits 127 in ms — no 20 s mystery).
     let start = Instant::now();
     loop {
+        reset_check()?;
         if port_open(port) {
             break;
         }
@@ -740,6 +751,7 @@ fn ensure_server(
         std::thread::sleep(Duration::from_millis(200));
     }
     probe()?;
+    reset_check()?;
     if let Some(server) = servers().lock().map_err(|e| e.to_string())?.get_mut(name) {
         server.ready = true;
         pidfile_record(data_dir, name, server.child.0.id(), port);

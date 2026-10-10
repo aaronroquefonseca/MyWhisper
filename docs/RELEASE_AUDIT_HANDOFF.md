@@ -108,3 +108,12 @@ The user explicitly deferred the project license: **do not add a project
 LICENSE or invent a copyright holder**. Preserve third-party notices;
 distribution remains blocked. Do not open a PR until all original submission
 gates pass. Do not merge, deploy, create a release or create a release tag.
+
+
+Reset follow-up (F12): schema 6 adds durable pending/completed reset ownership.
+Schema-5 builds refuse the newer database; do not test a downgrade against real
+user data. The reset worker keeps a private recovery intent across interrupted
+cleanup and preserves edits after its DB transaction. Both UI smoke configurations
+now include native reset lock/failure/retry and startup-recovery cases. See the
+matrix and validation-review-reset.json for executed evidence and outstanding
+warmup/filesystem/final-artifact requirements. No PR has been submitted.

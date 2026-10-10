@@ -3,6 +3,8 @@
 use gtk4::prelude::*;
 use mywhisper::app::{AppState, apply_theme, build_app_window};
 
+#[path = "ui_preview/reset_smoke.rs"]
+mod reset_smoke;
 #[path = "ui_preview/smoke.rs"]
 mod smoke;
 
@@ -14,6 +16,10 @@ fn main() -> gtk4::glib::ExitCode {
         std::env::set_var("MYWHISPER_DB_KEY", "00".repeat(32));
     }
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--reset-lock-owner") {
+        reset_smoke::lock_owner(std::path::Path::new(&args[2]));
+        return gtk4::glib::ExitCode::SUCCESS;
+    }
     let app = gtk4::Application::builder()
         .application_id("com.mywhisper.UIPreview")
         .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
@@ -23,6 +29,13 @@ fn main() -> gtk4::glib::ExitCode {
         let mut state = AppState::fresh();
         state.settings.borrow_mut().sync.enabled = false;
         std::rc::Rc::get_mut(&mut state).unwrap().db_path = disposable.path().join("state.db");
+        if args
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "--reset-smoke" | "--reset-resume-smoke"))
+        {
+            let store = mywhisper::store::Store::open_with_key(&state.db_path, &[0; 32]).unwrap();
+            std::rc::Rc::get_mut(&mut state).unwrap().store = std::rc::Rc::new(store);
+        }
         if !args.iter().any(|a| a == "empty") {
             for (raw, text) in [
                 (
@@ -93,6 +106,9 @@ fn main() -> gtk4::glib::ExitCode {
             *state_mut.settings.borrow_mut() = recovered;
             state_mut.store = std::rc::Rc::new(store);
         }
+        if args.iter().any(|arg| arg == "--reset-resume-smoke") {
+            reset_smoke::prepare_recovery(&state);
+        }
         apply_theme(theme);
         let window = build_app_window(
             app,
@@ -103,6 +119,12 @@ fn main() -> gtk4::glib::ExitCode {
         window.present();
         if args.iter().any(|a| a == "--settings-recovery") {
             smoke::settings_recovery(app, &state, &window);
+        }
+        if args.iter().any(|a| a == "--reset-smoke") {
+            reset_smoke::run(app, &state, &window);
+        }
+        if args.iter().any(|a| a == "--reset-resume-smoke") {
+            reset_smoke::resume(app, &state);
         }
         if args.iter().any(|a| a == "--expanded") {
             smoke::expand(&window, args.get(4).map(String::as_str) == Some("Snippets"));

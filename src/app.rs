@@ -27,6 +27,7 @@ pub struct AppState {
     /// True when the background service holds the engine lock. The
     /// GUI is always frontend-only; this only drives status display.
     pub service_alive: std::cell::Cell<bool>,
+    pub reset_busy: std::cell::Cell<bool>,
     /// mDNS-discovered LAN peers, refreshed by the browser thread.
     pub discovered:
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, crate::net::Discovered>>>,
@@ -46,6 +47,7 @@ impl AppState {
             creds: crate::device::DeviceIdentity::ephemeral().creds(),
             sync_port: std::cell::Cell::new(0),
             service_alive: std::cell::Cell::new(false),
+            reset_busy: std::cell::Cell::new(false),
             discovered: Default::default(),
             _retention: None,
         })
@@ -93,6 +95,7 @@ impl AppState {
             creds,
             sync_port: std::cell::Cell::new(0),
             service_alive: std::cell::Cell::new(false),
+            reset_busy: std::cell::Cell::new(false),
             discovered,
             _retention: retention,
         })
@@ -489,6 +492,7 @@ pub fn build_app_window(
 
     let stack = Stack::new();
     stack.set_widget_name("main-pages");
+    stack.set_sensitive(!state.reset_busy.get());
     stack.set_vexpand(true);
     stack.set_hexpand(true);
     stack.add_named(&crate::app_home::page(state), Some("home"));

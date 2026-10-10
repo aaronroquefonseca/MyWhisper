@@ -1,0 +1,4 @@
+   Compiling mywhisper-reset-compat-baseline v0.9.3 (/tmp/mywhisper-reset-compat-b80vi29u/baseline)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.47s
+   Compiling mywhisper-reset-compat-implementation v0.9.3 (/tmp/mywhisper-reset-compat-b80vi29u/implementation)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.42s

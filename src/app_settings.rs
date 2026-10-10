@@ -5024,38 +5024,47 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
 
     let (card, rows) = group(tr("group.danger"));
     let (b, _) = row(tr("row.resetall"));
-    let reset = Button::with_label(tr("action.resetdots"));
+    let retry = state.store.settings_warning() == Some("settings.reset.incomplete");
+    let reset = Button::with_label(tr(if state.reset_busy.get() {
+        "settings.reset.pending"
+    } else if retry {
+        "settings.reset.retry"
+    } else {
+        "action.resetdots"
+    }));
+    reset.set_widget_name("reset-all");
+    reset.set_sensitive(!state.reset_busy.get());
     {
         let state = state.clone();
-        let data_dir = data_dir.clone();
         super::app::connect_confirmed(
             &reset,
-            tr("confirm.reset.title"),
-            tr("confirm.reset.body"),
-            tr("action.resetdots"),
-            move |_| {
-                // Wipe user data + downloads. Identity (device key) and
-                // the running service survive: the next dictation
-                // re-reads defaults from the fresh DB and reports missing
-                // models; restart the service for a fully clean slate.
-                if let Err(e) = state.store.reset_all_data() {
-                    eprintln!("[system] reset db: {e}");
-                    super::app::notify(tr("feedback.deletefailed"));
-                    return;
+            tr(if retry {
+                "settings.reset.retry"
+            } else {
+                "confirm.reset.title"
+            }),
+            tr(if retry {
+                "settings.reset.retry.body"
+            } else {
+                "confirm.reset.body"
+            }),
+            tr(if retry {
+                "settings.reset.retry"
+            } else {
+                "action.resetdots"
+            }),
+            move |button| {
+                begin_reset(state.clone(), retry);
+                if state.reset_busy.get() {
+                    button.set_label(tr("settings.reset.pending"));
+                    button.set_sensitive(false);
+                    if let Some(page) = button.ancestor(Stack::static_type()) {
+                        page.set_sensitive(false);
+                        if let Some(content) = page.ancestor(Stack::static_type()) {
+                            content.set_sensitive(false);
+                        }
+                    }
                 }
-                if let Err(e) = crate::stt::clear_download_cache(&data_dir)
-                    .and_then(|_| crate::audio::clear_audio(&data_dir))
-                {
-                    eprintln!("[system] reset files: {e}");
-                    super::app::notify(tr("feedback.deletefailed"));
-                    return;
-                }
-                *state.settings.borrow_mut() = state.store.load_settings();
-                eprintln!("[system] application data reset");
-                crate::i18n::set_lang(crate::i18n::UiLang::System);
-                apply_theme(crate::settings::Theme::System);
-                crate::i18n::rebuild_ui();
-                super::app::notify(tr("feedback.cleared"));
             },
         );
     }
@@ -5066,10 +5075,90 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
     root
 }
 
+/// Recover only a previously authorized reset; opening a window cannot
+/// initiate a new reset or wipe edits after a completed reset transaction.
+pub fn resume_pending_reset(state: &Rc<AppState>) {
+    if state.store.settings_warning() == Some("settings.reset.incomplete") {
+        begin_reset(state.clone(), true);
+    }
+}
+
+fn begin_reset(state: Rc<AppState>, resume_only: bool) {
+    if state.reset_busy.replace(true) {
+        return;
+    }
+    let job = match crate::reset::start(state.db_path.clone(), resume_only) {
+        Ok(job) => job,
+        Err(error) => {
+            state.reset_busy.set(false);
+            eprintln!("[reset] admission: {error}");
+            super::app::notify(tr("settings.reset.failed"));
+            return;
+        }
+    };
+    crate::transcribe::invalidate_all_capture();
+    gtk4::glib::timeout_add_local(std::time::Duration::from_millis(20), move || {
+        let mut rebuild = false;
+        let mut finished = None;
+        loop {
+            match job.events.try_recv() {
+                Ok(crate::reset::Event::Snapshot(settings, warning)) => {
+                    if let Err(error) = state.store.adopt_settings_baseline(&settings, warning) {
+                        eprintln!("[reset] snapshot: {error}");
+                    }
+                    crate::i18n::set_lang(crate::i18n::UiLang::parse(
+                        &settings.preferences.ui_language,
+                    ));
+                    apply_theme(settings.preferences.theme);
+                    *state.settings.borrow_mut() = *settings;
+                    rebuild = true;
+                }
+                Ok(crate::reset::Event::Finished(result)) => {
+                    finished = Some(result);
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    finished = Some(Err(
+                        "reset worker disconnected; recovery remains available".into()
+                    ));
+                    break;
+                }
+            }
+        }
+        if finished.is_some() {
+            state.reset_busy.set(false);
+            rebuild = true;
+        }
+        if rebuild {
+            crate::i18n::rebuild_ui();
+        }
+        match finished {
+            Some(Ok(())) => {
+                super::app::notify(tr("feedback.cleared"));
+                gtk4::glib::ControlFlow::Break
+            }
+            Some(Err(error)) => {
+                eprintln!("[reset] {error}");
+                super::app::notify(tr(
+                    if state.store.settings_warning() == Some("settings.reset.incomplete") {
+                        "settings.reset.incomplete"
+                    } else {
+                        "settings.reset.failed"
+                    },
+                ));
+                gtk4::glib::ControlFlow::Break
+            }
+            None => gtk4::glib::ControlFlow::Continue,
+        }
+    });
+}
+
 // ---------------------------------------------------------------- page
 
 pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
     let root = GtkBox::new(Orientation::Horizontal, 0);
+    root.set_sensitive(!state.reset_busy.get());
 
     let nav = GtkBox::new(Orientation::Vertical, 4);
     nav.add_css_class("sidebar");

@@ -23,7 +23,7 @@ The [complete independent review and original probe sources/logs](release-audit-
 | F09: corrupt assets appear installed | R35, R49 | Legacy presence/95%-size checks bypass download integrity. Validate legacy/manual content and persist trustworthy receipts off GTK; expose repair states. | Reproduced with empty Parakeet and 96%-length Whisper. Open: same-size corruption, missing libraries, receipt tampering, valid manual installs and interrupted validation/repair. |
 | F10: thinking model-default overwritten | R38, R50 | Every load treats explicit null as a missing legacy field. Version missing-field migration and preserve all three explicit choices in UI/service requests. | Correction passed: None/true/false persist through store reload, all three real GTK save choices pass in both smoke configurations, and captured HTTP requests omit think for None or send the explicit boolean. Migration applies only to the legacy Ollama entry shape with an absent thinking field; explicit null stays model default, and the field is persisted on save. The previous every-load rewrite is removed. Before-fix regression failed on None becoming false. Broader live-provider/final artifact gates remain open. |
 | F11: startup ignores saved mute | R23 | Listener publishes before initial input/feedback preferences; watcher sleeps before first pass. Apply settings before accepting input and start polling immediately. | Correction: startup applies persisted mute, cue and media preferences before publishing the listener; watcher runs immediately and retains a bounded cadence on error paths. A process-isolated encrypted save/reopen check verifies first input is muted, sound disabled/media preference applied, and explicit re-enable restores ordered input. The native gate repeats initial muted input through its exclusively owned uinput device and the production poller. Full Rust suite: 177 passed, zero failed; strict Clippy and seven native hotkey checks passed. Complete headless-service launch timing and actual sound/MPRIS integration remain open; the native poller check is not a full service launch. |
-| F12: reset blocks GTK/stales UI | R05, R50 | Confirmation performs DB/reset/installer lock/recursive deletion synchronously and reconciles only on full success. Own reset in background, coordinate captures/installers/servers, always reflect committed state and recover partial cleanup. | Inspected. Open: lock stalls, active cross-process installer, partial filesystem failure, interruption/retry and UI pending/completion/error assertions. |
+| F12: reset blocks GTK/stales UI | R05, R50 | Confirmation performs DB/reset/installer lock/recursive deletion synchronously and reconciles only on full success. Own reset in background, coordinate captures/installers/servers, always reflect committed state and recover partial cleanup. | Correction passed for reset ownership/recovery: the original native GTK callback blocks 5.006 s on a separate process’s DB lock. The owned worker now admits without database/file IO on GTK, reconciles worker-loaded committed settings even if cleanup fails, and exposes pending/cleanup-retry states. Capture, atomic sync export/import and installer admission/promotion deny a durable private reset intent before the DB reset commits. The DB tracks a pending nonce and completed nonce; retry/restart never repeats a committed reset or wipes subsequent edits. Eight regressions cover held DB/installer locks, active independent-process installation, four interruption states including a missing file marker, killed coordinator processes, corrupt/foreign recovery records, replacement after commit, preferences/dictionary preservation after failure, and schema-5 migration. Both real GTK configurations exercise held independent-process locks, an active heartbeat, partial filesystem failure, committed theme/language reconciliation, disabled pending permission controls, retry and startup recovery. Schema 6 protects the pending-reset semantics: an actual schema-5 build refuses it without modifying the encrypted file; the current build upgrades/reopens preserved data. Current Rust suite: 200 passed, zero failed; formatting/strict Clippy, release build, current security audit, private real keyring/sync lifecycle, seven native hotkey checks and 14 packaging checks pass. No peer protocol or key/identity rotation. Owned local warmup/readiness in F05, final filesystem/privacy/cleanup review and the final packaged artifact remain open. |
 
 Main integration: merged `15776960fe4351be551df607861db21b59d0e388` (0.9.3) into this implementation branch. The Nix conflict retains source builds and reads the Cargo version. Arch uses the actual authenticated 0.9.3 archive SHA-256 `443ce5d00a992bf1cca6c4cbadd5978216b9a7d62a7661cce23c6ada35a11046`, verified by download. Locked all-target compilation and 14 packaging tests pass after this integration; final builds/native/artifact checks must be repeated after corrections. Main and the historical audit branch are unchanged.
 
@@ -65,7 +65,7 @@ Each finding retains its original classification. Grouped subissues below quote 
 
 - Root cause/correction: Delete, clear, expiry, receipt and migration redact payload columns; secure_delete enabled.
 - Regression coverage and executed validation: release_regressions::deletion_clear_expiry_and_all_merge_orders_redact (see source for current test names).
-- Migration/compatibility: Schema v5 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
+- Migration/compatibility: Schema v6 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
 - Unresolved requirements: WAL/checkpoint/backup deletion guarantees and associated audio cleanup still need verification.
 
 **Acceptance requirement:** Change: keep identity-only tombstones and redact payload columns locally and on receipt; account for SQLite WAL/backups when defining deletion guarantees. Verify: delete/clear/expire a transcript, export to a new peer, and inspect both databases for the original text.
@@ -78,7 +78,7 @@ Each finding retains its original classification. Grouped subissues below quote 
 
 - Root cause/correction: Merge flags with SQL OR; every tombstone redacts text and metrics.
 - Regression coverage and executed validation: All six normal/discarded/deleted permutations, repeated three times, converge in disposable databases.
-- Migration/compatibility: Schema v5 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
+- Migration/compatibility: Schema v6 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
 - Unresolved requirements: Protocol compatibility review and stale legacy peer behavior.
 
 **Acceptance requirement:** Change: merge monotonic flags with logical OR, or use an explicit versioned state machine; combine this with R03's redaction. Verify: all permutations and repetitions of normal/discarded/deleted snapshots converge and no deleted row returns.
@@ -91,8 +91,9 @@ Each finding retains its original classification. Grouped subissues below quote 
 
 - Root cause/correction: Reset preserves redacted tombstones, revokes peers, resets settings with sync off, advances both sync and capture epochs, and cancels installers before clearing assets.
 - Regression coverage and executed validation: Reset/revocation regression and capture_privacy_regressions reject old normal/discarded persistence after reset. Installer reset race regression passes.
-- Migration/compatibility: Schema v5 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
-- Unresolved requirements: Active HTTP/WS/CLI disclosure cancellation now has F01 coverage. Pending capture admission, owned warmup/server cleanup, full clipboard privacy boundaries, and interrupted filesystem reset recovery remain.
+- Migration/compatibility: Schema v6 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
+- Regression follow-up (F12): a private durable intent, transactional pending/completed nonces and an owned background worker coordinate reset/recovery. Failed cleanup keeps capture/sync/installers disabled, reflects the committed settings in GTK, and can be retried without repeating the DB reset or deleting later edits. Native callbacks remain responsive under independent-process DB/installer locks; killed-process recovery and actual older-build refusal of schema 6 pass. Identity/key provisioning is unchanged.
+- Unresolved requirements: Active HTTP/WS/CLI disclosure cancellation now has F01 coverage. Pending capture admission, owned warmup/server cleanup, full clipboard privacy boundaries, final filesystem/privacy review and packaged compatibility remain.
 
 **Acceptance requirement:** Change: define reset as a coordinated boundary: stop jobs/sync, clear trust or retain replicated deletion state, then reset settings. Verify: reset a paired device and reconnect it to a stale peer; user data must stay cleared.
 
@@ -273,7 +274,7 @@ Each finding retains its original classification. Grouped subissues below quote 
 
 - Root cause/correction: LWW predicate is part of SQL ON CONFLICT; remote cross-table merge uses one transaction.
 - Regression coverage and executed validation: Concurrent connections and rollback/idempotence regressions pass.
-- Migration/compatibility: Schema v5 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
+- Migration/compatibility: Schema v6 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
 - Unresolved requirements: Deterministic local-edit/two-peer barrier coverage and remaining gossip/contact transaction boundary.
 
 **Acceptance requirement:** Change/verify: put the version predicate in the SQL conflict update or a transaction with correct contention handling. Exercise simultaneous local edit and two peer merges with barriers; the maximum version must always survive.
@@ -286,7 +287,7 @@ Each finding retains its original classification. Grouped subissues below quote 
 
 - Root cause/correction: Local logical clock advances past stored versions; reject negative/extreme peer timestamps.
 - Regression coverage and executed validation: One hundred fast edits, future-dated peer day, local deletion and invalid maximum timestamp checks pass.
-- Migration/compatibility: Schema v5 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
+- Migration/compatibility: Schema v6 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
 - Unresolved requirements: Clock rollback/overflow recovery and protocol clock validation across every input.
 
 **Acceptance requirement:** Change/verify: use a monotonic logical/hybrid clock that advances past stored versions for local edits; validate extreme peer times. Test equal-millisecond updates, clock rollback, and a peer one day ahead.
@@ -299,7 +300,7 @@ Each finding retains its original classification. Grouped subissues below quote 
 
 - Root cause/correction: Compatible fields default individually; corrupt settings blob preserved, load fails closed for sync/history/audio and save refuses overwrite.
 - Regression coverage and executed validation: Minimal/partial configurations and corrupt preservation checks pass.
-- Migration/compatibility: Schema v5 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
+- Migration/compatibility: Schema v6 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
 - Unresolved requirements: Versioned settings migration, unknown enums, visible recovery message and privacy defaults for absent fields.
 
 **Acceptance requirement:** Change/verify: version and migrate settings, default compatible missing fields individually, surface errors, and preserve the original blob. Test historical/minimal configurations and invalid enums without changing unrelated privacy settings.
@@ -312,7 +313,7 @@ Each finding retains its original classification. Grouped subissues below quote 
 
 - Root cause/correction: DB initialization lock, private unique staging, atomic plaintext replacement, transactional schema upgrade and newer-schema rejection. Wrong key is distinguished from plaintext.
 - Regression coverage and executed validation: Eight simultaneous migrators, wrong-key preservation and newer-schema tests pass.
-- Migration/compatibility: Schema v5 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
+- Migration/compatibility: Schema v6 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
 - Unresolved requirements: Active WAL, disk-full, interrupted migration/recovery, pre-migration future-version rejection and directory durability.
 
 **Acceptance requirement:** Change/verify: exclusive versioned transactions, distinguish wrong key/plaintext/corruption, preserve a recoverable backup, and fault-test two simultaneous openers, active WAL, disk-full, interrupted migration, and newer schemas.
@@ -585,7 +586,7 @@ Each finding retains its original classification. Grouped subissues below quote 
 
 - Root cause/correction: Durable revoked IDs prevent gossip repair; explicit trust clears revocation, accepting trust no longer grants introducer automatically. Listener addresses advertised; responder ignores ephemeral source port.
 - Regression coverage and executed validation: Reset/revocation/gossip/explicit repair checks pass.
-- Migration/compatibility: Schema v5 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
+- Migration/compatibility: Schema v6 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
 - Unresolved requirements: Introduction authority UI/policy, bounded expiring addresses and versioned names; real asymmetric pairing without mDNS.
 
 **Acceptance requirement:** Change/verify: explicit introduction policy, durable local revocations, listener-only advertised addresses, bounded/expiring address metadata, and versioned names. Test unpair→gossip, asymmetric pairing without mDNS, and repeated connections.
@@ -598,7 +599,7 @@ Each finding retains its original classification. Grouped subissues below quote 
 
 - Root cause/correction: Atomic batched typed-table merge; unchanged records do not bump generation. Background triggers use a bounded per-database/per-peer scheduler: one active round and one latest dirty request per peer, independent of dictation workers. Startup/periodic/discovery/change requests retain their original permissions and engine owner. Enumeration continues in bounded batches instead of dropping peers on admission pressure.
 - Regression coverage and executed validation: Rollback/idempotent generation/concurrent merge checks pass. Scheduler regressions verify dirty replay/fairness, unrelated-peer progress and panic recovery. A real two-round encrypted loopback changes data during the first exported snapshot and verifies the latest change arrives through one coalesced replay after 100 triggers.
-- Migration/compatibility: Schema v5 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
+- Migration/compatibility: Schema v6 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
 - Unresolved requirements: Manual/inbound/cross-process round coalescing, heavy-trigger/large-peer enumeration fairness, delta protocol, tombstone lifecycle and schema negotiation; large slow-link benchmark.
 
 **Acceptance requirement:** Change/verify: coalesce per-peer rounds, batch transactional merges, delta/change tracking and a tombstone lifecycle; explicitly version compatibility. Benchmark a large history over a slow link and inject failure halfway through a merge.
@@ -676,7 +677,7 @@ Each finding retains its original classification. Grouped subissues below quote 
 
 - Root cause/correction: Transactional settings snapshot-diff preserves another frontend changes; typed dictionary remains authoritative and is omitted from JSON. No-op merges do not rebuild. Schema work only on version upgrades. Runtime init serialized. Server status TCP/process inspection now runs on one page-owned bounded session task, with a nonblocking GTK result poll; hidden, removed or reconfigured pages cancel pending work. Results belong to the originating page and configuration, and callbacks hold weak status controls.
 - Regression coverage and executed validation: Two-frontends/dictionary privacy/idempotent generation and concurrent DB tests pass. Real loopback cancellation coverage verifies that a cancelled status query makes no connection and cancellation between engines prevents the next connection. Native smoke now exercises real mapped status queries, a changed configuration with an owned reserved non-listening port, foreign-process stop refusal, and removed speech/settings control release. Latest all-target Rust run passes 165 tests with zero failures and the five unchanged opt-in runtime tests.
-- Migration/compatibility: Schema v5 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
+- Migration/compatibility: Schema v6 retains replicated tombstones and durable local revocations; legacy peer compatibility and interrupted upgrade review remain open.
 - Unresolved requirements: Explicit service/session/provider boundaries, backup/export policy, remaining GTK blocking operations, task ownership and obsolete docs/helpers.
 
 **Acceptance requirement:** Change/verify: establish clear repository/service/session/provider boundaries, transactional preference patches, one authoritative dictionary store, read-only polling, explicit task ownership and cleanup, and accurate support docs. Test two frontend snapshots, startup/rebuild latency with slow external services, and any promised backup/export workflow. Remove obsolete helpers/comments rather than treating them as functioning features.

@@ -69,6 +69,7 @@ pub(crate) struct Stage {
     _global: File,
     _asset: File,
     destination: PathBuf,
+    data: PathBuf,
     global_epoch: (PathBuf, u64),
     asset_epoch: (PathBuf, u64),
 }
@@ -76,6 +77,9 @@ impl Stage {
     pub fn new(data: &Path, key: &str, destination: PathBuf) -> Result<Self, String> {
         if !valid_key(key) {
             return Err("invalid artifact key".into());
+        }
+        if crate::reset::requested(data).map_err(|error| error.to_string())? {
+            return Err("reset cleanup is pending; installation is disabled".into());
         }
         let control = data.join(".install");
         crate::private_fs::directory(&control).map_err(|e| e.to_string())?;
@@ -86,7 +90,10 @@ impl Stage {
         let global = shared_lock(&control.join("reset.lock"))?;
         let asset = crate::private_fs::lock(&control.join(format!("{key}.lock")))
             .map_err(|e| e.to_string())?;
-        if epoch(&global_epoch)? != saved_global || epoch(&asset_epoch)? != saved_asset {
+        if crate::reset::requested(data).map_err(|error| error.to_string())?
+            || epoch(&global_epoch)? != saved_global
+            || epoch(&asset_epoch)? != saved_asset
+        {
             return Err("installation cancelled before startup".into());
         }
         let parent = destination.parent().ok_or("artifact has no parent")?;
@@ -100,6 +107,7 @@ impl Stage {
             _global: global,
             _asset: asset,
             destination,
+            data: data.to_owned(),
             global_epoch: (global_epoch, saved_global),
             asset_epoch: (asset_epoch, saved_asset),
         })
@@ -109,6 +117,7 @@ impl Stage {
     }
     pub fn check(&self, cancel: &AtomicBool) -> Result<(), String> {
         if cancel.load(Ordering::Acquire)
+            || crate::reset::requested(&self.data).map_err(|error| error.to_string())?
             || epoch(&self.global_epoch.0)? != self.global_epoch.1
             || epoch(&self.asset_epoch.0)? != self.asset_epoch.1
         {

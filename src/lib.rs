@@ -25,6 +25,7 @@ mod private_fs;
 mod process_status;
 mod provider_contract;
 mod provider_io;
+mod reset;
 pub mod runtime;
 
 /// Single source for the app version (Cargo.toml package

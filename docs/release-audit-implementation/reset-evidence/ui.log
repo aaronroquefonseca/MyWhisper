@@ -1,0 +1,304 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.18s
+dbus-daemon[1198346]: [session uid=1000 pid=1198346 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=1198568 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[1198346]: [session uid=1000 pid=1198346 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=1198573 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1198346]: [session uid=1000 pid=1198346 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[1198346]: [session uid=1000 pid=1198346 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=1198573 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1198346]: [session uid=1000 pid=1198346 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+
+(/usr/lib/xdg-desktop-portal:1198573): xdg-desktop-portal-WARNING **: 21:29:47.130: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:1198573): xdg-desktop-portal-WARNING **: 21:29:47.130: The camera portal requires an access impl
+dbus-daemon[1198346]: [session uid=1000 pid=1198346 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:1198568): Gdk-WARNING **: 21:29:47.177: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[poc] layer-shell supported: false
+[poc] WARNING: layer-shell not supported; using undecorated fallback window
+[poc] viz mark icon loaded: 18x18
+[poc] overlay state: Hidden -> Error
+[poc] anim 69x36 -> 93x48 220ms fade 0.00->1.00
+[poc] overlay shown (compact Error)
+[poc] fit window to content: 683x70
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] geom anim done (Error): window=0x0 compact=0x0 vis=false expanded=0x0 vis=false
+[hotkey] capture saw keycode=192 token=Some("F14")
+[hotkey] capture saw keycode=47 token=Some("Semicolon")
+[ui-smoke] release regressions passed: widget lifetime, remote language, malformed discovery
+[ui-smoke] step 0
+[ui-smoke] step 1
+[sync] outgoing database path unavailable
+[ui-smoke] step 2
+[ui-smoke] step 3
+[ui-smoke] step 4
+[ui-smoke] step 5
+[ui-smoke] step 6
+[ui-smoke] step 7
+[ui-smoke] step 8
+[ui-smoke] step 9
+[sync] outgoing database path unavailable
+[ui-smoke] step 10
+[ui-smoke] step 11
+[sync] outgoing database path unavailable
+[sync] outgoing database path unavailable
+[ui-smoke] step 12
+[ui-smoke] step 13
+[ui-smoke] step 14
+[ui-smoke] step 15
+[ui-smoke] step 16
+[ui-smoke] step 17
+[ui-smoke] step 18
+[ui-smoke] step 19
+[ui-smoke] step 20
+[ui-smoke] step 21
+[ui-smoke] step 22
+[ui-smoke] step 23
+[ui-smoke] step 24
+[ui-smoke] step 25
+[ui-smoke] step 26
+[ui-smoke] step 27
+[ui-smoke] step 28
+[ui-smoke] step 29
+[ui-smoke] step 30
+[ui-smoke] step 31
+[ui-smoke] step 32
+[ui-smoke] step 33
+[ui-smoke] step 34
+[privacy] cleared 4 transcripts
+[sync] outgoing database path unavailable
+[ui-smoke] step 35
+[app] palette -> dark
+[app] theme state: dark=true system-supports-color-schemes=false scheme=ForceDark theme-name=Adwaita-empty
+[app] theme -> Dark
+[app] palette -> light
+[app] theme state: dark=false system-supports-color-schemes=false scheme=ForceLight theme-name=Adwaita-empty
+[app] theme -> Light
+[ui-smoke] step 36
+Native UI smoke passed: validation, draft retention, delete cancel/confirm, multiline snippet creation/editing, alias conflicts, search, deep links, separate model/cleanup settings, cleanup persistence, prompt draft cancel/close, explicit save, summary refresh, default restoration, model add/edit/remove, priority and selection across pages, bulk history clear, theme persistence, language rebuild.
+dbus-daemon[1201962]: [session uid=1000 pid=1201962 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=1202162 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[1201962]: [session uid=1000 pid=1201962 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=1202190 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1201962]: [session uid=1000 pid=1201962 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[1201962]: [session uid=1000 pid=1201962 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=1202190 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1201962]: [session uid=1000 pid=1201962 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+
+(/usr/lib/xdg-desktop-portal:1202190): xdg-desktop-portal-WARNING **: 21:30:22.778: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:1202190): xdg-desktop-portal-WARNING **: 21:30:22.778: The camera portal requires an access impl
+dbus-daemon[1201962]: [session uid=1000 pid=1201962 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:1202162): Gdk-WARNING **: 21:30:22.837: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[ui-smoke] settings recovery passed: visible message, disabled permissions, unknown fields preserved after native save
+dbus-daemon[1202877]: [session uid=1000 pid=1202877 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=1203512 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[1202877]: [session uid=1000 pid=1202877 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=1203517 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1202877]: [session uid=1000 pid=1202877 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[1202877]: [session uid=1000 pid=1202877 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=1203517 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1202877]: [session uid=1000 pid=1202877 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+
+(/usr/lib/xdg-desktop-portal:1203517): xdg-desktop-portal-WARNING **: 21:30:28.919: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:1203517): xdg-desktop-portal-WARNING **: 21:30:28.919: The camera portal requires an access impl
+dbus-daemon[1202877]: [session uid=1000 pid=1202877 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:1203512): Gdk-WARNING **: 21:30:28.973: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+[poc] layer-shell supported: false
+[poc] WARNING: layer-shell not supported; using undecorated fallback window
+[poc] viz mark icon loaded: 18x18
+[poc] overlay state: Hidden -> Error
+[poc] anim 69x36 -> 93x48 220ms fade 0.00->1.00
+[poc] overlay shown (compact Error)
+[poc] fit window to content: 592x70
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] geom anim done (Error): window=0x0 compact=0x0 vis=false expanded=0x0 vis=false
+[hotkey] capture saw keycode=192 token=Some("F14")
+[hotkey] capture saw keycode=47 token=Some("Semicolon")
+[ui-smoke] release regressions passed: widget lifetime, remote language, malformed discovery
+[ui-smoke] step 0
+[ui-smoke] step 1
+[sync] outgoing database path unavailable
+[ui-smoke] step 2
+[ui-smoke] step 3
+[ui-smoke] step 4
+[ui-smoke] step 5
+[ui-smoke] step 6
+[ui-smoke] step 7
+[ui-smoke] step 8
+[ui-smoke] step 9
+[sync] outgoing database path unavailable
+[ui-smoke] step 10
+[ui-smoke] step 11
+[sync] outgoing database path unavailable
+[sync] outgoing database path unavailable
+[ui-smoke] step 12
+[ui-smoke] step 13
+[ui-smoke] step 14
+[ui-smoke] step 15
+[ui-smoke] step 16
+[ui-smoke] step 17
+[ui-smoke] step 18
+[ui-smoke] step 19
+[ui-smoke] step 20
+[ui-smoke] step 21
+[ui-smoke] step 22
+[ui-smoke] step 23
+[ui-smoke] step 24
+[ui-smoke] step 25
+[ui-smoke] step 26
+[ui-smoke] step 27
+[ui-smoke] step 28
+[ui-smoke] step 29
+[ui-smoke] step 30
+[ui-smoke] step 31
+[ui-smoke] step 32
+[ui-smoke] step 33
+[ui-smoke] step 34
+[privacy] cleared 4 transcripts
+[sync] outgoing database path unavailable
+[ui-smoke] step 35
+[app] palette -> light
+[app] theme state: dark=false system-supports-color-schemes=false scheme=ForceLight theme-name=Adwaita-empty
+[app] theme -> Light
+[ui-smoke] step 36
+Native UI smoke passed: validation, draft retention, delete cancel/confirm, multiline snippet creation/editing, alias conflicts, search, deep links, separate model/cleanup settings, cleanup persistence, prompt draft cancel/close, explicit save, summary refresh, default restoration, model add/edit/remove, priority and selection across pages, bulk history clear, theme persistence, language rebuild.
+dbus-daemon[1206852]: [session uid=1000 pid=1206852 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=1207077 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[1206852]: [session uid=1000 pid=1206852 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=1207082 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1206852]: [session uid=1000 pid=1206852 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[1206852]: [session uid=1000 pid=1206852 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=1207082 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1206852]: [session uid=1000 pid=1206852 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+
+(/usr/lib/xdg-desktop-portal:1207082): xdg-desktop-portal-WARNING **: 21:31:04.514: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:1207082): xdg-desktop-portal-WARNING **: 21:31:04.514: The camera portal requires an access impl
+dbus-daemon[1206852]: [session uid=1000 pid=1206852 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:1207077): Gdk-WARNING **: 21:31:04.564: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+[ui-smoke] settings recovery passed: visible message, disabled permissions, unknown fields preserved after native save
+dbus-daemon[1207415]: [session uid=1000 pid=1207415 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=1207628 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[1207415]: [session uid=1000 pid=1207415 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=1207633 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1207415]: [session uid=1000 pid=1207415 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[1207415]: [session uid=1000 pid=1207415 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=1207633 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1207415]: [session uid=1000 pid=1207415 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+
+(/usr/lib/xdg-desktop-portal:1207633): xdg-desktop-portal-WARNING **: 21:31:10.664: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:1207633): xdg-desktop-portal-WARNING **: 21:31:10.664: The camera portal requires an access impl
+dbus-daemon[1207415]: [session uid=1000 pid=1207415 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:1207628): Gdk-WARNING **: 21:31:10.715: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[app] palette -> light
+[reset] reset committed; model cleanup is incomplete and can be retried
+[app] palette -> light
+[reset] reset committed; model cleanup is incomplete and can be retried
+[app] palette -> light
+[app] palette -> light
+[ui-smoke] reset passed: independent DB/installer stalls, GTK heartbeat, committed state after file failure, visible retry, preserved later edits
+dbus-daemon[1208085]: [session uid=1000 pid=1208085 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=1208394 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[1208085]: [session uid=1000 pid=1208085 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=1208399 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1208085]: [session uid=1000 pid=1208085 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[1208085]: [session uid=1000 pid=1208085 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=1208399 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1208085]: [session uid=1000 pid=1208085 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+
+(/usr/lib/xdg-desktop-portal:1208399): xdg-desktop-portal-WARNING **: 21:31:18.010: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:1208399): xdg-desktop-portal-WARNING **: 21:31:18.010: The camera portal requires an access impl
+dbus-daemon[1208085]: [session uid=1000 pid=1208085 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:1208394): Gdk-WARNING **: 21:31:18.076: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[app] palette -> light
+[app] palette -> light
+[ui-smoke] startup reset recovery passed: muted pending state, owned recovery, preserved later edit, removed old assets
+dbus-daemon[1208648]: [session uid=1000 pid=1208648 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=1208836 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[1208648]: [session uid=1000 pid=1208648 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=1208841 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1208648]: [session uid=1000 pid=1208648 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[1208648]: [session uid=1000 pid=1208648 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=1208841 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1208648]: [session uid=1000 pid=1208648 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+
+(/usr/lib/xdg-desktop-portal:1208841): xdg-desktop-portal-WARNING **: 21:31:23.306: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:1208841): xdg-desktop-portal-WARNING **: 21:31:23.306: The camera portal requires an access impl
+dbus-daemon[1208648]: [session uid=1000 pid=1208648 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:1208836): Gdk-WARNING **: 21:31:23.360: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+[app] palette -> dark
+[app] palette -> light
+[reset] reset committed; model cleanup is incomplete and can be retried
+[app] palette -> light
+[reset] reset committed; model cleanup is incomplete and can be retried
+[app] palette -> light
+[app] palette -> light
+[ui-smoke] reset passed: independent DB/installer stalls, GTK heartbeat, committed state after file failure, visible retry, preserved later edits
+dbus-daemon[1209574]: [session uid=1000 pid=1209574 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=1210223 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[1209574]: [session uid=1000 pid=1209574 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=1210228 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1209574]: [session uid=1000 pid=1209574 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[1209574]: [session uid=1000 pid=1209574 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=1210228 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[1209574]: [session uid=1000 pid=1209574 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+
+(/usr/lib/xdg-desktop-portal:1210228): xdg-desktop-portal-WARNING **: 21:31:30.705: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:1210228): xdg-desktop-portal-WARNING **: 21:31:30.705: The camera portal requires an access impl
+dbus-daemon[1209574]: [session uid=1000 pid=1209574 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:1210223): Gdk-WARNING **: 21:31:30.761: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+[app] palette -> dark
+[app] palette -> light
+[app] palette -> light
+[ui-smoke] startup reset recovery passed: muted pending state, owned recovery, preserved later edit, removed old assets

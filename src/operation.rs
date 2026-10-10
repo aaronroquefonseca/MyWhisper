@@ -71,11 +71,11 @@ impl Operation {
                         return Err(Denial::Revoked);
                     }
                 }
-                let current = store
-                    .lock()
-                    .map_err(|_| Denial::Unavailable)?
-                    .capture_epoch()
-                    .map_err(|_| Denial::Unavailable)?;
+                let policy = store.lock().map_err(|_| Denial::Unavailable)?;
+                if policy.reset_pending().map_err(|_| Denial::Unavailable)? {
+                    return Err(Denial::Revoked);
+                }
+                let current = policy.capture_epoch().map_err(|_| Denial::Unavailable)?;
                 if current == epoch {
                     Ok(())
                 } else {

@@ -259,7 +259,7 @@ fn migrate_plaintext_to_encrypted(path: &Path, key: &[u8; 32]) -> rusqlite::Resu
     let plain = Connection::open(path)?;
     plain.busy_timeout(std::time::Duration::from_secs(5))?;
     let version: i64 = plain.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version > 5 {
+    if version > 6 {
         return Err(rusqlite::Error::ToSqlConversionFailure(
             "database schema is newer than this build".into(),
         ));
@@ -393,7 +393,7 @@ impl Store {
             r.get::<_, i64>(0)
         })?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 5 {
+        if version > 6 {
             return Err(rusqlite::Error::ToSqlConversionFailure(
                 "database schema is newer than this MyWhisper build".into(),
             ));
@@ -401,7 +401,7 @@ impl Store {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON;",
         )?;
-        if version == 5 {
+        if version == 6 {
             return Ok(Self {
                 conn,
                 file_identity,
@@ -415,13 +415,13 @@ impl Store {
             |r| r.get::<_, i64>(0),
         )? == 0;
         let tx = conn.unchecked_transaction()?;
-        if version == 3 || version == 4 {
+        if (3..=5).contains(&version) {
             tx.execute(
                 "UPDATE history SET text='',raw_text='',words=0 WHERE discarded=1",
                 [],
             )?;
             Self::initialize_settings_on(&tx, false)?;
-            tx.execute_batch("PRAGMA user_version=5")?;
+            tx.execute_batch("PRAGMA user_version=6")?;
             tx.commit()?;
             return Ok(Self {
                 conn,
@@ -489,7 +489,7 @@ impl Store {
         )?;
         tx.execute("UPDATE devices SET introducer=0", [])?;
         Self::initialize_settings_on(&tx, fresh)?;
-        tx.execute_batch("PRAGMA user_version=5")?;
+        tx.execute_batch("PRAGMA user_version=6")?;
         tx.commit()?;
         Ok(Self {
             conn,
@@ -677,9 +677,17 @@ impl Store {
         {
             settings.stt.local_provider = crate::settings::LocalSttProvider::Cohere;
         }
+        let reset_pending = self.reset_pending()?;
+        if reset_pending {
+            settings.hotkeys.hotkeys_enabled = false;
+            settings.sync.enabled = false;
+        }
         *self.settings_baseline.borrow_mut() = Some(Self::settings_value(&settings)?);
-        self.settings_warning
-            .set(incomplete.then_some("settings.recovery.incomplete"));
+        self.settings_warning.set(if reset_pending {
+            Some("settings.reset.incomplete")
+        } else {
+            incomplete.then_some("settings.recovery.incomplete")
+        });
         Ok(settings)
     }
 
@@ -1161,7 +1169,10 @@ impl Store {
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        if cancel.load(Ordering::Acquire) || self.capture_epoch()? != expected_epoch {
+        if cancel.load(Ordering::Acquire)
+            || self.capture_epoch()? != expected_epoch
+            || self.reset_pending()?
+        {
             return Ok(false);
         }
         let privacy = self.load_settings().privacy;
@@ -1244,7 +1255,14 @@ impl Store {
     /// Callers separately coordinate capture/installers and filesystem cleanup.
     pub fn reset_all_data(&self) -> rusqlite::Result<()> {
         let tx = self.conn.unchecked_transaction()?;
-        let version = Self::next_version(&tx)?;
+        Self::reset_on(&tx)?;
+        tx.commit()?;
+        bump_data_gen();
+        Ok(())
+    }
+
+    fn reset_on(tx: &Connection) -> rusqlite::Result<()> {
+        let version = Self::next_version(tx)?;
         tx.execute(
             "UPDATE history SET deleted=1, text='', raw_text='', words=0, duration_secs=0",
             [],
@@ -1259,8 +1277,8 @@ impl Store {
             [],
         )?;
         tx.execute("DELETE FROM devices", [])?;
-        Self::invalidate_sync(&tx)?;
-        Self::invalidate_capture(&tx)?;
+        Self::invalidate_sync(tx)?;
+        Self::invalidate_capture(tx)?;
         tx.execute("DELETE FROM kv", [])?;
         let mut defaults = AppSettings::default();
         defaults.sync.enabled = false;
@@ -1269,9 +1287,108 @@ impl Store {
             [serde_json::to_string(&defaults)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?],
         )?;
+        bump_gen(tx)?;
+        Ok(())
+    }
+
+    pub(crate) fn reset_pending(&self) -> rusqlite::Result<bool> {
+        Self::reset_pending_on(&self.conn)
+    }
+
+    fn reset_pending_on(conn: &Connection) -> rusqlite::Result<bool> {
+        if let Some(data) = conn.path().and_then(|path| Path::new(path).parent())
+            && crate::reset::requested(data)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?
+        {
+            return Ok(true);
+        }
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM kv WHERE key='reset_pending')",
+            [],
+            |row| row.get(0),
+        )
+    }
+
+    pub(crate) fn pending_reset_nonce(&self) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM kv WHERE key='reset_pending'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    pub(crate) fn completed_reset(&self, nonce: &str) -> rusqlite::Result<bool> {
+        self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_meta WHERE key='completed_reset' AND value=?1)",
+            [nonce],
+            |row| row.get(0),
+        )
+    }
+
+    /// Persist one reset transaction. Retrying cleanup must not wipe edits
+    /// written after this commit, including after an interrupted restart.
+    pub(crate) fn begin_reset(&self, nonce: &str) -> rusqlite::Result<()> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let pending: Option<String> = tx
+            .query_row(
+                "SELECT value FROM kv WHERE key='reset_pending'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match pending.as_deref() {
+            Some(current) if current == nonce => return Ok(()),
+            Some(_) => {
+                return Err(rusqlite::Error::ToSqlConversionFailure(
+                    "another reset must complete before beginning a new one".into(),
+                ));
+            }
+            None => {}
+        }
+        if self.completed_reset(nonce)? {
+            return Ok(());
+        }
+        Self::reset_on(&tx)?;
+        tx.execute(
+            "INSERT INTO kv(key,value) VALUES('reset_pending',?1)",
+            [nonce],
+        )?;
+        tx.commit()?;
+        bump_data_gen();
+        Ok(())
+    }
+
+    pub(crate) fn complete_reset(&self, nonce: &str) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let changed = tx.execute(
+            "DELETE FROM kv WHERE key='reset_pending' AND value=?1",
+            [nonce],
+        )?;
+        if changed != 1 {
+            return Err(rusqlite::Error::ToSqlConversionFailure(
+                "reset completion does not own its pending transaction".into(),
+            ));
+        }
+        tx.execute("INSERT INTO sync_meta(key,value) VALUES('completed_reset',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[nonce])?;
         bump_gen(&tx)?;
         tx.commit()?;
         bump_data_gen();
+        Ok(())
+    }
+
+    /// Adopt a worker-loaded snapshot without doing database IO on GTK.
+    pub(crate) fn adopt_settings_baseline(
+        &self,
+        settings: &AppSettings,
+        warning: Option<&'static str>,
+    ) -> rusqlite::Result<()> {
+        *self.settings_baseline.borrow_mut() = Some(Self::settings_value(settings)?);
+        self.settings_warning.set(warning);
         Ok(())
     }
 
@@ -1636,6 +1753,7 @@ impl Store {
             |row| row.get(0),
         )?;
         if !enabled
+            || Self::reset_pending_on(conn)?
             || revoked
             || current_epoch.unwrap_or(0) != epoch
             || !peer.is_some_and(|peer| peer.trusted)
@@ -1686,7 +1804,7 @@ impl Store {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
         Self::initialize_settings_on(&conn, true)?;
-        conn.execute_batch("PRAGMA user_version=5")?;
+        conn.execute_batch("PRAGMA user_version=6")?;
         Ok(Self {
             conn,
             file_identity: None,
@@ -2980,7 +3098,7 @@ mod release_regressions {
                     .conn
                     .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                5
+                6
             );
         }
     }
