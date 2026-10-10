@@ -3789,6 +3789,81 @@ fn deliver(
 mod tests {
     use super::*;
 
+    #[test]
+    fn persisted_ollama_thinking_choices_reach_the_actual_request() {
+        use crate::store::Store;
+        use std::io::{Read, Write};
+        for choice in [None, Some(true), Some(false)] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline);
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("synthetic provider: {error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    assert!(header.len() < 16 * 1024);
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    header.push(byte[0]);
+                }
+                let length = String::from_utf8(header)
+                    .unwrap()
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|n| n.trim().parse::<usize>().ok())
+                    })
+                    .unwrap();
+                assert!(length < 64 * 1024);
+                let mut body = vec![0; length];
+                stream.read_exact(&mut body).unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                match choice {
+                    Some(expected) => assert_eq!(body["think"], serde_json::Value::Bool(expected)),
+                    None => assert!(body.get("think").is_none(), "model default must omit think"),
+                }
+                let reply = br#"{"done":true,"done_reason":"stop","message":{"content":"synthetic cleaned"}}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    reply.len()
+                )
+                .unwrap();
+                stream.write_all(reply).unwrap();
+            });
+            let store = Store::open_memory().unwrap();
+            let mut settings = store.load_settings();
+            settings.language_models.entries[0].thinking = choice;
+            settings.language_models.entries[0].url = url;
+            store.save_settings(&settings).unwrap();
+            let saved = store.load_settings();
+            assert_eq!(
+                llm_cleanup(
+                    &saved.language_models.entries[0],
+                    "synthetic prompt",
+                    "synthetic speech"
+                )
+                .unwrap(),
+                "synthetic cleaned"
+            );
+            server.join().unwrap();
+        }
+    }
+
     fn fake_http_reply(wire: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

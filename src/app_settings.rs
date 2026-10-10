@@ -3997,6 +3997,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         dd
     };
     let thinking_dd = thinking_opts();
+    thinking_dd.set_widget_name("lm-ollama-thinking");
     let cloud_thinking_dd = thinking_opts();
     let numctx_dd = DropDown::new(
         Some(StringList::new(&num_ctx_labels())),

@@ -526,6 +526,28 @@ impl Store {
 
     // -- settings (JSON blob under kv['settings']) -------------------------
 
+    fn decode_settings(raw: &str) -> Result<AppSettings, serde_json::Error> {
+        let mut value: serde_json::Value = serde_json::from_str(raw)?;
+        // The legacy entry shape omitted thinking entirely. Explicit null is
+        // the current model-default choice and must never be migrated again.
+        if let Some(entries) = value
+            .get_mut("language_models")
+            .and_then(|models| models.get_mut("entries"))
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for entry in entries {
+                if entry["kind"] == "Ollama"
+                    && let Some(entry) = entry.as_object_mut()
+                {
+                    entry
+                        .entry("thinking")
+                        .or_insert(serde_json::Value::Bool(false));
+                }
+            }
+        }
+        serde_json::from_value(value)
+    }
+
     pub fn load_settings(&self) -> AppSettings {
         let json: Option<String> = self
             .conn
@@ -535,7 +557,7 @@ impl Store {
             .ok();
         let mut settings: AppSettings = match json.as_deref() {
             None => AppSettings::default(),
-            Some(raw) => match serde_json::from_str(raw) {
+            Some(raw) => match Self::decode_settings(raw) {
                 Ok(settings) => settings,
                 Err(e) => {
                     eprintln!(
@@ -553,13 +575,6 @@ impl Store {
         // Pre-list configs seed one entry from legacy fields.
         settings.language_models.ensure_seed();
         settings.stt.ensure_seed();
-        // Old default left Ollama thinking unset: force off (new
-        // default). Runs every load, so existing installs migrate.
-        for e in &mut settings.language_models.entries {
-            if matches!(e.kind, crate::settings::LlmKind::Ollama) && e.thinking.is_none() {
-                e.thinking = Some(false);
-            }
-        }
         // Typed tables are authoritative for dictionary content.
         settings.dictionary.words = self.load_words().unwrap_or_default();
         settings.dictionary.snippets = self.load_snippets().unwrap_or_default();
@@ -591,7 +606,7 @@ impl Store {
             .optional()?;
         let mut current = match old {
             Some(raw) => {
-                let parsed: AppSettings = serde_json::from_str(&raw).map_err(|e| {
+                let parsed = Self::decode_settings(&raw).map_err(|e| {
                     rusqlite::Error::ToSqlConversionFailure(
                         format!(
                             "settings are invalid; repair the preserved original before saving: {}",
@@ -2681,6 +2696,48 @@ mod release_regressions {
                 4
             );
         }
+    }
+
+    #[test]
+    fn thinking_model_default_survives_reload_and_missing_legacy_field_migrates_once() {
+        let store = Store::open_memory().unwrap();
+        for choice in [None, Some(true), Some(false)] {
+            let mut settings = store.load_settings();
+            settings.language_models.entries[0].thinking = choice;
+            store.save_settings(&settings).unwrap();
+            assert_eq!(
+                store.load_settings().language_models.entries[0].thinking,
+                choice
+            );
+        }
+        let mut raw = serde_json::to_value(store.load_settings()).unwrap();
+        raw["language_models"]["entries"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("thinking");
+        store
+            .conn
+            .execute(
+                "UPDATE kv SET value=?1 WHERE key='settings'",
+                [raw.to_string()],
+            )
+            .unwrap();
+        let mut migrated = store.load_settings();
+        assert_eq!(migrated.language_models.entries[0].thinking, Some(false));
+        store.save_settings(&migrated).unwrap();
+        migrated.language_models.entries[0].thinking = None;
+        store.save_settings(&migrated).unwrap();
+        assert_eq!(
+            store.load_settings().language_models.entries[0].thinking,
+            None
+        );
+        let saved: String = store
+            .conn
+            .query_row("SELECT value FROM kv WHERE key='settings'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(serde_json::from_str::<serde_json::Value>(&saved).unwrap()["language_models"]["entries"][0]["thinking"].is_null());
     }
 
     #[test]

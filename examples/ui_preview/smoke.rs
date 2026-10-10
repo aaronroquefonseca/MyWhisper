@@ -893,8 +893,21 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                 }
                 named::<gtk4::Entry>(&root, "lm-name").set_text("Cleanup fallback");
                 named::<gtk4::Entry>(&root, "lm-ollama-model").set_text("cleanup-smoke");
+                named::<gtk4::DropDown>(&root, "lm-ollama-thinking").set_selected(0);
                 button(&root, "action.add").emit_clicked();
                 assert_eq!(state.store.load_settings().language_models.entries.len(), 2);
+                assert_eq!(
+                    state
+                        .store
+                        .load_settings()
+                        .language_models
+                        .entries
+                        .iter()
+                        .find(|entry| entry.model == "cleanup-smoke")
+                        .unwrap()
+                        .thinking,
+                    None
+                );
                 button(&root, "action.cleanupsettings").emit_clicked();
             }
             25 => {
@@ -927,7 +940,20 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                     "Cleanup fallback"
                 );
                 named::<gtk4::Entry>(&root, "lm-ollama-model").set_text("cleanup-smoke-edited");
+                named::<gtk4::DropDown>(&root, "lm-ollama-thinking").set_selected(1);
                 button(&root, "action.save").emit_clicked();
+                assert_eq!(
+                    state
+                        .store
+                        .load_settings()
+                        .language_models
+                        .entries
+                        .iter()
+                        .find(|entry| entry.model == "cleanup-smoke-edited")
+                        .unwrap()
+                        .thinking,
+                    Some(true)
+                );
                 button(&root, "action.cleanupsettings").emit_clicked();
             }
             27 => {
@@ -945,7 +971,24 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                 assert!(!saved.language_models.entries[1].enabled);
                 button(&root, "action.managelm").emit_clicked();
             }
-            28 => button(&root, "action.remove").emit_clicked(),
+            28 => {
+                button(&root, "action.edit").emit_clicked();
+                named::<gtk4::DropDown>(&root, "lm-ollama-thinking").set_selected(2);
+                button(&root, "action.save").emit_clicked();
+                assert_eq!(
+                    state
+                        .store
+                        .load_settings()
+                        .language_models
+                        .entries
+                        .iter()
+                        .find(|entry| entry.model == "cleanup-smoke-edited")
+                        .unwrap()
+                        .thinking,
+                    Some(false)
+                );
+                button(&root, "action.remove").emit_clicked();
+            }
             29 => {
                 respond(&window, "confirm");
                 button(&root, "action.cleanupsettings").emit_clicked();
