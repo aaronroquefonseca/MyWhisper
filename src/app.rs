@@ -563,6 +563,9 @@ pub fn build_app_window(
     feedback.set_child(Some(&layout));
     use libadwaita::prelude::*;
     window.set_content(Some(&feedback));
+    if let Some(warning) = state.store.settings_warning() {
+        feedback.add_toast(libadwaita::Toast::new(tr(warning)));
+    }
 
     // Preserve the current destination and settings section when translating.
     {

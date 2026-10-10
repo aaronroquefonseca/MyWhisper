@@ -1074,6 +1074,53 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
     });
 }
 
+pub fn settings_recovery(
+    app: &gtk4::Application,
+    state: &Rc<AppState>,
+    window: &gtk4::ApplicationWindow,
+) {
+    let app = app.clone();
+    let state = state.clone();
+    let window = window.clone();
+    gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+        let message = tr("settings.recovery.incomplete");
+        assert!(
+            descendants(window.upcast_ref()).into_iter().any(|widget| {
+                widget
+                    .downcast::<gtk4::Label>()
+                    .is_ok_and(|label| label.text() == message)
+            }),
+            "incomplete settings must present the recovery message"
+        );
+        let page = mywhisper::app_settings::page(&state, "Preferences");
+        let language = named::<gtk4::DropDown>(page.upcast_ref(), "language-picker");
+        language.set_selected(if language.selected() == 0 { 1 } else { 0 });
+        let loaded = state.store.load_settings();
+        assert!(
+            !loaded.sync.enabled
+                && !loaded.sync.advertise
+                && !loaded.privacy.history_enabled
+                && !loaded.privacy.keep_audio_recordings
+        );
+        let conn = rusqlite::Connection::open(&state.db_path).unwrap();
+        conn.execute_batch(&format!("PRAGMA key=\"x'{}'\"", "00".repeat(32)))
+            .unwrap();
+        let raw: String = conn
+            .query_row("SELECT value FROM kv WHERE key='settings'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&raw).unwrap()["synthetic_future_field"]["preserved"],
+            true
+        );
+        eprintln!(
+            "[ui-smoke] settings recovery passed: visible message, disabled permissions, unknown fields preserved after native save"
+        );
+        app.quit();
+    });
+}
+
 /// Render the actual libadwaita toast, including its close hover. Assertions
 /// compare computed colors and rendered pixels, not stylesheet text.
 pub fn toast_proof(app: &gtk4::Application, window: &gtk4::ApplicationWindow, dark: bool) {

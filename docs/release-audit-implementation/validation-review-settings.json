@@ -1,0 +1,32 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "correction": "F02: distinguish new settings from incomplete or unreadable stored configuration",
+  "before_fix_regressions_failed": 3,
+  "rust_tests": {
+    "passed": 176,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "native_ui": [
+    "light/en",
+    "dark/es"
+  ],
+  "native_recovery": [
+    "light/en",
+    "dark/es"
+  ],
+  "settings_format_version": 1,
+  "database_schema": 5,
+  "compatibility": "Fresh defaults are inserted transactionally only for a new database. Missing configuration in existing schema 3/4 databases receives conservative permissions without removing user data. Existing settings JSON is preserved on read; later edits preserve unknown fields. Explicit valid retention works; missing/invalid policy cannot authorize automatic deletion. Older builds reject schema 5 rather than downgrade it.",
+  "logs_sha256": {
+    "before": "ac70278bc0ac8071e3bb87cdc965a1d77f5a801dc3bc7984d35fa3d04525fb8c",
+    "tests": "4e3daab92d2ea6e245cc6e4e324836d9b4da9256a310ac6ffc5a0d3744d7de4d",
+    "clippy": "de943ea633de539d5cdca922a3288d32518c03ddc3faa606cc4ed5db36ec0396",
+    "ui": "5a043761adfde885d77d038bb0f8184dd8fd64197b0e9f51b975e47827c69b9d",
+    "recovery-light": "504b3ed5f1bdc62f9e9c3da7585d63b141f115c291171318c41371e5e190e014",
+    "recovery-dark": "9c9d9b5d722fd3ce277467e92fd3f55e69c5213bd4947564a69bb838da175430"
+  },
+  "source_diff_sha256": "5b216fb9b2b176af84994b64f4eec6c389141c8b7266acd2bcaafd14029c435f",
+  "outstanding": "Original interrupted-migration, live integrations, other review issues and final artifact gates remain open."
+}

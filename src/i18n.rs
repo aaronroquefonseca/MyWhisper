@@ -394,6 +394,14 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.keepwarm" => ("Keep server ready", "Mantener el servidor preparado"),
         "row.serverstatus" => ("Server status", "Estado del servidor"),
         "server.none" => ("No server running", "Ningún servidor en marcha"),
+        "settings.recovery.incomplete" => (
+            "Stored settings are incomplete. Missing privacy and sync permissions are disabled. Review Settings before saving; the original configuration is preserved.",
+            "La configuración guardada está incompleta. Los permisos de privacidad y sincronización que faltan están desactivados. Revisa Ajustes antes de guardar; la configuración original se conserva.",
+        ),
+        "settings.recovery.unreadable" => (
+            "Settings could not be read. Recording shortcuts, history and sync are disabled. Restore the preserved configuration before saving.",
+            "No se pudo leer la configuración. Los atajos de grabación, el historial y la sincronización están desactivados. Restaura la configuración conservada antes de guardar.",
+        ),
         "server.checking" => (
             "Checking server status…",
             "Comprobando el estado del servidor…",

@@ -120,6 +120,7 @@ fn bump_gen(conn: &Connection) -> rusqlite::Result<()> {
 pub struct Store {
     conn: Connection,
     settings_baseline: std::cell::RefCell<Option<serde_json::Value>>,
+    settings_warning: std::cell::Cell<Option<&'static str>>,
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -257,7 +258,7 @@ fn migrate_plaintext_to_encrypted(path: &Path, key: &[u8; 32]) -> rusqlite::Resu
     let plain = Connection::open(path)?;
     plain.busy_timeout(std::time::Duration::from_secs(5))?;
     let version: i64 = plain.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version > 4 {
+    if version > 5 {
         return Err(rusqlite::Error::ToSqlConversionFailure(
             "database schema is newer than this build".into(),
         ));
@@ -380,7 +381,7 @@ impl Store {
             r.get::<_, i64>(0)
         })?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 4 {
+        if version > 5 {
             return Err(rusqlite::Error::ToSqlConversionFailure(
                 "database schema is newer than this MyWhisper build".into(),
             ));
@@ -388,23 +389,31 @@ impl Store {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON;",
         )?;
-        if version == 4 {
+        if version == 5 {
             return Ok(Self {
                 conn,
                 settings_baseline: std::cell::RefCell::new(None),
+                settings_warning: std::cell::Cell::new(None),
             });
         }
+        let fresh = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? == 0;
         let tx = conn.unchecked_transaction()?;
-        if version == 3 {
+        if version == 3 || version == 4 {
             tx.execute(
                 "UPDATE history SET text='',raw_text='',words=0 WHERE discarded=1",
                 [],
             )?;
-            tx.execute_batch("PRAGMA user_version=4")?;
+            Self::initialize_settings_on(&tx, false)?;
+            tx.execute_batch("PRAGMA user_version=5")?;
             tx.commit()?;
             return Ok(Self {
                 conn,
                 settings_baseline: std::cell::RefCell::new(None),
+                settings_warning: std::cell::Cell::new(None),
             });
         }
         tx.execute_batch(SCHEMA)?;
@@ -465,11 +474,13 @@ impl Store {
             [],
         )?;
         tx.execute("UPDATE devices SET introducer=0", [])?;
-        tx.execute_batch("PRAGMA user_version=4")?;
+        Self::initialize_settings_on(&tx, fresh)?;
+        tx.execute_batch("PRAGMA user_version=5")?;
         tx.commit()?;
         Ok(Self {
             conn,
             settings_baseline: std::cell::RefCell::new(None),
+            settings_warning: std::cell::Cell::new(None),
         })
     }
 
@@ -526,10 +537,66 @@ impl Store {
 
     // -- settings (JSON blob under kv['settings']) -------------------------
 
-    fn decode_settings(raw: &str) -> Result<AppSettings, serde_json::Error> {
+    fn safe_settings() -> AppSettings {
+        let mut safe = AppSettings::default();
+        safe.sync.enabled = false;
+        safe.sync.advertise = false;
+        safe.privacy.history_enabled = false;
+        safe.privacy.keep_audio_recordings = false;
+        safe.privacy.save_discarded_transcriptions = false;
+        safe.hotkeys.hotkeys_enabled = false;
+        safe
+    }
+
+    fn initialize_settings_on(conn: &Connection, fresh: bool) -> rusqlite::Result<()> {
+        let settings = if fresh {
+            AppSettings::default()
+        } else {
+            Self::safe_settings()
+        };
+        let mut value = Self::settings_value(&settings)?;
+        value["settings_version"] = serde_json::Value::from(1);
+        conn.execute(
+            "INSERT OR IGNORE INTO kv(key,value) VALUES ('settings',?1)",
+            [value.to_string()],
+        )?;
+        Ok(())
+    }
+
+    fn decode_settings_value(raw: &str) -> Result<(serde_json::Value, bool), serde_json::Error> {
         let mut value: serde_json::Value = serde_json::from_str(raw)?;
-        // The legacy entry shape omitted thinking entirely. Explicit null is
-        // the current model-default choice and must never be migrated again.
+        let object = value.as_object_mut().ok_or_else(|| {
+            <serde_json::Error as serde::de::Error>::custom("settings must be an object")
+        })?;
+        if object
+            .get("settings_version")
+            .is_some_and(|version| !matches!(version.as_u64(), Some(0 | 1)))
+        {
+            return Err(<serde_json::Error as serde::de::Error>::custom(
+                "unsupported settings version",
+            ));
+        }
+        let mut incomplete = false;
+        for (section, field) in [
+            ("sync", "enabled"),
+            ("sync", "advertise"),
+            ("privacy", "history_enabled"),
+            ("privacy", "keep_audio_recordings"),
+            ("privacy", "save_discarded_transcriptions"),
+            ("hotkeys", "hotkeys_enabled"),
+        ] {
+            let section = object
+                .entry(section)
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(section) = section.as_object_mut()
+                && !section.contains_key(field)
+            {
+                section.insert(field.into(), serde_json::Value::Bool(false));
+                incomplete = true;
+            }
+        }
+        // Schema 0 entries omit thinking. Null in the current shape is an
+        // explicit model-default choice, independent of the schema marker.
         if let Some(entries) = value
             .get_mut("language_models")
             .and_then(|models| models.get_mut("entries"))
@@ -545,41 +612,38 @@ impl Store {
                 }
             }
         }
-        serde_json::from_value(value)
+        // Validate typed fields without discarding unrecognized settings.
+        serde_json::from_value::<AppSettings>(value.clone())?;
+        value["settings_version"] = serde_json::Value::from(1);
+        Ok((value, incomplete))
     }
 
-    pub fn load_settings(&self) -> AppSettings {
-        let json: Option<String> = self
+    pub fn settings_warning(&self) -> Option<&'static str> {
+        self.settings_warning.get()
+    }
+
+    pub fn try_load_settings(&self) -> rusqlite::Result<AppSettings> {
+        let raw: Option<String> = self
             .conn
-            .query_row("SELECT value FROM kv WHERE key = 'settings'", [], |row| {
+            .query_row("SELECT value FROM kv WHERE key='settings'", [], |row| {
                 row.get(0)
             })
-            .ok();
-        let mut settings: AppSettings = match json.as_deref() {
-            None => AppSettings::default(),
-            Some(raw) => match Self::decode_settings(raw) {
-                Ok(settings) => settings,
-                Err(e) => {
-                    eprintln!(
-                        "[store] settings could not be read: {}; original settings preserved, sync disabled",
-                        crate::diagnostics::json(&e)
-                    );
-                    let mut safe = AppSettings::default();
-                    safe.sync.enabled = false;
-                    safe.privacy.history_enabled = false;
-                    safe.privacy.keep_audio_recordings = false;
-                    safe
-                }
-            },
-        };
-        // Pre-list configs seed one entry from legacy fields.
+            .optional()?;
+        let raw = raw.ok_or_else(|| {
+            rusqlite::Error::ToSqlConversionFailure(
+                "stored settings are missing; permissions disabled until recovery".into(),
+            )
+        })?;
+        let (value, incomplete) = Self::decode_settings_value(&raw).map_err(|error| {
+            rusqlite::Error::ToSqlConversionFailure(crate::diagnostics::json(&error).into())
+        })?;
+        let mut settings: AppSettings = serde_json::from_value(value).map_err(|error| {
+            rusqlite::Error::ToSqlConversionFailure(crate::diagnostics::json(&error).into())
+        })?;
         settings.language_models.ensure_seed();
         settings.stt.ensure_seed();
-        // Typed tables are authoritative for dictionary content.
-        settings.dictionary.words = self.load_words().unwrap_or_default();
-        settings.dictionary.snippets = self.load_snippets().unwrap_or_default();
-        // Pre-per-vendor databases stored Parakeet for everything
-        // sherpa; Cohere gets its own vendor now.
+        settings.dictionary.words = self.load_words()?;
+        settings.dictionary.snippets = self.load_snippets()?;
         if matches!(
             settings.stt.local_provider,
             crate::settings::LocalSttProvider::Nvidia
@@ -587,9 +651,25 @@ impl Store {
         {
             settings.stt.local_provider = crate::settings::LocalSttProvider::Cohere;
         }
-        *self.settings_baseline.borrow_mut() =
-            Some(Self::settings_value(&settings).expect("settings serialization"));
-        settings
+        *self.settings_baseline.borrow_mut() = Some(Self::settings_value(&settings)?);
+        self.settings_warning
+            .set(incomplete.then_some("settings.recovery.incomplete"));
+        Ok(settings)
+    }
+
+    pub fn load_settings(&self) -> AppSettings {
+        match self.try_load_settings() {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.settings_warning
+                    .set(Some("settings.recovery.unreadable"));
+                *self.settings_baseline.borrow_mut() = None;
+                eprintln!(
+                    "[store] settings could not be read: {error}; original settings preserved, sync disabled, recording permissions disabled"
+                );
+                Self::safe_settings()
+            }
+        }
     }
 
     /// Persist the settings blob. Versioned tables (words/snippets)
@@ -604,28 +684,37 @@ impl Store {
                 r.get(0)
             })
             .optional()?;
-        let mut current = match old {
-            Some(raw) => {
-                let parsed = Self::decode_settings(&raw).map_err(|e| {
-                    rusqlite::Error::ToSqlConversionFailure(
-                        format!(
-                            "settings are invalid; repair the preserved original before saving: {}",
-                            crate::diagnostics::json(&e)
-                        )
-                        .into(),
-                    )
-                })?;
-                Self::settings_value(&parsed)?
-            }
-            None => Self::settings_value(&AppSettings::default())?,
-        };
+        let raw = old.ok_or_else(|| {
+            rusqlite::Error::ToSqlConversionFailure(
+                "stored settings are missing; restore them before saving".into(),
+            )
+        })?;
+        let (mut current, _) = Self::decode_settings_value(&raw).map_err(|error| {
+            rusqlite::Error::ToSqlConversionFailure(
+                format!(
+                    "settings are invalid; repair the preserved original before saving: {}",
+                    crate::diagnostics::json(&error)
+                )
+                .into(),
+            )
+        })?;
         let previous_privacy = current.get("privacy").cloned();
         let next = Self::settings_value(settings)?;
         if let Some(baseline) = self.settings_baseline.borrow().as_ref() {
             Self::patch_changed(baseline, &next, &mut current);
         } else {
-            current = next.clone();
+            Self::patch_changed(
+                &Self::settings_value(&serde_json::from_value(current.clone()).map_err(|e| {
+                    rusqlite::Error::ToSqlConversionFailure(crate::diagnostics::json(&e).into())
+                })?)?,
+                &next,
+                &mut current,
+            );
         }
+        for field in ["words", "snippets"] {
+            current["dictionary"][field] = next["dictionary"][field].clone();
+        }
+        current["settings_version"] = serde_json::Value::from(1);
         let json = serde_json::to_string(&current)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
         tx.execute("INSERT INTO kv(key,value) VALUES ('settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[json])?;
@@ -652,6 +741,35 @@ impl Store {
         current: &mut serde_json::Value,
     ) {
         if base == next {
+            return;
+        }
+        if let (Some(base), Some(next), Some(current_array)) =
+            (base.as_array(), next.as_array(), current.as_array())
+        {
+            let mut patched = Vec::with_capacity(next.len());
+            for (index, value) in next.iter().enumerate() {
+                let id = value
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|id| !id.is_empty());
+                let find = |items: &[serde_json::Value]| match id {
+                    Some(id) => items.iter().position(|item| {
+                        item.get("id").and_then(serde_json::Value::as_str) == Some(id)
+                    }),
+                    None => (base.len() == next.len())
+                        .then_some(index)
+                        .filter(|index| *index < items.len()),
+                };
+                match (find(base), find(current_array)) {
+                    (Some(old), Some(now)) => {
+                        let mut item = current_array[now].clone();
+                        Self::patch_changed(&base[old], value, &mut item);
+                        patched.push(item);
+                    }
+                    _ => patched.push(value.clone()),
+                }
+            }
+            *current = serde_json::Value::Array(patched);
             return;
         }
         if let (Some(base), Some(next), Some(current)) =
@@ -1140,19 +1258,60 @@ impl Store {
     /// Periodic retention also handles idle applications and orphaned audio
     /// left by a crash between writing a clip and committing its history row.
     pub(crate) fn maintain_retention_at(&self, now: i64) -> rusqlite::Result<(usize, usize)> {
-        let settings = self.load_settings();
-        let count = if settings.privacy.transcript_auto_delete_days > 0 {
+        let Some(privacy) = self.retention_policy()? else {
+            return Ok((0, 0));
+        };
+        let count = if privacy.transcript_auto_delete_days > 0 {
             self.redact_history_where_at(
                 "recorded_at < ?1",
-                [now.saturating_sub(
-                    i64::from(settings.privacy.transcript_auto_delete_days) * 86400,
-                )],
+                [now.saturating_sub(i64::from(privacy.transcript_auto_delete_days) * 86400)],
                 now,
             )?
         } else {
             0
         };
         Ok((count, self.prune_audio_vault_at(now)?))
+    }
+
+    /// An incomplete or invalid configuration cannot authorize automatic
+    /// deletion. Keep valid explicit retention policies working even when
+    /// an unrelated permission was conservatively disabled during decoding.
+    fn retention_policy(&self) -> rusqlite::Result<Option<crate::settings::PrivacySettings>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM kv WHERE key='settings'", [], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        let Some(raw) = raw else {
+            self.settings_warning
+                .set(Some("settings.recovery.unreadable"));
+            return Ok(None);
+        };
+        let value = match Self::decode_settings_value(&raw) {
+            Ok((value, _)) => value,
+            Err(error) => {
+                self.settings_warning
+                    .set(Some("settings.recovery.unreadable"));
+                eprintln!(
+                    "[store] retention awaits settings recovery: {}",
+                    crate::diagnostics::json(&error)
+                );
+                return Ok(None);
+            }
+        };
+        if ["audio_retention_days", "transcript_auto_delete_days"]
+            .iter()
+            .any(|field| value["privacy"].get(field).is_none())
+        {
+            self.settings_warning
+                .set(Some("settings.recovery.incomplete"));
+            return Ok(None);
+        }
+        let settings: AppSettings = serde_json::from_value(value).map_err(|error| {
+            rusqlite::Error::ToSqlConversionFailure(crate::diagnostics::json(&error).into())
+        })?;
+        Ok(Some(settings.privacy))
     }
 
     pub fn clear_audio(&self) -> rusqlite::Result<usize> {
@@ -1183,13 +1342,15 @@ impl Store {
         if !dir.exists() {
             return Ok(0);
         }
+        let Some(privacy) = self.retention_policy()? else {
+            return Ok(0);
+        };
         // Delivery and pruning share the database writer lock: no clip can
         // appear between this snapshot and cleanup without its committed row.
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        let privacy = self.load_settings().privacy;
         let mut history = tx.prepare(
             "SELECT recorded_at FROM history WHERE uuid=?1 AND deleted=0 AND discarded=0",
         )?;
@@ -1497,10 +1658,12 @@ impl Store {
     pub fn open_memory() -> rusqlite::Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
-        conn.execute_batch("PRAGMA user_version=4")?;
+        Self::initialize_settings_on(&conn, true)?;
+        conn.execute_batch("PRAGMA user_version=5")?;
         Ok(Self {
             conn,
             settings_baseline: std::cell::RefCell::new(None),
+            settings_warning: std::cell::Cell::new(None),
         })
     }
 }
@@ -2693,7 +2856,7 @@ mod release_regressions {
                     .conn
                     .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                4
+                5
             );
         }
     }
@@ -2741,12 +2904,275 @@ mod release_regressions {
     }
 
     #[test]
+    fn incomplete_existing_settings_never_restore_missing_permissions() {
+        for missing in [
+            "privacy",
+            "sync",
+            "hotkeys",
+            "privacy.history_enabled",
+            "privacy.keep_audio_recordings",
+            "privacy.save_discarded_transcriptions",
+            "sync.enabled",
+            "hotkeys.hotkeys_enabled",
+            "sync.advertise",
+        ] {
+            let store = Store::open_memory().unwrap();
+            let mut settings = AppSettings::default();
+            settings.sync.enabled = false;
+            settings.sync.advertise = false;
+            settings.privacy.history_enabled = false;
+            settings.hotkeys.hotkeys_enabled = false;
+            let mut raw = serde_json::to_value(settings).unwrap();
+            if let Some((section, field)) = missing.split_once('.') {
+                raw[section].as_object_mut().unwrap().remove(field);
+            } else {
+                raw.as_object_mut().unwrap().remove(missing);
+            }
+            store
+                .conn
+                .execute(
+                    "INSERT OR REPLACE INTO kv(key,value) VALUES ('settings',?1)",
+                    [raw.to_string()],
+                )
+                .unwrap();
+            let loaded = store.load_settings();
+            assert!(!loaded.sync.enabled && !loaded.sync.advertise, "{missing}");
+            assert!(
+                !loaded.privacy.history_enabled
+                    && !loaded.privacy.keep_audio_recordings
+                    && !loaded.privacy.save_discarded_transcriptions,
+                "{missing}"
+            );
+            assert!(!loaded.hotkeys.hotkeys_enabled, "{missing}");
+            let original: String = store
+                .conn
+                .query_row("SELECT value FROM kv WHERE key='settings'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(original, raw.to_string());
+            store.save_settings(&loaded).unwrap();
+            let again = store.load_settings();
+            assert!(
+                !again.sync.enabled
+                    && !again.privacy.history_enabled
+                    && !again.hotkeys.hotkeys_enabled
+            );
+        }
+    }
+
+    #[test]
+    fn settings_read_failure_is_conservative_and_recoverable() {
+        let store = Store::open_memory().unwrap();
+        store
+            .conn
+            .execute_batch("ALTER TABLE kv RENAME TO saved_kv")
+            .unwrap();
+        let failed = store.load_settings();
+        assert!(
+            !failed.sync.enabled
+                && !failed.privacy.history_enabled
+                && !failed.hotkeys.hotkeys_enabled
+        );
+        assert!(store.save_settings(&failed).is_err());
+        assert!(store.try_load_settings().is_err());
+        assert!(store.maintain_retention_at(0).is_err());
+        assert_eq!(
+            store.settings_warning(),
+            Some("settings.recovery.unreadable")
+        );
+        store
+            .conn
+            .execute_batch("ALTER TABLE saved_kv RENAME TO kv")
+            .unwrap();
+        assert!(
+            store.load_settings().sync.enabled,
+            "a genuinely new configuration retains its documented defaults"
+        );
+    }
+
+    #[test]
+    fn missing_retention_policy_preserves_data_until_explicit_recovery() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open_with_key(&root.path().join("synthetic.db"), &[27; 32]).unwrap();
+        let now = 1_000_000;
+        store
+            .apply_history(&[HistoryRecord {
+                uuid: "synthetic-old".into(),
+                text: "synthetic saved speech".into(),
+                raw_text: "synthetic saved raw".into(),
+                words: 3,
+                duration_secs: 4,
+                recorded_at: now - 2 * 86400,
+                deleted: false,
+                discarded: false,
+            }])
+            .unwrap();
+        let vault = crate::audio::audio_vault_dir(root.path());
+        crate::private_fs::directory(&vault).unwrap();
+        let clip = vault.join("synthetic-old.wav");
+        std::fs::write(&clip, b"synthetic audio").unwrap();
+        let mut raw = serde_json::to_value(store.load_settings()).unwrap();
+        raw["privacy"]
+            .as_object_mut()
+            .unwrap()
+            .remove("transcript_auto_delete_days");
+        store
+            .conn
+            .execute(
+                "UPDATE kv SET value=?1 WHERE key='settings'",
+                [raw.to_string()],
+            )
+            .unwrap();
+        assert_eq!(store.maintain_retention_at(now).unwrap(), (0, 0));
+        assert!(clip.exists());
+        assert_eq!(
+            store.export_history().unwrap()[0].text,
+            "synthetic saved speech"
+        );
+        // Missing capture permissions must not disable an otherwise explicit
+        // retention policy, or extend retention without the user's consent.
+        raw["privacy"]["transcript_auto_delete_days"] = serde_json::json!(1);
+        raw["privacy"]["audio_retention_days"] = serde_json::json!(1);
+        raw["privacy"]
+            .as_object_mut()
+            .unwrap()
+            .remove("history_enabled");
+        store
+            .conn
+            .execute(
+                "UPDATE kv SET value=?1 WHERE key='settings'",
+                [raw.to_string()],
+            )
+            .unwrap();
+        assert!(!store.load_settings().privacy.history_enabled);
+        assert_eq!(store.maintain_retention_at(now).unwrap(), (1, 1));
+        assert!(!clip.exists());
+        assert!(store.export_history().unwrap()[0].deleted);
+    }
+
+    #[test]
+    fn missing_or_future_settings_cannot_be_treated_as_a_new_configuration() {
+        let store = Store::open_memory().unwrap();
+        for raw in [
+            "null",
+            "[]",
+            "42",
+            r#""synthetic invalid settings""#,
+            r#"{"settings_version":2}"#,
+        ] {
+            store
+                .conn
+                .execute("UPDATE kv SET value=?1 WHERE key='settings'", [raw])
+                .unwrap();
+            assert!(store.try_load_settings().is_err());
+            let safe = store.load_settings();
+            assert!(
+                !safe.sync.enabled
+                    && !safe.privacy.history_enabled
+                    && !safe.hotkeys.hotkeys_enabled
+            );
+            assert!(store.save_settings(&safe).is_err());
+            assert_eq!(
+                store
+                    .conn
+                    .query_row("SELECT value FROM kv WHERE key='settings'", [], |r| r
+                        .get::<_, String>(0))
+                    .unwrap(),
+                raw
+            );
+        }
+        store
+            .conn
+            .execute("DELETE FROM kv WHERE key='settings'", [])
+            .unwrap();
+        assert!(store.try_load_settings().is_err());
+        let safe = store.load_settings();
+        assert!(!safe.sync.enabled && !safe.privacy.history_enabled);
+        assert!(store.save_settings(&safe).is_err());
+    }
+
+    #[test]
+    fn old_missing_settings_recover_conservatively_without_losing_user_data() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("synthetic.db");
+        let store = Store::open_with_key(&path, &[9; 32]).unwrap();
+        store
+            .upsert_word("synthetic saved word", "synthetic node")
+            .unwrap();
+        store
+            .conn
+            .execute("DELETE FROM kv WHERE key='settings'", [])
+            .unwrap();
+        store.conn.execute_batch("PRAGMA user_version=4").unwrap();
+        drop(store);
+        let upgraded = Store::open_with_key(&path, &[9; 32]).unwrap();
+        let recovered = upgraded.try_load_settings().unwrap();
+        assert!(
+            !recovered.sync.enabled
+                && !recovered.privacy.history_enabled
+                && !recovered.hotkeys.hotkeys_enabled
+        );
+        assert_eq!(upgraded.load_words().unwrap(), ["synthetic saved word"]);
+        drop(upgraded);
+        let fresh = Store::open_with_key(&root.path().join("fresh.db"), &[10; 32]).unwrap();
+        assert!(fresh.try_load_settings().unwrap().sync.enabled);
+        drop(fresh);
+        assert!(
+            Store::open_with_key(&root.path().join("fresh.db"), &[10; 32])
+                .unwrap()
+                .try_load_settings()
+                .unwrap()
+                .sync
+                .enabled
+        );
+    }
+
+    #[test]
+    fn settings_edits_preserve_unknown_root_nested_and_entry_fields() {
+        let store = Store::open_memory().unwrap();
+        let mut raw = serde_json::to_value(store.load_settings()).unwrap();
+        raw["future_root"] = serde_json::json!({"value":"synthetic future setting"});
+        raw["preferences"]["future_nested"] = serde_json::Value::Bool(true);
+        raw["dictionary"]["future_nested"] = serde_json::Value::Bool(true);
+        raw["language_models"]["entries"][0]["future_entry"] = serde_json::Value::from(42);
+        store
+            .conn
+            .execute(
+                "INSERT OR REPLACE INTO kv(key,value) VALUES ('settings',?1)",
+                [raw.to_string()],
+            )
+            .unwrap();
+        let mut loaded = store.load_settings();
+        loaded.preferences.theme = crate::settings::Theme::Dark;
+        loaded.language_models.entries[0].name = "edited synthetic entry".into();
+        store.save_settings(&loaded).unwrap();
+        let saved: String = store
+            .conn
+            .query_row("SELECT value FROM kv WHERE key='settings'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(saved["future_root"], raw["future_root"]);
+        assert_eq!(
+            saved["preferences"]["future_nested"],
+            raw["preferences"]["future_nested"]
+        );
+        assert_eq!(saved["language_models"]["entries"][0]["future_entry"], 42);
+        assert_eq!(saved["dictionary"]["future_nested"], true);
+    }
+
+    #[test]
     fn settings_missing_fields_preserve_privacy_and_corrupt_blobs_cannot_be_overwritten() {
         let store = Store::open_memory().unwrap();
         let raw = r#"{"sync":{"enabled":false},"privacy":{"history_enabled":false}}"#;
         store
             .conn
-            .execute("INSERT INTO kv(key,value) VALUES ('settings',?1)", [raw])
+            .execute(
+                "INSERT OR REPLACE INTO kv(key,value) VALUES ('settings',?1)",
+                [raw],
+            )
             .unwrap();
         let settings = store.load_settings();
         assert!(!settings.sync.enabled && !settings.privacy.history_enabled);
