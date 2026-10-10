@@ -18,6 +18,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::settings::{AppSettings, HistoryEntry, Snippet};
 
+#[path = "sync_pages.rs"]
+mod pages;
+pub(crate) use pages::{SyncManifest, SyncPage};
+
 /// Milliseconds since the Unix epoch (wall clock). Sync conflict
 /// resolution compares these; ties break on node id (total order).
 pub fn now_ms() -> i64 {
@@ -259,7 +263,7 @@ fn migrate_plaintext_to_encrypted(path: &Path, key: &[u8; 32]) -> rusqlite::Resu
     let plain = Connection::open(path)?;
     plain.busy_timeout(std::time::Duration::from_secs(5))?;
     let version: i64 = plain.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version > 6 {
+    if version > 7 {
         return Err(rusqlite::Error::ToSqlConversionFailure(
             "database schema is newer than this build".into(),
         ));
@@ -393,7 +397,7 @@ impl Store {
             r.get::<_, i64>(0)
         })?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 6 {
+        if version > 7 {
             return Err(rusqlite::Error::ToSqlConversionFailure(
                 "database schema is newer than this MyWhisper build".into(),
             ));
@@ -401,7 +405,7 @@ impl Store {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON;",
         )?;
-        if version == 6 {
+        if version == 7 {
             return Ok(Self {
                 conn,
                 file_identity,
@@ -415,13 +419,14 @@ impl Store {
             |r| r.get::<_, i64>(0),
         )? == 0;
         let tx = conn.unchecked_transaction()?;
-        if (3..=5).contains(&version) {
+        if (3..=6).contains(&version) {
             tx.execute(
                 "UPDATE history SET text='',raw_text='',words=0 WHERE discarded=1",
                 [],
             )?;
             Self::initialize_settings_on(&tx, false)?;
-            tx.execute_batch("PRAGMA user_version=6")?;
+            pages::initialize(&tx)?;
+            tx.execute_batch("PRAGMA user_version=7")?;
             tx.commit()?;
             return Ok(Self {
                 conn,
@@ -489,7 +494,8 @@ impl Store {
         )?;
         tx.execute("UPDATE devices SET introducer=0", [])?;
         Self::initialize_settings_on(&tx, fresh)?;
-        tx.execute_batch("PRAGMA user_version=6")?;
+        pages::initialize(&tx)?;
+        tx.execute_batch("PRAGMA user_version=7")?;
         tx.commit()?;
         Ok(Self {
             conn,
@@ -1745,7 +1751,22 @@ impl Store {
         epoch: i64,
     ) -> rusqlite::Result<ContentSnapshot> {
         let tx = self.conn.unchecked_transaction()?;
+        self.check_sync_identity()?;
         Self::require_sync_authorized(&tx, peer_id, epoch)?;
+        // Legacy peers still require one message. Refuse oversized snapshots
+        // before building vectors; capable peers use the paged path instead.
+        let estimate: i64 = tx.query_row(
+            "SELECT COALESCE((SELECT SUM(length(CAST(word AS BLOB))+length(CAST(updated_by AS BLOB))+256) FROM words),0)
+               +COALESCE((SELECT SUM(length(CAST(trigger AS BLOB))+length(CAST(replacement AS BLOB))+length(CAST(updated_by AS BLOB))+256) FROM snippets),0)
+               +COALESCE((SELECT SUM(length(CAST(uuid AS BLOB))+length(CAST(text AS BLOB))+length(CAST(raw_text AS BLOB))+512) FROM history),0)
+               +COALESCE((SELECT SUM(length(CAST(node_id AS BLOB))+length(CAST(name AS BLOB))+length(CAST(address AS BLOB))+length(CAST(addresses AS BLOB))+256) FROM devices),0)",
+            [], |row| row.get(0),
+        )?;
+        if estimate > 16 * 1024 * 1024 {
+            return Err(rusqlite::Error::ToSqlConversionFailure(
+                "peer needs paged-sync support for this database; upgrade the peer".into(),
+            ));
+        }
         let snapshot = ContentSnapshot {
             words: self.export_words()?,
             snippets: self.export_snippets()?,
@@ -1804,6 +1825,7 @@ impl Store {
         gossip: &[PeerGossip],
     ) -> rusqlite::Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
+        self.check_sync_identity()?;
         Self::require_sync_authorized(&tx, peer_id, epoch)?;
         let peer = Self::peer_on(&tx, peer_id)?;
         let changed = Self::apply_words_on(&tx, content.0)?
@@ -1834,7 +1856,8 @@ impl Store {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
         Self::initialize_settings_on(&conn, true)?;
-        conn.execute_batch("PRAGMA user_version=6")?;
+        pages::initialize(&conn)?;
+        conn.execute_batch("PRAGMA user_version=7")?;
         Ok(Self {
             conn,
             file_identity: None,
@@ -3128,7 +3151,7 @@ mod release_regressions {
                     .conn
                     .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                6
+                7
             );
         }
     }

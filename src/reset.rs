@@ -747,7 +747,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            6
+            7
         );
         let preserved: String = conn
             .query_row("SELECT value FROM kv WHERE key='settings'", [], |row| {

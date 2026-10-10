@@ -20,6 +20,8 @@ GTK4 + Rust, Linux/Wayland-first.
   Deepgram). One local server at a time; lazy start with catch-up.
 - **Sync**: serverless device-to-device over encrypted TCP
   (Noise_XX, ed25519 session proofs), mDNS discovery, LWW merge.
+  Compatible updated peers use resumable pages for large histories; older
+  peers need an upgrade when their single-message limit is exceeded.
 - **State**: single encrypted `state.db` (`~/.local/share/mywhisper/`),
   SQLCipher with the key in the OS keychain.
 

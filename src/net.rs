@@ -1,11 +1,11 @@
-//! Node-to-node sync transport (v3): Noise-encrypted TCP.
+//! Node-to-node sync transport: authenticated Noise-encrypted TCP.
 //!
 //! Everything on the wire is encrypted with `Noise_XX` (mutual
 //! authentication, forward secrecy) and framed. Trust is
 //! table-driven with Syncthing-style introduction:
 //!
 //! * unknown dialers are recorded as pending requests, never merged;
-//! * accepting marks the peer trusted + introducer, then syncs;
+//! * accepting explicitly grants trust; introduction authority is separate;
 //! * introducers' vouched devices join automatically as trusted;
 //! * everyone exchanges peer lists, so addresses stay fresh without
 //!   typing IPs (mDNS covers LAN discovery on top).
@@ -22,7 +22,9 @@
 //! * hello both ways: `{"v":1,"node_id":"…","name":"…",
 //!   "addresses":[],"introducer":false,"sig":[…]}`
 //! * verdict from responder: `{"ok":true}` or `{"error":"…"}`
-//! * records both ways: `{"words":[…],"snippets":[…],
+//! * capable peers exchange bounded pages with durable cursor acknowledgements;
+//!   peers without that capability retain the small-database records flow;
+//! * legacy records both ways: `{"words":[…],"snippets":[…],
 //!   "history":[…],"peers":[…]}`
 //!
 //! Reachability v1: same LAN (mDNS/discovered/gossiped addresses),
@@ -57,6 +59,8 @@ const MDNS_SERVICE: &str = "_mywhisper._tcp.local.";
 #[derive(Debug, Serialize, Deserialize)]
 struct Hello {
     v: u32,
+    #[serde(default)]
+    pages: bool,
     node_id: String,
     name: String,
     #[serde(default)]
@@ -85,6 +89,8 @@ pub struct SyncReport {
     pub snippets_in: usize,
     pub history_in: usize,
     pub introduced: usize,
+    /// This bounded session committed progress; further pages remain.
+    pub has_more: bool,
 }
 
 /// mDNS-discovered peer (LAN, no configuration).
@@ -219,6 +225,23 @@ pub struct NoiseStream {
     policy: Option<SyncPolicy>,
     authorization_epoch: Option<i64>,
     owner_stop: Option<Arc<AtomicBool>>,
+}
+
+struct JsonBuffer {
+    bytes: Vec<u8>,
+    cap: usize,
+}
+impl Write for JsonBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > self.cap - self.bytes.len() {
+            return Err(std::io::Error::other("sync JSON exceeds message limit"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 impl NoiseStream {
@@ -387,9 +410,13 @@ impl NoiseStream {
     }
 
     pub fn send_json(&mut self, value: &impl Serialize) -> Result<(), String> {
-        let bytes = serde_json::to_vec(value)
+        let mut buffer = JsonBuffer {
+            bytes: Vec::new(),
+            cap: self.cap,
+        };
+        serde_json::to_writer(&mut buffer, value)
             .map_err(|e| format!("encode: {}", crate::diagnostics::json(&e)))?;
-        self.send_msg(&bytes)
+        self.send_msg(&buffer.bytes)
     }
 
     fn read_chunk(&mut self) -> Result<Vec<u8>, String> {
@@ -443,6 +470,9 @@ struct SyncPolicy {
 }
 
 fn permitted(store: &Store, peer: &str) -> Result<(), String> {
+    store
+        .check_sync_identity()
+        .map_err(|error| error.to_string())?;
     if !store.load_settings().sync.enabled {
         return Err("sync disabled".into());
     }
@@ -561,6 +591,7 @@ pub fn exchange(
         .unwrap_or_else(|| store.sync_epoch());
     let hello = Hello {
         v: PROTOCOL_V,
+        pages: true,
         node_id: creds.node_id.clone(),
         name: name.to_string(),
         addresses: addresses.to_vec(),
@@ -657,6 +688,9 @@ pub fn exchange(
 
     permitted(store, &peer.node_id)?;
     SyncPolicy::install(session, store, &peer.node_id, policy_epoch)?;
+    if peer.pages {
+        return exchange_pages(session, store, creds, peer, policy_epoch, initiator);
+    }
     // Records, strict alternation again.
     let mut ours = store
         .export_authorized(&peer.node_id, policy_epoch)
@@ -689,7 +723,101 @@ pub fn exchange(
         snippets_in: theirs.snippets.len(),
         history_in: theirs.history.len(),
         introduced,
+        has_more: false,
     })
+}
+
+/// Each page is acknowledged only after its merge and receive cursor commit.
+/// Alternate directions so a large sender cannot deadlock a large receiver.
+/// A fixed upper sequence excludes changes made by the incoming half of this
+/// session; their fresh sequences are sent by the next round.
+fn exchange_pages(
+    session: &mut NoiseStream,
+    store: &Store,
+    creds: &SyncCreds,
+    peer: Hello,
+    epoch: i64,
+    initiator: bool,
+) -> Result<SyncReport, String> {
+    use crate::store::{SyncManifest, SyncPage};
+    let ours = store
+        .sync_manifest(&peer.node_id, epoch)
+        .map_err(|e| e.to_string())?;
+    let theirs: SyncManifest = if initiator {
+        session.send_json(&ours)?;
+        session.recv_json()?
+    } else {
+        let theirs = session.recv_json()?;
+        session.send_json(&ours)?;
+        theirs
+    };
+    let mut incoming = store
+        .sync_received_cursor(&peer.node_id, epoch, &theirs)
+        .map_err(|e| e.to_string())?;
+    let mut outgoing: i64 = if initiator {
+        session.send_json(&incoming)?;
+        session.recv_json()?
+    } else {
+        let outgoing = session.recv_json()?;
+        session.send_json(&incoming)?;
+        outgoing
+    };
+    if outgoing < 0 || outgoing > ours.upper {
+        return Err("invalid peer receive cursor".into());
+    }
+    let mut report = SyncReport {
+        peer_node: peer.node_id.clone(),
+        peer_name: peer.name,
+        words_in: 0,
+        snippets_in: 0,
+        history_in: 0,
+        introduced: 0,
+        has_more: true,
+    };
+    for _ in 0..1024 {
+        let page = store
+            .export_sync_page(&peer.node_id, epoch, &creds.node_id, outgoing, ours.upper)
+            .map_err(|e| e.to_string())?;
+        let outgoing_done = page.done;
+        let send = |session: &mut NoiseStream| -> Result<(), String> {
+            session.send_json(&page)?;
+            let ack: i64 = session.recv_json()?;
+            if ack != page.to {
+                return Err("invalid page acknowledgement".into());
+            }
+            Ok(())
+        };
+        let mut receive = |session: &mut NoiseStream| -> Result<bool, String> {
+            let received: SyncPage = session.recv_json()?;
+            session.progress_deadline()?;
+            if received.from != incoming {
+                return Err("unexpected page position".into());
+            }
+            report.introduced += store
+                .apply_sync_page(&peer.node_id, epoch, &creds.node_id, &theirs, &received)
+                .map_err(|e| e.to_string())?;
+            report.words_in += received.content.words.len();
+            report.snippets_in += received.content.snippets.len();
+            report.history_in += received.content.history.len();
+            incoming = received.to;
+            session.send_json(&incoming)?;
+            Ok(received.done)
+        };
+        let incoming_done = if initiator {
+            send(session)?;
+            receive(session)?
+        } else {
+            let done = receive(session)?;
+            send(session)?;
+            done
+        };
+        outgoing = page.to;
+        if outgoing_done && incoming_done {
+            report.has_more = false;
+            break;
+        }
+    }
+    Ok(report)
 }
 
 fn short(node_id: &str) -> String {
@@ -916,8 +1044,15 @@ pub fn serve(
                     })();
                     match res {
                         Ok(report) => eprintln!(
-                            "[sync] served {} ({} words in, {} introduced)",
-                            report.peer_node, report.words_in, report.introduced
+                            "[sync] {} {} ({} words in, {} introduced)",
+                            if report.has_more {
+                                "partial progress from"
+                            } else {
+                                "served"
+                            },
+                            report.peer_node,
+                            report.words_in,
+                            report.introduced
                         ),
                         Err(e) => {
                             eprintln!("[sync] {}: {e}", remote.unwrap_or_else(|| "?".to_string()))
@@ -1204,7 +1339,12 @@ pub fn sync_all_trusted(db_path: &Path, creds: &SyncCreds) -> Vec<String> {
             Some(epoch),
         ) {
             Ok(r) => out.push(format!(
-                "synced {} ({} words in)",
+                "{} {} ({} words in)",
+                if r.has_more {
+                    "progress saved for; sync continues"
+                } else {
+                    "synced"
+                },
                 short(&r.peer_node),
                 r.words_in
             )),
@@ -1382,13 +1522,37 @@ fn run_background(request: BackgroundRequest) {
             &name,
             &node,
             Some(epoch),
-            owner_stop,
+            owner_stop.clone(),
         ) {
-            Ok(report) => eprintln!(
-                "[sync] synced {} ({} words in)",
-                short(&report.peer_node),
-                report.words_in
-            ),
+            Ok(report) => {
+                eprintln!(
+                    "[sync] {} {} ({} words in)",
+                    if report.has_more {
+                        "progress saved for"
+                    } else {
+                        "synced"
+                    },
+                    short(&report.peer_node),
+                    report.words_in
+                );
+                if report.has_more {
+                    let key = (db.clone(), node.clone());
+                    let request = BackgroundRequest::Peer {
+                        db,
+                        creds,
+                        epoch,
+                        owner_stop,
+                        node,
+                        name,
+                        addresses,
+                    };
+                    if let Err(error) =
+                        outgoing().and_then(|jobs| jobs.continue_if_clean(key, request))
+                    {
+                        eprintln!("[sync] page continuation: {error}");
+                    }
+                }
+            }
             Err(error) => eprintln!("[sync] {}: {error}", short(&node)),
         },
     }
@@ -1809,6 +1973,7 @@ mod tests {
             session
                 .send_json(&Hello {
                     v: PROTOCOL_V,
+                    pages: false,
                     node_id: remote_id.node_id.clone(),
                     name: "synthetic remote".into(),
                     addresses: Vec::new(),
@@ -1883,6 +2048,7 @@ mod tests {
             session
                 .send_json(&Hello {
                     v: PROTOCOL_V,
+                    pages: false,
                     node_id: remote.node_id.clone(),
                     name: "synthetic remote".into(),
                     addresses: Vec::new(),
@@ -2084,6 +2250,237 @@ mod tests {
     }
 
     #[test]
+    fn large_encrypted_history_resumes_after_committed_page_loses_ack_and_then_sends_only_deltas() {
+        use crate::store::{HistoryRecord, SyncManifest, SyncPage};
+        let root = tempfile::tempdir().unwrap();
+        let a = DeviceIdentity::ephemeral().creds();
+        let b = DeviceIdentity::ephemeral().creds();
+        let db_a = root.path().join("a.db");
+        let db_b = root.path().join("b.db");
+        let store_a = Store::open(&db_a).unwrap();
+        let store_b = Store::open(&db_b).unwrap();
+        for store in [&store_a, &store_b] {
+            let mut settings = store.load_settings();
+            settings.sync.enabled = true;
+            store.save_settings(&settings).unwrap();
+        }
+        store_a
+            .upsert_peer(&b.node_id, "synthetic b", "", true)
+            .unwrap();
+        store_b
+            .upsert_peer(&a.node_id, "synthetic a", "", true)
+            .unwrap();
+        for n in 0..9 {
+            store_a
+                .apply_history(&[HistoryRecord {
+                    uuid: format!("synthetic-large-{n}"),
+                    text: "é".repeat(512 * 1024),
+                    raw_text: "Synthetic raw. ".repeat(75_000),
+                    words: 1,
+                    duration_secs: 1,
+                    deleted: false,
+                    discarded: false,
+                    recorded_at: 123 + n,
+                }])
+                .unwrap();
+        }
+        let originals = store_a.export_history().unwrap();
+        assert!(serde_json::to_vec(&originals).unwrap().len() > CONTENT_CAP);
+        assert!(
+            store_a
+                .export_authorized(&b.node_id, store_a.sync_epoch())
+                .unwrap_err()
+                .to_string()
+                .contains("upgrade the peer")
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let server_db = db_b.clone();
+        let server_a = a.clone();
+        let server_b = b.clone();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let (mut session, hash, _) =
+                NoiseStream::handshake(stream, &server_b.noise_static, false).unwrap();
+            let hello: Hello = session.recv_json().unwrap();
+            assert_eq!(hello.node_id, server_a.node_id);
+            assert!(hello.pages);
+            session
+                .send_json(&Hello {
+                    v: PROTOCOL_V,
+                    pages: true,
+                    node_id: server_b.node_id.clone(),
+                    name: "synthetic b".into(),
+                    addresses: vec![],
+                    introducer: false,
+                    sig: DeviceIdentity::sign_session_static(&server_b.signing, &hash).to_vec(),
+                })
+                .unwrap();
+            session
+                .send_json(&Verdict {
+                    ok: true,
+                    error: String::new(),
+                })
+                .unwrap();
+            session.cap = CONTENT_CAP;
+            let store = Store::open_existing(&server_db).unwrap();
+            let incoming: SyncManifest = session.recv_json().unwrap();
+            let ours = store
+                .sync_manifest(&server_a.node_id, store.sync_epoch())
+                .unwrap();
+            session.send_json(&ours).unwrap();
+            let remote_cursor: i64 = session.recv_json().unwrap();
+            assert_eq!(remote_cursor, 0);
+            session.send_json(&0i64).unwrap();
+            let page: SyncPage = session.recv_json().unwrap();
+            assert!(!page.done);
+            assert!(serde_json::to_vec(&page).unwrap().len() < CONTENT_CAP);
+            store
+                .apply_sync_page(
+                    &server_a.node_id,
+                    store.sync_epoch(),
+                    &server_b.node_id,
+                    &incoming,
+                    &page,
+                )
+                .unwrap();
+            assert!(
+                store
+                    .sync_received_cursor(&server_a.node_id, store.sync_epoch(), &incoming)
+                    .unwrap()
+                    > 0
+            );
+            // Kill the connection after the durable commit and before ACK.
+            // Restarted peers must ask for the persisted cursor, not resend
+            // the first page or lose records from the unfinished page.
+            drop(session);
+            page.content.history.len()
+        });
+        assert!(
+            sync_now(
+                std::slice::from_ref(&address),
+                &db_a,
+                &a,
+                "synthetic a",
+                &b.node_id
+            )
+            .is_err()
+        );
+        let first_count = server.join().unwrap();
+        assert!(first_count > 0 && first_count < 9);
+        assert_eq!(store_b.export_history().unwrap().len(), first_count);
+        let round = || {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let server_db = db_b.clone();
+            let server_b = b.clone();
+            let server = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let (mut session, hash, _) =
+                    NoiseStream::handshake(stream, &server_b.noise_static, false).unwrap();
+                let store = Store::open_existing(&server_db).unwrap();
+                exchange(
+                    &mut session,
+                    &hash,
+                    &store,
+                    &server_b,
+                    "synthetic b",
+                    &[],
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap()
+            });
+            let result = sync_now(&[address], &db_a, &a, "synthetic a", &b.node_id).unwrap();
+            (result, server.join().unwrap())
+        };
+        let (outbound, inbound) = round();
+        assert!(!outbound.has_more && !inbound.has_more);
+        assert_eq!(inbound.history_in, 9 - first_count);
+        let mut expected = originals;
+        expected.sort_by(|a, b| a.uuid.cmp(&b.uuid));
+        let mut actual = store_b.export_history().unwrap();
+        actual.sort_by(|a, b| a.uuid.cmp(&b.uuid));
+        assert_eq!(
+            actual, expected,
+            "every Unicode transcript must survive restart/resume exactly"
+        );
+        // The responder snapshot was fixed before receiving the unfinished
+        // records. Those two fresh local changes are eligible in its next
+        // snapshot; acknowledge them once before checking the steady state.
+        let (outbound, inbound) = round();
+        assert_eq!(
+            (outbound.history_in, inbound.history_in),
+            (9 - first_count, 0)
+        );
+        let (outbound, inbound) = round();
+        assert_eq!(
+            (outbound.history_in, inbound.history_in),
+            (0, 0),
+            "unchanged histories must not be resent"
+        );
+        store_a.delete_history("synthetic-large-0").unwrap();
+        store_a
+            .upsert_word("synthetic delta after resume", &a.node_id)
+            .unwrap();
+        let (_, inbound) = round();
+        assert_eq!((inbound.history_in, inbound.words_in), (1, 1));
+        let tombstone = store_b
+            .export_history()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.uuid == "synthetic-large-0")
+            .unwrap();
+        assert!(tombstone.deleted && tombstone.text.is_empty() && tombstone.raw_text.is_empty());
+        // A fresh encrypted store can legitimately retain its device key.
+        // Its new stream identity and empty receive cursor require all data,
+        // including records it previously supplied to the other peer.
+        store_b.checkpoint().unwrap();
+        drop(store_b);
+        std::fs::rename(&db_b, root.path().join("preserved-b.db")).unwrap();
+        let fresh_b = Store::open(&db_b).unwrap();
+        let mut settings = fresh_b.load_settings();
+        settings.sync.enabled = true;
+        fresh_b.save_settings(&settings).unwrap();
+        fresh_b
+            .upsert_peer(&a.node_id, "synthetic a", "", true)
+            .unwrap();
+        let (_, inbound) = round();
+        assert_eq!(inbound.history_in, 9);
+        let mut recovered = fresh_b.export_history().unwrap();
+        recovered.sort_by(|a, b| a.uuid.cmp(&b.uuid));
+        let mut current = store_a.export_history().unwrap();
+        current.sort_by(|a, b| a.uuid.cmp(&b.uuid));
+        assert_eq!(
+            recovered, current,
+            "fresh peer recovery must include formerly shared data and tombstones"
+        );
+    }
+
+    #[test]
+    fn escaped_json_limit_rejects_before_wire_progress_and_preserves_next_unicode_message() {
+        let a = DeviceIdentity::ephemeral().creds();
+        let b = DeviceIdentity::ephemeral().creds();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let (mut session, _, _) =
+                NoiseStream::handshake(socket, &b.noise_static, false).unwrap();
+            session.cap = 64;
+            session.recv_json::<String>().unwrap()
+        });
+        let socket = TcpStream::connect(address).unwrap();
+        let (mut session, _, _) = NoiseStream::handshake(socket, &a.noise_static, true).unwrap();
+        session.cap = 64;
+        assert!(session.send_json(&"\0".repeat(100)).is_err());
+        session.send_json(&"🦀 é synthetic").unwrap();
+        assert_eq!(server.join().unwrap(), "🦀 é synthetic");
+    }
+
+    #[test]
     fn loopback_sync_converges_and_rejects_untrusted() {
         let id_a = DeviceIdentity::ephemeral();
         let id_b = DeviceIdentity::ephemeral();
@@ -2267,6 +2664,7 @@ mod tests {
         // Forge: valid framing, victim's id, attacker's signature.
         let forged = Hello {
             v: PROTOCOL_V,
+            pages: false,
             node_id: id_victim.node_id.clone(),
             name: "attacker".to_string(),
             addresses: vec![],
