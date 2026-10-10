@@ -1806,6 +1806,7 @@ mod suspend_handshake_tests {
     #[test]
     fn capture_requires_fresh_ack_and_recovers_after_process_exit() {
         const CHILD_ROOT: &str = "MYWHISPER_SUSPEND_TEST_ROOT";
+        const ISOLATED_OWNER: &str = "MYWHISPER_SUSPEND_TEST_OWNER";
         if let Some(root) = std::env::var_os(CHILD_ROOT) {
             let root = std::path::PathBuf::from(root);
             assert!(
@@ -1850,6 +1851,27 @@ mod suspend_handshake_tests {
             crate::private_fs::replace(&root.join("done"), b"done").unwrap();
             std::thread::sleep(Duration::from_secs(3));
             return;
+        }
+        if std::env::var_os(ISOLATED_OWNER).is_none() {
+            // Parallel tests fork/pre_exec, temporarily inheriting this
+            // process's flock descriptions until exec. Isolate the actual
+            // lock owner as well as its engine: all fresh-ack and immediate
+            // post-exit release assertions below remain unchanged.
+            let mut owner=ChildGuard(Some(std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","hotkey::suspend_handshake_tests::capture_requires_fresh_ack_and_recovers_after_process_exit","--test-threads=1"])
+                .env(ISOLATED_OWNER,"1").stdin(std::process::Stdio::null()).spawn().unwrap()));
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                if let Some(status) = owner.0.as_mut().unwrap().try_wait().unwrap() {
+                    assert!(status.success(), "isolated lock owner failed: {status}");
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "isolated lock owner deadline exceeded"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
         let root = tempfile::Builder::new()
             .prefix("mywhisper-capture-handshake-")
