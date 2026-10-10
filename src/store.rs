@@ -257,7 +257,7 @@ fn migrate_plaintext_to_encrypted(path: &Path, key: &[u8; 32]) -> rusqlite::Resu
     let plain = Connection::open(path)?;
     plain.busy_timeout(std::time::Duration::from_secs(5))?;
     let version: i64 = plain.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version > 3 {
+    if version > 4 {
         return Err(rusqlite::Error::ToSqlConversionFailure(
             "database schema is newer than this build".into(),
         ));
@@ -380,7 +380,7 @@ impl Store {
             r.get::<_, i64>(0)
         })?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 3 {
+        if version > 4 {
             return Err(rusqlite::Error::ToSqlConversionFailure(
                 "database schema is newer than this MyWhisper build".into(),
             ));
@@ -388,13 +388,25 @@ impl Store {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON;",
         )?;
-        if version == 3 {
+        if version == 4 {
             return Ok(Self {
                 conn,
                 settings_baseline: std::cell::RefCell::new(None),
             });
         }
         let tx = conn.unchecked_transaction()?;
+        if version == 3 {
+            tx.execute(
+                "UPDATE history SET text='',raw_text='',words=0 WHERE discarded=1",
+                [],
+            )?;
+            tx.execute_batch("PRAGMA user_version=4")?;
+            tx.commit()?;
+            return Ok(Self {
+                conn,
+                settings_baseline: std::cell::RefCell::new(None),
+            });
+        }
         tx.execute_batch(SCHEMA)?;
         // Best-effort migration for pre-existing databases: SQLite has
         // no ADD COLUMN IF NOT EXISTS, so a duplicate-column failure
@@ -448,8 +460,12 @@ impl Store {
             "UPDATE history SET text='', raw_text='', words=0, duration_secs=0 WHERE deleted=1",
             [],
         )?;
+        tx.execute(
+            "UPDATE history SET text='',raw_text='',words=0 WHERE discarded=1",
+            [],
+        )?;
         tx.execute("UPDATE devices SET introducer=0", [])?;
-        tx.execute_batch("PRAGMA user_version=3")?;
+        tx.execute_batch("PRAGMA user_version=4")?;
         tx.commit()?;
         Ok(Self {
             conn,
@@ -1323,13 +1339,15 @@ impl Store {
                  ON CONFLICT(uuid) DO UPDATE SET
                    deleted=history.deleted OR excluded.deleted,
                    discarded=history.discarded OR excluded.discarded,
-                   text=CASE WHEN history.deleted OR excluded.deleted THEN '' ELSE history.text END,
-                   raw_text=CASE WHEN history.deleted OR excluded.deleted THEN '' ELSE history.raw_text END,
-                   words=CASE WHEN history.deleted OR excluded.deleted THEN 0 ELSE history.words END,
-                   duration_secs=CASE WHEN history.deleted OR excluded.deleted THEN 0 ELSE history.duration_secs END
-                 WHERE (excluded.deleted AND NOT history.deleted) OR (excluded.discarded AND NOT history.discarded)",
-                (&r.uuid, if r.deleted { "" } else { &r.text },if r.deleted { "" } else { &r.raw_text },
-                 if r.deleted { 0 } else { r.words },if r.deleted { 0 } else { r.duration_secs },r.deleted,r.discarded,r.recorded_at))?;
+                   text=CASE WHEN history.deleted OR excluded.deleted OR history.discarded OR excluded.discarded THEN '' ELSE history.text END,
+                   raw_text=CASE WHEN history.deleted OR excluded.deleted OR history.discarded OR excluded.discarded THEN '' ELSE history.raw_text END,
+                   words=CASE WHEN history.deleted OR excluded.deleted OR history.discarded OR excluded.discarded THEN 0 ELSE history.words END,
+                   duration_secs=CASE WHEN history.deleted OR excluded.deleted THEN 0
+                     WHEN history.discarded OR excluded.discarded THEN MAX(history.duration_secs,excluded.duration_secs) ELSE history.duration_secs END
+                 WHERE (excluded.deleted AND NOT history.deleted) OR (excluded.discarded AND NOT history.discarded)
+                   OR (history.discarded AND NOT history.deleted AND (history.text<>'' OR history.raw_text<>'' OR history.words<>0 OR history.duration_secs<excluded.duration_secs))",
+                (&r.uuid, if r.deleted || r.discarded { "" } else { &r.text },if r.deleted || r.discarded { "" } else { &r.raw_text },
+                 if r.deleted || r.discarded { 0 } else { r.words },if r.deleted { 0 } else { r.duration_secs },r.deleted,r.discarded,r.recorded_at))?;
         }
         Ok(changed)
     }
@@ -1464,7 +1482,7 @@ impl Store {
     pub fn open_memory() -> rusqlite::Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
-        conn.execute_batch("PRAGMA user_version=3")?;
+        conn.execute_batch("PRAGMA user_version=4")?;
         Ok(Self {
             conn,
             settings_baseline: std::cell::RefCell::new(None),
@@ -2584,6 +2602,85 @@ mod release_regressions {
         store.upsert_peer(&peer, "peer", "", true).unwrap();
         assert!(!store.is_revoked(&peer).unwrap());
         assert!(!store.get_peer(&peer).unwrap().unwrap().introducer);
+    }
+
+    #[test]
+    fn discarded_only_merges_converge_without_retaining_speech() {
+        let normal = HistoryRecord {
+            uuid: "synthetic-discard-merge".into(),
+            text: "synthetic private speech".into(),
+            raw_text: "synthetic private raw speech".into(),
+            words: 4,
+            duration_secs: 17,
+            recorded_at: 123,
+            deleted: false,
+            discarded: false,
+        };
+        let discarded = HistoryRecord {
+            text: String::new(),
+            raw_text: String::new(),
+            words: 0,
+            discarded: true,
+            ..normal.clone()
+        };
+        let malicious_discarded = HistoryRecord {
+            discarded: true,
+            ..normal.clone()
+        };
+        let mut expected = None;
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let store = Store::open_memory().unwrap();
+            let snapshots = [
+                normal.clone(),
+                discarded.clone(),
+                malicious_discarded.clone(),
+            ];
+            for _ in 0..3 {
+                for index in order {
+                    store.apply_history(&[snapshots[index].clone()]).unwrap();
+                }
+            }
+            let row = store.export_history().unwrap().remove(0);
+            assert!(row.discarded && !row.deleted);
+            assert!(row.text.is_empty() && row.raw_text.is_empty());
+            assert_eq!(row.words, 0);
+            assert_eq!(row.duration_secs, 17, "discard markers retain duration");
+            if let Some(expected) = &expected {
+                assert_eq!(&row, expected);
+            } else {
+                expected = Some(row);
+            }
+        }
+    }
+
+    #[test]
+    fn schema_three_upgrade_redacts_discarded_rows_without_losing_marker_duration() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("synthetic.db");
+        let store = Store::open_with_key(&path, &[8; 32]).unwrap();
+        store.conn.execute("INSERT INTO history(uuid,text,raw_text,words,duration_secs,discarded) VALUES ('marker','synthetic secret','synthetic raw',2,17,1)", []).unwrap();
+        store.conn.execute_batch("PRAGMA user_version=3").unwrap();
+        drop(store);
+        for _ in 0..2 {
+            let upgraded = Store::open_with_key(&path, &[8; 32]).unwrap();
+            let row = upgraded.export_history().unwrap().remove(0);
+            assert!(row.discarded && row.text.is_empty() && row.raw_text.is_empty());
+            assert_eq!((row.words, row.duration_secs), (0, 17));
+            assert_eq!(
+                upgraded
+                    .conn
+                    .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                4
+            );
+        }
     }
 
     #[test]

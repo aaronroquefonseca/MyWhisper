@@ -1993,6 +1993,97 @@ mod tests {
     }
 
     #[test]
+    fn discarded_payloads_converge_over_encrypted_sync_and_later_deletion() {
+        let root = tempfile::tempdir().unwrap();
+        let a = DeviceIdentity::ephemeral().creds();
+        let b = DeviceIdentity::ephemeral().creds();
+        let db_a = root.path().join("a.db");
+        let db_b = root.path().join("b.db");
+        let store_a = Store::open(&db_a).unwrap();
+        let store_b = Store::open(&db_b).unwrap();
+        for store in [&store_a, &store_b] {
+            let mut settings = store.load_settings();
+            settings.sync.enabled = true;
+            store.save_settings(&settings).unwrap();
+        }
+        store_a.upsert_peer(&b.node_id, "b", "", true).unwrap();
+        store_b.upsert_peer(&a.node_id, "a", "", true).unwrap();
+        for (uuid, reverse) in [("synthetic-first", false), ("synthetic-second", true)] {
+            let normal = crate::store::HistoryRecord {
+                uuid: uuid.into(),
+                text: "synthetic private speech".into(),
+                raw_text: "synthetic private raw".into(),
+                words: 3,
+                duration_secs: 17,
+                recorded_at: 123,
+                deleted: false,
+                discarded: false,
+            };
+            let discarded = crate::store::HistoryRecord {
+                discarded: true,
+                ..normal.clone()
+            };
+            store_a
+                .apply_history(&[if reverse {
+                    discarded.clone()
+                } else {
+                    normal.clone()
+                }])
+                .unwrap();
+            store_b
+                .apply_history(&[if reverse { normal } else { discarded }])
+                .unwrap();
+        }
+        for deleted in [false, true] {
+            if deleted {
+                store_a.delete_history("synthetic-first").unwrap();
+            }
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let server_db = db_b.clone();
+            let server_b = b.clone();
+            let server = std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                let stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(std::time::Instant::now() < deadline);
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("synthetic listener: {error}"),
+                    }
+                };
+                let (mut session, hash, _) =
+                    NoiseStream::handshake_until(stream, &server_b.noise_static, false, deadline)
+                        .unwrap();
+                exchange(
+                    &mut session,
+                    &hash,
+                    &Store::open(&server_db).unwrap(),
+                    &server_b,
+                    "b",
+                    &[],
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap();
+            });
+            sync_now(&[address], &db_a, &a, "a", &b.node_id).unwrap();
+            server.join().unwrap();
+            let rows = store_a.export_history().unwrap();
+            assert_eq!(rows, store_b.export_history().unwrap());
+            for row in rows {
+                assert!(row.discarded && row.text.is_empty() && row.raw_text.is_empty());
+                assert_eq!(row.words, 0);
+                assert_eq!(row.duration_secs, if row.deleted { 0 } else { 17 });
+            }
+        }
+    }
+
+    #[test]
     fn loopback_sync_converges_and_rejects_untrusted() {
         let id_a = DeviceIdentity::ephemeral();
         let id_b = DeviceIdentity::ephemeral();
