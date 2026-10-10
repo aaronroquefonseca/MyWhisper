@@ -44,15 +44,27 @@ impl Operation {
         epoch: i64,
         cancel: Arc<AtomicBool>,
     ) -> Result<Self, String> {
-        use std::os::unix::fs::MetadataExt;
-        let file = store
-            .path()
-            .zip(store.file_identity())
-            .map(|(path, (device, inode))| (path.to_owned(), device, inode));
         store
             .policy_reads_only()
             .map_err(|_| "capture policy reader unavailable")?;
-        let store = Mutex::new(store);
+        Self::capture_reader(Arc::new(Mutex::new(store)), epoch, cancel)
+    }
+
+    pub(crate) fn capture_reader(
+        store: Arc<Mutex<crate::store::Store>>,
+        epoch: i64,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Self, String> {
+        use std::os::unix::fs::MetadataExt;
+        let file = {
+            let policy = store
+                .lock()
+                .map_err(|_| "capture policy reader unavailable")?;
+            policy
+                .path()
+                .zip(policy.file_identity())
+                .map(|(path, (device, inode))| (path.to_owned(), device, inode))
+        };
         let operation = Self {
             cancel,
             parent_cancel: None,

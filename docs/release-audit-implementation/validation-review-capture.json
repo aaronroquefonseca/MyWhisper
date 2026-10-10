@@ -1,0 +1,36 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "baseline": "77bbf92",
+  "correction": "F03 remove service recording admission from the short worker queue",
+  "cases": [
+    "Four occupied workers remain blocked through PCM capture, release, actual synthetic HTTP inference, and a single Complete callback",
+    "Twelve repeated Cancel/new-press cycles preserve separate recorder ownership",
+    "Saved mute rejects admission before watcher refresh",
+    "Existing database-stall release/cancel regression remains passing"
+  ],
+  "rust_tests": {
+    "passed": 201,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "compatibility": "No migration or wire change; all provider plans and streaming/speculative paths remain supported. Database/keyring provisioning occurs before listening; per-press reads use busy_timeout=0 and a single settings/authority snapshot. Dictionary/history are read later by finalization.",
+  "logs_sha256": {
+    "tests": "6d9239ee6119eab05ddcc2c3f2907b331dc188584788f9a6bd30068a023b1c91",
+    "clippy": "77fa9074a9aeafadaf2797a342864a276e7e67778bd2ec0febcf317477bbbe88",
+    "fmt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "release": "faacce4bee5067cd1fe10415f34d1d01c009275de9f86b6792a026b3d22475da",
+    "pressure": "825f82fd571725cf02b8054ebc182bc82bab0b77bd97f149dd993432c19612a4"
+  },
+  "source_sha256": {
+    "src/transcribe.rs": "652470e5a1e499f8e062686e3fc33227a9cf01186e550df1f5ec63b7f0e081f4",
+    "src/bin/mywhisper.rs": "d73c29857d2ee3e748868868d99245951a8e98855cc70734ff7764e82664da40",
+    "src/store.rs": "ce6f2917d65ce2e73e548e33ecee8dc2ff79e6e346d5bdf8dfd058c23807fd52",
+    "src/operation.rs": "f252098b429663d43dd465a932d971443e4180cdb30e2aa80bbc89c73e054206"
+  },
+  "harness_notes": [
+    "An initial complete suite reported a child exit failure after the child printed passing assertions. The regression now waits for optional queued work before disposing its database; the common helper reports the child exit status. Historical failure log is retained at /tmp/mywhisper-review-capture-worker-exit-failure.log.",
+    "A subsequent run hit the existing handshake lock-release assertion. Failure retained at /tmp/mywhisper-review-capture-handshake-release-failure.log; the assertion is unchanged and later full suite passed. Cause remains under investigation; this is not a final stability gate."
+  ],
+  "outstanding": "Engine ownership, paginated sync, asset integrity, remaining original grouped requirements and final live/artifact gates remain open. No PR submitted."
+}

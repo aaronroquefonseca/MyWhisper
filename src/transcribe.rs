@@ -2823,6 +2823,59 @@ pub fn begin_utterance(
     begin_reserved_utterance(epoch, stt, keep_audio, data_dir, release_delay_ms);
 }
 
+/// A service-owned policy reader provisioned before input starts. A press does
+/// not queue recording admission behind unrelated short jobs or reopen the
+/// database/keyring. Each recording still gets its own cancellation authority.
+pub struct CaptureInput {
+    policy: Arc<Mutex<crate::store::Store>>,
+    data_dir: PathBuf,
+}
+
+impl CaptureInput {
+    pub fn new(store: crate::store::Store, data_dir: PathBuf) -> Result<Self, String> {
+        store
+            .policy_reads_only()
+            .map_err(|_| "capture policy reader unavailable")?;
+        Ok(Self {
+            policy: Arc::new(Mutex::new(store)),
+            data_dir,
+        })
+    }
+
+    pub fn press(&self) -> Result<(), String> {
+        let epoch = reserve_utterance();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = (|| {
+            let (settings, privacy_epoch) = self
+                .policy
+                .try_lock()
+                .map_err(|_| "capture policy reader busy; retry dictation")?
+                .capture_settings()
+                .map_err(|_| "capture settings unavailable; original data preserved")?;
+            if !settings.hotkeys.hotkeys_enabled {
+                return Err("recording is disabled or reset cleanup is pending".into());
+            }
+            let operation =
+                Operation::capture_reader(self.policy.clone(), privacy_epoch, cancel.clone())?;
+            let plans = plans_for(&settings.stt, &self.data_dir)?;
+            publish_utterance(
+                epoch,
+                settings.stt,
+                settings.privacy.keep_audio_recordings,
+                &self.data_dir,
+                settings.preferences.mic_release_delay_ms,
+                cancel,
+                (privacy_epoch, plans, operation),
+            )
+        })();
+        if result.is_err() && INPUT_EPOCH.load(Ordering::Acquire) == epoch {
+            CANCELLED.store(true, Ordering::Release);
+            engine_failed();
+        }
+        result
+    }
+}
+
 pub fn begin_reserved_utterance(
     epoch: u64,
     stt: crate::settings::SttSettings,
@@ -2847,18 +2900,45 @@ pub fn begin_reserved_utterance(
         let operation = Operation::capture(store, privacy_epoch, cancel.clone())?;
         Ok::<_, String>((privacy_epoch, plans, operation))
     })();
-    let _arm = ARM_LOCK.lock().unwrap();
-    if INPUT_EPOCH.load(Ordering::Acquire) != epoch {
-        return;
-    }
-    let (privacy_epoch, mut plans, operation) = match prepared {
+    let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(e) => {
-            engine_failed();
-            eprintln!("[stt] press: cannot start: {e}");
+            if INPUT_EPOCH.load(Ordering::Acquire) == epoch {
+                engine_failed();
+                eprintln!("[stt] press: cannot start: {e}");
+            }
             return;
         }
     };
+    if let Err(error) = publish_utterance(
+        epoch,
+        stt,
+        keep_audio,
+        data_dir,
+        release_delay_ms,
+        cancel,
+        prepared,
+    ) {
+        eprintln!("[stt] press: {error}");
+    }
+}
+
+type PreparedCapture = (i64, Vec<(String, Plan)>, Operation);
+
+fn publish_utterance(
+    epoch: u64,
+    stt: crate::settings::SttSettings,
+    keep_audio: bool,
+    data_dir: &Path,
+    release_delay_ms: u64,
+    cancel: Arc<AtomicBool>,
+    prepared: PreparedCapture,
+) -> Result<(), String> {
+    let _arm = ARM_LOCK.lock().unwrap();
+    if INPUT_EPOCH.load(Ordering::Acquire) != epoch {
+        return Err("capture was released or canceled during admission".into());
+    }
+    let (privacy_epoch, mut plans, operation) = prepared;
     let recorded_at = crate::store::now_ms() / 1000;
     CANCELLED.store(false, Ordering::Relaxed);
     let (first_name, plan) = plans.remove(0);
@@ -3091,6 +3171,7 @@ pub fn begin_reserved_utterance(
         settled: settled.clone(),
         release_delay_ms,
     });
+    Ok(())
 }
 
 /// Streaming pump body: realtime ~200 ms cadence while held, tail
@@ -4295,7 +4376,7 @@ mod tests {
                 .unwrap();
         assert!(
             status.success(),
-            "capture probe {name} failed: {}",
+            "capture probe {name} failed ({status}): {}",
             String::from_utf8_lossy(&log)
         );
         false
@@ -5200,6 +5281,123 @@ mod tests {
         }
         for owner in owners {
             owner.join();
+        }
+    }
+
+    #[test]
+    fn short_worker_pressure_preserves_capture_and_completion() {
+        if !isolated_capture_probe("short_worker_pressure_preserves_capture_and_completion") {
+            return;
+        }
+        use std::io::Write;
+        crate::runtime::init().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let writer = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt.entries.truncate(1);
+        settings.stt.entries[0].kind = crate::settings::SttEntryKind::SelfHosted;
+        settings.stt.entries[0].url = format!("http://{}", listener.local_addr().unwrap());
+        settings.stt.entries[0].streaming = false;
+        settings.stt.vad_enabled = false;
+        settings.language_models.cleanup_enabled = false;
+        settings.preferences.auto_paste = false;
+        writer.save_settings(&settings).unwrap();
+        let reader = crate::store::Store::open_existing(&root.path().join("state.db")).unwrap();
+        let input = CaptureInput::new(reader, root.path().to_owned()).unwrap();
+        let (ready, barrier) = mpsc::channel();
+        let mut releases = Vec::new();
+        for _ in 0..crate::runtime::POOL_WORKERS {
+            let (release, wait) = mpsc::channel();
+            let ready = ready.clone();
+            crate::runtime::submit("synthetic-busy-worker", move || {
+                ready.send(()).unwrap();
+                wait.recv().unwrap();
+            })
+            .unwrap();
+            releases.push(release);
+        }
+        for _ in 0..crate::runtime::POOL_WORKERS {
+            barrier.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        input.press().unwrap();
+        let samples: Vec<i16> = (0..16_000).map(|n| (n % 2000) as i16).collect();
+        audio::tap_samples(&samples, 16_000);
+        let owner = audio::callback_recorder().unwrap().unwrap();
+        assert_eq!(owner.lock().unwrap().samples_since(0), samples);
+        let server = std::thread::spawn(move || {
+            let mut socket = accept_http_fixture(listener);
+            let reply = br#"{"text":"synthetic speech"}"#;
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                reply.len()
+            )
+            .unwrap();
+            socket.write_all(reply).unwrap();
+        });
+        let (done, result) = mpsc::channel();
+        end_utterance_with_outcome(move |outcome| done.send(outcome).unwrap());
+        audio::tap_samples(&[0; 320], 16_000);
+        assert_eq!(
+            result.recv_timeout(Duration::from_secs(3)).unwrap(),
+            FinalizationOutcome::Complete
+        );
+        assert!(result.try_recv().is_err(), "completion must occur once");
+        assert!(audio::callback_recorder().unwrap().is_none());
+        server.join().unwrap();
+        // Repeated input remains independent of the still-blocked pool, and
+        // a canceled owner cannot collect samples for the next recording.
+        for _ in 0..12 {
+            input.press().unwrap();
+            audio::tap_samples(&[17; 320], 16_000);
+            let old = audio::callback_recorder().unwrap().unwrap();
+            cancel_utterance(|| {});
+            input.press().unwrap();
+            audio::tap_samples(&[29; 320], 16_000);
+            assert_eq!(old.lock().unwrap().samples_since(0), vec![17; 320]);
+            assert_eq!(
+                audio::callback_recorder()
+                    .unwrap()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .samples_since(0),
+                vec![29; 320]
+            );
+            cancel_utterance(|| {});
+        }
+        // This reader observes current mute even before the settings watcher
+        // reacts. It never restores a permission from a startup snapshot.
+        settings.hotkeys.hotkeys_enabled = false;
+        writer.save_settings(&settings).unwrap();
+        assert!(input.press().is_err());
+        assert!(audio::callback_recorder().unwrap().is_none());
+        // All four short workers remain blocked through capture, inference
+        // and completion: releasing them cannot be what makes this pass.
+        for release in releases {
+            release.send(()).unwrap();
+        }
+        // Keep the disposable database alive until optional queued warmups
+        // and discard-marker work has exited, including all four workers.
+        let (drained, drain) = mpsc::channel();
+        for _ in 0..crate::runtime::POOL_WORKERS {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                let drained = drained.clone();
+                if crate::runtime::submit("synthetic-drain", move || {
+                    drained.send(()).unwrap();
+                })
+                .is_ok()
+                {
+                    break;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+        for _ in 0..crate::runtime::POOL_WORKERS {
+            drain.recv_timeout(Duration::from_secs(3)).unwrap();
         }
     }
 

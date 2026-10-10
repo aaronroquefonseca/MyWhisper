@@ -168,6 +168,19 @@ fn run_headless(
     // A persisted mute and feedback preferences govern the very first
     // accepted input, before any listener or watcher can publish an edge.
     mywhisper::service::apply_input_preferences(&initial);
+    let capture_input =
+        match mywhisper::transcribe::CaptureInput::new(store, paths.data_dir.clone()) {
+            Ok(input) => input,
+            Err(error) => {
+                eprintln!("[service] input admission unavailable: {error}");
+                return gtk4::glib::ExitCode::FAILURE;
+            }
+        };
+    let capture_input = std::sync::Arc::new(capture_input);
+    if let Err(error) = mywhisper::runtime::init() {
+        eprintln!("[service] FATAL: {error}");
+        return gtk4::glib::ExitCode::FAILURE;
+    }
     mywhisper::hotkey::start_dictation(
         initial.hotkeys.effective_hotkeys(),
         initial.hotkeys.smart_tap_ms,
@@ -258,6 +271,7 @@ fn run_headless(
         let gen_show = ugen.clone();
         let gen_hide = ugen.clone();
         let tx_done = tx.clone();
+        let capture_input = capture_input.clone();
         gtk4::glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
             // Live preview drain: pump-published partials reach the
             // pill here (option-gated at the pumps; silent otherwise).
@@ -283,36 +297,12 @@ fn run_headless(
                             mywhisper::sound::play(mywhisper::sound::UiSound::Start);
                             *paused.borrow_mut() = mywhisper::media::pause_playing();
                             overlay.show_listening();
-                            // Press: arm the RAM capture tap (+ open a
-                            // streaming session when the engine does
-                            // realtime). Prefs read fresh so UI edits
-                            // apply to the very next utterance. Pooled:
-                            // saturation drops the press, never the app.
-                            let epoch = mywhisper::transcribe::reserve_utterance();
-                            if let Err(e) = mywhisper::runtime::submit("press-arm", move || {
-                                let paths = match mywhisper::paths::AppPaths::create() {
-                                    Ok(p) => p,
-                                    Err(e) => {
-                                        eprintln!("[stt] paths: {e}");
-                                        return;
-                                    }
-                                };
-                                let data_dir = paths.data_dir.clone();
-                                match mywhisper::store::Store::open(&paths.db_file()) {
-                                    Ok(store) => {
-                                        let settings = store.load_settings();
-                                        mywhisper::transcribe::begin_reserved_utterance(
-                                            epoch,
-                                            settings.stt,
-                                            settings.privacy.keep_audio_recordings,
-                                            &data_dir,
-                                            settings.preferences.mic_release_delay_ms,
-                                        );
-                                    }
-                                    Err(e) => eprintln!("[stt] store: {e}"),
-                                }
-                            }) {
-                                eprintln!("[stt] press: {e}");
+                            if let Err(error) = capture_input.press() {
+                                eprintln!("[stt] input admission failed: {error}");
+                                mywhisper::media::resume(
+                                    &paused.borrow_mut().drain(..).collect::<Vec<_>>(),
+                                );
+                                overlay.show_error();
                             }
                         }
                         PillCmd::Hide => {

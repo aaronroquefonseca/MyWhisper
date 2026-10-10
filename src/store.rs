@@ -543,6 +543,36 @@ impl Store {
         self.conn.execute_batch("PRAGMA query_only=ON")
     }
 
+    /// Read the input configuration and its durable authority from one
+    /// snapshot. Dictionary/history enumeration belongs to finalization.
+    pub(crate) fn capture_settings(&self) -> rusqlite::Result<(AppSettings, i64)> {
+        let snapshot = self.conn.unchecked_transaction()?;
+        let raw: String =
+            snapshot.query_row("SELECT value FROM kv WHERE key='settings'", [], |row| {
+                row.get(0)
+            })?;
+        let (value, _) = Self::decode_settings_value(&raw).map_err(|error| {
+            rusqlite::Error::ToSqlConversionFailure(crate::diagnostics::json(&error).into())
+        })?;
+        let mut settings: AppSettings = serde_json::from_value(value).map_err(|error| {
+            rusqlite::Error::ToSqlConversionFailure(crate::diagnostics::json(&error).into())
+        })?;
+        settings.stt.ensure_seed();
+        if matches!(
+            settings.stt.local_provider,
+            crate::settings::LocalSttProvider::Nvidia
+        ) && settings.stt.parakeet_model == "cohere-transcribe-03-2026"
+        {
+            settings.stt.local_provider = crate::settings::LocalSttProvider::Cohere;
+        }
+        if self.reset_pending()? {
+            settings.hotkeys.hotkeys_enabled = false;
+        }
+        let epoch = self.capture_epoch()?;
+        snapshot.commit()?;
+        Ok((settings, epoch))
+    }
+
     fn invalidate_capture(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute("INSERT INTO sync_meta(key,value) VALUES ('capture_epoch','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1", [])?;
         Ok(())
