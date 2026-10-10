@@ -4,30 +4,43 @@ version = "0.9.2"
 edition = "2024"
 
 [dependencies]
+async-io = "2.6.0"
 base64 = "0.23.1"
 bzip2 = "0.6.1"
 cpal = "0.18.2"
 ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
 evdev = "0.13.2"
 fs2 = "0.4.3"
+futures-util = "0.3.34"
 getrandom = "0.4.3"
 gtk4 = { version = "0.11.5", features = ["v4_22"] }
 gtk4-layer-shell = "0.8.1"
 keyring = "4.2.0"
+libc = "0.2.190"
 libadwaita = { version = "0.9.2", features = ["v1_5"] }
 mdns-sd = "0.21.5"
 reqwest = { version = "0.13.5", features = ["blocking"] }
 rodio = "0.22.2"
+rtrb = "0.3.5"
 rusqlite = { version = "0.40.2", features = ["bundled", "bundled-sqlcipher"] }
+secret-service = "5.2.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 snow = "0.10.0"
+socket2 = "0.6.5"
 tar = "0.4.46"
-tokio = { version = "1.53.2", features = ["rt"] }
+tempfile = "3.27.0"
+tokio = { version = "1.53.2", features = ["rt", "time"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = "0.3.23"
 tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 zbus = "5.19.0"
 zip = "8.6.0"
+wayland-client = "0.31.15"
+wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
+wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
+
+[patch.crates-io]
+secret-service = { path = "vendor/secret-service" }
