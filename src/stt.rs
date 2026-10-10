@@ -12,7 +12,6 @@
 //! progress, size verification and cancel. GPU runtimes and the
 //! server processes are the next layer, not this module.
 
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
@@ -45,6 +44,7 @@ pub struct ModelEntry {
     /// Expected bytes when the upstream states it (whisper .bin and
     /// Orukeet); otherwise verified by required files after extract.
     pub expected_bytes: Option<u64>,
+    pub sha256: &'static str,
     pub download_url: &'static str,
     /// Archive member top dir (parakeet only).
     pub extract_dir: Option<&'static str>,
@@ -76,8 +76,9 @@ pub const WHISPER_MODELS: &[ModelEntry] = &[
         description: "Fastest, lower quality",
         size_label: "75MB",
         size_mb: 75,
-        expected_bytes: Some(78_000_000),
-        download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
+        expected_bytes: Some(77_691_713),
+        sha256: "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+        download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin",
         extract_dir: None,
         required_files: &[],
         runtime: None,
@@ -90,8 +91,9 @@ pub const WHISPER_MODELS: &[ModelEntry] = &[
         description: "Good balance",
         size_label: "142MB",
         size_mb: 142,
-        expected_bytes: Some(148_000_000),
-        download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+        expected_bytes: Some(147_951_465),
+        sha256: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+        download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin",
         extract_dir: None,
         required_files: &[],
         runtime: None,
@@ -104,8 +106,9 @@ pub const WHISPER_MODELS: &[ModelEntry] = &[
         description: "Better quality, slower",
         size_label: "466MB",
         size_mb: 466,
-        expected_bytes: Some(488_000_000),
-        download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
+        expected_bytes: Some(487_601_967),
+        sha256: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+        download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.bin",
         extract_dir: None,
         required_files: &[],
         runtime: None,
@@ -118,8 +121,9 @@ pub const WHISPER_MODELS: &[ModelEntry] = &[
         description: "High quality",
         size_label: "1.5GB",
         size_mb: 1500,
-        expected_bytes: Some(1_570_000_000),
-        download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
+        expected_bytes: Some(1_533_763_059),
+        sha256: "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
+        download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-medium.bin",
         extract_dir: None,
         required_files: &[],
         runtime: None,
@@ -132,8 +136,9 @@ pub const WHISPER_MODELS: &[ModelEntry] = &[
         description: "Best quality, slowest",
         size_label: "3GB",
         size_mb: 3000,
-        expected_bytes: Some(3_140_000_000),
-        download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
+        expected_bytes: Some(3_095_033_483),
+        sha256: "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2",
+        download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3.bin",
         extract_dir: None,
         required_files: &[],
         runtime: None,
@@ -146,8 +151,9 @@ pub const WHISPER_MODELS: &[ModelEntry] = &[
         description: "Fast with good quality",
         size_label: "1.6GB",
         size_mb: 1600,
-        expected_bytes: Some(1_670_000_000),
-        download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+        expected_bytes: Some(1_624_555_275),
+        sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+        download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo.bin",
         extract_dir: None,
         required_files: &[],
         runtime: None,
@@ -156,10 +162,8 @@ pub const WHISPER_MODELS: &[ModelEntry] = &[
 ];
 
 /// Cactus Whistle (own engine, CLI-driven): 16.9 MB, 7 languages
-/// with auto-detect, up to 30 s per pass. Model URL unconfirmed
-/// (natural HF path from the release post — TO-VERIFY on first
-/// download; the engine resolves `models/whistle/whistle.cact`
-/// whatever the source, so manual placement always works).
+/// with auto-detect, up to 30 s per pass. Downloads are pinned to the
+/// upstream commit and SHA-256; existing manually placed models remain usable.
 pub const WHISTLE_LANGS: &[&str] = &["en", "de", "fr", "es", "it", "nl", "pl"];
 
 pub const WHISTLE_MODELS: &[ModelEntry] = &[ModelEntry {
@@ -170,7 +174,8 @@ pub const WHISTLE_MODELS: &[ModelEntry] = &[ModelEntry {
     size_label: "17MB",
     size_mb: 17,
     expected_bytes: Some(16_919_407),
-    download_url: "https://huggingface.co/Cactus-Compute/whistle/resolve/main/whistle.cact",
+    sha256: "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
+    download_url: "https://huggingface.co/Cactus-Compute/whistle/resolve/b358ddadd89b7a713b5aa131f23032d3cca1b251/whistle.cact",
     extract_dir: None,
     required_files: &["whistle.cact"],
     runtime: None,
@@ -185,7 +190,8 @@ pub const PARAKEET_MODELS: &[ModelEntry] = &[
         description: "Fast multilingual ASR with auto language detection",
         size_label: "680MB",
         size_mb: 680,
-        expected_bytes: None,
+        expected_bytes: Some(487_170_055),
+        sha256: "5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf",
         download_url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2",
         extract_dir: Some("sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"),
         required_files: TRANSDUCER_FILES,
@@ -199,7 +205,8 @@ pub const PARAKEET_MODELS: &[ModelEntry] = &[
         description: "English-only, fast",
         size_label: "631MB",
         size_mb: 631,
-        expected_bytes: None,
+        expected_bytes: Some(501_350_460),
+        sha256: "99f63605b3a85a54c250c0869670a687b7d6598a47bf2421515e1f839a76e150",
         download_url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming.tar.bz2",
         extract_dir: Some("sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming"),
         required_files: TRANSDUCER_FILES,
@@ -213,7 +220,8 @@ pub const PARAKEET_MODELS: &[ModelEntry] = &[
         description: "English streaming",
         size_label: "632MB",
         size_mb: 632,
-        expected_bytes: None,
+        expected_bytes: Some(463_945_051),
+        sha256: "78e2b79fcf7271553a74402a76b771b09ea40117a39566a79f52235b23db6358",
         download_url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2",
         extract_dir: Some("sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25"),
         required_files: TRANSDUCER_FILES,
@@ -227,7 +235,8 @@ pub const PARAKEET_MODELS: &[ModelEntry] = &[
         description: "Multilingual streaming, 15 languages",
         size_label: "650MB",
         size_mb: 650,
-        expected_bytes: None,
+        expected_bytes: Some(475_271_763),
+        sha256: "c6bf5e0df765f9d5b43bc9e0536d4b4b3e7d40bdf5ecf13e45f134c51c05ae3a",
         download_url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11.tar.bz2",
         extract_dir: Some("sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11"),
         required_files: TRANSDUCER_FILES,
@@ -241,11 +250,12 @@ pub const PARAKEET_MODELS: &[ModelEntry] = &[
         description: "14 languages, no auto-detect (single-language server)",
         size_label: "2.7GB",
         size_mb: 2700,
-        expected_bytes: None,
+        expected_bytes: Some(1_699_791_751),
+        sha256: "bd582588d50685a795dcd2807ab77e11361b8312d96c53884682def45ab4206d",
         download_url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01.tar.bz2",
         extract_dir: Some("sherpa-onnx-cohere-transcribe-14-lang-int8-2026-04-01"),
         required_files: COHERE_FILES,
-        runtime: None,
+        runtime: Some(ParakeetRuntime::Offline),
         recommended: false,
     },
     ModelEntry {
@@ -256,6 +266,7 @@ pub const PARAKEET_MODELS: &[ModelEntry] = &[
         size_label: "672MB",
         size_mb: 672,
         expected_bytes: Some(486_807_585),
+        sha256: "f9191f30178cc9122ce2f023bf9fefafc822028307b0efa4caff645ba3fe8d0a",
         download_url: "https://huggingface.co/oruk/orukeet/resolve/55a984d46f68323301837194ce647c702f55facc/onnx/sherpa-onnx-orukeet-v0.1.0-int8.tar.bz2",
         extract_dir: Some("sherpa-onnx-orukeet-v0.1.0-int8"),
         required_files: TRANSDUCER_FILES,
@@ -334,6 +345,27 @@ pub fn models_for_parakeet() -> Vec<&'static ModelEntry> {
 
 #[cfg(test)]
 mod lang_tests {
+    use super::*;
+    #[test]
+    fn cancelled_cohere_download_does_not_replace_existing_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let entry = find_model("cohere-transcribe-03-2026").unwrap();
+        let existing = model_dir(directory.path(), entry);
+        std::fs::create_dir_all(&existing).unwrap();
+        std::fs::write(existing.join("tokens.txt"), "preserved user model").unwrap();
+        let callback: DownloadCallback =
+            Arc::new(|_| panic!("cancelled download must not make progress"));
+        assert!(
+            download_model(directory.path(), entry, &AtomicBool::new(true), &callback)
+                .unwrap_err()
+                .contains("cancel")
+        );
+        assert_eq!(
+            std::fs::read_to_string(existing.join("tokens.txt")).unwrap(),
+            "preserved user model"
+        );
+    }
+
     #[test]
     fn whisper_list_is_complete() {
         assert_eq!(super::WHISPER_LANGS.len(), 99);
@@ -424,9 +456,30 @@ pub fn whisper_file_stem(id: &str) -> &str {
 }
 
 pub fn delete_model(data_dir: &Path, entry: &ModelEntry) -> std::io::Result<()> {
-    let dir = model_dir(data_dir, entry);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)?;
+    crate::artifact::delete(
+        data_dir,
+        &format!("model-{}", entry.id),
+        &model_dir(data_dir, entry),
+    )
+}
+
+/// Invalidate every queued/active installer, then remove only downloaded assets.
+/// The control directory and its epochs survive so old work cannot repopulate it.
+pub fn clear_download_cache(data_dir: &Path) -> std::io::Result<()> {
+    for (_, cancel) in downloads()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .values()
+    {
+        cancel.store(true, Ordering::Release);
+    }
+    let _reset = crate::artifact::reset(data_dir)?;
+    for name in ["models", "bin"] {
+        let path = data_dir.join(name);
+        if path.exists() {
+            std::fs::remove_dir_all(&path)?;
+        }
+        crate::private_fs::directory(&path)?;
     }
     Ok(())
 }
@@ -451,51 +504,25 @@ pub fn download_model(
     cancel: &AtomicBool,
     on_event: &DownloadCallback,
 ) -> Result<(), String> {
-    let dir = model_dir(data_dir, entry);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
-
-    let tmp = dir.join(format!(".{}.part", entry.id));
-    let _ = std::fs::remove_file(&tmp);
-    let mut file = std::fs::File::create(&tmp).map_err(|e| format!("create: {e}"))?;
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(None)
-        .build()
-        .map_err(|e| format!("http client: {e}"))?;
-    let mut resp = client
-        .get(entry.download_url)
-        .send()
-        .map_err(|e| format!("request: {e}"))?;
-    if !resp.status().is_success() {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!("http status: {}", resp.status()));
-    }
-    let total = resp.content_length();
-    let mut received = 0u64;
-    let mut buf = [0u8; 65536];
-    loop {
-        if cancel.load(Ordering::SeqCst) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err("cancelled".to_string());
-        }
-        let n = resp.read(&mut buf).map_err(|e| format!("read: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        file.write_all(&buf[..n])
-            .map_err(|e| format!("write: {e}"))?;
-        received += n as u64;
-        on_event(DownloadEvent::Progress { received, total });
-    }
-    drop(file);
-
-    if let Some(expected) = entry.expected_bytes {
-        if received < (expected * 95) / 100 {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!(
-                "size mismatch: got {received} bytes, expected ~{expected}"
-            ));
-        }
+    let stage = crate::artifact::Stage::new(
+        data_dir,
+        &format!("model-{}", entry.id),
+        model_dir(data_dir, entry),
+    )?;
+    let dir = stage.path().to_owned();
+    let tmp = dir.join("download.part");
+    let received = crate::artifact::download(
+        crate::artifact::Source {
+            url: entry.download_url,
+            sha256: entry.sha256,
+            limit: 5 * 1024 * 1024 * 1024,
+        },
+        &tmp,
+        || stage.check(cancel),
+        |received, total| on_event(DownloadEvent::Progress { received, total }),
+    )?;
+    if entry.expected_bytes.is_some_and(|bytes| bytes != received) {
+        return Err("model size mismatch".into());
     }
 
     on_event(DownloadEvent::Installing);
@@ -514,10 +541,7 @@ pub fn download_model(
             }
         }
         ModelKind::Parakeet => {
-            extract_tar_bz2(&tmp, &dir).map_err(|e| {
-                let _ = std::fs::remove_file(&tmp);
-                e
-            })?;
+            crate::artifact::unpack_tar(&tmp, &dir, || stage.check(cancel))?;
             let _ = std::fs::remove_file(&tmp);
             // Flatten one level when the archive nests everything
             // under its extract dir (as all registry archives do).
@@ -537,15 +561,8 @@ pub fn download_model(
             }
         }
     }
+    stage.promote(cancel)?;
     on_event(DownloadEvent::Done);
-    Ok(())
-}
-
-fn extract_tar_bz2(archive: &Path, dest: &Path) -> Result<(), String> {
-    let file = std::fs::File::open(archive).map_err(|e| format!("open archive: {e}"))?;
-    let bz = bzip2::read::BzDecoder::new(file);
-    let mut tar = tar::Archive::new(bz);
-    tar.unpack(dest).map_err(|e| format!("extract: {e}"))?;
     Ok(())
 }
 
@@ -579,12 +596,11 @@ pub struct DlSnapshot {
     pub phase: DlPhase,
 }
 
-static DOWNLOADS: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<String, (DlSnapshot, Arc<AtomicBool>)>>,
-> = std::sync::OnceLock::new();
+type DownloadStates =
+    std::sync::Mutex<std::collections::HashMap<String, (DlSnapshot, Arc<AtomicBool>)>>;
+static DOWNLOADS: std::sync::OnceLock<DownloadStates> = std::sync::OnceLock::new();
 
-fn downloads()
--> &'static std::sync::Mutex<std::collections::HashMap<String, (DlSnapshot, Arc<AtomicBool>)>> {
+fn downloads() -> &'static DownloadStates {
     DOWNLOADS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -599,68 +615,113 @@ pub fn download_state(id: &str) -> Option<DlSnapshot> {
 
 /// Start a download on a worker thread. No-op if one is running.
 pub fn start_download(data_dir: PathBuf, id: &'static str) {
-    {
-        let map = downloads().lock().unwrap();
-        if let Some((snap, _)) = map.get(id) {
-            if matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing) {
-                return;
-            }
-        }
-    }
     let Some(entry) = find_model(id) else {
         return;
     };
+    start_artifact_download(id, entry.expected_bytes, move |cancel, cb| {
+        download_model(&data_dir, entry, cancel, cb)
+    });
+}
+
+/// Admission and ownership are atomic. Long network IO does not consume the
+/// short-job pool, and completion cannot overwrite a later attempt's state.
+fn start_artifact_download(
+    id: &'static str,
+    total: Option<u64>,
+    install: impl FnOnce(&AtomicBool, &DownloadCallback) -> Result<(), String> + Send + 'static,
+) {
     let cancel = Arc::new(AtomicBool::new(false));
-    let cancel_worker = cancel.clone();
-    downloads().lock().unwrap().insert(
-        id.to_string(),
-        (
-            DlSnapshot {
-                received: 0,
-                total: None,
-                phase: DlPhase::Downloading,
-            },
-            cancel,
-        ),
-    );
-    std::thread::spawn(move || {
-        let cb: DownloadCallback = Arc::new(move |ev| {
-            if let Ok(mut map) = downloads().lock() {
-                if let Some((snap, _)) = map.get_mut(id) {
-                    match ev {
-                        DownloadEvent::Progress { received, total } => {
-                            snap.received = received;
-                            snap.total = total;
-                            snap.phase = DlPhase::Downloading;
-                        }
-                        DownloadEvent::Installing => snap.phase = DlPhase::Installing,
-                        DownloadEvent::Done => {}
+    {
+        let mut map = downloads().lock().unwrap_or_else(|p| p.into_inner());
+        if map.get(id).is_some_and(|(snap, _)| {
+            matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing)
+        }) {
+            return;
+        }
+        let active = map
+            .values()
+            .filter(|(snap, _)| matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing))
+            .count();
+        let phase = if active >= 2 {
+            DlPhase::Failed(
+                "two downloads are already active; finish or cancel one before retrying".into(),
+            )
+        } else {
+            DlPhase::Downloading
+        };
+        let rejected = matches!(phase, DlPhase::Failed(_));
+        map.insert(
+            id.to_string(),
+            (
+                DlSnapshot {
+                    received: 0,
+                    total,
+                    phase,
+                },
+                cancel.clone(),
+            ),
+        );
+        if rejected {
+            return;
+        }
+    }
+    let worker_cancel = cancel.clone();
+    let result = crate::runtime::spawn_session("artifact-install", move || {
+        let callback_cancel = worker_cancel.clone();
+        let cb: DownloadCallback = Arc::new(move |event| {
+            let mut map = downloads().lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((snap, current)) = map.get_mut(id)
+                && Arc::ptr_eq(current, &callback_cancel)
+            {
+                match event {
+                    DownloadEvent::Progress { received, total } => {
+                        snap.received = received;
+                        snap.total = total;
+                        snap.phase = DlPhase::Downloading;
                     }
+                    DownloadEvent::Installing => snap.phase = DlPhase::Installing,
+                    DownloadEvent::Done => {}
                 }
             }
         });
-        let result = download_model(&data_dir, entry, &cancel_worker, &cb);
-        if let Ok(mut map) = downloads().lock() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if worker_cancel.load(Ordering::Acquire) {
+                return Err("cancelled".into());
+            }
+            install(&worker_cancel, &cb)
+        }))
+        .unwrap_or_else(|_| Err("installer failed unexpectedly".into()));
+        let mut map = downloads().lock().unwrap_or_else(|p| p.into_inner());
+        if map
+            .get(id)
+            .is_some_and(|(_, current)| Arc::ptr_eq(current, &worker_cancel))
+        {
             match result {
                 Ok(()) => {
                     map.remove(id);
                 }
-                Err(e) => {
-                    if let Some((snap, _)) = map.get_mut(id) {
-                        snap.phase = DlPhase::Failed(e);
-                    }
+                Err(error) => {
+                    map.get_mut(id).unwrap().0.phase = DlPhase::Failed(error);
                 }
             }
         }
     });
+    if let Err(error) = result {
+        let mut map = downloads().lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((snapshot, current)) = map.get_mut(id)
+            && Arc::ptr_eq(current, &cancel)
+        {
+            snapshot.phase = DlPhase::Failed(error);
+        }
+    }
 }
 
 /// Cancel an in-flight download.
 pub fn cancel_download(id: &str) {
-    if let Ok(map) = downloads().lock() {
-        if let Some((_, cancel)) = map.get(id) {
-            cancel.store(true, Ordering::SeqCst);
-        }
+    if let Ok(map) = downloads().lock()
+        && let Some((_, cancel)) = map.get(id)
+    {
+        cancel.store(true, Ordering::SeqCst);
     }
 }
 
@@ -722,8 +783,8 @@ mod tests {
     #[test]
     #[ignore]
     fn downloads_tiny_model() {
-        let data = std::env::temp_dir().join(format!("mywhisper-dl-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&data);
+        let temporary = tempfile::tempdir().unwrap();
+        let data = temporary.path();
         let entry = find_model("tiny").unwrap();
         let cancel = AtomicBool::new(false);
         let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -731,15 +792,14 @@ mod tests {
         let cb: DownloadCallback = std::sync::Arc::new(move |e| {
             ev.lock().unwrap().push(format!("{e:?}"));
         });
-        download_model(&data, entry, &cancel, &cb).expect("tiny download");
-        assert!(is_installed(&data, entry));
+        download_model(data, entry, &cancel, &cb).expect("tiny download");
+        assert!(is_installed(data, entry));
         let log = events.lock().unwrap();
         assert!(
             log.iter().any(|e| e.contains("Progress")),
             "no progress events"
         );
         assert!(log.last().unwrap().contains("Done"));
-        let _ = std::fs::remove_dir_all(&data);
     }
 
     /// Full GPU pack round-trip (CPU pack, ~1.3MB). Ignored by
@@ -748,14 +808,13 @@ mod tests {
     #[test]
     #[ignore]
     fn downloads_cpu_pack() {
-        let data = std::env::temp_dir().join(format!("mywhisper-gpu-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&data);
+        let temporary = tempfile::tempdir().unwrap();
+        let data = temporary.path();
         let pack = GPU_PACKS.iter().find(|p| p.id == "whisper-cpu").unwrap();
         let cancel = AtomicBool::new(false);
         let cb: DownloadCallback = std::sync::Arc::new(|_| {});
-        download_gpu_pack(&data, pack, &cancel, &cb).expect("cpu pack");
-        assert!(gpu_installed(&data, pack));
-        let _ = std::fs::remove_dir_all(&data);
+        download_gpu_pack(data, pack, &cancel, &cb).expect("cpu pack");
+        assert!(gpu_installed(data, pack));
     }
 
     #[test]
@@ -811,7 +870,7 @@ pub const GPU_PACKS: &[GpuPack] = &[
         id: "whisper-cuda",
         backend: GpuBackend::Cuda,
         name: "CUDA server",
-        description: "NVIDIA GPUs (Pascal 6.1+, needs proprietary driver)",
+        description: "NVIDIA GPUs (Pascal 6.1+); driver plus CUDA 12 runtime/cuBLAS libraries",
         size_label: "219MB",
         size_bytes: 218_743_566,
         asset: "whisper-server-linux-x64-cuda.zip",
@@ -861,17 +920,16 @@ pub fn detect_gpu() -> GpuDetect {
     if let Ok(info) = std::process::Command::new("nvidia-smi")
         .args(["--query-gpu=name", "--format=csv,noheader"])
         .output()
+        && info.status.success()
     {
-        if info.status.success() {
-            let name = String::from_utf8_lossy(&info.stdout)
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if !name.is_empty() {
-                out.nvidia_gpu = Some(name);
-            }
+        let name = String::from_utf8_lossy(&info.stdout)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !name.is_empty() {
+            out.nvidia_gpu = Some(name);
         }
     }
     out.vulkan_tools = std::process::Command::new("vulkaninfo")
@@ -901,65 +959,27 @@ pub fn download_gpu_pack(
     cancel: &AtomicBool,
     on_event: &DownloadCallback,
 ) -> Result<(), String> {
-    use sha2::Digest;
-    let dir = gpu_bin_dir(data_dir, pack);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
-    let tmp = dir.join(format!(".{}.part", pack.id));
-    let _ = std::fs::remove_file(&tmp);
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(None)
-        .build()
-        .map_err(|e| format!("http client: {e}"))?;
-    let mut resp = client
-        .get(gpu_url(pack.asset))
-        .send()
-        .map_err(|e| format!("request: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("http status: {}", resp.status()));
-    }
-    let total = resp.content_length();
-    let file = std::fs::File::create(&tmp).map_err(|e| format!("create: {e}"))?;
-    let mut hasher = sha2::Sha256::new();
-    let mut writer = HashWriter {
-        file,
-        hasher: &mut hasher,
-    };
-    let mut received = 0u64;
-    let mut buf = [0u8; 65536];
-    loop {
-        if cancel.load(Ordering::SeqCst) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err("cancelled".to_string());
-        }
-        let n = resp.read(&mut buf).map_err(|e| format!("read: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        writer
-            .write_all(&buf[..n])
-            .map_err(|e| format!("write: {e}"))?;
-        received += n as u64;
-        on_event(DownloadEvent::Progress { received, total });
-    }
-    drop(writer);
-    let digest: String = hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    if digest != pack.sha256 {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!(
-            "sha256 mismatch (got {digest}, expected {})",
-            pack.sha256
-        ));
-    }
+    let stage = crate::artifact::Stage::new(
+        data_dir,
+        &format!("gpu-{}", pack.id),
+        gpu_bin_dir(data_dir, pack),
+    )?;
+    let dir = stage.path().to_owned();
+    let tmp = dir.join("download.part");
+    let url = gpu_url(pack.asset);
+    crate::artifact::download(
+        crate::artifact::Source {
+            url: &url,
+            sha256: pack.sha256,
+            limit: 5 * 1024 * 1024 * 1024,
+        },
+        &tmp,
+        || stage.check(cancel),
+        |received, total| on_event(DownloadEvent::Progress { received, total }),
+    )?;
 
     on_event(DownloadEvent::Installing);
-    let file = std::fs::File::open(&tmp).map_err(|e| format!("open archive: {e}"))?;
-    let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("open zip: {e}"))?;
-    zip.extract(&dir).map_err(|e| format!("extract zip: {e}"))?;
+    crate::artifact::unpack_zip(&tmp, &dir, || stage.check(cancel))?;
     let _ = std::fs::remove_file(&tmp);
     // The archives ship the binary under its release filename
     // (`whisper-server-linux-x64-cuda`, …): normalize to
@@ -992,94 +1012,30 @@ pub fn download_gpu_pack(
             std::fs::set_permissions(&bin, perms).map_err(|e| format!("chmod: {e}"))?;
         }
     }
-    if !gpu_installed(data_dir, pack) {
+    if !dir.join("whisper-server").is_file() {
         return Err("whisper-server missing after extract".to_string());
     }
+    stage.promote(cancel)?;
     on_event(DownloadEvent::Done);
     Ok(())
 }
 
-struct HashWriter<'a> {
-    file: std::fs::File,
-    hasher: &'a mut sha2::Sha256,
-}
-
-impl Write for HashWriter<'_> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        use sha2::Digest;
-        self.hasher.update(buf);
-        self.file.write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.file.flush()
-    }
-}
-
 pub fn delete_gpu_pack(data_dir: &Path, pack: &GpuPack) -> std::io::Result<()> {
-    let dir = gpu_bin_dir(data_dir, pack);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)?;
-    }
-    Ok(())
+    crate::artifact::delete(
+        data_dir,
+        &format!("gpu-{}", pack.id),
+        &gpu_bin_dir(data_dir, pack),
+    )
 }
 
 /// Start a GPU pack download on a worker thread. No-op if running.
 /// Shares the download state map with model downloads.
 pub fn start_gpu_download(data_dir: PathBuf, id: &'static str) {
-    {
-        let map = downloads().lock().unwrap();
-        if let Some((snap, _)) = map.get(id) {
-            if matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing) {
-                return;
-            }
-        }
-    }
     let Some(pack) = GPU_PACKS.iter().find(|p| p.id == id) else {
         return;
     };
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancel_worker = cancel.clone();
-    downloads().lock().unwrap().insert(
-        id.to_string(),
-        (
-            DlSnapshot {
-                received: 0,
-                total: Some(pack.size_bytes),
-                phase: DlPhase::Downloading,
-            },
-            cancel,
-        ),
-    );
-    std::thread::spawn(move || {
-        let cb: DownloadCallback = Arc::new(move |ev| {
-            if let Ok(mut map) = downloads().lock() {
-                if let Some((snap, _)) = map.get_mut(id) {
-                    match ev {
-                        DownloadEvent::Progress { received, total } => {
-                            snap.received = received;
-                            snap.total = total;
-                            snap.phase = DlPhase::Downloading;
-                        }
-                        DownloadEvent::Installing => snap.phase = DlPhase::Installing,
-                        DownloadEvent::Done => {}
-                    }
-                }
-            }
-        });
-        let result = download_gpu_pack(&data_dir, pack, &cancel_worker, &cb);
-        if let Ok(mut map) = downloads().lock() {
-            match result {
-                Ok(()) => {
-                    map.remove(id);
-                }
-                Err(e) => {
-                    if let Some((snap, _)) = map.get_mut(id) {
-                        snap.phase = DlPhase::Failed(e);
-                    }
-                }
-            }
-        }
+    start_artifact_download(id, Some(pack.size_bytes), move |cancel, cb| {
+        download_gpu_pack(&data_dir, pack, cancel, cb)
     });
 }
 
@@ -1169,66 +1125,27 @@ pub fn download_sherpa_pack(
     cancel: &AtomicBool,
     on_event: &DownloadCallback,
 ) -> Result<(), String> {
-    use sha2::Digest;
-    let dir = sherpa_bin_dir(data_dir, pack);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
-    let tmp = dir.join(format!(".{}.part", pack.id));
-    let _ = std::fs::remove_file(&tmp);
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(None)
-        .build()
-        .map_err(|e| format!("http client: {e}"))?;
-    let mut resp = client
-        .get(sherpa_url(pack.asset))
-        .send()
-        .map_err(|e| format!("request: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("http status: {}", resp.status()));
-    }
-    let total = resp.content_length();
-    let file = std::fs::File::create(&tmp).map_err(|e| format!("create: {e}"))?;
-    let mut hasher = sha2::Sha256::new();
-    let mut writer = HashWriter {
-        file,
-        hasher: &mut hasher,
-    };
-    let mut received = 0u64;
-    let mut buf = [0u8; 65536];
-    loop {
-        if cancel.load(Ordering::SeqCst) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err("cancelled".to_string());
-        }
-        let n = resp.read(&mut buf).map_err(|e| format!("read: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        writer
-            .write_all(&buf[..n])
-            .map_err(|e| format!("write: {e}"))?;
-        received += n as u64;
-        on_event(DownloadEvent::Progress { received, total });
-    }
-    drop(writer);
-    let digest: String = hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    if digest != pack.sha256 {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!(
-            "sha256 mismatch (got {digest}, expected {})",
-            pack.sha256
-        ));
-    }
+    let stage = crate::artifact::Stage::new(
+        data_dir,
+        &format!("sherpa-{}", pack.id),
+        sherpa_bin_dir(data_dir, pack),
+    )?;
+    let dir = stage.path().to_owned();
+    let tmp = dir.join("download.part");
+    let url = sherpa_url(pack.asset);
+    crate::artifact::download(
+        crate::artifact::Source {
+            url: &url,
+            sha256: pack.sha256,
+            limit: 5 * 1024 * 1024 * 1024,
+        },
+        &tmp,
+        || stage.check(cancel),
+        |received, total| on_event(DownloadEvent::Progress { received, total }),
+    )?;
 
     on_event(DownloadEvent::Installing);
-    extract_tar_bz2(&tmp, &dir).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        e
-    })?;
+    crate::artifact::unpack_tar(&tmp, &dir, || stage.check(cancel))?;
     let _ = std::fs::remove_file(&tmp);
     // Flatten the single top dir when present.
     if let Ok(mut entries) = std::fs::read_dir(&dir) {
@@ -1249,12 +1166,12 @@ pub fn download_sherpa_pack(
                 continue;
             }
             let bin = dir.join(b);
-            if bin.exists() {
-                if let Ok(meta) = std::fs::metadata(&bin) {
-                    let mut perms = meta.permissions();
-                    perms.set_mode(0o755);
-                    let _ = std::fs::set_permissions(&bin, perms);
-                }
+            if bin.exists()
+                && let Ok(meta) = std::fs::metadata(&bin)
+            {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o755);
+                let _ = std::fs::set_permissions(&bin, perms);
             }
         }
     }
@@ -1266,16 +1183,17 @@ pub fn download_sherpa_pack(
     if !missing.is_empty() {
         return Err(format!("missing after extract: {missing:?}"));
     }
+    stage.promote(cancel)?;
     on_event(DownloadEvent::Done);
     Ok(())
 }
 
 pub fn delete_sherpa_pack(data_dir: &Path, pack: &SherpaPack) -> std::io::Result<()> {
-    let dir = sherpa_bin_dir(data_dir, pack);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)?;
-    }
-    Ok(())
+    crate::artifact::delete(
+        data_dir,
+        &format!("sherpa-{}", pack.id),
+        &sherpa_bin_dir(data_dir, pack),
+    )
 }
 
 // ---------------------------------------------------------------- needle engine
@@ -1308,7 +1226,9 @@ fn needle_asset() -> Result<NeedleAsset, String> {
 }
 
 fn needle_url(folder: &str) -> String {
-    format!("https://huggingface.co/Cactus-Compute/needle3/resolve/main/{folder}/needle")
+    format!(
+        "https://huggingface.co/Cactus-Compute/needle3/resolve/2ae11323dc000f5e70c49f7403efa6af12ba9e67/{folder}/needle"
+    )
 }
 
 pub fn needle_bin_dir(data_dir: &Path) -> PathBuf {
@@ -1331,62 +1251,21 @@ pub fn download_needle_pack(
     cancel: &AtomicBool,
     on_event: &DownloadCallback,
 ) -> Result<(), String> {
-    use sha2::Digest;
     let asset = needle_asset()?;
-    let dir = needle_bin_dir(data_dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
-    let tmp = dir.join(".needle.part");
-    let _ = std::fs::remove_file(&tmp);
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(None)
-        .build()
-        .map_err(|e| format!("http client: {e}"))?;
-    let mut resp = client
-        .get(needle_url(asset.folder))
-        .send()
-        .map_err(|e| format!("request: {e}"))?;
-    if !resp.status().is_success() {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!("http status: {}", resp.status()));
-    }
-    let total = resp.content_length();
-    let file = std::fs::File::create(&tmp).map_err(|e| format!("create: {e}"))?;
-    let mut hasher = sha2::Sha256::new();
-    let mut writer = HashWriter {
-        file,
-        hasher: &mut hasher,
-    };
-    let mut received = 0u64;
-    let mut buf = [0u8; 65536];
-    loop {
-        if cancel.load(Ordering::SeqCst) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err("cancelled".to_string());
-        }
-        let n = resp.read(&mut buf).map_err(|e| format!("read: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        writer
-            .write_all(&buf[..n])
-            .map_err(|e| format!("write: {e}"))?;
-        received += n as u64;
-        on_event(DownloadEvent::Progress { received, total });
-    }
-    drop(writer);
-    let digest: String = hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    if digest != asset.sha256 {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!(
-            "sha256 mismatch (got {digest}, expected {})",
-            asset.sha256
-        ));
-    }
+    let stage = crate::artifact::Stage::new(data_dir, "needle", needle_bin_dir(data_dir))?;
+    let dir = stage.path().to_owned();
+    let tmp = dir.join("download.part");
+    let url = needle_url(asset.folder);
+    crate::artifact::download(
+        crate::artifact::Source {
+            url: &url,
+            sha256: asset.sha256,
+            limit: 5 * 1024 * 1024 * 1024,
+        },
+        &tmp,
+        || stage.check(cancel),
+        |received, total| on_event(DownloadEvent::Progress { received, total }),
+    )?;
 
     on_event(DownloadEvent::Installing);
     let dest = dir.join("needle");
@@ -1397,138 +1276,31 @@ pub fn download_needle_pack(
         std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))
             .map_err(|e| format!("chmod: {e}"))?;
     }
+    stage.promote(cancel)?;
     on_event(DownloadEvent::Done);
     Ok(())
 }
 
 pub fn delete_needle_pack(data_dir: &Path) -> std::io::Result<()> {
-    let dir = needle_bin_dir(data_dir);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)?;
-    }
-    Ok(())
+    crate::artifact::delete(data_dir, "needle", &needle_bin_dir(data_dir))
 }
 
 /// Start a needle engine download on the task runtime. No-op if
 /// running or when this arch has no build.
 pub fn start_needle_download(data_dir: PathBuf) {
-    {
-        let map = downloads().lock().unwrap();
-        if let Some((snap, _)) = map.get(NEEDLE_ENGINE_ID) {
-            if matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing) {
-                return;
-            }
-        }
-    }
-    let size = needle_asset().map(|a| a.size_bytes).unwrap_or(0);
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancel_worker = cancel.clone();
-    downloads().lock().unwrap().insert(
-        NEEDLE_ENGINE_ID.to_string(),
-        (
-            DlSnapshot {
-                received: 0,
-                total: Some(size),
-                phase: DlPhase::Downloading,
-            },
-            cancel,
-        ),
+    start_artifact_download(
+        NEEDLE_ENGINE_ID,
+        needle_asset().ok().map(|asset| asset.size_bytes),
+        move |cancel, cb| download_needle_pack(&data_dir, cancel, cb),
     );
-    let id = NEEDLE_ENGINE_ID;
-    if crate::runtime::submit("dl-needle", move || {
-        let cb: DownloadCallback = Arc::new(move |ev| {
-            if let Ok(mut map) = downloads().lock() {
-                if let Some((snap, _)) = map.get_mut(id) {
-                    match ev {
-                        DownloadEvent::Progress { received, total } => {
-                            snap.received = received;
-                            snap.total = total;
-                            snap.phase = DlPhase::Downloading;
-                        }
-                        DownloadEvent::Installing => snap.phase = DlPhase::Installing,
-                        DownloadEvent::Done => {}
-                    }
-                }
-            }
-        });
-        let result = download_needle_pack(&data_dir, &cancel_worker, &cb);
-        if let Ok(mut map) = downloads().lock() {
-            match result {
-                Ok(()) => {
-                    map.remove(id);
-                }
-                Err(e) => {
-                    if let Some((snap, _)) = map.get_mut(id) {
-                        snap.phase = DlPhase::Failed(e);
-                    }
-                }
-            }
-        }
-    })
-    .is_err()
-    {
-        if let Ok(mut map) = downloads().lock() {
-            if let Some((snap, _)) = map.get_mut(id) {
-                snap.phase = DlPhase::Failed("task runtime saturated".to_string());
-            }
-        }
-    }
 }
 
 /// Start a sherpa pack download on a worker thread. No-op if running.
 pub fn start_sherpa_download(data_dir: PathBuf, id: &'static str) {
-    {
-        let map = downloads().lock().unwrap();
-        if let Some((snap, _)) = map.get(id) {
-            if matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing) {
-                return;
-            }
-        }
-    }
     let Some(pack) = SHERPA_PACKS.iter().find(|p| p.id == id) else {
         return;
     };
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancel_worker = cancel.clone();
-    downloads().lock().unwrap().insert(
-        id.to_string(),
-        (
-            DlSnapshot {
-                received: 0,
-                total: Some(pack.size_bytes),
-                phase: DlPhase::Downloading,
-            },
-            cancel,
-        ),
-    );
-    std::thread::spawn(move || {
-        let cb: DownloadCallback = Arc::new(move |ev| {
-            if let Ok(mut map) = downloads().lock() {
-                if let Some((snap, _)) = map.get_mut(id) {
-                    match ev {
-                        DownloadEvent::Progress { received, total } => {
-                            snap.received = received;
-                            snap.total = total;
-                            snap.phase = DlPhase::Downloading;
-                        }
-                        DownloadEvent::Installing => snap.phase = DlPhase::Installing,
-                        DownloadEvent::Done => {}
-                    }
-                }
-            }
-        });
-        let result = download_sherpa_pack(&data_dir, pack, &cancel_worker, &cb);
-        if let Ok(mut map) = downloads().lock() {
-            match result {
-                Ok(()) => {
-                    map.remove(id);
-                }
-                Err(e) => {
-                    if let Some((snap, _)) = map.get_mut(id) {
-                        snap.phase = DlPhase::Failed(e);
-                    }
-                }
-            }
-        }
+    start_artifact_download(id, Some(pack.size_bytes), move |cancel, cb| {
+        download_sherpa_pack(&data_dir, pack, cancel, cb)
     });
 }
