@@ -84,8 +84,14 @@ pub(crate) fn connect(
 pub(crate) fn resolve(
     address: &str,
     deadline: Instant,
-    permitted: impl FnMut() -> bool,
+    mut permitted: impl FnMut() -> bool,
 ) -> Result<Vec<SocketAddr>, String> {
+    if !permitted() {
+        return Err("address resolution cancelled".into());
+    }
+    if Instant::now() >= deadline {
+        return Err("address resolution deadline exceeded".into());
+    }
     if address.len() > 256 {
         return Err("peer address exceeds limit".into());
     }

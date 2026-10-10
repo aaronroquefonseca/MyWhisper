@@ -1253,7 +1253,78 @@ fn ensure_sherpa_online(
 
 // ------------------------------------------------------------- ws client
 
-type Ws = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>;
+type RawWs = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>;
+
+/// The socket's owner can interrupt TLS, upgrade, partial frame IO and
+/// completion. Per-read timeouts alone cannot bound a trickling peer.
+struct SocketDeadline {
+    deadline: Arc<Mutex<Option<Instant>>>,
+    done: mpsc::Sender<()>,
+    socket: TcpStream,
+    _task: crate::runtime::SessionTask,
+}
+
+impl SocketDeadline {
+    fn new(socket: &TcpStream, deadline: Instant, cancel: Arc<AtomicBool>) -> Result<Self, String> {
+        let deadline = Arc::new(Mutex::new(Some(deadline)));
+        let watched = deadline.clone();
+        let socket = socket.try_clone().map_err(|e| e.to_string())?;
+        let watchdog = socket.try_clone().map_err(|e| e.to_string())?;
+        let (done, receiver) = mpsc::channel();
+        let task = crate::runtime::spawn_session("ws-socket-owner", move || {
+            loop {
+                let expired = watched
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_some_and(|limit| Instant::now() >= limit);
+                if expired || cancel.load(Ordering::Acquire) {
+                    let _ = watchdog.shutdown(std::net::Shutdown::Both);
+                    return;
+                }
+                match receiver.recv_timeout(Duration::from_millis(20)) {
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    _ => return,
+                }
+            }
+        })?;
+        Ok(Self {
+            deadline,
+            done,
+            socket,
+            _task: task,
+        })
+    }
+
+    fn set(&self, deadline: Option<Instant>) {
+        *self.deadline.lock().unwrap_or_else(|p| p.into_inner()) = deadline;
+    }
+}
+
+impl Drop for SocketDeadline {
+    fn drop(&mut self) {
+        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+        let _ = self.done.send(());
+        // The owned SessionTask is reaped without blocking its caller.
+    }
+}
+
+struct Ws {
+    transport: RawWs,
+    owner: SocketDeadline,
+}
+
+impl std::ops::Deref for Ws {
+    type Target = RawWs;
+    fn deref(&self) -> &RawWs {
+        &self.transport
+    }
+}
+
+impl std::ops::DerefMut for Ws {
+    fn deref_mut(&mut self) -> &mut RawWs {
+        &mut self.transport
+    }
+}
 
 fn ws_connect(port: u16, read_timeout: Duration) -> Result<Ws, String> {
     ws_connect_url(&format!("ws://127.0.0.1:{port}"), read_timeout)
@@ -1272,7 +1343,22 @@ fn ws_socket(ws: &Ws) -> &TcpStream {
 }
 
 fn ws_connect_authenticated(url: &str, key: &str, read_timeout: Duration) -> Result<Ws, String> {
-    use std::net::ToSocketAddrs;
+    ws_connect_owned(
+        url,
+        key,
+        read_timeout,
+        Instant::now() + Duration::from_secs(10),
+        Arc::new(AtomicBool::new(false)),
+    )
+}
+
+fn ws_connect_owned(
+    url: &str,
+    key: &str,
+    read_timeout: Duration,
+    deadline: Instant,
+    cancel: Arc<AtomicBool>,
+) -> Result<Ws, String> {
     use tungstenite::client::IntoClientRequest;
     let parsed = reqwest::Url::parse(url).map_err(|_| "invalid WebSocket URL")?;
     if !matches!(parsed.scheme(), "ws" | "wss")
@@ -1285,19 +1371,23 @@ fn ws_connect_authenticated(url: &str, key: &str, read_timeout: Duration) -> Res
     let port = parsed
         .port_or_known_default()
         .ok_or("WebSocket URL has no port")?;
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let address = format!("{host}:{port}");
     let mut socket = None;
-    for addr in (host, port)
-        .to_socket_addrs()
-        .map_err(|e| format!("ws resolve: {e}"))?
-    {
+    for addr in crate::address::resolve(&address, deadline, || !cancel.load(Ordering::Acquire))? {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             break;
         }
-        if let Ok(stream) = TcpStream::connect_timeout(&addr, remaining) {
+        if let Ok(stream) = crate::address::connect(
+            addr,
+            deadline.min(Instant::now() + Duration::from_secs(2)),
+            || !cancel.load(Ordering::Acquire),
+        ) {
             socket = Some(stream);
             break;
+        }
+        if cancel.load(Ordering::Acquire) {
+            return Err("WebSocket connection cancelled".into());
         }
     }
     let socket = socket.ok_or("WebSocket connect deadline exceeded or endpoint refused")?;
@@ -1307,46 +1397,41 @@ fn ws_connect_authenticated(url: &str, key: &str, read_timeout: Duration) -> Res
     socket
         .set_write_timeout(Some(Duration::from_secs(10)))
         .map_err(|e| e.to_string())?;
-    // Socket shutdown imposes a total deadline even if a peer trickles
-    // individual TLS/upgrade bytes inside each per-read timeout.
-    let timer_socket = socket.try_clone().map_err(|e| e.to_string())?;
-    let (finish, wait) = mpsc::channel();
-    let timer = crate::runtime::spawn_dedicated("ws-upgrade-deadline", move || {
-        if wait
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .is_err()
-        {
-            let _ = timer_socket.shutdown(std::net::Shutdown::Both);
-        }
-    })?;
-    let result = (|| {
-        let mut request = url
-            .into_client_request()
-            .map_err(|_| "invalid WebSocket upgrade request")?;
-        if !key.is_empty() {
-            request.headers_mut().insert(
-                "authorization",
-                format!("Bearer {key}")
-                    .parse()
-                    .map_err(|_| "invalid bearer key")?,
-            );
-        }
-        let config = tungstenite::protocol::WebSocketConfig::default()
-            .max_message_size(Some(1024 * 1024))
-            .max_frame_size(Some(1024 * 1024));
-        let (ws, _) = tungstenite::client_tls_with_config(request, socket, Some(config), None)
-            .map_err(|_| "WebSocket TLS/upgrade failed or timed out")?;
-        ws_socket(&ws)
-            .set_read_timeout(Some(read_timeout))
-            .map_err(|e| e.to_string())?;
-        ws_socket(&ws)
-            .set_write_timeout(Some(Duration::from_secs(5)))
-            .map_err(|e| e.to_string())?;
-        Ok(ws)
-    })();
-    let _ = finish.send(());
-    let _ = timer.join();
-    result
+    let owner = SocketDeadline::new(&socket, deadline, cancel.clone())?;
+    let mut request = url
+        .into_client_request()
+        .map_err(|_| "invalid WebSocket upgrade request")?;
+    if !key.is_empty() {
+        request.headers_mut().insert(
+            "authorization",
+            format!("Bearer {key}")
+                .parse()
+                .map_err(|_| "invalid bearer key")?,
+        );
+    }
+    let config = tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(1024 * 1024))
+        .max_frame_size(Some(1024 * 1024));
+    if cancel.load(Ordering::Acquire) || Instant::now() >= deadline {
+        return Err("WebSocket startup cancelled or expired".into());
+    }
+    let (ws, _) = tungstenite::client_tls_with_config(request, socket, Some(config), None)
+        .map_err(|_| "WebSocket TLS/upgrade failed or timed out")?;
+    let ws = Ws {
+        transport: ws,
+        owner,
+    };
+    if cancel.load(Ordering::Acquire) || Instant::now() >= deadline {
+        return Err("WebSocket startup cancelled or expired".into());
+    }
+    ws_socket(&ws)
+        .set_read_timeout(Some(read_timeout))
+        .map_err(|e| e.to_string())?;
+    ws_socket(&ws)
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| e.to_string())?;
+    ws.owner.set(None);
+    Ok(ws)
 }
 
 fn ws_send_binary(ws: &mut Ws, bytes: &[u8]) -> Result<(), String> {
@@ -1434,8 +1519,23 @@ impl OnlineSession {
         key: &str,
         read_timeout: Duration,
     ) -> Result<Self, String> {
+        Self::open_cancellable(url, key, read_timeout, Arc::new(AtomicBool::new(false)))
+    }
+
+    pub fn open_cancellable(
+        url: &str,
+        key: &str,
+        read_timeout: Duration,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Self, String> {
         Ok(Self {
-            ws: Some(ws_connect_authenticated(url, key, read_timeout)?),
+            ws: Some(ws_connect_owned(
+                url,
+                key,
+                read_timeout,
+                Instant::now() + Duration::from_secs(10),
+                cancel,
+            )?),
             segments: Vec::new(),
             current: String::new(),
             read_timeout,
@@ -1501,12 +1601,18 @@ impl OnlineSession {
     pub fn send_chunk(&mut self, samples: &[f32]) -> Result<(), String> {
         {
             let ws = self.ws.as_mut().ok_or("online session closed")?;
+            ws.owner.set(Some(Instant::now() + Duration::from_secs(5)));
             ws_send_binary(ws, &f32le(samples))?;
             ws_read_timeout(ws, Duration::from_millis(50));
         }
         // Drain pending partials without blocking: anything the
         // server already emitted updates the live text.
         let deadline = Instant::now() + Duration::from_millis(100);
+        self.ws
+            .as_ref()
+            .ok_or("online session closed")?
+            .owner
+            .set(Some(deadline));
         while Instant::now() < deadline {
             let msg = {
                 let ws = self.ws.as_mut().ok_or("online session closed")?;
@@ -1546,9 +1652,14 @@ impl OnlineSession {
                 {
                     break;
                 }
-                Err(_) => break,
+                Err(_) => return Err("online stream read failed".into()),
             }
         }
+        self.ws
+            .as_ref()
+            .ok_or("online session closed")?
+            .owner
+            .set(None);
         Ok(())
     }
 
@@ -1556,10 +1667,11 @@ impl OnlineSession {
     /// behind realtime; this blocks (worker thread) until it lands.
     pub fn finish(mut self) -> Result<String, String> {
         let mut ws = self.ws.take().ok_or("online session closed")?;
+        let deadline = Instant::now() + self.read_timeout;
+        ws.owner.set(Some(deadline));
         ws_read_timeout(&mut ws, self.read_timeout);
         ws.send(tungstenite::Message::text("Done"))
             .map_err(|e| format!("ws done: {e}"))?;
-        let deadline = Instant::now() + self.read_timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -1580,6 +1692,7 @@ impl OnlineSession {
                 _ => {}
             }
         }
+        ws.owner.set(Some(Instant::now() + Duration::from_secs(5)));
         let _ = ws.close(None);
         Ok(self.transcript())
     }
@@ -2042,6 +2155,7 @@ fn sherpa_offline_transcribe_inner(
     port: u16,
 ) -> Result<String, String> {
     let mut ws = ws_connect(port, read_timeout)?;
+    ws.owner.set(Some(Instant::now() + read_timeout));
     // [rate u32-LE][BYTE count u32-LE][float32…], ≤10 KiB per message.
     // The count is BYTES (samples*4): the server heap-sizes its buffer
     // from it and overflows on excess, so this must be exact.
@@ -2663,10 +2777,18 @@ pub fn begin_reserved_utterance(
                 return;
             }
             let open = match &plan {
-                Plan::SelfHostedWs { url, key } => {
-                    OnlineSession::open_authenticated(url, key, INFERENCE_TIMEOUT)
-                }
-                _ => OnlineSession::open_with(online_port, INFERENCE_TIMEOUT),
+                Plan::SelfHostedWs { url, key } => OnlineSession::open_cancellable(
+                    url,
+                    key,
+                    INFERENCE_TIMEOUT,
+                    cancel_pump.clone(),
+                ),
+                _ => OnlineSession::open_cancellable(
+                    &format!("ws://127.0.0.1:{online_port}"),
+                    "",
+                    INFERENCE_TIMEOUT,
+                    cancel_pump.clone(),
+                ),
             };
             match open {
                 Ok(mut session) => {
@@ -3793,7 +3915,26 @@ fn deliver(
 mod tests {
     use super::*;
 
+    struct SyntheticBearer;
+    impl tungstenite::handshake::server::Callback for SyntheticBearer {
+        fn on_request(
+            self,
+            request: &tungstenite::handshake::server::Request,
+            response: tungstenite::handshake::server::Response,
+        ) -> Result<
+            tungstenite::handshake::server::Response,
+            tungstenite::handshake::server::ErrorResponse,
+        > {
+            assert_eq!(request.headers()["authorization"], "Bearer synthetic token");
+            Ok(response)
+        }
+    }
+
     fn isolated_capture_probe(name: &str) -> bool {
+        isolated_capture_probe_with(name, |_| {})
+    }
+
+    fn isolated_capture_probe_with(name: &str, configure: impl FnOnce(&mut Command)) -> bool {
         if std::env::var("MYWHISPER_CAPTURE_PROBE").ok().as_deref() == Some(name) {
             return true;
         }
@@ -3810,6 +3951,7 @@ mod tests {
             .env("MYWHISPER_DB_KEY", "21".repeat(32))
             .stdout(Stdio::from(log.try_clone().unwrap()))
             .stderr(Stdio::from(log));
+        configure(&mut command);
         let child = crate::child::OwnedChild::spawn(&mut command).unwrap();
         let deadline = Instant::now() + Duration::from_secs(20);
         let status = loop {
@@ -3831,6 +3973,338 @@ mod tests {
             String::from_utf8_lossy(&log)
         );
         false
+    }
+
+    #[test]
+    fn websocket_stalled_nss_cannot_escape_startup_deadline() {
+        let name = "websocket_stalled_nss_cannot_escape_startup_deadline";
+        if std::env::var("MYWHISPER_CAPTURE_PROBE").ok().as_deref() != Some(name) {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("synthetic-stalled-dns.c");
+            let library = root.path().join("synthetic-stalled-dns.so");
+            std::fs::write(
+                &source,
+                include_str!("../docs/release-audit-implementation/review-f426c9a/stalled_dns.c"),
+            )
+            .unwrap();
+            crate::child::run(
+                Command::new(std::env::var_os("CC").unwrap_or_else(|| "cc".into()))
+                    .args(["-shared", "-fPIC"])
+                    .arg(&source)
+                    .arg("-o")
+                    .arg(&library)
+                    .arg("-ldl"),
+                &[],
+                Duration::from_secs(10),
+                64 * 1024,
+            )
+            .unwrap();
+            assert!(!isolated_capture_probe_with(name, |command| {
+                command.env("LD_PRELOAD", &library);
+            }));
+            return;
+        }
+        let start = Instant::now();
+        assert!(
+            OnlineSession::open_with_url(
+                "ws://mywhisper-review.invalid:9",
+                Duration::from_millis(50)
+            )
+            .is_err()
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "NSS escaped bounded resolution: {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn websocket_resolver_cancellation_recovers_owned_task_budget() {
+        let name = "websocket_resolver_cancellation_recovers_owned_task_budget";
+        if std::env::var("MYWHISPER_CAPTURE_PROBE").ok().as_deref() != Some(name) {
+            use std::os::unix::fs::PermissionsExt;
+            let root = tempfile::tempdir().unwrap();
+            let resolver = root.path().join("getent");
+            std::fs::write(&resolver, "#!/bin/sh\nif [ \"$2\" = cancel.invalid ]; then\n : > \"$MYWHISPER_RESOLVER_MARKER\"\n exec sleep 60\nfi\nprintf '::1 STREAM\\n127.0.0.1 STREAM\\n'\n").unwrap();
+            std::fs::set_permissions(&resolver, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let path = std::env::join_paths(
+                std::iter::once(root.path().to_owned())
+                    .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+            )
+            .unwrap();
+            assert!(!isolated_capture_probe_with(name, |command| {
+                command
+                    .env("PATH", path)
+                    .env("MYWHISPER_RESOLVER_MARKER", root.path().join("started"));
+            }));
+            return;
+        }
+        let marker = PathBuf::from(std::env::var_os("MYWHISPER_RESOLVER_MARKER").unwrap());
+        for _ in 0..12 {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let token = cancel.clone();
+            let (result, receiver) = mpsc::channel();
+            let task = crate::runtime::spawn_session("cancelled-ws-resolution", move || {
+                result
+                    .send(
+                        OnlineSession::open_cancellable(
+                            "ws://cancel.invalid:9",
+                            "synthetic token",
+                            INFERENCE_TIMEOUT,
+                            token,
+                        )
+                        .is_err(),
+                    )
+                    .unwrap();
+            })
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !marker.exists() {
+                assert!(
+                    Instant::now() < deadline,
+                    "owned resolver did not reach its barrier"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            cancel.store(true, Ordering::Release);
+            assert!(receiver.recv_timeout(Duration::from_millis(500)).unwrap());
+            task.join();
+            std::fs::remove_file(&marker).unwrap();
+        }
+        assert!(
+            ws_connect_owned(
+                "ws://127.0.0.1:9",
+                "",
+                INFERENCE_TIMEOUT,
+                Instant::now(),
+                Arc::new(AtomicBool::new(false))
+            )
+            .is_err()
+        );
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let start = Instant::now();
+        assert!(
+            OnlineSession::open_cancellable(
+                "ws://cancel.invalid:9",
+                "",
+                INFERENCE_TIMEOUT,
+                cancelled
+            )
+            .is_err()
+        );
+        assert!(start.elapsed() < Duration::from_millis(100));
+        assert!(!marker.exists(), "pre-cancelled input started a resolver");
+        // The first IPv6 candidate refuses; the following IPv4 candidate
+        // must complete the actual protocol, with authentication intact.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline);
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("accept: {error}"),
+                }
+            };
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut ws = tungstenite::accept_hdr(socket, SyntheticBearer).unwrap();
+            assert_eq!(ws.read().unwrap().into_text().unwrap(), "Done");
+            ws.send(tungstenite::Message::text(
+                r#"{"text":"synthetic result","is_final":true}"#,
+            ))
+            .unwrap();
+            ws.send(tungstenite::Message::text("Done!")).unwrap();
+        });
+        let session = OnlineSession::open_authenticated(
+            &format!("ws://multiple.invalid:{port}"),
+            "synthetic token",
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        assert_eq!(session.finish().unwrap(), "synthetic result");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn websocket_cancellation_interrupts_setup_write_and_completion() {
+        if !isolated_capture_probe("websocket_cancellation_interrupts_setup_write_and_completion") {
+            return;
+        }
+        use std::io::Read;
+        for stage in (0..4).cycle().take(12) {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let address = listener.local_addr().unwrap();
+            let (ready, barrier) = mpsc::channel();
+            let (release, wait) = mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                let mut socket = loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline);
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(error) => panic!("accept: {error}"),
+                    }
+                };
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                socket
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                if stage < 2 {
+                    let mut bytes = Vec::new();
+                    let mut byte = [0];
+                    loop {
+                        socket.read_exact(&mut byte).unwrap();
+                        bytes.push(byte[0]);
+                        assert!(bytes.len() <= 16 * 1024);
+                        if stage == 1 || bytes.ends_with(b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    if stage == 0 {
+                        assert!(
+                            String::from_utf8(bytes)
+                                .unwrap()
+                                .contains("authorization: Bearer synthetic token")
+                        );
+                    }
+                    ready.send(()).unwrap();
+                } else {
+                    let mut ws = tungstenite::accept_hdr(socket, SyntheticBearer).unwrap();
+                    if stage == 2 {
+                        assert_eq!(ws.read().unwrap().into_text().unwrap(), "Done");
+                    }
+                    ready.send(()).unwrap();
+                    wait.recv_timeout(Duration::from_secs(2)).unwrap();
+                    socket = ws.into_inner();
+                    let mut received = 0;
+                    let mut bytes = [0; 16 * 1024];
+                    loop {
+                        match socket.read(&mut bytes) {
+                            Ok(0) => break,
+                            Ok(length) => {
+                                received += length;
+                                assert!(received < 9 * 1024 * 1024);
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {
+                                break;
+                            }
+                            Err(error) => panic!("cancelled client retained socket: {error}"),
+                        }
+                    }
+                    return;
+                }
+                // TLS may already have queued the rest of ClientHello before
+                // cancellation. Drain those bounded bytes and require EOF.
+                let mut bytes = [0; 4096];
+                let mut received = 0;
+                loop {
+                    match socket.read(&mut bytes) {
+                        Ok(0) => break,
+                        Ok(length) => {
+                            received += length;
+                            assert!(received < 64 * 1024);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+                        Err(error) => panic!("cancelled setup retained socket: {error}"),
+                    }
+                }
+            });
+            let cancel = Arc::new(AtomicBool::new(false));
+            let token = cancel.clone();
+            let (result, receiver) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let operation = (|| {
+                    let mut session = OnlineSession::open_cancellable(
+                        &format!("{}://{address}", if stage == 1 { "wss" } else { "ws" }),
+                        "synthetic token",
+                        INFERENCE_TIMEOUT,
+                        token,
+                    )?;
+                    if stage == 3 {
+                        session.send_chunk(&vec![0.0; 2_000_000])?;
+                    }
+                    session.finish()
+                })();
+                result.send(operation).unwrap();
+            });
+            barrier.recv_timeout(Duration::from_secs(3)).unwrap();
+            if stage == 3 {
+                std::thread::sleep(Duration::from_millis(100));
+                assert!(
+                    matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)),
+                    "large upload did not reach its blocked write"
+                );
+            }
+            cancel.store(true, Ordering::Release);
+            assert!(
+                receiver
+                    .recv_timeout(Duration::from_millis(500))
+                    .unwrap()
+                    .is_err()
+            );
+            if stage >= 2 {
+                release.send(()).unwrap();
+            }
+            worker.join().unwrap();
+            server.join().unwrap();
+        }
+        // All eight existing session slots must recover; a leaked watchdog
+        // would prevent this independently observable admission check.
+        let mut owners = Vec::new();
+        let mut releases = Vec::new();
+        let (ready, receiver) = mpsc::channel();
+        for _ in 0..8 {
+            let deadline = Instant::now() + Duration::from_millis(200);
+            // Permit the bounded reaper's next tick after the last drop.
+            loop {
+                let (release, wait) = mpsc::channel();
+                let ready = ready.clone();
+                match crate::runtime::spawn_session("ws-recovered-owner", move || {
+                    ready.send(()).unwrap();
+                    wait.recv_timeout(Duration::from_secs(2)).unwrap();
+                }) {
+                    Ok(owner) => {
+                        owners.push(owner);
+                        releases.push(release);
+                        break;
+                    }
+                    Err(error) => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "socket owner budget did not recover: {error}"
+                        );
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                }
+            }
+        }
+        for _ in 0..8 {
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        }
+        assert!(crate::runtime::spawn_session("over-budget", || {}).is_err());
+        for release in releases {
+            release.send(()).unwrap();
+        }
+        for owner in owners {
+            owner.join();
+        }
     }
 
     #[test]
