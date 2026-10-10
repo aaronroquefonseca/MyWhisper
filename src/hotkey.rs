@@ -406,6 +406,18 @@ fn capture_request() -> Option<[u8; 16]> {
         .try_into()
         .ok()
 }
+
+fn fresh_capture_request(
+    previous: &mut Option<[u8; 16]>,
+    current: Option<[u8; 16]>,
+) -> Option<[u8; 16]> {
+    let request = current?;
+    if *previous == Some(request) {
+        return None;
+    }
+    *previous = Some(request);
+    Some(request)
+}
 pub fn capture_suspend_pending(nonce: [u8; 16]) -> bool {
     !capture_available() && capture_request() == Some(nonce)
 }
@@ -699,18 +711,15 @@ fn run_loop(
             }
         }
         previous_enabled = enabled;
-        if !available {
-            if let Some(request) = capture_request()
-                && suspended_request != Some(request)
-            {
-                suspended_request = Some(request);
-                if let Some(hook) = CAPTURE_SUSPEND.get() {
-                    hook(request);
-                }
-            }
-        } else {
-            suspended_request = None;
+        if !available
+            && let Some(request) = fresh_capture_request(&mut suspended_request, capture_request())
+            && let Some(hook) = CAPTURE_SUSPEND.get()
+        {
+            hook(request);
         }
+        // Keep the last nonce across lock release. A new frontend takes the
+        // lock before publishing its new request; the old file in that gap
+        // must not replay a completed suspension.
         poll_events(&mut devices, &mut held, &mut watched, &on_event);
         // Watchdog: a Push hold wedged by a lost release is
         // force-released instead of sticking dictation on forever.
@@ -1743,6 +1752,28 @@ mod suspend_handshake_tests {
     use super::*;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
+    #[test]
+    fn released_capture_nonce_cannot_replay_during_a_new_frontend_start() {
+        let first = [1; 16];
+        let second = [2; 16];
+        let mut previous = None;
+        assert_eq!(
+            fresh_capture_request(&mut previous, Some(first)),
+            Some(first)
+        );
+        assert_eq!(fresh_capture_request(&mut previous, Some(first)), None);
+        // An available lock or temporarily absent request cannot forget an
+        // acknowledged request. Reacquisition initially exposes that old file.
+        assert_eq!(fresh_capture_request(&mut previous, None), None);
+        assert_eq!(fresh_capture_request(&mut previous, Some(first)), None);
+        assert_eq!(
+            fresh_capture_request(&mut previous, Some(second)),
+            Some(second)
+        );
+        assert_eq!(fresh_capture_request(&mut previous, Some(second)), None);
+        assert_eq!(fresh_capture_request(&mut previous, None), None);
+    }
+
     struct ChildGuard(Option<std::process::Child>);
     impl Drop for ChildGuard {
         fn drop(&mut self) {
@@ -1798,7 +1829,14 @@ mod suspend_handshake_tests {
             start(HashMap::new(), Arc::new(|_| {}), Arc::new(|_| {}));
             let first = rx.recv_timeout(Duration::from_secs(3)).unwrap();
             crate::private_fs::replace(&root.join("observed"), &first).unwrap();
-            std::thread::sleep(Duration::from_millis(150));
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while capture_request() == Some(first) {
+                assert!(
+                    Instant::now() < deadline,
+                    "new frontend did not publish its fresh request"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
             acknowledge_capture_suspend(first).unwrap();
             assert!(
                 !root.join("hotkey-capture.ack").exists(),
@@ -1843,6 +1881,10 @@ mod suspend_handshake_tests {
         std::thread::sleep(Duration::from_millis(100));
         let capture =
             crate::private_fs::try_lock(&root.path().join("hotkey-capture.lock")).unwrap();
+        // A frontend owns the lock before its atomic request write. Keep
+        // that legitimate startup gap open for two native poll intervals.
+        // The old nonce must not be emitted again and consume the next ack.
+        std::thread::sleep(Duration::from_millis(100));
         crate::private_fs::replace(&root.path().join("hotkey-capture.request"), &third).unwrap();
         wait_for(root.path(), "hotkey-capture.ack", &third);
         wait_for(root.path(), "done", b"done");

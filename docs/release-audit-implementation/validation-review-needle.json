@@ -39,5 +39,12 @@
     "original_hello_nemotron-speech-streaming-en-0.6b": "bd5c0955622afa0fad605d94621e9c5fb7a09fe337a53daa23f0adcf7f531351"
   },
   "source_diff_sha256": "67759bbd9640927e0d317748d8dd09373c4a9d8b3c34ea081f18d4bb27256a01",
-  "outstanding": "Parent-death cleanup, larger native recordings, other findings and final packaged/live gates remain open."
+  "outstanding": "Parent-death cleanup, larger native recordings, other findings and final packaged/live gates remain open.",
+  "subsequent_full_suite_failure": {
+    "preserved_log_sha256": "908e3c648385725a39bdaadef82d0ed9ab6f3e2e8b71da4301cb8a57c2edf892",
+    "passed": 189,
+    "failed": 1,
+    "finding": "R24: old capture nonce replay across lock release/reacquisition",
+    "correction": "Separate nonce correction; 191 tests, strict Clippy, formatting, release build, both native UI configurations and seven native hotkey checks pass afterward."
+  }
 }
