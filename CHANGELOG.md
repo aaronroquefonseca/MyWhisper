@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.9.3
+
+- Refreshed desktop UI with persistent Dictation, Activity,
+  Dictionary, Devices, and Settings navigation, a monochrome
+  sidebar logo, light/dark themes, and clearer English/Spanish copy.
+- Search recent dictations, inspect original transcripts, and use
+  direct setup links; clearer service status, action feedback,
+  validation, and confirmations for destructive actions.
+- Separate Language models management from Text cleanup, with
+  model fallback controls and a resizable prompt editor supporting
+  explicit Save/Cancel, default restoration, and full-screen editing.
+- Dictionary edits survive background refreshes; multiline snippets
+  retain their formatting and reject conflicting spoken triggers.
+- Activity totals use all retained history; speed excludes recordings
+  without measured duration; local-date streaks and the responsive
+  activity calendar display correctly in narrow windows.
+- Devices shows nearby peers through mDNS browsing and clearer
+  pairing, trust, and manual sync controls. Bulk history deletion
+  and retention preserve tombstones so older peers cannot restore it.
+- Restore automatic language detection for multilingual sherpa
+  models. Ollama thinking defaults to off, including saved models
+  without an explicit setting.
+- Disposable UI preview and smoke checks for settings, history,
+  dictionary, theme, language, and prompt editing workflows.
+
 ## 0.9.2
 
 - Exact release-point capture: timestamped mic tap, truncate at
