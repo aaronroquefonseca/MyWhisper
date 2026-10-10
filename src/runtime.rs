@@ -10,9 +10,9 @@
 //!   is constant no matter how many utterances, presses, or sounds
 //!   flow through; we can never fork-bomb ourselves.
 //! - Bounded queue ([`JOB_QUEUE_DEPTH`]). `submit` never blocks and
-//!   never panics: a full queue returns `Err`, and callers degrade
-//!   (skip the cue, drop the utterance, hide the pill) instead of
-//!   dying.
+//!   never panics: a full queue returns `Err`. Capture/finalization
+//!   callers report admission failure and release the owning session;
+//!   optional feedback jobs may be skipped.
 //! - Jobs run under `catch_unwind`: a panicking job is logged and
 //!   the worker survives. Pool threads only exit at process end.
 //!
@@ -24,8 +24,8 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
-/// Pool workers. Dictation needs at most: 1 transcribe worker +
-/// 1 streaming pump + 1 warmup + slack for cues/reapers.
+/// Short-job workers. Streaming loops use owned SessionTasks, outgoing sync
+/// uses its per-peer scheduler, and finalization uses its ordered worker.
 pub const POOL_WORKERS: usize = 4;
 /// Pending jobs before `submit` refuses. Deep enough for press +
 /// release + completion of one utterance with headroom.
@@ -38,11 +38,13 @@ struct Pool {
 }
 
 static GLOBAL: OnceLock<Pool> = OnceLock::new();
+static INIT_LOCK: Mutex<()> = Mutex::new(());
 
 /// Create the pool. Call once at service startup; an `Err` here (we
 /// cannot even start our fixed threads) is fatal with a message, by
 /// design — better than limping into press handling.
 pub fn init() -> Result<(), String> {
+    let _init = INIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     if GLOBAL.get().is_some() {
         return Ok(());
     }
@@ -97,6 +99,94 @@ pub fn spawn_dedicated(
         .map_err(|e| format!("[runtime] cannot spawn {name}: {e}"))
 }
 
+/// Session loops have an explicit process budget and retain ownership
+/// until joined. They never occupy the short-job pool.
+pub struct SessionTask {
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+static SESSION_TASKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const SESSION_TASK_LIMIT: usize = 8;
+static SESSION_REAPER: OnceLock<Result<mpsc::Sender<std::thread::JoinHandle<()>>, String>> =
+    OnceLock::new();
+
+fn session_reaper() -> Result<&'static mpsc::Sender<std::thread::JoinHandle<()>>, String> {
+    SESSION_REAPER
+        .get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<std::thread::JoinHandle<()>>();
+            std::thread::Builder::new()
+                .name("session-reaper".into())
+                .spawn(move || {
+                    let mut pending = Vec::new();
+                    loop {
+                        if let Ok(handle) = rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                            pending.push(handle);
+                        }
+                        pending.extend(rx.try_iter());
+                        let mut i = 0;
+                        while i < pending.len() {
+                            if pending[i].is_finished() {
+                                let _ = pending.swap_remove(i).join();
+                                SESSION_TASKS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                            } else {
+                                i += 1;
+                            }
+                        }
+                    }
+                })
+                .map_err(|e| format!("session reaper: {e}"))?;
+            Ok(tx)
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+pub fn spawn_session(
+    name: &'static str,
+    f: impl FnOnce() + Send + 'static,
+) -> Result<SessionTask, String> {
+    let reaper = session_reaper()?;
+    let old = SESSION_TASKS.try_update(
+        std::sync::atomic::Ordering::AcqRel,
+        std::sync::atomic::Ordering::Acquire,
+        |count| (count < SESSION_TASK_LIMIT).then_some(count + 1),
+    );
+    if old.is_err() {
+        return Err("session task budget exhausted; wait for cancellation cleanup".into());
+    }
+    match spawn_dedicated(name, f) {
+        Ok(handle) => {
+            let _ = reaper;
+            Ok(SessionTask {
+                handle: Some(handle),
+            })
+        }
+        Err(e) => {
+            SESSION_TASKS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            Err(e)
+        }
+    }
+}
+
+impl SessionTask {
+    /// Only use for loops whose stop path is nonblocking and already signalled.
+    pub fn join(mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+            SESSION_TASKS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+}
+
+impl Drop for SessionTask {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take()
+            && let Ok(reaper) = session_reaper()
+        {
+            let _ = reaper.send(handle);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +228,70 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(done.load(Ordering::SeqCst), 1);
+    }
+}
+
+/// One bounded FIFO worker owns finalization through cleanup and delivery.
+/// Recording and streaming remain independent; slow cleanup cannot reorder
+/// later utterances or consume every short-job worker.
+static FINALIZATION_QUEUE: OnceLock<Result<mpsc::SyncSender<Job>, String>> = OnceLock::new();
+pub fn submit_finalization(job: impl FnOnce() + Send + 'static) -> Result<(), String> {
+    let queue = FINALIZATION_QUEUE
+        .get_or_init(|| {
+            let (tx, rx) = mpsc::sync_channel::<Job>(4);
+            std::thread::Builder::new()
+                .name("utterance-finalization".into())
+                .spawn(move || {
+                    for job in rx {
+                        if catch_unwind(AssertUnwindSafe(job)).is_err() {
+                            eprintln!("[runtime] finalization panicked; worker survives");
+                        }
+                    }
+                })
+                .map_err(|e| format!("cannot start finalization worker: {e}"))?;
+            Ok(tx)
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
+    queue
+        .try_send(Box::new(job))
+        .map_err(|_| "finalization queue is full or stopped".into())
+}
+
+#[cfg(test)]
+mod finalization_tests {
+    use super::*;
+    use std::time::Duration;
+    #[test]
+    fn slow_first_delivery_cannot_be_overtaken_and_panic_does_not_stop_queue() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (order_tx, order_rx) = mpsc::channel();
+        let first = order_tx.clone();
+        submit_finalization(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            first.send(1).unwrap();
+        })
+        .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let second = order_tx.clone();
+        submit_finalization(move || {
+            second.send(2).unwrap();
+        })
+        .unwrap();
+        submit_finalization(|| panic!("injected ordered job failure")).unwrap();
+        submit_finalization(move || {
+            order_tx.send(3).unwrap();
+        })
+        .unwrap();
+        assert!(order_rx.try_recv().is_err());
+        release_tx.send(()).unwrap();
+        for expected in [1, 2, 3] {
+            assert_eq!(
+                order_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+                expected
+            );
+        }
     }
 }

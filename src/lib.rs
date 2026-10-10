@@ -5,6 +5,7 @@ pub mod app_insights;
 pub mod app_settings;
 pub mod app_sync;
 pub mod audio;
+mod child;
 pub mod clipboard;
 pub mod device;
 pub mod hotkey;
