@@ -1,0 +1,154 @@
+{
+  "date": "2026-10-10",
+  "interim": true,
+  "submission_gate_passed": false,
+  "audit_baseline": "f018ab855af41759e275c80708d67973f2890587",
+  "implementation_branch": "t3code/release-audit-complete",
+  "source_diff_scope": [
+    "src",
+    "Cargo.toml",
+    "Cargo.lock",
+    "examples",
+    "packaging",
+    "scripts",
+    ".github",
+    "README.md"
+  ],
+  "uncommitted_source_diff_sha256": "ae02acf18f82c2a42e1bae778441f3874f24d524d88e79382d202243b9e28122",
+  "rust_tests": {
+    "command": "cargo test --locked --all-targets",
+    "passed": 159,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "fmt": {
+    "command": "cargo fmt --all -- --check",
+    "passed": true
+  },
+  "clippy": {
+    "command": "cargo clippy --locked --all-targets -- -D warnings",
+    "passed": true
+  },
+  "release_build": {
+    "command": "cargo build --release --locked --bin mywhisper",
+    "passed": true
+  },
+  "native_ui": {
+    "command": "bash scripts/ui-smoke.sh",
+    "passed": [
+      "light/en",
+      "dark/es"
+    ],
+    "steps_per_configuration": 37,
+    "retention_controls_storage_disabled_custom_zero": true,
+    "limitations": "X11 smoke logs existing Wayland-layer-shell diagnostic when exercising overlay error state; this does not establish a live Wayland capture/overlay/device-change integration."
+  },
+  "native_cpal": {
+    "command": "bash scripts/cpal-smoke.sh",
+    "formats": [
+      "f32",
+      "i16",
+      "u16"
+    ],
+    "channels": [
+      1,
+      2,
+      6
+    ],
+    "rate": 48000,
+    "source": "process-private paced synthetic ALSA file/null PCM",
+    "physical_devices_tested": false
+  },
+  "native_keyring_sync": {
+    "command": "bash scripts/keyring-smoke.sh",
+    "passed": [
+      "8 independent process creators share identity/key",
+      "missing-key refusal and recovery",
+      "three fixed-port sync-engine replacements with stalled clients",
+      "old incoming sockets closed and engine watchers joined",
+      "listen-port-zero encrypted outbound catch-up",
+      "actual same-host mutual multicast discovery and goodbye removal"
+    ],
+    "limitations": "Disposable real Secret Service is unlocked. Same-host ephemeral nodes do not establish cross-host DHCP or compositor pairing/revocation UX."
+  },
+  "security": {
+    "database": {
+      "advisory-count": 1296,
+      "last-commit": "7eebec69c352c7191b1f13eb95dd510eeca5d1de",
+      "last-updated": "2026-10-09T10:12:02+02:00"
+    },
+    "lockfile": {
+      "dependency-count": 477
+    },
+    "settings": {
+      "target_arch": [],
+      "target_os": [],
+      "severity": null,
+      "ignore": [],
+      "informational_warnings": [
+        "unmaintained",
+        "unsound",
+        "notice"
+      ]
+    },
+    "vulnerabilities": {
+      "found": false,
+      "count": 0,
+      "list": []
+    },
+    "warnings": {}
+  },
+  "packaging_regressions": {
+    "upgrade_tests": 5,
+    "release_notice_tests": 8,
+    "actionlint": "1.7.12",
+    "passed": true
+  },
+  "log_artifacts": {
+    "rust_tests": {
+      "local_path": "/tmp/mywhisper-audit-tests-current.log",
+      "sha256": "acc7138a6ab112bc97a7b073d9d3e1049f8ab3c984764b2905d78595f4801e56"
+    },
+    "fmt": {
+      "local_path": "/tmp/mywhisper-audit-format-current.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "clippy": {
+      "local_path": "/tmp/mywhisper-audit-clippy-current.log",
+      "sha256": "61cd4f8eb57c241d53741cd511b7d47b45fa6dc6f24e8571ef8ca07282c9f2b4"
+    },
+    "release_build": {
+      "local_path": "/tmp/mywhisper-audit-release-current.log",
+      "sha256": "3bb9f25ff70f0358c81d8d091ab6a0b1a264d6a8d09abad0d455debf936d5a52"
+    },
+    "native_ui": {
+      "local_path": "/tmp/mywhisper-native-ui-both-current.log",
+      "sha256": "ebda8eb4ca68e3d69ea6a2572616d2e0344ec1c351552aeecd2689b3a65b815e"
+    },
+    "native_cpal": {
+      "local_path": "/tmp/mywhisper-native-cpal-formats.log",
+      "sha256": "971ca57418892774b935a21418a3255ab09310f538a231747ebdfcb5490f2e96"
+    },
+    "native_keyring_sync": {
+      "local_path": "/tmp/mywhisper-native-sync-lifecycle.log",
+      "sha256": "b2abfebec021e13d733cbc4ffea723a57151d76f96cd2c27b7904e3936fe05ff"
+    },
+    "packaging_regressions": {
+      "local_path": "/tmp/mywhisper-package-regressions.log",
+      "sha256": "a41458c888d45d9c2549dd6cde82430881622769bc9f6dff7f7aa856e8417a70"
+    },
+    "release_notice_regressions": {
+      "local_path": "/tmp/mywhisper-release-gate-tests.log",
+      "sha256": "5df683edb1fe34bcd13fad4f7cece04b1dc88f256e76a8f9ef2c11322cd4b577"
+    },
+    "workflow_lint": {
+      "local_path": "/tmp/mywhisper-release-workflow-lint.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "security": {
+      "local_path": "/tmp/mywhisper-current-security.json",
+      "sha256": "c1fd5aed7215276b64781f0b19750419b3d763d31c3484b1b3eee5b80470a151"
+    }
+  },
+  "outstanding": "All matrix findings remain open for full final acceptance. Delta/schema/tombstone protocol, further lifecycle/privacy/migration/download fixes and live cloud/WSS, physical device/compositor, clean NixOS desktop and final packaged artifact gates remain. Project license explicitly deferred; distribution stays blocked. No commit, push or PR."
+}

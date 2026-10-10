@@ -1,0 +1,161 @@
+{
+  "date": "2026-10-10",
+  "interim": true,
+  "submission_gate_passed": false,
+  "branch": "fix/release-audit",
+  "audit_baseline": "f018ab855af41759e275c80708d67973f2890587",
+  "reconstructed_after_implementation": true,
+  "all_existing_implementation_files_preserved_byte_for_byte": true,
+  "source_diff_scope": [
+    "src",
+    "Cargo.toml",
+    "Cargo.lock",
+    "examples",
+    "packaging",
+    "scripts",
+    ".github",
+    "README.md",
+    "vendor"
+  ],
+  "source_diff_from_audit_sha256": "2d7411b73e2a473f102fe1d60f9a0d7273a9a04487f16fbefa75e92110ffcd68",
+  "implementation_commits": [
+    {
+      "commit": "2089ad5b55cf9f3cdddfda3d14aa318ef75077f8",
+      "tree": "97dc3908b333abeac88fb69f4a32c194d509f907",
+      "phase": "01-dependencies",
+      "command": "cargo check --locked --all-targets",
+      "result": "passed",
+      "warnings_present": false,
+      "log_sha256": "f6cadde41667d82f294a9a8186a27d9148f55b661d7aec7c5835906fac66e4e8"
+    },
+    {
+      "commit": "f17f47c6bc4088430d74879ee9b968f71e3f1f9d",
+      "tree": "06d013694df6e60330f7e13833e81e850f6cba6b",
+      "phase": "02-identity",
+      "command": "cargo check --locked --all-targets",
+      "result": "passed",
+      "warnings_present": true,
+      "log_sha256": "a52fddf92d7b21a5018ae88c3a002bc33b4986a0b8cbe7a481e2729e47e840ed"
+    },
+    {
+      "commit": "16fbf10a8012fd67b9bc2fb8aca4d0f94190e438",
+      "tree": "94097211f52a190e05e482eb3318ab3abf1f408a",
+      "phase": "03-ownership",
+      "command": "cargo check --locked --all-targets",
+      "result": "passed",
+      "warnings_present": true,
+      "log_sha256": "f56cdc1d01494b05b871aff405c570e1ff00b6bdb689b6fab0a7ec63f22ad641"
+    },
+    {
+      "commit": "bc6b3b17336eaba651c22b404386c61f8a3facb3",
+      "tree": "c35cde8224cc9b6ac0e71645d5420af95d337fb2",
+      "phase": "04-state",
+      "command": "cargo check --locked --all-targets",
+      "result": "passed",
+      "warnings_present": true,
+      "log_sha256": "dbc345e466c215b965d11d715b4ad7db7922ab2691c6b52fae1ddaa30feef7ff"
+    },
+    {
+      "commit": "3468a0d1f7923e354fea00d393c51c2574d3208c",
+      "tree": "5c6ee5e5be325f650da043f0c15ad2723d7b7d6e",
+      "phase": "05-sync",
+      "command": "cargo check --locked --all-targets",
+      "result": "passed",
+      "warnings_present": true,
+      "log_sha256": "b2fe24dcf63093d2474c68c16b413e0ddf9db5ed0e735dfdf32c46db173d1e5d"
+    },
+    {
+      "commit": "367cd9709e4a33b372cf32f4b4304cd54e7d4e42",
+      "tree": "75b7dba1ad9383cc351347dfce37f958d4d67113",
+      "phase": "06-artifacts",
+      "command": "cargo check --locked --all-targets",
+      "result": "passed",
+      "warnings_present": true,
+      "log_sha256": "14f91022543d11a15099d0ac39ffd26ec9f61acbf3524c587cd09e37ee64b4bc"
+    },
+    {
+      "commit": "319da642c8a2b3ef2463927fe3aae706d30ac997",
+      "tree": "b737547f150b151b660c561a62c52a7a1a0b17d0",
+      "phase": "07-capture",
+      "command": "cargo check --locked --all-targets",
+      "result": "passed",
+      "warnings_present": true,
+      "log_sha256": "e737976f04f39421a79356c3c8384310eb506299c4e3a222cfb97a5ad7f3d6a8"
+    },
+    {
+      "commit": "401068a7e6160ad957d02dfa2e8d18a106333526",
+      "tree": "3441a4faa308735ae1865bfe36acf859fd20addb",
+      "phase": "08-ui",
+      "command": "cargo check --locked --all-targets",
+      "result": "passed",
+      "warnings_present": false,
+      "log_sha256": "ba528caa4db6ae3c5a77969bb35f9375a2f9441084907dcb237c6586758bcbb9"
+    },
+    {
+      "commit": "d8fe141a55fdd1bd8a1a77bc8c1e4825257700a9",
+      "tree": "1802f27e0bc834e921c4ac8af9f49ea7f96b1c66",
+      "phase": "09-packaging",
+      "command": "cargo check --locked --all-targets",
+      "result": "passed",
+      "warnings_present": false,
+      "log_sha256": "a95fdedc3ca113e8242d63f08a882ea8951acee38d7f62125e7f3c30f82113a5"
+    },
+    {
+      "commit": "c5c6bc73f52375166b76bf6643849831be54813a",
+      "tree": "8af651e838222f58c1d4b4dc187323df3b14e3bb",
+      "phase": "10-regressions",
+      "command": "cargo check --locked --all-targets",
+      "result": "passed",
+      "warnings_present": false,
+      "log_sha256": "43059d4ed8694a1b5a5f92db319bcc5706833473486bbc7b5f6a60422a77d515"
+    }
+  ],
+  "tip_validation": {
+    "format": "passed",
+    "strict_clippy": "passed",
+    "all_target_rust_tests": {
+      "passed": 165,
+      "failed": 0,
+      "unchanged_ignored": 5
+    },
+    "release_bin": "passed",
+    "packaging_release_tests": 9,
+    "packaging_upgrade_tests": 5,
+    "native_ui": "Both configurations passed on the identical implementation source recorded in validation-2026-10-10-ui-status.json; not rerun solely for commit reconstruction.",
+    "security": "Unchanged dependency/source graph; zero vulnerabilities/warnings in recorded current RustSec evidence."
+  },
+  "tip_check_logs": {
+    "format": {
+      "path": "/tmp/mywhisper-branch-format.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "clippy": {
+      "path": "/tmp/mywhisper-branch-clippy.log",
+      "sha256": "49fd0d600e388864b876a9faca75c139253f942b35a53e4d94bbf32cf6d21bc0"
+    },
+    "tests": {
+      "path": "/tmp/mywhisper-branch-tests.log",
+      "sha256": "db41ab46987f05a8750b9fa5d586ff8688b33c589ddd03af1dd8158d050e942d"
+    },
+    "release": {
+      "path": "/tmp/mywhisper-branch-release.log",
+      "sha256": "85c8dbac64ed6a362d668bf3988686e26e947620bb15cfdbe2e999a0ff8261b2"
+    },
+    "release-tests": {
+      "path": "/tmp/mywhisper-branch-release-tests.log",
+      "sha256": "88e99df14c79b2b8b54e19bfe748593fc04331b4abf62e48aa612a926eb90bb4"
+    },
+    "upgrade-tests": {
+      "path": "/tmp/mywhisper-branch-upgrade-tests.log",
+      "sha256": "10ba0a06e2828098ba6cf146b50d41002ee944b1e77d67d33ded58b8b4d22718"
+    }
+  },
+  "publishing_scope": "User authorized pushing unfinished branch for independent testing; no PR or release authorized before original gates pass.",
+  "progress": {
+    "finding_groups": 51,
+    "partial_corrections": 51,
+    "fully_closed": 0,
+    "additional_verified_toast_issue": 1
+  },
+  "outstanding": "See RELEASE_AUDIT_MATRIX.md and RELEASE_AUDIT_HANDOFF.md. All grouped requirements and final validation gates remain authoritative."
+}

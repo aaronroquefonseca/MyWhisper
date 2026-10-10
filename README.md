@@ -40,11 +40,13 @@ Specific version:
 ./packaging/arch/update.sh 0.9.0
 ```
 
-The script downloads the tarball, bumps the PKGBUILD, runs
-`makepkg -si` (needs sudo), then enables the user service:
+The script chooses the highest stable version, verifies the authenticated
+GitHub asset digest and archive layout, builds in a disposable directory with
+`makepkg -si` (needs sudo), and restarts the upgraded user service:
 
 ```bash
-systemctl --user enable --now mywhisper.service
+systemctl --user enable mywhisper.service
+systemctl --user restart mywhisper.service
 ```
 
 NixOS — flake input (HTTPS + token, no SSH needed):
@@ -64,9 +66,21 @@ imports = [ mywhisper.nixosModules.default ];
 services.mywhisper.enable = true;
 ```
 
-Plus a GitHub token in nix.conf for the private tarball
-(`access-tokens = github.com=...`) and the per-release `fetchzip`
-hash (see comments in `packaging/nixos/flake.nix`).
+Nix builds the authenticated repository source against its pinned Nixpkgs libraries.
+Use your existing GitHub access token through Nix's `access-tokens` configuration
+or the SSH input above. No separate private tarball or placeholder hash is needed.
+The desktop session must provide a running Secret Service (for example GNOME
+Keyring or a compatible KWallet service), microphone access, and input-device
+permissions. The default login collection must be unlocked before opening MyWhisper;
+background processes never request an unlock prompt. Keyring requests have a five-second
+deadline. If an encrypted database key is missing, restore its original keyring entry;
+MyWhisper preserves the database and never substitutes a new key.
+The package provides its default clipboard, paste and PulseAudio tools.
+The NixOS module also supplies `nix-ld` and the CPU runtime libraries required by
+the downloaded upstream engines. Set `services.mywhisper.enableDownloadedRuntimes = false`
+when using only remote providers and supplying your own runtime environment.
+CUDA engines additionally require the matching NVIDIA driver and CUDA/cuDNN
+libraries; MyWhisper reports missing libraries before starting the selected engine.
 
 ## Build
 
@@ -105,4 +119,9 @@ change system graphics settings or the background service.
 
 ## System deps (Arch)
 
-gtk4, gtk4-layer-shell, libadwaita, alsa-lib, pkgconf.
+Build: gtk4 >= 4.22, gtk4-layer-shell, libadwaita >= 1.5, alsa-lib,
+pkgconf, Rust and Cargo. Runtime: wl-clipboard, wtype, libpulse
+(`parec`/`pactl`), and a running Secret Service. The packaged defaults
+include the delivery/capture tools; a compatible keyring service remains a
+desktop-session requirement. Hotkeys need read permission on input devices;
+the optional ydotool paste backend needs ydotool and a running ydotoold.

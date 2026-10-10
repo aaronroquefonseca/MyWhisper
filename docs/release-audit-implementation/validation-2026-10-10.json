@@ -1,0 +1,113 @@
+{
+  "date": "2026-10-10",
+  "interim": true,
+  "submission_gate_passed": false,
+  "audit_baseline": "f018ab855af41759e275c80708d67973f2890587",
+  "implementation_branch": "t3code/release-audit-complete",
+  "uncommitted_source_diff_sha256": "49b53dcb21c338173d1923e4c1a442076e6d7622301857f0a179cfa08ed7a19a",
+  "rust_tests": {
+    "command": "cargo test --locked --all-targets",
+    "passed": 149,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "fmt": {
+    "command": "cargo fmt --all -- --check",
+    "passed": true
+  },
+  "clippy": {
+    "command": "cargo clippy --locked --all-targets -- -D warnings",
+    "passed": true
+  },
+  "native_ui": {
+    "command": "bash scripts/ui-smoke.sh",
+    "passed": [
+      "light/en",
+      "dark/es"
+    ],
+    "rebuild_and_language_regressions": true
+  },
+  "native_cpal": {
+    "command": "bash scripts/cpal-smoke.sh",
+    "passed_formats": [
+      "f32",
+      "i16",
+      "u16"
+    ],
+    "passed_channels": [
+      1,
+      2,
+      6
+    ],
+    "rate": 48000,
+    "source": "process-private ALSA file/null PCM with paced synthetic FIFO",
+    "physical_devices_tested": false
+  },
+  "current_security": {
+    "database": {
+      "advisory-count": 1296,
+      "last-commit": "7eebec69c352c7191b1f13eb95dd510eeca5d1de",
+      "last-updated": "2026-10-09T10:12:02+02:00"
+    },
+    "lockfile": {
+      "dependency-count": 477
+    },
+    "settings": {
+      "target_arch": [],
+      "target_os": [],
+      "severity": null,
+      "ignore": [],
+      "informational_warnings": [
+        "unmaintained",
+        "unsound",
+        "notice"
+      ]
+    },
+    "vulnerabilities": {
+      "found": false,
+      "count": 0,
+      "list": []
+    },
+    "warnings": {}
+  },
+  "arch_candidate": {
+    "command": "python3 scripts/arch-package-smoke.py CANDIDATE_DIRECTORY",
+    "metadata": {
+      "tag": "v0.9.2",
+      "version": "0.9.2",
+      "prerelease": false,
+      "source_sha": "f018ab855af41759e275c80708d67973f2890587",
+      "source_dirty": true,
+      "project_license_established": false,
+      "dependency_notices_complete": true,
+      "asset": "mywhisper-v0.9.2-x86_64-unknown-linux-gnu.tar.gz",
+      "sha256": "5b1c91b76fac4aa9859ab1f444adf2a05c3215abe451c17215d49f745046b7f8"
+    },
+    "passed": [
+      "makepkg",
+      "pacman install",
+      "pkgrel upgrade",
+      "no-keyring no-data --version",
+      "ELF dependencies",
+      "desktop/service definition validation",
+      "notices/icons",
+      "pacman file integrity"
+    ],
+    "running_desktop_service_upgrade_tested": false
+  },
+  "nix_candidate": {
+    "derivation": "/nix/store/yncj1bkd4jrzriii1x9kdv1ivrfhyw0l-mywhisper-0.9.2.drv",
+    "package": "/nix/store/47ip8qdajm25a18cdm5vk8ikda58ph6q-mywhisper-0.9.2",
+    "rust_tests_passed": 149,
+    "ignored": 5,
+    "dependency_notices": 370,
+    "isolated_version": "mywhisper 0.9.2",
+    "desktop_and_downloaded_runtime_loader_tested": false
+  },
+  "limitations": [
+    "All R01-R51 remain open pending complete implementation and final review/gates.",
+    "No PR, push, tag or release created.",
+    "No project LICENSE added; distribution held as requested.",
+    "Live paid provider credentials, physical device changes, clean desktop upgrades and remaining integration gates are outstanding."
+  ]
+}
