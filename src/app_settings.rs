@@ -4353,9 +4353,16 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
                         .parent()
                         .map(|p| p.to_path_buf())
                         .unwrap_or_default();
-                    let n = crate::audio::clear_audio(&data_dir);
-                    eprintln!("[privacy] cleared {n} audio files");
-                    super::app::notify(tr("feedback.cleared"));
+                    match crate::audio::clear_audio(&data_dir) {
+                        Ok(n) => {
+                            eprintln!("[privacy] cleared {n} audio files");
+                            super::app::notify(tr("feedback.cleared"));
+                        }
+                        Err(error) => {
+                            eprintln!("[privacy] audio clearing failed: {error}");
+                            super::app::notify(tr("feedback.savefailed"));
+                        }
+                    }
                 },
             );
         }

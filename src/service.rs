@@ -284,7 +284,14 @@ pub fn spawn_hotkey_watcher(
                 continue;
             };
             // One-shot GUI commands: Stop / Cold-start the STT server.
-            if let Some(cmd) = store.take_server_cmd() {
+            let command = match store.take_server_cmd() {
+                Ok(cmd) => cmd,
+                Err(e) => {
+                    eprintln!("[service] command read failed: {e}");
+                    continue;
+                }
+            };
+            if let Some(cmd) = command {
                 let data_dir = db_path
                     .parent()
                     .map(|p| p.to_path_buf())
