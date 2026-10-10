@@ -1,57 +1,141 @@
-name: release
+name: release checks
 
-# Tag a version (v0.9.0) and push: the binary tarball lands on the
-# private GitHub Release. No public repos involved.
-#
-# Builds inside an Arch container (same libs as dev: current gtk4,
-# libadwaita, gtk4-layer-shell). Ubuntu runners ship GTK 4.14, too
-# old for our gtk4 crate (>= 4.21), and have no layer-shell package.
 on:
+  pull_request:
   push:
+    branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to verify
+        type: string
+        required: true
+      publish:
+        description: Publish after all checks and distribution licensing gates pass
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
+  checks:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     container:
       image: archlinux:base-devel
+    outputs:
+      tag: ${{ steps.candidate.outputs.tag }}
+      source-sha: ${{ steps.candidate.outputs.source-sha }}
     steps:
-      - name: System deps
+      - name: Native prerequisites
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm \
-            gtk4 libadwaita gtk4-layer-shell alsa-lib \
-            pkgconf curl ca-certificates github-cli git
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: cargo build --release --bin mywhisper
-      - name: Tarball
+          pacman -S --noconfirm gtk4 libadwaita gtk4-layer-shell alsa-lib \
+            pkgconf openssl curl ca-certificates github-cli git python \
+            xorg-server-xvfb xorg-xauth dbus gnome-keyring mesa
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable action
+        with:
+          toolchain: 1.99.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Version, tag and notes policy
+        env:
+          REQUESTED_TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          STAGE="mywhisper-${TAG}-x86_64-unknown-linux-gnu"
-          mkdir -p "$STAGE"
-          cp target/release/mywhisper "$STAGE/"
-          cp packaging/systemd/mywhisper.service "$STAGE/"
-          cp assets/applications/com.mywhisper.App.desktop "$STAGE/"
-          cp assets/icons/app-icon.svg "$STAGE/com.mywhisper.App.svg"
-          cp assets/icons/symbolic.svg "$STAGE/com.mywhisper.App-symbolic.svg"
-          tar czf "$STAGE.tar.gz" "$STAGE"
-          echo "TARBALL=$STAGE.tar.gz" >> "$GITHUB_ENV"
-      - name: Release
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          TAG="${GITHUB_REF#refs/tags/}"
-          VER="${TAG#v}"
-          # Body = this version's CHANGELOG section (fallback: compare link).
-          awk "/^## $VER\$/{flag=1;next}/^## /{flag=0}flag" CHANGELOG.md > notes.md
-          if [ ! -s notes.md ]; then
-            echo "Full Changelog: https://github.com/aaronroquefonseca/MyWhisper/compare/v${VER}...${TAG}" > notes.md
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch || "$GITHUB_REF" == refs/tags/* ]]; then
+            python3 packaging/release.py "$REQUESTED_TAG" --verify-tag
+          else
+            REQUESTED_TAG=$(python3 -c 'import tomllib; print("v"+tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')
+            python3 packaging/release.py "$REQUESTED_TAG"
           fi
-          gh release create "$TAG" "$TARBALL" --title "$TAG" --notes-file notes.md
+          printf 'RELEASE_TAG=%s\n' "$REQUESTED_TAG" >> "$GITHUB_ENV"
+      - name: Formatting, strict lint and regression coverage
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets
+          python3 packaging/test-upgrade.py
+          python3 packaging/test-release.py
+      - name: Current dependency security audit
+        run: |
+          cargo install --locked cargo-audit --version 0.22.2
+          cargo audit --deny warnings --json > security-audit.json
+      - name: Release binary and native UI configurations
+        run: |
+          cargo build --release --locked --bin mywhisper
+          cargo build --locked --example ui_preview --example store_probe
+          bash scripts/ui-smoke.sh
+          bash scripts/cpal-smoke.sh
+          bash scripts/keyring-smoke.sh
+      - name: Candidate artifact, notices and integrity
+        id: candidate
+        shell: bash
+        env:
+          PUBLISH_REQUESTED: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+        run: |
+          if [[ "$PUBLISH_REQUESTED" == true ]]; then
+            python3 packaging/release.py "$RELEASE_TAG" --require-license
+          fi
+          python3 packaging/release.py "$RELEASE_TAG" --output .release-candidate
+          python3 packaging/validate-artifact.py ".release-candidate/mywhisper-${RELEASE_TAG}-x86_64-unknown-linux-gnu.tar.gz" "${RELEASE_TAG#v}"
+          (cd .release-candidate && sha256sum --check SHA256SUMS)
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          metadata = json.loads(Path('.release-candidate/release.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"tag={metadata['tag']}\nsource-sha={metadata['source_sha']}\n")
+          PY
+          cp security-audit.json .release-candidate/security-audit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-candidate
+          path: .release-candidate
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
+  publish:
+    needs: checks
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-candidate
+          path: candidate
+      - name: Verify source and publish the checked artifact
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.checks.outputs.tag }}
+          SOURCE_SHA: ${{ needs.checks.outputs.source-sha }}
+        shell: bash
+        working-directory: candidate
+        run: |
+          test "$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)" = "$SOURCE_SHA"
+          sha256sum --check SHA256SUMS
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          metadata = json.loads(Path('release.json').read_text())
+          assert metadata['tag'] == os.environ['RELEASE_TAG']
+          assert metadata['source_sha'] == os.environ['SOURCE_SHA']
+          assert metadata['source_dirty'] is False
+          assert metadata['project_license_established'] is True
+          assert metadata['dependency_notices_complete'] is True
+          PY
+          arguments=(--verify-tag --title "$RELEASE_TAG" --notes-file notes.md)
+          if [[ "$RELEASE_TAG" == *-* ]]; then arguments+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" "mywhisper-${RELEASE_TAG}-x86_64-unknown-linux-gnu.tar.gz" SHA256SUMS security-audit.json release.json "${arguments[@]}"
