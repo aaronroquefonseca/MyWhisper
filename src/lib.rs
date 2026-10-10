@@ -12,6 +12,7 @@ pub mod clipboard;
 mod database_key;
 pub mod device;
 mod diagnostics;
+mod focus;
 pub mod hotkey;
 pub mod i18n;
 mod maintenance;

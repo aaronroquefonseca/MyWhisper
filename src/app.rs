@@ -408,6 +408,13 @@ pub fn confirm(
     dialog.present(Some(from));
 }
 
+/// Install once when creating a window, before it receives focus. Dynamic
+/// contents and dismissing dialogs may destroy the previous focus widget
+/// reentrantly; GTK must retain a valid owner through that dispatch.
+pub fn manage_window_focus(window: &impl IsA<gtk4::Window>) {
+    crate::focus::install(window);
+}
+
 pub fn connect_confirmed(
     button: &Button,
     title: &'static str,
@@ -464,6 +471,7 @@ pub fn build_app_window(
     load_app_css();
 
     let window = libadwaita::ApplicationWindow::new(app);
+    manage_window_focus(&window);
     window.add_css_class("mywhisper-app");
     window.set_title(Some("MyWhisper"));
     window.set_default_size(1120, 760);
