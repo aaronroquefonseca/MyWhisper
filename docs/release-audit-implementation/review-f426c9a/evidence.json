@@ -1,0 +1,24 @@
+{
+  "reviewed_commit": "f426c9ae71854c262a43f6bd337036d82173adfc",
+  "historical_bug_reproductions": true,
+  "future_passing_suite": false,
+  "reproduced": 10,
+  "inspected": 2,
+  "files_sha256": {
+    "REVIEW.md": "48c54f569bebba829b1aa479135525cd7b6db064a8e8c859a81218f15028a12d",
+    "review_acceptance.rs": "ef454a02885e7f63cdc8fdc288437d47032be2e5e153b2b7aa4e867794948ec6",
+    "fake_whisper.py": "5d3d1428d45062c2481b293791efd6096a2f8254de91bbfd0b9ef35ad2db4865",
+    "stalled_dns.c": "c236f72faf2ce165de521cc7c7395efec3184f7222e4a1030ca052b0c232dd89",
+    "probe-armlock.log": "91fb7b031b8af2dab0464c11a1d1e6d3deaa99dc68f0606f61e9e44393029fb4",
+    "probe-build.log": "a8ee901840b939f92eeee6f9ea19387e3c103e889a305285d7229b5ea322834a",
+    "probe-cancel.log": "3724862f296df86dfd13dce79b58952359c359988c4cafe90dbda4817ca66b30",
+    "probe-discard.log": "bbc2d07fc2fe6358d0be186e5a7b44ce4778674960745f75085044e31fe8a55f",
+    "probe-dns.log": "40c298053b9e4a96453f7368c00d8cb1f8d5e14cefb5ae1b4888bf96113f3ff3",
+    "probe-installed.log": "2fa245f79c7ab3f37c9566d8a160a92e291cfdc4eb944ff0a585ee188c4e773d",
+    "probe-oversized.log": "277b95e9cb8e79f18af7498eeece919a73a871160144f778dfa66fa7ab992e90",
+    "probe-queued.log": "3f2505d457da7478f931355d20b245c5b6dd52582092de8dc25c99897b38ea62",
+    "probe-reset.log": "110501dbaf1a2e81a9e9ab3b56b0cd1bb3ad1f3b541ee193ad962a2610f16cca",
+    "probe-server-replacement.log": "b8b86a4e4a3c3549f7d14fcfc86b527128ad20ca2ce8c93a785cbbaf98a43172",
+    "probe-thinking.log": "428004d40e68be9406b943a89e43e74f106ceed5202af5f529997dd6a45a58e6"
+  }
+}
