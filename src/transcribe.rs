@@ -2024,11 +2024,60 @@ impl WhistleStream {
     fn parse_line(&mut self, line: &[u8]) -> Result<(), String> {
         let value: serde_json::Value =
             serde_json::from_slice(line).map_err(|_| "malformed needle stream output")?;
-        if let Some(text) = value.get("text").and_then(|v| v.as_str()) {
+        if !value.is_object() {
+            return Err("needle stream output is not an object".into());
+        }
+        if let Some(raw_text) = value.get("text") {
+            let text = raw_text
+                .as_str()
+                .ok_or("malformed needle transcript text")?;
             if text.len() > 1024 * 1024 {
                 return Err("needle transcript limit exceeded".into());
             }
-            self.committed = text.trim().to_owned();
+            if let Some(words) = value.get("words") {
+                let words = words.as_array().ok_or("malformed needle committed words")?;
+                for word in words {
+                    if !word
+                        .get("word")
+                        .and_then(|word| word.as_str())
+                        .is_some_and(|word| !word.trim().is_empty())
+                    {
+                        return Err("malformed needle committed word".into());
+                    }
+                    let start = word
+                        .get("start")
+                        .and_then(|time| time.as_f64())
+                        .ok_or("malformed needle word time")?;
+                    let end = word
+                        .get("end")
+                        .and_then(|time| time.as_f64())
+                        .ok_or("malformed needle word time")?;
+                    if !start.is_finite() || !end.is_finite() || start < 0.0 || end < start {
+                        return Err("invalid needle word time".into());
+                    }
+                }
+                let text = text.trim();
+                if words.is_empty() != text.is_empty() {
+                    return Err("needle committed words disagree with text".into());
+                }
+                // The pinned Needle protocol emits newly committed words;
+                // `pending` is an uncommitted preview and never final text.
+                let separator = usize::from(!self.committed.is_empty() && !text.is_empty());
+                if text.len() + separator > (1024 * 1024_usize).saturating_sub(self.committed.len())
+                {
+                    return Err("needle transcript limit exceeded".into());
+                }
+                if separator != 0 {
+                    self.committed.push(' ');
+                }
+                self.committed.push_str(text);
+            } else {
+                // Retain the text-only cumulative format supported by earlier
+                // integrations. It does not carry a committed-word delta.
+                self.committed = text.trim().to_owned();
+            }
+        } else if value.get("words").is_some() {
+            return Err("needle committed words have no text".into());
         }
         Ok(())
     }
@@ -5598,6 +5647,72 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(callbacks.load(Ordering::Acquire), 1);
         assert_eq!(FINAL_COUNT.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn needle_committed_deltas_preserve_every_word_and_reject_malformed_output() {
+        let cases = [
+            (
+                r#"{"text":"Hello","words":[{"word":"Hello","start":0.08,"end":0.24}],"pending":"uncertain beginning"}"#,
+                "Hello",
+            ),
+            (
+                r#"{"text":"world 世界","words":[{"word":"world","start":0.24,"end":0.48},{"word":"世界","start":0.48,"end":0.56}],"pending":"uncommitted sensitive guess"}"#,
+                "Hello world 世界",
+            ),
+            (r#"{"text":"","words":[],"pending":""}"#, "Hello world 世界"),
+        ];
+        let mut script =
+            "import sys\nf=open(sys.argv[sys.argv.index('--audio')+1],'rb')\nf.read()\n"
+                .to_string();
+        for (line, _) in cases {
+            script.push_str(&format!("print({line:?},flush=True)\n"));
+        }
+        let (_root, engine) = fake_needle(&script);
+        let mut stream = WhistleStream::open_command(
+            Command::new("python3").arg(&engine),
+            Path::new("synthetic-model"),
+            None,
+            "auto",
+        )
+        .unwrap();
+        // Direct assertions cover incremental state independently of child timing.
+        for (line, expected) in cases {
+            stream.parse_line(line.as_bytes()).unwrap();
+            assert_eq!(stream.committed, expected);
+        }
+        for line in [
+            "null",
+            "[]",
+            r#"{"text":null,"words":[]}"#,
+            r#"{"words":[]}"#,
+            r#"{"text":"lost","words":null}"#,
+            r#"{"text":"lost","words":[]}"#,
+            r#"{"text":"lost","words":[{"word":"lost","start":1,"end":0}]}"#,
+            r#"{"text":"lost","words":[{"word":null,"start":0,"end":1}]}"#,
+            r#"{"text":"lost","words":[{"word":"","start":0,"end":1}]}"#,
+            r#"{"text":"lost","words":[{"word":"lost","start":null,"end":1}]}"#,
+        ] {
+            assert!(stream.parse_line(line.as_bytes()).is_err());
+            assert_eq!(stream.committed, "Hello world 世界");
+        }
+        stream.committed = "x".repeat(1024 * 1024);
+        assert!(
+            stream
+                .parse_line(cases[0].0.as_bytes())
+                .unwrap_err()
+                .contains("limit")
+        );
+        // A real subprocess emits these deltas after FIFO EOF; finalization
+        // must drain every line, including the empty terminal event.
+        stream.committed.clear();
+        stream.feed(&[0; 1600], 16000).unwrap();
+        assert_eq!(
+            stream
+                .finish_until(Instant::now() + Duration::from_secs(2))
+                .unwrap(),
+            "Hello world 世界"
+        );
     }
 
     fn fake_needle(script: &str) -> (tempfile::TempDir, PathBuf) {

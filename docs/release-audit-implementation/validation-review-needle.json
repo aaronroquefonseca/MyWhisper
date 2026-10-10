@@ -1,0 +1,43 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "correction": "R29: accumulate the pinned Needle committed-word protocol without including pending guesses",
+  "before_fix_regression_failed": true,
+  "baseline": "6655e4ecac389646f7563867d2b68b0853c9c131",
+  "rust_tests": {
+    "passed": 190,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "native_ui": [
+    "light/en",
+    "dark/es"
+  ],
+  "native_recovery": [
+    "light/en",
+    "dark/es"
+  ],
+  "real_runtime_verified": [
+    "Needle file and FIFO: verified model/runtime, synthetic expected word and exact three committed events preserved",
+    "Nemotron CPU streaming: verified model/runtime, ready decode, known synthetic expected word, owned cleanup"
+  ],
+  "compatibility": "Text-only cumulative events remain supported. Word-bearing events are validated and appended. Aggregate output remains capped at 1 MiB. No schema or data migration.",
+  "recognition_limitations": "Original hello fixture remains recorded: Needle streaming commits The long and Nemotron recognizes Hell. These upstream recognition errors are separate from the demonstrated frontend delta loss. No test assertions were weakened or removed.",
+  "logs_sha256": {
+    "before": "f2c706ac6ad0c06bc06ad0e44a63e0e9427ff1201900f6c60538a9491f47cae6",
+    "deltas": "63ea77bb385780d56cb4bf38bd78dc4af8b224deb4beba8ba24bf605c41fb458",
+    "tests": "908e3c648385725a39bdaadef82d0ed9ab6f3e2e8b71da4301cb8a57c2edf892",
+    "clippy": "3bd4e94d42a7f90f39e624154e141b660389c7dc113b5749d6be1456678edb9d",
+    "fmt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "release": "20becd2e0de7e998ed10b644a9344a74eb8a7e219789e591113753e2ea4d94e7",
+    "ui": "14b3a716b54d70ecf7e947f3cde618b80a4093ba2ffa1af24e709fd6ec836bb4",
+    "runtime": "786eb4bfdfc14b4eeef59873f0b2adfafdf9685d5df8f052c767b22e49650e7c",
+    "contract": "f1dc48c51048f145eeae3d74c46b0968a0e64aa60f59be6c576a58680090598a",
+    "nemotron": "65cc595466938762aca1503080dd163e19a1ee4846b0c8bc55d851c948c40e31",
+    "wire": "5e4cd2c082ef4e54b4fe98928aca3d8eb0751cdacd581bed2bece18f559f9a90",
+    "original_hello_whistle-v1": "3273f62d045ff80e677306b5593925cadb010a1cd4beec2573f29533e9134f3c",
+    "original_hello_nemotron-speech-streaming-en-0.6b": "bd5c0955622afa0fad605d94621e9c5fb7a09fe337a53daa23f0adcf7f531351"
+  },
+  "source_diff_sha256": "67759bbd9640927e0d317748d8dd09373c4a9d8b3c34ea081f18d4bb27256a01",
+  "outstanding": "Parent-death cleanup, larger native recordings, other findings and final packaged/live gates remain open."
+}
