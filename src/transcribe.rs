@@ -2927,17 +2927,36 @@ pub fn begin_utterance(
 /// not queue recording admission behind unrelated short jobs or reopen the
 /// database/keyring. Each recording still gets its own cancellation authority.
 pub struct CaptureInput {
-    policy: Arc<Mutex<crate::store::Store>>,
+    policy: Mutex<crate::store::Store>,
+    authority: Arc<Mutex<crate::store::Store>>,
+    file: (PathBuf, u64, u64),
     data_dir: PathBuf,
 }
 
 impl CaptureInput {
     pub fn new(store: crate::store::Store, data_dir: PathBuf) -> Result<Self, String> {
+        let (path, (device, inode)) = store
+            .path()
+            .zip(store.file_identity())
+            .ok_or("capture input requires an existing on-disk policy database")?;
+        let file = (path.to_owned(), device, inode);
+        // Provision once before input starts, never on a press. Background
+        // authorization must not share ownership of the admission reader.
+        let authority = crate::store::Store::open_existing(path)
+            .map_err(|_| "capture authority reader unavailable; original data preserved")?;
+        if authority.file_identity() != Some((device, inode)) {
+            return Err("capture database changed during input provisioning".into());
+        }
         store
             .policy_reads_only()
             .map_err(|_| "capture policy reader unavailable")?;
+        authority
+            .policy_reads_only()
+            .map_err(|_| "capture authority reader unavailable")?;
         Ok(Self {
-            policy: Arc::new(Mutex::new(store)),
+            policy: Mutex::new(store),
+            authority: Arc::new(Mutex::new(authority)),
+            file,
             data_dir,
         })
     }
@@ -2946,6 +2965,13 @@ impl CaptureInput {
         let epoch = reserve_utterance();
         let cancel = Arc::new(AtomicBool::new(false));
         let result = (|| {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = std::fs::symlink_metadata(&self.file.0)
+                .map_err(|_| "capture database identity unavailable; original data preserved")?;
+            if !metadata.is_file() || metadata.dev() != self.file.1 || metadata.ino() != self.file.2
+            {
+                return Err("capture database was replaced; restart the service".into());
+            }
             let (settings, privacy_epoch) = self
                 .policy
                 .try_lock()
@@ -2955,8 +2981,12 @@ impl CaptureInput {
             if !settings.hotkeys.hotkeys_enabled {
                 return Err("recording is disabled or reset cleanup is pending".into());
             }
-            let operation =
-                Operation::capture_reader(self.policy.clone(), privacy_epoch, cancel.clone())?;
+            let operation = Operation::admitted_capture(
+                self.authority.clone(),
+                Some(self.file.clone()),
+                privacy_epoch,
+                cancel.clone(),
+            );
             let plans = plans_for(&settings.stt, &self.data_dir)?;
             let operation = bind_asset_requests(
                 &operation,
@@ -4886,6 +4916,10 @@ mod tests {
     }
 
     fn accept_http_fixture(listener: std::net::TcpListener) -> TcpStream {
+        accept_http_fixture_with_body(listener).0
+    }
+
+    fn accept_http_fixture_with_body(listener: std::net::TcpListener) -> (TcpStream, Vec<u8>) {
         use std::io::Read;
         listener.set_nonblocking(true).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -4924,7 +4958,7 @@ mod tests {
         assert!(length < 128 * 1024);
         let mut body = vec![0; length];
         socket.read_exact(&mut body).unwrap();
-        socket
+        (socket, body)
     }
 
     #[test]
@@ -6782,6 +6816,173 @@ while True:
         assert!(crate::runtime::drain(Duration::from_millis(20)).is_err());
         release_drop.send(()).unwrap();
         crate::runtime::drain(Duration::from_secs(2)).unwrap();
+    }
+
+    #[test]
+    fn delayed_release_cannot_detach_or_capture_samples_for_the_next_recording() {
+        if !isolated_capture_probe(
+            "delayed_release_cannot_detach_or_capture_samples_for_the_next_recording",
+        ) {
+            return;
+        }
+        use std::io::Write;
+        crate::runtime::init().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let writer = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt.entries.truncate(1);
+        settings.stt.entries[0].kind = crate::settings::SttEntryKind::SelfHosted;
+        settings.stt.entries[0].streaming = false;
+        settings.stt.vad_enabled = false;
+        settings.language_models.cleanup_enabled = false;
+        settings.preferences.auto_paste = false;
+        settings.preferences.keep_transcription_in_clipboard = false;
+        let reader = crate::store::Store::open_existing(&root.path().join("state.db")).unwrap();
+        let input = CaptureInput::new(reader, root.path().to_owned()).unwrap();
+
+        for delay in [0, 200, 2000] {
+            for cycle in 0..4 {
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                settings.stt.entries[0].url = format!("http://{}", listener.local_addr().unwrap());
+                settings.preferences.mic_release_delay_ms = delay;
+                writer.save_settings(&settings).unwrap();
+                input.press().unwrap();
+                let first_samples = vec![100 + cycle; 16_000];
+                audio::tap_samples(&first_samples, 16_000);
+                let first_owner = audio::callback_recorder().unwrap().unwrap();
+                let first_settled = live().lock().unwrap().as_ref().unwrap().settled.clone();
+                // Hold an actual reader callback at release. The tail worker
+                // cannot finish while the next input edge replaces its tap.
+                let mut delayed_callback = first_owner.lock().unwrap();
+                let (done, completion) = mpsc::channel();
+                end_utterance_with_outcome(move |outcome| done.send(outcome).unwrap());
+                input.press().unwrap();
+                let next_owner = audio::callback_recorder().unwrap().unwrap();
+                assert!(!Arc::ptr_eq(&first_owner, &next_owner));
+                assert!(!first_settled.load(Ordering::Acquire));
+                let next_samples = vec![300 + cycle; 16_000];
+                audio::tap_samples(&next_samples, 16_000);
+
+                // A deterministic fake microphone supplies two old-owner
+                // slices past the configured cut, without sleeping or
+                // directing its queued callback into the new recorder.
+                let past_cut = Instant::now() + Duration::from_millis(delay + 1);
+                let straddling = vec![200 + cycle; 320];
+                delayed_callback.push_at(&straddling, past_cut);
+                delayed_callback.push_at(&[900; 320], past_cut + Duration::from_millis(1));
+                drop(delayed_callback);
+                let mut expected_first = first_samples;
+                expected_first.extend(straddling);
+                // The provider path normalizes s16 by 32768, then writes
+                // clamped f32 * 32767. These positive fixture amplitudes
+                // therefore arrive one unit lower, with identical lengths.
+                let wire_samples: Vec<i16> =
+                    expected_first.iter().map(|sample| sample - 1).collect();
+                let expected_wav = audio::wav_bytes_16k(&wire_samples);
+                let server = std::thread::spawn(move || {
+                    let (mut socket, body) = accept_http_fixture_with_body(listener);
+                    let begin = body.windows(4).position(|bytes| bytes == b"RIFF").unwrap();
+                    assert!(
+                        body[begin..begin + expected_wav.len()] == expected_wav,
+                        "provider received different PCM, cut or WAV format"
+                    );
+                    let reply = br#"{"text":"synthetic delayed recording"}"#;
+                    write!(
+                        socket,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        reply.len()
+                    )
+                    .unwrap();
+                    socket.write_all(reply).unwrap();
+                });
+                assert_eq!(
+                    completion.recv_timeout(Duration::from_secs(3)).unwrap(),
+                    FinalizationOutcome::Complete
+                );
+                assert!(completion.try_recv().is_err());
+                server.join().unwrap();
+                assert!(first_settled.load(Ordering::Acquire));
+                assert!(Arc::ptr_eq(
+                    &next_owner,
+                    &audio::callback_recorder().unwrap().unwrap()
+                ));
+                // Both a late callback retained by the old microphone reader
+                // and normal new-owner capture must preserve ownership.
+                first_owner.lock().unwrap().push(&[901; 320]);
+                audio::tap_samples(&[400; 320], 16_000);
+                let mut expected_next = next_samples;
+                expected_next.extend([400; 320]);
+                assert_eq!(next_owner.lock().unwrap().snapshot(), expected_next);
+                assert_eq!(first_owner.lock().unwrap().len(), 0);
+                cancel_utterance(|| {});
+                assert!(audio::callback_recorder().unwrap().is_none());
+                crate::runtime::drain(Duration::from_secs(3)).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn background_authorization_cannot_block_input_or_adopt_a_replaced_database() {
+        if !isolated_capture_probe(
+            "background_authorization_cannot_block_input_or_adopt_a_replaced_database",
+        ) {
+            return;
+        }
+        crate::runtime::init().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("state.db");
+        let writer = crate::store::Store::open(&path).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt.entries.truncate(1);
+        settings.stt.entries[0].kind = crate::settings::SttEntryKind::SelfHosted;
+        settings.stt.entries[0].url = "http://127.0.0.1:1".into();
+        settings.stt.entries[0].streaming = false;
+        writer.save_settings(&settings).unwrap();
+        let input = CaptureInput::new(
+            crate::store::Store::open_existing(&path).unwrap(),
+            root.path().to_owned(),
+        )
+        .unwrap();
+        // Hold the actual background reader. The input edge uses a different
+        // already-provisioned connection, with no reader wait or keyring IO.
+        let held = input.authority.lock().unwrap();
+        let began = Instant::now();
+        input.press().unwrap();
+        assert!(began.elapsed() < Duration::from_millis(100));
+        audio::tap_samples(&[71; 320], 16_000);
+        assert_eq!(
+            audio::callback_recorder()
+                .unwrap()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .snapshot(),
+            vec![71; 320]
+        );
+        let (done, completion) = mpsc::channel();
+        let began = Instant::now();
+        cancel_utterance(move || done.send(()).unwrap());
+        assert!(began.elapsed() < Duration::from_millis(100));
+        assert!(audio::callback_recorder().unwrap().is_none());
+        drop(held);
+        completion.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(completion.try_recv().is_err());
+        crate::runtime::drain(Duration::from_secs(3)).unwrap();
+
+        // A replacement with the same capture epoch is still a different
+        // authority. Neither admission nor background work can inherit it.
+        writer.checkpoint().unwrap();
+        let epoch = writer.capture_epoch().unwrap();
+        let replacement = root.path().join("replacement.db");
+        let fresh = crate::store::Store::open(&replacement).unwrap();
+        fresh.save_settings(&settings).unwrap();
+        assert_eq!(fresh.capture_epoch().unwrap(), epoch);
+        fresh.checkpoint().unwrap();
+        drop(fresh);
+        std::fs::rename(&path, root.path().join("original.db")).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        assert!(input.press().unwrap_err().contains("replaced"));
+        assert!(audio::callback_recorder().unwrap().is_none());
     }
 
     #[test]

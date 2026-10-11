@@ -70,6 +70,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             assert_eq!(Store::open(&paths.db_file())?.load_words()?.len(), 8);
         }
         Some("sync-lifecycle") => sync_lifecycle(&paths)?,
+        Some("capture-provisioning") => {
+            use std::time::{Duration, Instant};
+            mywhisper::runtime::init()?;
+            let store = Store::open(&paths.db_file())?;
+            let original = store.load_settings();
+            let mut settings = original.clone();
+            settings.stt.entries.truncate(1);
+            settings.stt.entries[0].kind = mywhisper::settings::SttEntryKind::SelfHosted;
+            settings.stt.entries[0].url = "http://127.0.0.1:1".into();
+            settings.stt.entries[0].streaming = false;
+            store.save_settings(&settings)?;
+            let input = mywhisper::transcribe::CaptureInput::new(
+                Store::open(&paths.db_file())?,
+                paths.data_dir.clone(),
+            )?;
+            std::fs::write(root.join("capture-ready"), b"ready")?;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !root.join("capture-go").exists() {
+                if Instant::now() >= deadline {
+                    return Err("capture provisioning barrier timed out".into());
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            // The runner has paused only its own Secret Service. Presses use
+            // already-provisioned readers; fake microphone/device-failure
+            // cleanup does not create discard markers or touch that daemon.
+            for _ in 0..4 {
+                let began = Instant::now();
+                input.press()?;
+                assert!(began.elapsed() < Duration::from_millis(100));
+                assert!(mywhisper::transcribe::has_live());
+                mywhisper::audio::tap_samples(&[71; 320], 16_000);
+                mywhisper::transcribe::abort_failed_capture();
+                assert!(!mywhisper::transcribe::has_live());
+                mywhisper::runtime::drain(Duration::from_secs(2))?;
+            }
+            drop(input);
+            std::fs::write(root.join("capture-done"), b"done")?;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !root.join("capture-resumed").exists() {
+                if Instant::now() >= deadline {
+                    return Err("Secret Service resume barrier timed out".into());
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            store.save_settings(&original)?;
+            assert_eq!(Store::open(&paths.db_file())?.export_words()?.len(), 8);
+            store.checkpoint()?;
+            println!(
+                "Real private keyring provisioned both input readers; four input/device-failure cycles completed while its daemon was paused; original settings and eight words preserved."
+            );
+        }
         Some("duplicate-key-recovery") => {
             use std::collections::HashMap;
             let entry = keyring::Entry::new("mywhisper", "state-db")?;

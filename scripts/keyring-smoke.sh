@@ -60,4 +60,23 @@ kill -STOP "$daemon"
 timeout 20 "$repo_root/target/debug/examples/store_probe" stalled-keyring
 kill -CONT "$daemon"
 timeout 20 "$repo_root/target/debug/examples/store_probe" verify 8
+timeout 25 "$repo_root/target/debug/examples/store_probe" capture-provisioning &
+capture_probe=$!
+for _ in {1..100}; do
+  [[ -f "$MYWHISPER_AUDIT_ROOT/capture-ready" ]] && break
+  kill -0 "$capture_probe"
+  sleep .05
+done
+[[ -f "$MYWHISPER_AUDIT_ROOT/capture-ready" ]]
+kill -STOP "$daemon"
+touch "$MYWHISPER_AUDIT_ROOT/capture-go"
+for _ in {1..100}; do
+  [[ -f "$MYWHISPER_AUDIT_ROOT/capture-done" ]] && break
+  kill -0 "$capture_probe"
+  sleep .05
+done
+[[ -f "$MYWHISPER_AUDIT_ROOT/capture-done" ]]
+kill -CONT "$daemon"
+touch "$MYWHISPER_AUDIT_ROOT/capture-resumed"
+wait "$capture_probe"
 timeout 45 "$repo_root/target/debug/examples/store_probe" sync-lifecycle

@@ -57,7 +57,6 @@ impl Operation {
         epoch: i64,
         cancel: Arc<AtomicBool>,
     ) -> Result<Self, String> {
-        use std::os::unix::fs::MetadataExt;
         let file = {
             let policy = store
                 .lock()
@@ -67,7 +66,23 @@ impl Operation {
                 .zip(policy.file_identity())
                 .map(|(path, (device, inode))| (path.to_owned(), device, inode))
         };
-        let operation = Self {
+        let operation = Self::admitted_capture(store, file, epoch, cancel);
+        operation.check()?;
+        Ok(operation)
+    }
+
+    /// The input owner has already read settings and epoch from one checked
+    /// snapshot. Construction must not wait for background policy checks on
+    /// this separate reader. Every subsequent provider/persistence boundary
+    /// still checks the original database identity and durable epoch.
+    pub(crate) fn admitted_capture(
+        store: Arc<Mutex<crate::store::Store>>,
+        file: Option<(std::path::PathBuf, u64, u64)>,
+        epoch: i64,
+        cancel: Arc<AtomicBool>,
+    ) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self {
             cancel,
             parent_cancel: None,
             assets: Vec::new(),
@@ -97,9 +112,7 @@ impl Operation {
                     Err(Denial::Revoked)
                 }
             }),
-        };
-        operation.check()?;
-        Ok(operation)
+        }
     }
 
     pub(crate) fn permitted(&self) -> bool {
