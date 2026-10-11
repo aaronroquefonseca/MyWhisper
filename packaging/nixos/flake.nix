@@ -53,5 +53,17 @@
   in {
     packages.${system}.default = mywhisper;
     nixosModules.default = import ./module.nix { inherit mywhisper runtimeLibraries; };
+    checks.${system}.symbolic-logo = let
+      probe = import ./svg-probe.nix { inherit pkgs; };
+    in pkgs.runCommand "mywhisper-symbolic-logo" {
+      nativeBuildInputs = [ pkgs.dbus pkgs.xvfb-run pkgs.xorg.xorgserver ];
+    } ''
+      export XDG_RUNTIME_DIR="$TMPDIR/runtime" XDG_CACHE_HOME="$TMPDIR/cache"
+      mkdir -m700 "$XDG_RUNTIME_DIR" "$XDG_CACHE_HOME"
+      export GDK_BACKEND=x11 GTK_A11Y=none G_DEBUG=fatal-criticals GSK_RENDERER=cairo
+      export FONTCONFIG_FILE=${pkgs.fontconfig.out}/etc/fonts/fonts.conf
+      dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf -- xvfb-run -a ${probe}/bin/svg-probe ${../../assets/icons/symbolic.svg} 1
+      touch $out
+    '';
   };
 }

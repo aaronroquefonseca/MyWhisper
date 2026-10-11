@@ -72,6 +72,57 @@ fn prompt_editor(app: &gtk4::Application) -> gtk4::Window {
         .unwrap()
 }
 
+fn symbolic_logo(window: &gtk4::ApplicationWindow) {
+    let mark = descendants(window.upcast_ref())
+        .into_iter()
+        .find_map(|widget| {
+            widget
+                .downcast_ref::<gtk4::Image>()
+                .and_then(gtk4::Image::paintable)
+                .and_then(|paintable| paintable.downcast::<gtk4::Svg>().ok())
+        })
+        .expect("embedded brand paintable missing");
+    let renderer = window.renderer().expect("native renderer missing");
+    for foreground in [gtk4::gdk::RGBA::WHITE, gtk4::gdk::RGBA::BLACK] {
+        let snapshot = gtk4::Snapshot::new();
+        mark.snapshot_with_weight(&snapshot, 32.0, 32.0, &[foreground; 4], 400.0);
+        let node = snapshot.to_node().expect("embedded logo is blank");
+        let texture = renderer.render_texture(
+            &node,
+            Some(&gtk4::graphene::Rect::new(0.0, 0.0, 32.0, 32.0)),
+        );
+        let mut pixels = [0; 32 * 32 * 4];
+        texture.download(&mut pixels, 32 * 4);
+        let visible = pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|pixel| pixel[3] != 0)
+            .count();
+        assert!(
+            visible >= 100,
+            "embedded logo blank or truncated: {visible}"
+        );
+        for pixel in pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|pixel| pixel[3] != 0)
+        {
+            let expected = if foreground == gtk4::gdk::RGBA::WHITE {
+                pixel[3]
+            } else {
+                0
+            };
+            assert!(
+                pixel[..3].iter().all(|channel| *channel == expected),
+                "embedded logo does not follow symbolic foreground"
+            );
+        }
+    }
+    eprintln!("[ui-smoke] embedded logo renders in both symbolic foregrounds");
+}
+
 pub(super) fn respond(window: &gtk4::ApplicationWindow, response: &str) {
     let host = window
         .clone()
@@ -682,7 +733,10 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
         eprintln!("[ui-smoke] step {step}");
         let main: gtk4::Stack = named(&root, "main-pages");
         match step {
-            0 => main.set_visible_child_name("dictionary"),
+            0 => {
+                symbolic_logo(&window);
+                main.set_visible_child_name("dictionary");
+            }
             1 => {
                 let entry: gtk4::Entry = named(&root, "new-word");
                 entry.set_text("");

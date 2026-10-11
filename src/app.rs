@@ -484,10 +484,12 @@ pub fn build_app_window(
     let brand = GtkBox::new(Orientation::Horizontal, 8);
     brand.add_css_class("sidebar-brand");
     // Embed the source asset so development builds also show the real logo.
-    let source =
-        include_str!("../assets/icons/symbolic.svg").replace("currentColor", "SymbolicForeground");
-    let bytes = gtk4::glib::Bytes::from_owned(source.into_bytes());
-    let mark = gtk4::Svg::from_bytes(&bytes);
+    let bytes = gtk4::glib::Bytes::from_static(include_bytes!("../assets/icons/symbolic.svg"));
+    let mark = gtk4::Svg::new();
+    // GTK 4.22 supports traditional symbolic assets, while the CSS system
+    // color name SymbolicForeground only works in newer SVG parsers.
+    mark.set_features(mark.features() | gtk4::SvgFeatures::TRADITIONAL_SYMBOLIC);
+    mark.load_from_bytes(&bytes);
     let logo = gtk4::Image::from_paintable(Some(&mark));
     logo.set_pixel_size(32);
     logo.set_valign(gtk4::Align::Center);
