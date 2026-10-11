@@ -4854,13 +4854,48 @@ mod tests {
         }
     }
 
-    fn isolated_capture_probe(name: &str) -> bool {
+    struct CaptureProbeOwner {
+        data: PathBuf,
+    }
+    impl CaptureProbeOwner {
+        fn new() -> Self {
+            let data = PathBuf::from(std::env::var_os("XDG_DATA_HOME").unwrap());
+            assert_eq!(data.file_name().unwrap(), "data");
+            use std::os::unix::fs::MetadataExt;
+            let metadata = data.metadata().unwrap();
+            assert_eq!(metadata.mode() & 0o777, 0o700);
+            assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+            Self {
+                data: data.join(crate::paths::APP_DIR),
+            }
+        }
+    }
+    impl Drop for CaptureProbeOwner {
+        fn drop(&mut self) {
+            // A job counter cannot join worker/TLS destruction before the
+            // test runner finalizes SQLCipher/OpenSSL. Retain the same terminal
+            // boundary as the actual application in this fresh child process.
+            crate::runtime::begin_shutdown();
+            shutdown(&self.data);
+            if let Err(error) = crate::runtime::finish_shutdown() {
+                eprintln!("capture probe shutdown failed: {error}");
+                if !std::thread::panicking() {
+                    panic!("capture probe shutdown did not complete");
+                }
+            }
+        }
+    }
+
+    fn isolated_capture_probe(name: &str) -> Option<CaptureProbeOwner> {
         isolated_capture_probe_with(name, |_| {})
     }
 
-    fn isolated_capture_probe_with(name: &str, configure: impl FnOnce(&mut Command)) -> bool {
+    fn isolated_capture_probe_with(
+        name: &str,
+        configure: impl FnOnce(&mut Command),
+    ) -> Option<CaptureProbeOwner> {
         if std::env::var("MYWHISPER_CAPTURE_PROBE").ok().as_deref() == Some(name) {
-            return true;
+            return Some(CaptureProbeOwner::new());
         }
         let root = tempfile::tempdir().unwrap();
         let log = std::fs::File::create(root.path().join("synthetic-probe.log")).unwrap();
@@ -4922,7 +4957,7 @@ mod tests {
             "capture probe {name} failed ({status}): {}",
             String::from_utf8_lossy(&log)
         );
-        false
+        None
     }
 
     fn accept_http_fixture(listener: std::net::TcpListener) -> TcpStream {
@@ -5009,9 +5044,9 @@ mod tests {
             }
             return;
         }
-        if !isolated_capture_probe(NAME) {
+        let Some(_shutdown) = isolated_capture_probe(NAME) else {
             return;
-        }
+        };
         use std::io::{Read, Write};
         crate::runtime::init().unwrap();
         for cleanup in [false, true] {
@@ -5124,11 +5159,11 @@ mod tests {
 
     #[test]
     fn revoked_websocket_authority_rejects_new_audio_and_interrupts_completion() {
-        if !isolated_capture_probe(
+        let Some(_shutdown) = isolated_capture_probe(
             "revoked_websocket_authority_rejects_new_audio_and_interrupts_completion",
-        ) {
+        ) else {
             return;
-        }
+        };
         for completing in [false, true] {
             for reset in [false, true] {
                 let root = tempfile::tempdir().unwrap();
@@ -5219,11 +5254,11 @@ mod tests {
 
     #[test]
     fn cancelled_http_partial_upload_closes_before_sending_the_whole_body() {
-        if !isolated_capture_probe(
+        let Some(_shutdown) = isolated_capture_probe(
             "cancelled_http_partial_upload_closes_before_sending_the_whole_body",
-        ) {
+        ) else {
             return;
-        }
+        };
         use std::io::Read;
         const BODY_BYTES: usize = 16 * 1024 * 1024;
         for reset in [false, true] {
@@ -5316,9 +5351,11 @@ mod tests {
 
     #[test]
     fn queued_discard_markers_keep_the_original_database_authority() {
-        if !isolated_capture_probe("queued_discard_markers_keep_the_original_database_authority") {
+        let Some(_shutdown) =
+            isolated_capture_probe("queued_discard_markers_keep_the_original_database_authority")
+        else {
             return;
-        }
+        };
         crate::runtime::init().unwrap();
         for action in 0..4 {
             let root = tempfile::tempdir().unwrap();
@@ -5394,9 +5431,11 @@ mod tests {
 
     #[test]
     fn an_authorized_recording_still_uses_its_http_fallback() {
-        if !isolated_capture_probe("an_authorized_recording_still_uses_its_http_fallback") {
+        let Some(_shutdown) =
+            isolated_capture_probe("an_authorized_recording_still_uses_its_http_fallback")
+        else {
             return;
-        }
+        };
         use std::io::Write;
         crate::runtime::init().unwrap();
         let root = tempfile::tempdir().unwrap();
@@ -5471,11 +5510,15 @@ mod tests {
                 64 * 1024,
             )
             .unwrap();
-            assert!(!isolated_capture_probe_with(name, |command| {
-                command.env("LD_PRELOAD", &library);
-            }));
+            assert!(
+                isolated_capture_probe_with(name, |command| {
+                    command.env("LD_PRELOAD", &library);
+                })
+                .is_none()
+            );
             return;
         }
+        let _shutdown = CaptureProbeOwner::new();
         let start = Instant::now();
         assert!(
             OnlineSession::open_with_url(
@@ -5528,13 +5571,17 @@ mod tests {
                 64 * 1024,
             )
             .unwrap();
-            assert!(!isolated_capture_probe_with(name, |command| {
-                command
-                    .env("LD_PRELOAD", &library)
-                    .env("MYWHISPER_RESOLVER_MARKER", root.path().join("started"));
-            }));
+            assert!(
+                isolated_capture_probe_with(name, |command| {
+                    command
+                        .env("LD_PRELOAD", &library)
+                        .env("MYWHISPER_RESOLVER_MARKER", root.path().join("started"));
+                })
+                .is_none()
+            );
             return;
         }
+        let _shutdown = CaptureProbeOwner::new();
         let marker = PathBuf::from(std::env::var_os("MYWHISPER_RESOLVER_MARKER").unwrap());
         let threads = || std::fs::read_dir("/proc/self/task").unwrap().count();
         let baseline = threads();
@@ -5704,13 +5751,17 @@ mod tests {
                     .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
             )
             .unwrap();
-            assert!(!isolated_capture_probe_with(name, |command| {
-                command
-                    .env("PATH", path)
-                    .env("MYWHISPER_RESOLVER_MARKER", root.path().join("started"));
-            }));
+            assert!(
+                isolated_capture_probe_with(name, |command| {
+                    command
+                        .env("PATH", path)
+                        .env("MYWHISPER_RESOLVER_MARKER", root.path().join("started"));
+                })
+                .is_none()
+            );
             return;
         }
+        let _shutdown = CaptureProbeOwner::new();
         let marker = PathBuf::from(std::env::var_os("MYWHISPER_RESOLVER_MARKER").unwrap());
         for _ in 0..12 {
             let cancel = Arc::new(AtomicBool::new(false));
@@ -5841,9 +5892,11 @@ mod tests {
 
     #[test]
     fn websocket_cancellation_interrupts_setup_write_and_completion() {
-        if !isolated_capture_probe("websocket_cancellation_interrupts_setup_write_and_completion") {
+        let Some(_shutdown) =
+            isolated_capture_probe("websocket_cancellation_interrupts_setup_write_and_completion")
+        else {
             return;
-        }
+        };
         use std::io::Read;
         for stage in (0..4).cycle().take(12) {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -6055,11 +6108,11 @@ mod tests {
 
     #[test]
     fn truncated_managed_whisper_is_rejected_before_provider_or_subprocess_use() {
-        if !isolated_capture_probe(
+        let Some(_shutdown) = isolated_capture_probe(
             "truncated_managed_whisper_is_rejected_before_provider_or_subprocess_use",
-        ) {
+        ) else {
             return;
-        }
+        };
         let root = tempfile::tempdir().unwrap();
         let entry = stt::find_model("tiny").unwrap();
         let spec = stt::model_spec(root.path(), entry);
@@ -6098,11 +6151,11 @@ mod tests {
 
     #[test]
     fn active_asset_deletion_cancels_inference_and_stale_use_cannot_kill_replacement() {
-        if !isolated_capture_probe(
+        let Some(_shutdown) = isolated_capture_probe(
             "active_asset_deletion_cancels_inference_and_stale_use_cannot_kill_replacement",
-        ) {
+        ) else {
             return;
-        }
+        };
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let pack = stt::GPU_PACKS
@@ -6221,9 +6274,11 @@ ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
 
     #[test]
     fn configuration_warmup_cannot_replace_active_inference() {
-        if !isolated_capture_probe("configuration_warmup_cannot_replace_active_inference") {
+        let Some(_shutdown) =
+            isolated_capture_probe("configuration_warmup_cannot_replace_active_inference")
+        else {
             return;
-        }
+        };
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         crate::store::Store::open(&root.path().join("state.db")).unwrap();
@@ -6516,10 +6571,11 @@ ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
 
     #[test]
     fn local_readiness_probe_cancel_reset_and_stop_reap_owned_servers() {
-        if !isolated_capture_probe("local_readiness_probe_cancel_reset_and_stop_reap_owned_servers")
-        {
+        let Some(_shutdown) = isolated_capture_probe(
+            "local_readiness_probe_cancel_reset_and_stop_reap_owned_servers",
+        ) else {
             return;
-        }
+        };
         for online in [false, true] {
             for action in 0..3 {
                 let root = tempfile::tempdir().unwrap();
@@ -6607,11 +6663,11 @@ while True:
 
     #[test]
     fn engine_ownership_wait_and_startup_cancel_without_affecting_another_owner() {
-        if !isolated_capture_probe(
+        let Some(_shutdown) = isolated_capture_probe(
             "engine_ownership_wait_and_startup_cancel_without_affecting_another_owner",
-        ) {
+        ) else {
             return;
-        }
+        };
         let owner = EngineLease::acquire(&Operation::unrestricted(), true).unwrap();
         for _ in 0..12 {
             let cancel = Arc::new(AtomicBool::new(false));
@@ -6713,9 +6769,11 @@ while True:
 
     #[test]
     fn short_worker_pressure_preserves_capture_and_completion() {
-        if !isolated_capture_probe("short_worker_pressure_preserves_capture_and_completion") {
+        let Some(_shutdown) =
+            isolated_capture_probe("short_worker_pressure_preserves_capture_and_completion")
+        else {
             return;
-        }
+        };
         use std::io::Write;
         crate::runtime::init().unwrap();
         let root = tempfile::tempdir().unwrap();
@@ -6812,10 +6870,11 @@ while True:
 
     #[test]
     fn task_completion_waits_for_earlier_work_and_capture_destruction() {
-        if !isolated_capture_probe("task_completion_waits_for_earlier_work_and_capture_destruction")
-        {
+        let Some(_shutdown) = isolated_capture_probe(
+            "task_completion_waits_for_earlier_work_and_capture_destruction",
+        ) else {
             return;
-        }
+        };
         crate::runtime::init().unwrap();
         struct CapturedStore {
             store: Option<crate::store::Store>,
@@ -6866,11 +6925,11 @@ while True:
 
     #[test]
     fn delayed_release_cannot_detach_or_capture_samples_for_the_next_recording() {
-        if !isolated_capture_probe(
+        let Some(_shutdown) = isolated_capture_probe(
             "delayed_release_cannot_detach_or_capture_samples_for_the_next_recording",
-        ) {
+        ) else {
             return;
-        }
+        };
         use std::io::Write;
         crate::runtime::init().unwrap();
         let root = tempfile::tempdir().unwrap();
@@ -6969,11 +7028,11 @@ while True:
 
     #[test]
     fn background_authorization_cannot_block_input_or_adopt_a_replaced_database() {
-        if !isolated_capture_probe(
+        let Some(_shutdown) = isolated_capture_probe(
             "background_authorization_cannot_block_input_or_adopt_a_replaced_database",
-        ) {
+        ) else {
             return;
-        }
+        };
         crate::runtime::init().unwrap();
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("state.db");
@@ -7033,9 +7092,11 @@ while True:
 
     #[test]
     fn arming_database_stall_never_blocks_release_or_cancel() {
-        if !isolated_capture_probe("arming_database_stall_never_blocks_release_or_cancel") {
+        let Some(_shutdown) =
+            isolated_capture_probe("arming_database_stall_never_blocks_release_or_cancel")
+        else {
             return;
-        }
+        };
         use fs2::FileExt;
         let root = tempfile::tempdir().unwrap();
         crate::store::Store::open(&root.path().join("state.db")).unwrap();
@@ -7564,9 +7625,11 @@ while True:
     }
     #[test]
     fn revoked_cli_operations_reap_children_and_remove_owned_audio() {
-        if !isolated_capture_probe("revoked_cli_operations_reap_children_and_remove_owned_audio") {
+        let Some(_shutdown) =
+            isolated_capture_probe("revoked_cli_operations_reap_children_and_remove_owned_audio")
+        else {
             return;
-        }
+        };
         use std::os::unix::fs::PermissionsExt;
         for streaming in [false, true] {
             for reset in [false, true] {
