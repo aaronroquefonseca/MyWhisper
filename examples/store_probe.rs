@@ -3,6 +3,21 @@
 use mywhisper::{device::DeviceIdentity, paths::AppPaths, store::Store};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
+struct ProbeShutdown(std::path::PathBuf);
+impl Drop for ProbeShutdown {
+    fn drop(&mut self) {
+        mywhisper::runtime::begin_shutdown();
+        mywhisper::service::stop_sync_engine();
+        mywhisper::transcribe::shutdown(&self.0);
+        if let Err(error) = mywhisper::runtime::finish_shutdown() {
+            eprintln!("keyring probe shutdown failed: {error}");
+            if !std::thread::panicking() {
+                panic!("keyring probe shutdown did not complete");
+            }
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = std::path::PathBuf::from(
         std::env::var_os("MYWHISPER_AUDIT_ROOT").ok_or("disposable root required")?,
@@ -35,6 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("real keyring gate cannot use an environment key".into());
     }
     let paths = AppPaths::create()?;
+    let _shutdown = ProbeShutdown(paths.data_dir.clone());
     let args = std::env::args().collect::<Vec<_>>();
     match args.get(1).map(String::as_str) {
         Some("add") => {

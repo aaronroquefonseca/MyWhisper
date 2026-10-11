@@ -202,6 +202,7 @@ fn main() {
         "native clipboard smoke deadline exceeded"
     );
     worker.join().unwrap();
+    mywhisper::runtime::finish_shutdown().expect("clipboard probe owned shutdown");
     println!(
         "Real nested niri/wtype passed: delayed consumption; empty/text/binary restoration; user replacement; cancellation; copy-only/no-op."
     );

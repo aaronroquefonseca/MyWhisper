@@ -30,6 +30,7 @@ fn main() -> gtk4::glib::ExitCode {
         .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
         .build();
     let disposable = tempfile::tempdir().expect("disposable preview directory");
+    let shutdown_data = disposable.path().to_path_buf();
     app.connect_activate(move |app| {
         let mut state = AppState::fresh();
         state.settings.borrow_mut().sync.enabled = false;
@@ -156,5 +157,10 @@ fn main() -> gtk4::glib::ExitCode {
             smoke::run(app, &state, &window);
         }
     });
-    app.run_with_args::<&str>(&[])
+    let result = app.run_with_args::<&str>(&[]);
+    drop(app);
+    mywhisper::runtime::begin_shutdown();
+    mywhisper::transcribe::shutdown(&shutdown_data);
+    mywhisper::runtime::finish_shutdown().expect("preview owned shutdown");
+    result
 }
