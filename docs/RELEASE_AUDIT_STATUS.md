@@ -1,6 +1,6 @@
 # Release audit status
 
-Source checkpoint: `0079d56` (production Rust and fresh Nix checks at `ce6b000`; the later helper change adds side-effect-free CLI help), 11 October 2026. Branch: `fix/release-audit`. Historical audit branch remains `f018ab855af41759e275c80708d67973f2890587`; current `main` is integrated. No PR has been submitted.
+Source checkpoint: `e6047a7` (host checks include test-only identity interruption coverage; fresh Nix/native/live acceptance retains its `ce6b000` checkpoint), 11 October 2026. Branch: `fix/release-audit`. Historical audit branch remains `f018ab855af41759e275c80708d67973f2890587`; current `main` is integrated. No PR has been submitted.
 
 The work is unfinished. Earlier statements about “two remaining” concerned a subset of the independent review, not completion of the original release audit. Stopping at those checkpoints was premature. This status keeps the original scope visible.
 
@@ -10,7 +10,7 @@ The work is unfinished. Earlier statements about “two remaining” concerned a
 | Fully closed against all original/final obligations | 0; this conservative counter includes pending final release acceptance and does **not** mean 51 demonstrated current failures |
 | Independent review at f426c9a | All 12 observations have targeted corrections and passing checks; they overlap the original 51 groups |
 | Additional model-deletion toast | Correction and both native theme/hover/dismissal checks pass |
-| Current Rust suite | 263 passed, 0 failed, 5 original opt-in ignores unchanged; host and fresh Nix source checks |
+| Current Rust suite | 264 passed, 0 failed, 5 original opt-in ignores unchanged on host; latest fresh Nix checkpoint passes 263 |
 | Other current checks | Formatting, strict Clippy, release build, 14 native UI/asset invocations, 14 packaging checks, current dependency auditing, real private-keyring/sync gate, actual Nix artifact open/close/resolver/encrypted-store smoke, and live private Ollama native load/unload pass |
 
 There is still implementation and acceptance work, beyond final review:
@@ -21,6 +21,8 @@ There is still implementation and acceptance work, beyond final review:
 4. **Synchronization:** final revocation/export/apply barriers, concurrent edits and clock anomalies, connection/resource load and fairness, discovery/address expiry/restarts, asymmetric pairing and tombstone retirement. Paging and record segmentation have real encrypted-wire acceptance, including lost acknowledgements.
 5. **Providers and runtimes:** Whisper Tiny CUDA now passes actual pinned download/readiness/inference and server-owned GPU memory on the RTX 3090 using private authenticated loader prerequisites. Remaining requirements include successful authenticated WSS and paid cloud contracts/model controls, remaining advertised CUDA/language combinations, downloaded loaders and final packaged inference. No disposable paid-provider credentials have been established; fixtures cannot close those live gates.
 6. **Release acceptance:** remaining compositor/paste variants, running upgrade/recovery, clean booted Arch/NixOS desktop behavior, hosted CI and complete final diff/migration/privacy/cleanup review. A Nix artifact running on the local Arch kernel/display is not a clean NixOS desktop.
+
+Latest identity recovery evidence: [manifest and passing real-process logs](release-audit-implementation/validation-review-identity-recovery.json). Test-only fault barriers cover five replacement stages in new/legacy cases, with both keys verified after actual fresh-process contention.
 
 Latest page/input ownership and live Ollama evidence: [manifest and hashed logs](release-audit-implementation/validation-review-model-load.json). The fresh actual Nix artifact is `/nix/store/4b9ndivzsi1qn5z1hg452g856vxnyqxc-mywhisper-0.9.3`; its smoke uses an owned device-free software-rendered display. The registry CLI pull remains stalled; importing an authenticated public GGUF proves the native API control separately. Retained host/Nix quota failures recovered after content-verified relocation of the task-owned store and unchanged sequential reruns. No production limits or assertions were increased.
 
@@ -39,7 +41,7 @@ The exact outstanding item for every original group is below. Repeated requireme
 | R03: Deleted transcripts retain their original content and are exported | WAL/checkpoint/backup deletion guarantees and associated audio cleanup still need verification. |
 | R04: A stale discarded record resurrects deleted history | Protocol compatibility review and stale legacy peer behavior. |
 | R05: Reset retains trusted peers, enables sync, and permits deleted data to return | Active HTTP/WS/CLI disclosure cancellation now has F01 coverage. Capture admission and warmup/readiness cancellation now have F03/F05 coverage. Full clipboard privacy boundaries, deletion across active WAL/backup/audio files, final filesystem/privacy review and packaged compatibility remain. |
-| R06: First-run identity creation is not atomic | Kill-during-replacement and concurrent fresh-process legacy expansion checks still needed. Eight concurrent real private-keyring creator processes already verify the persisted signing identity through their stored word authors; this does not directly measure each process's Noise key. |
+| R06: First-run identity creation is not atomic | Ten killed-process replacement cases and actual eight-process lock contention now preserve both keys, legacy signing bytes and already-published identity, followed by fresh-process reopening. Final integrated migration/resource review remains; SIGKILL is not physical power-loss proof. |
 | R07: First-run database-key creation can lose the key to an encrypted database | Actual killed-process/delayed CreateItem fault injection, interrupted migration recovery, other supported keyring implementations and user-visible startup recovery behavior still need acceptance coverage. |
 | R08: Release/cancel can arrive before the queued press installs its session | Microphone readiness/device-change edges, stalled provider setup through the actual service UI, repeated resource/lifecycle stress and final native acceptance. Rapid configured-delay replacement is demonstrated under R09; it is no longer an unimplemented requirement. |
 | R09: An old release disarms the next recorder | This original failure has a demonstrated correction and dedicated acceptance regression. Final integrated service/physical-microphone/resource and packaged-candidate review still apply; this is not a claim that every session/input finding is closed. |
