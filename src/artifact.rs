@@ -143,8 +143,214 @@ impl Authority {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectoryIdentity {
+    device: u64,
+    inode: u64,
+}
+impl DirectoryIdentity {
+    fn of(metadata: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StagingRecord {
+    version: u32,
+    key: String,
+    parent: PathBuf,
+    name: String,
+    identities: Vec<DirectoryIdentity>,
+}
+
+/// The per-asset lock owns this journal and directory. Persist reservation
+/// before mkdir, then its identity before writing payloads. A crash at either
+/// boundary leaves an empty reservation or an identifiable owned directory.
+struct StagingDirectory {
+    path: PathBuf,
+    journal: PathBuf,
+    record: StagingRecord,
+    created: bool,
+    closed: bool,
+}
+impl StagingDirectory {
+    fn journal(data: &Path, key: &str) -> PathBuf {
+        data.join(".install/staging").join(format!("{key}.json"))
+    }
+
+    fn read(journal: &Path) -> Result<Option<StagingRecord>, String> {
+        match crate::private_fs::read_bounded(journal, 4096) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|_| "invalid interrupted installation record; files preserved".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err("cannot read interrupted installation record; files preserved".into()),
+        }
+    }
+
+    fn recover(data: &Path, key: &str, parent: &Path) -> Result<(), String> {
+        let journal = Self::journal(data, key);
+        let Some(record) = Self::read(&journal)? else {
+            return Ok(());
+        };
+        let relative = parent
+            .strip_prefix(data)
+            .map_err(|_| "staging is outside app data")?;
+        if record.version != 1
+            || record.key != key
+            || record.parent != relative
+            || record.identities.len() > 2
+            || !record.name.starts_with(".mywhisper-install-")
+            || record.name.len() != ".mywhisper-install-".len() + 32
+            || !record.name[".mywhisper-install-".len()..]
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(
+                "interrupted installation ownership does not match; files preserved".into(),
+            );
+        }
+        let mut previous = Self {
+            path: parent.join(&record.name),
+            journal,
+            record,
+            created: true,
+            closed: false,
+        };
+        previous.close()
+    }
+
+    fn new(data: &Path, key: &str, parent: &Path) -> Result<Self, String> {
+        let relative = parent
+            .strip_prefix(data)
+            .map_err(|_| "staging is outside app data")?;
+        if relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err("invalid installation parent".into());
+        }
+        crate::private_fs::directory(&data.join(".install/staging")).map_err(|e| e.to_string())?;
+        Self::recover(data, key, parent)?;
+        let mut nonce = [0u8; 16];
+        getrandom::fill(&mut nonce).map_err(|_| "cannot generate staging identity")?;
+        let suffix: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+        let name = format!(".mywhisper-install-{suffix}");
+        let mut owned = Self {
+            path: parent.join(&name),
+            journal: Self::journal(data, key),
+            record: StagingRecord {
+                version: 1,
+                key: key.into(),
+                parent: relative.into(),
+                name,
+                identities: Vec::new(),
+            },
+            created: false,
+            closed: false,
+        };
+        owned.persist()?;
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&owned.path)
+            .map_err(|e| e.to_string())?;
+        owned.created = true;
+        owned.record.identities.push(DirectoryIdentity::of(
+            &std::fs::symlink_metadata(&owned.path).map_err(|e| e.to_string())?,
+        ));
+        owned.persist()?;
+        Ok(owned)
+    }
+
+    fn persist(&self) -> Result<(), String> {
+        let bytes =
+            serde_json::to_vec(&self.record).map_err(|_| "cannot encode staging ownership")?;
+        if bytes.len() > 4096 {
+            return Err("staging ownership exceeds its format limit".into());
+        }
+        crate::private_fs::replace(&self.journal, &bytes).map_err(|e| e.to_string())
+    }
+
+    fn include_previous(&mut self, destination: &Path) -> Result<bool, String> {
+        match std::fs::symlink_metadata(destination) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                let identity = DirectoryIdentity::of(&metadata);
+                if !self.record.identities.contains(&identity) {
+                    self.record.identities.push(identity);
+                }
+                // Exchange moves this previous directory under the journal's
+                // temporary name. Either identity is safe to clean after kill.
+                self.persist()?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            _ => Err("artifact destination is not a regular directory".into()),
+        }
+    }
+
+    fn close(&mut self) -> Result<(), String> {
+        if self.closed {
+            return Ok(());
+        }
+        if self.created {
+            match std::fs::symlink_metadata(&self.path) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                    if self.record.identities.is_empty() {
+                        // Payloads cannot have been written before identity
+                        // persistence. Do not recursively delete a reservation.
+                        std::fs::remove_dir(&self.path)
+                            .map_err(|_| "staging reservation is not empty; files preserved")?;
+                    } else if self
+                        .record
+                        .identities
+                        .contains(&DirectoryIdentity::of(&metadata))
+                    {
+                        std::fs::remove_dir_all(&self.path)
+                            .map_err(|_| "owned staging cleanup failed; retry required")?;
+                    } else {
+                        return Err("staging directory was replaced; files preserved".into());
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                _ => return Err("staging directory ownership changed; files preserved".into()),
+            }
+            File::open(self.path.parent().unwrap())
+                .and_then(|parent| parent.sync_all())
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(current) = Self::read(&self.journal)? {
+            if current.key != self.record.key
+                || current.name != self.record.name
+                || current.parent != self.record.parent
+            {
+                return Err("staging cleanup record was replaced; files preserved".into());
+            }
+            std::fs::remove_file(&self.journal).map_err(|e| e.to_string())?;
+            File::open(self.journal.parent().unwrap())
+                .and_then(|parent| parent.sync_all())
+                .map_err(|e| e.to_string())?;
+        }
+        self.closed = true;
+        Ok(())
+    }
+}
+impl Drop for StagingDirectory {
+    fn drop(&mut self) {
+        if let Err(error) = self.close() {
+            eprintln!("[install] {error}");
+        }
+    }
+}
+
 pub(crate) struct Stage {
-    temporary: tempfile::TempDir,
+    temporary: StagingDirectory,
     _global: File,
     _asset: File,
     destination: PathBuf,
@@ -153,6 +359,121 @@ pub(crate) struct Stage {
     asset_epoch: (PathBuf, u64),
     key: String,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PromotionPoint {
+    BeforeExchange,
+    AfterExchange,
+    AfterSync,
+}
+
+fn exchange(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let from = std::ffi::CString::new(from.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::other("invalid staging path"))?;
+    let to = std::ffi::CString::new(to.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::other("invalid artifact path"))?;
+    // SAFETY: NUL-terminated paths. Callers hold installer ownership of both
+    // directories on the same filesystem; exchange cannot expose half a tree.
+    if unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    } < 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Flush payloads and nested directory entries before publishing their name.
+/// Archive member writes already sync files, but their parent directories and
+/// subsequent flattening/renames also need a durable boundary.
+fn sync_tree(
+    root: &Path,
+    check: impl Fn() -> Result<(), String>,
+    mut sync: impl FnMut(&Path, &File) -> std::io::Result<()>,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(180);
+    let mut pending = vec![(root.to_owned(), 0)];
+    let mut directories = Vec::new();
+    let mut count = 0usize;
+    while let Some((directory, depth)) = pending.pop() {
+        check()?;
+        if depth > 32 || Instant::now() >= deadline {
+            return Err("installation durability limit exceeded".into());
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_DIRECTORY)
+            .open(&directory)
+            .map_err(|_| "cannot open installation directory for synchronization")?;
+        for entry in std::fs::read_dir(&directory)
+            .map_err(|_| "cannot enumerate installation for synchronization")?
+        {
+            check()?;
+            count += 1;
+            if count > 4097 || Instant::now() >= deadline {
+                return Err("installation durability limit exceeded".into());
+            }
+            let path = entry
+                .map_err(|_| "cannot inspect installation for synchronization")?
+                .path();
+            let metadata = std::fs::symlink_metadata(&path)
+                .map_err(|_| "cannot inspect installation for synchronization")?;
+            if metadata.is_dir() {
+                pending.push((path, depth + 1));
+            } else if metadata.is_file() {
+                let payload = std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                    .open(&path)
+                    .map_err(|_| "cannot open installation payload for synchronization")?;
+                if !payload.metadata().is_ok_and(|meta| {
+                    meta.is_file()
+                        && DirectoryIdentity::of(&meta) == DirectoryIdentity::of(&metadata)
+                }) {
+                    return Err("installation payload changed during synchronization".into());
+                }
+                sync(&path, &payload).map_err(|_| "cannot sync installation payload")?;
+            } else if !metadata.file_type().is_symlink() {
+                return Err("unsupported installation entry".into());
+            }
+        }
+        directories.push((
+            directory,
+            DirectoryIdentity::of(
+                &file
+                    .metadata()
+                    .map_err(|_| "cannot inspect installation directory")?,
+            ),
+        ));
+    }
+    for (directory, identity) in directories.into_iter().rev() {
+        check()?;
+        if Instant::now() >= deadline {
+            return Err("installation durability limit exceeded".into());
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_DIRECTORY)
+            .open(&directory)
+            .map_err(|_| "cannot open installation directory for synchronization")?;
+        if !file
+            .metadata()
+            .is_ok_and(|meta| DirectoryIdentity::of(&meta) == identity)
+        {
+            return Err("installation directory changed during synchronization".into());
+        }
+        sync(&directory, &file).map_err(|_| "cannot sync installation directory")?;
+    }
+    check()
+}
+
 impl Stage {
     #[cfg(test)]
     pub fn new(data: &Path, key: &str, destination: PathBuf) -> Result<Self, String> {
@@ -183,10 +504,7 @@ impl Stage {
         request.check(cancel)?;
         let parent = destination.parent().ok_or("artifact has no parent")?;
         crate::private_fs::directory(parent).map_err(|e| e.to_string())?;
-        let temporary = tempfile::Builder::new()
-            .prefix(".mywhisper-install-")
-            .tempdir_in(parent)
-            .map_err(|e| e.to_string())?;
+        let temporary = StagingDirectory::new(data, key, parent)?;
         Ok(Self {
             temporary,
             _global: global,
@@ -199,7 +517,7 @@ impl Stage {
         })
     }
     pub fn path(&self) -> &Path {
-        self.temporary.path()
+        &self.temporary.path
     }
     pub fn destination(&self) -> &Path {
         &self.destination
@@ -233,9 +551,19 @@ impl Stage {
     pub fn check(&self, cancel: &AtomicBool) -> Result<(), String> {
         self.authority()?.check(cancel)
     }
-    pub fn promote(mut self, cancel: &AtomicBool) -> Result<Authority, String> {
-        use std::os::unix::ffi::OsStrExt;
+    pub fn promote(self, cancel: &AtomicBool) -> Result<Authority, String> {
+        self.promote_observed(cancel, |_| {}, |_, file| file.sync_all())
+    }
+
+    fn promote_observed(
+        mut self,
+        cancel: &AtomicBool,
+        mut reached: impl FnMut(PromotionPoint),
+        mut sync: impl FnMut(&Path, &File) -> std::io::Result<()>,
+    ) -> Result<Authority, String> {
         self.check(cancel)?;
+        sync_tree(self.path(), || self.check(cancel), &mut sync)?;
+        let replacing = self.temporary.include_previous(&self.destination)?;
         // Serialize the final check/rename against delete/reset epoch changes.
         let metadata = self.global_epoch.0.parent().unwrap().join("metadata.lock");
         let _metadata = crate::private_fs::lock_guarded(&metadata, || {
@@ -249,42 +577,46 @@ impl Stage {
         self.asset_epoch.1 = epoch(&self.asset_epoch.0)?;
         crate::installed_asset::invalidate(&self.data, Some(&self.key));
         crate::transcribe::retire_invalid_assets(&self.data);
-        if self.destination.exists() {
-            if std::fs::symlink_metadata(&self.destination)
-                .map_err(|e| e.to_string())?
-                .file_type()
-                .is_symlink()
-            {
-                return Err("artifact destination is a symlink".into());
-            }
-            let from = std::ffi::CString::new(self.path().as_os_str().as_bytes())
-                .map_err(|_| "invalid staging path")?;
-            let to = std::ffi::CString::new(self.destination.as_os_str().as_bytes())
-                .map_err(|_| "invalid artifact path")?;
-            // SAFETY: both directories are on the same filesystem, exclusively
-            // owned under the installation locks. Exchange is atomic.
-            if unsafe {
-                libc::renameat2(
-                    libc::AT_FDCWD,
-                    from.as_ptr(),
-                    libc::AT_FDCWD,
-                    to.as_ptr(),
-                    libc::RENAME_EXCHANGE,
-                )
-            } < 0
-            {
-                return Err(format!(
-                    "atomic installation: {}",
-                    std::io::Error::last_os_error()
-                ));
-            }
+        reached(PromotionPoint::BeforeExchange);
+        self.check(cancel)?;
+        if replacing {
+            exchange(self.path(), &self.destination)
+                .map_err(|e| format!("atomic installation: {e}"))?;
         } else {
             std::fs::rename(self.path(), &self.destination).map_err(|e| e.to_string())?;
         }
-        File::open(self.destination.parent().unwrap())
-            .and_then(|parent| parent.sync_all())
-            .map_err(|e| e.to_string())?;
-        // TempDir now owns the previous installation after exchange.
+        reached(PromotionPoint::AfterExchange);
+        let parent = self.destination.parent().unwrap();
+        if File::open(parent)
+            .and_then(|file| sync(parent, &file))
+            .is_err()
+        {
+            // A failed durability boundary is a failed update. Restore the
+            // previous complete installation before any backup cleanup.
+            let rollback = if replacing {
+                exchange(self.path(), &self.destination)
+            } else {
+                std::fs::rename(&self.destination, self.path())
+            };
+            if rollback.is_err() {
+                // Preserve both complete trees and the ownership journal if
+                // even rollback fails; a later retry can recover, not guess.
+                self.temporary.closed = true;
+                return Err(
+                    "installation sync and rollback failed; files preserved for recovery".into(),
+                );
+            }
+            File::open(parent)
+                .and_then(|file| file.sync_all())
+                .map_err(|_| "installation rollback could not be synchronized")?;
+            return Err(
+                "installation could not be synchronized; previous installation preserved".into(),
+            );
+        }
+        reached(PromotionPoint::AfterSync);
+        // Cleanup and its durable journal cover the previous installation
+        // after exchange. A failed cleanup remains recoverable on retry.
+        self.temporary.close()?;
         self.authority()
     }
 }
@@ -302,8 +634,45 @@ pub(crate) fn delete(data: &Path, key: &str, destination: &Path) -> std::io::Res
     drop(metadata);
     crate::transcribe::retire_invalid_assets(data);
     let _asset = crate::private_fs::lock(&control.join(format!("{key}.lock")))?;
+    StagingDirectory::recover(
+        data,
+        key,
+        destination
+            .parent()
+            .ok_or_else(|| std::io::Error::other("artifact has no parent"))?,
+    )
+    .map_err(std::io::Error::other)?;
     if destination.exists() {
         std::fs::remove_dir_all(destination)?;
+        File::open(destination.parent().unwrap())?.sync_all()?;
+    }
+    Ok(())
+}
+
+/// The exclusive reset owner has revoked and waited for all installers. Remove
+/// their cache and journals together; keep epochs, locks and integrity keys.
+pub(crate) fn clear_cache(data: &Path) -> std::io::Result<()> {
+    let _reset = reset(data)?;
+    for name in ["models", "bin"] {
+        let path = data.join(name);
+        if path.exists() {
+            std::fs::remove_dir_all(&path)?;
+        }
+        crate::private_fs::directory(&path)?;
+    }
+    File::open(data)?.sync_all()?;
+    let staging = data.join(".install/staging");
+    match std::fs::symlink_metadata(&staging) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            std::fs::remove_dir_all(&staging)?;
+            File::open(data.join(".install"))?.sync_all()?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        _ => {
+            return Err(std::io::Error::other(
+                "invalid installation journal directory",
+            ));
+        }
     }
     Ok(())
 }
@@ -678,6 +1047,487 @@ mod tests {
         for key in ["", "../escape", "x/y", "..", ".private", "x\0y"] {
             assert!(Stage::new(data.path(), key, data.path().join("models/test")).is_err());
             assert!(delete(data.path(), key, &data.path().join("models/test")).is_err());
+        }
+    }
+
+    #[test]
+    fn interrupted_staging_is_recovered_without_deleting_installed_or_foreign_files() {
+        const NAME: &str =
+            "interrupted_staging_is_recovered_without_deleting_installed_or_foreign_files";
+        if let Some(path) = std::env::var_os("MYWHISPER_STAGE_RECOVERY_CHILD") {
+            use std::os::unix::fs::MetadataExt;
+            let data = PathBuf::from(path);
+            assert!(
+                data.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("mywhisper-staging-recovery-audit.")
+            );
+            assert_eq!(std::fs::metadata(&data).unwrap().uid(), unsafe {
+                libc::geteuid()
+            });
+            assert_eq!(std::fs::metadata(&data).unwrap().mode() & 0o777, 0o700);
+            assert!(data.join(".disposable").is_file());
+            let stage = Stage::new(&data, "model-test", data.join("models/test")).unwrap();
+            std::fs::write(
+                stage.path().join("partial-model"),
+                b"synthetic partial bytes",
+            )
+            .unwrap();
+            crate::private_fs::replace(
+                &data.join("stage-ready"),
+                stage.path().as_os_str().as_encoded_bytes(),
+            )
+            .unwrap();
+            // The parent terminates this exact owned process while it holds
+            // both installer locks; no destructor is allowed to simulate
+            // cleanup for the recovery assertion.
+            loop {
+                std::thread::park();
+            }
+        }
+        let data = tempfile::Builder::new()
+            .prefix("mywhisper-staging-recovery-audit.")
+            .tempdir()
+            .unwrap();
+        crate::private_fs::directory(data.path()).unwrap();
+        crate::private_fs::replace(&data.path().join(".disposable"), b"fixture").unwrap();
+        let destination = data.path().join("models/test");
+        crate::private_fs::directory(&destination).unwrap();
+        std::fs::write(destination.join("model"), b"previous installation").unwrap();
+        let foreign = data.path().join("models/.mywhisper-install-manual-backup");
+        crate::private_fs::directory(&foreign).unwrap();
+        std::fs::write(foreign.join("user-model"), b"synthetic user-managed model").unwrap();
+        let another =
+            Stage::new(data.path(), "model-other", data.path().join("models/other")).unwrap();
+        std::fs::write(
+            another.path().join("active-other-model"),
+            b"other active asset",
+        )
+        .unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        let log = std::fs::File::create(data.path().join("staging-child.log")).unwrap();
+        command
+            .args([
+                "--exact",
+                &format!("artifact::tests::{NAME}"),
+                "--nocapture",
+            ])
+            .env("MYWHISPER_STAGE_RECOVERY_CHILD", data.path())
+            .env_remove("DBUS_SESSION_BUS_ADDRESS")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(log.try_clone().unwrap()))
+            .stderr(std::process::Stdio::from(log));
+        let child = crate::child::OwnedChild::spawn(&mut command).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !data.path().join("stage-ready").exists() {
+            assert!(
+                child.try_status().unwrap().is_none(),
+                "staging child exited before barrier: {}",
+                String::from_utf8_lossy(
+                    &crate::private_fs::read_bounded(
+                        &data.path().join("staging-child.log"),
+                        64 * 1024
+                    )
+                    .unwrap()
+                )
+            );
+            assert!(
+                Instant::now() < deadline,
+                "staging child did not reach barrier"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let interrupted = PathBuf::from(
+            String::from_utf8(
+                crate::private_fs::read_bounded(&data.path().join("stage-ready"), 4096).unwrap(),
+            )
+            .unwrap(),
+        );
+        assert!(interrupted.starts_with(data.path().join("models")));
+        assert!(interrupted.join("partial-model").is_file());
+        drop(child); // actual SIGKILL and reap; locks are released by exit
+        assert!(
+            interrupted.is_dir(),
+            "the kill must leave actual interrupted staging"
+        );
+        let fresh = Stage::new(data.path(), "model-test", destination.clone()).unwrap();
+        assert!(
+            !interrupted.exists(),
+            "a retry left the killed installer's partial model files behind"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("model")).unwrap(),
+            b"previous installation"
+        );
+        assert_eq!(
+            std::fs::read(foreign.join("user-model")).unwrap(),
+            b"synthetic user-managed model"
+        );
+        assert_eq!(
+            std::fs::read(another.path().join("active-other-model")).unwrap(),
+            b"other active asset"
+        );
+        let fresh_path = fresh.path().to_owned();
+        drop(fresh);
+        assert!(!fresh_path.exists());
+    }
+
+    #[test]
+    fn killed_promotion_preserves_a_complete_installation_and_recovers_its_owned_backup() {
+        const NAME: &str =
+            "killed_promotion_preserves_a_complete_installation_and_recovers_its_owned_backup";
+        if let Some(path) = std::env::var_os("MYWHISPER_PROMOTION_RECOVERY_CHILD") {
+            use std::os::unix::fs::MetadataExt;
+            let data = PathBuf::from(path);
+            assert!(
+                data.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("mywhisper-promotion-recovery-audit.")
+            );
+            assert_eq!(std::fs::metadata(&data).unwrap().uid(), unsafe {
+                libc::geteuid()
+            });
+            assert_eq!(std::fs::metadata(&data).unwrap().mode() & 0o777, 0o700);
+            assert!(data.join(".disposable").is_file());
+            let phase = std::env::var("MYWHISPER_PROMOTION_RECOVERY_PHASE").unwrap();
+            let expected = match phase.as_str() {
+                "0" => PromotionPoint::BeforeExchange,
+                "1" => PromotionPoint::AfterExchange,
+                "2" => PromotionPoint::AfterSync,
+                _ => panic!("unsupported promotion fixture phase"),
+            };
+            let stage = Stage::new(&data, "model-test", data.join("models/test")).unwrap();
+            let temporary = stage.path().to_owned();
+            std::fs::write(stage.path().join("model"), b"complete replacement").unwrap();
+            stage
+                .promote_observed(
+                    &AtomicBool::new(false),
+                    move |point| {
+                        if point == expected {
+                            crate::private_fs::replace(
+                                &data.join("promotion-ready"),
+                                temporary.as_os_str().as_encoded_bytes(),
+                            )
+                            .unwrap();
+                            loop {
+                                std::thread::park();
+                            }
+                        }
+                    },
+                    |_, file| file.sync_all(),
+                )
+                .unwrap();
+            panic!("promotion fixture did not stop at its selected boundary");
+        }
+        for phase in 0..3 {
+            let data = tempfile::Builder::new()
+                .prefix("mywhisper-promotion-recovery-audit.")
+                .tempdir()
+                .unwrap();
+            crate::private_fs::directory(data.path()).unwrap();
+            crate::private_fs::replace(&data.path().join(".disposable"), b"fixture").unwrap();
+            let destination = data.path().join("models/test");
+            crate::private_fs::directory(&destination).unwrap();
+            std::fs::write(destination.join("model"), b"complete previous").unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            let log = std::fs::File::create(data.path().join("promotion-child.log")).unwrap();
+            command
+                .args([
+                    "--exact",
+                    &format!("artifact::tests::{NAME}"),
+                    "--nocapture",
+                ])
+                .env("MYWHISPER_PROMOTION_RECOVERY_CHILD", data.path())
+                .env("MYWHISPER_PROMOTION_RECOVERY_PHASE", phase.to_string())
+                .env_remove("DBUS_SESSION_BUS_ADDRESS")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::from(log.try_clone().unwrap()))
+                .stderr(std::process::Stdio::from(log));
+            let child = crate::child::OwnedChild::spawn(&mut command).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !data.path().join("promotion-ready").exists() {
+                assert!(
+                    child.try_status().unwrap().is_none(),
+                    "promotion child exited: {}",
+                    String::from_utf8_lossy(
+                        &crate::private_fs::read_bounded(
+                            &data.path().join("promotion-child.log"),
+                            64 * 1024
+                        )
+                        .unwrap()
+                    )
+                );
+                assert!(Instant::now() < deadline, "promotion did not reach barrier");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let interrupted = PathBuf::from(
+                String::from_utf8(
+                    crate::private_fs::read_bounded(&data.path().join("promotion-ready"), 4096)
+                        .unwrap(),
+                )
+                .unwrap(),
+            );
+            assert!(interrupted.starts_with(data.path().join("models")));
+            drop(child);
+            let expected: &[u8] = if phase == 0 {
+                b"complete previous"
+            } else {
+                b"complete replacement"
+            };
+            assert_eq!(std::fs::read(destination.join("model")).unwrap(), expected);
+            assert!(interrupted.is_dir());
+            let fresh = Stage::new(data.path(), "model-test", destination.clone()).unwrap();
+            assert!(
+                !interrupted.exists(),
+                "recovery kept the killed promotion's owned directory"
+            );
+            assert_eq!(std::fs::read(destination.join("model")).unwrap(), expected);
+            std::fs::write(fresh.path().join("model"), b"successful retry").unwrap();
+            fresh.promote(&AtomicBool::new(false)).unwrap();
+            assert_eq!(
+                std::fs::read(destination.join("model")).unwrap(),
+                b"successful retry"
+            );
+            assert!(!StagingDirectory::journal(data.path(), "model-test").exists());
+        }
+    }
+
+    #[test]
+    fn recovery_preserves_unidentified_or_replaced_staging_and_cache_clear_recovers() {
+        use std::os::unix::fs::symlink;
+        for fault in 0..10 {
+            let data = tempfile::tempdir().unwrap();
+            let parent = data.path().join("models");
+            crate::private_fs::directory(&parent).unwrap();
+            let staging = StagingDirectory::new(data.path(), "model-test", &parent).unwrap();
+            let path = staging.path.clone();
+            let journal = staging.journal.clone();
+            let mut record = serde_json::to_value(&staging.record).unwrap();
+            std::mem::forget(staging); // journal-only fixture; no held descriptors
+            let retained = parent.join("preserved-model");
+            crate::private_fs::directory(&retained).unwrap();
+            std::fs::write(retained.join("model"), b"complete existing model").unwrap();
+            std::fs::write(path.join("partial"), b"owned incomplete bytes").unwrap();
+            let external = data.path().join("user-managed-backup");
+            crate::private_fs::directory(&external).unwrap();
+            std::fs::write(external.join("model"), b"user-managed backup").unwrap();
+            match fault {
+                0 => record["version"] = 2.into(),
+                1 => record["key"] = "model-other".into(),
+                2 => record["parent"] = "../user-managed-backup".into(),
+                3 => record["name"] = "../user-managed-backup".into(),
+                4 => record["name"] = ".mywhisper-install-😀".into(),
+                5 => record["identities"][0]["inode"] = 0.into(),
+                6 => record["identities"] = serde_json::json!([]),
+                7 => {
+                    std::fs::rename(&path, data.path().join("old-owned-staging")).unwrap();
+                    crate::private_fs::directory(&path).unwrap();
+                    std::fs::write(path.join("partial"), b"replacement user bytes").unwrap();
+                }
+                8 => {
+                    std::fs::remove_dir_all(&path).unwrap();
+                    symlink(&external, &path).unwrap();
+                }
+                _ => {}
+            }
+            let encoded = if fault == 9 {
+                vec![b'x'; 4097]
+            } else {
+                serde_json::to_vec(&record).unwrap()
+            };
+            crate::private_fs::replace(&journal, &encoded).unwrap();
+            assert!(StagingDirectory::new(data.path(), "model-test", &parent).is_err());
+            assert_eq!(std::fs::read(&journal).unwrap(), encoded);
+            assert_eq!(
+                std::fs::read(retained.join("model")).unwrap(),
+                b"complete existing model"
+            );
+            assert_eq!(
+                std::fs::read(external.join("model")).unwrap(),
+                b"user-managed backup"
+            );
+            assert!(std::fs::symlink_metadata(&path).is_ok());
+            let stale = observe_authority(data.path(), "model-test").unwrap();
+            crate::stt::clear_download_cache(data.path()).unwrap();
+            assert!(!journal.exists());
+            assert!(!retained.exists());
+            assert_eq!(
+                std::fs::read(external.join("model")).unwrap(),
+                b"user-managed backup"
+            );
+            assert!(stale.check(&AtomicBool::new(false)).is_err());
+            assert!(
+                Stage::new_requested(
+                    data.path(),
+                    "model-test",
+                    retained.clone(),
+                    &stale,
+                    &AtomicBool::new(false)
+                )
+                .is_err()
+            );
+            let retry = Stage::new(data.path(), "model-test", retained.clone()).unwrap();
+            std::fs::write(retry.path().join("model"), b"successful retry").unwrap();
+            retry.promote(&AtomicBool::new(false)).unwrap();
+            assert_eq!(
+                std::fs::read(retained.join("model")).unwrap(),
+                b"successful retry"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_reservations_and_deleted_assets_recover_without_restoring_old_content() {
+        for created in [false, true] {
+            let data = tempfile::tempdir().unwrap();
+            let parent = data.path().join("models");
+            crate::private_fs::directory(&parent).unwrap();
+            let staging = StagingDirectory::new(data.path(), "model-test", &parent).unwrap();
+            let path = staging.path.clone();
+            let journal = staging.journal.clone();
+            let mut record = serde_json::to_value(&staging.record).unwrap();
+            std::mem::forget(staging);
+            record["identities"] = serde_json::json!([]);
+            if !created {
+                std::fs::remove_dir(&path).unwrap();
+            }
+            crate::private_fs::replace(&journal, &serde_json::to_vec(&record).unwrap()).unwrap();
+            let retry = Stage::new(data.path(), "model-test", parent.join("test")).unwrap();
+            assert!(!path.exists());
+            drop(retry);
+            assert!(!journal.exists());
+        }
+        let data = tempfile::tempdir().unwrap();
+        let parent = data.path().join("models");
+        crate::private_fs::directory(&parent).unwrap();
+        let destination = parent.join("test");
+        crate::private_fs::directory(&destination).unwrap();
+        std::fs::write(destination.join("model"), b"old installed model").unwrap();
+        let staging = StagingDirectory::new(data.path(), "model-test", &parent).unwrap();
+        let path = staging.path.clone();
+        let journal = staging.journal.clone();
+        std::fs::write(path.join("model"), b"interrupted replacement").unwrap();
+        std::mem::forget(staging);
+        let stale = observe_authority(data.path(), "model-test").unwrap();
+        delete(data.path(), "model-test", &destination).unwrap();
+        assert!(!path.exists());
+        assert!(!journal.exists());
+        assert!(!destination.exists());
+        assert!(
+            Stage::new_requested(
+                data.path(),
+                "model-test",
+                destination.clone(),
+                &stale,
+                &AtomicBool::new(false)
+            )
+            .is_err()
+        );
+        let retry = Stage::new(data.path(), "model-test", destination.clone()).unwrap();
+        std::fs::write(retry.path().join("model"), b"explicit fresh request").unwrap();
+        retry.promote(&AtomicBool::new(false)).unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("model")).unwrap(),
+            b"explicit fresh request"
+        );
+    }
+
+    #[test]
+    fn payload_and_nested_directory_sync_failures_preserve_previous_installation() {
+        for fail_directory in [false, true] {
+            let data = tempfile::tempdir().unwrap();
+            let destination = data.path().join("models/test");
+            crate::private_fs::directory(&destination).unwrap();
+            std::fs::write(destination.join("model"), b"previous complete model").unwrap();
+            let stage = Stage::new(data.path(), "model-test", destination.clone()).unwrap();
+            crate::private_fs::directory(&stage.path().join("nested/deeper")).unwrap();
+            std::fs::write(
+                stage.path().join("nested/deeper/model"),
+                b"replacement bytes",
+            )
+            .unwrap();
+            let staging = stage.path().to_owned();
+            let authority = stage.authority().unwrap();
+            let mut failed = false;
+            let mut reached_promotion = false;
+            let result = stage.promote_observed(
+                &AtomicBool::new(false),
+                |_| reached_promotion = true,
+                |path, file| {
+                    if (fail_directory && path.ends_with("nested/deeper"))
+                        || (!fail_directory && path.ends_with("nested/deeper/model"))
+                    {
+                        failed = true;
+                        return Err(std::io::Error::from_raw_os_error(libc::ENOSPC));
+                    }
+                    file.sync_all()
+                },
+            );
+            assert!(result.is_err());
+            assert!(failed);
+            assert!(!reached_promotion);
+            assert!(!staging.exists());
+            assert!(!StagingDirectory::journal(data.path(), "model-test").exists());
+            authority.check(&AtomicBool::new(false)).unwrap();
+            assert_eq!(
+                std::fs::read(destination.join("model")).unwrap(),
+                b"previous complete model"
+            );
+            let retry = Stage::new(data.path(), "model-test", destination.clone()).unwrap();
+            std::fs::write(retry.path().join("model"), b"successful replacement").unwrap();
+            retry.promote(&AtomicBool::new(false)).unwrap();
+            assert_eq!(
+                std::fs::read(destination.join("model")).unwrap(),
+                b"successful replacement"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_promotion_parent_sync_restores_complete_previous_installation() {
+        for replacing in [false, true] {
+            let data = tempfile::tempdir().unwrap();
+            let destination = data.path().join("models/test");
+            if replacing {
+                crate::private_fs::directory(&destination).unwrap();
+                std::fs::write(destination.join("model"), b"previous complete model").unwrap();
+            }
+            let stage = Stage::new(data.path(), "model-test", destination.clone()).unwrap();
+            let temporary = stage.path().to_owned();
+            std::fs::write(stage.path().join("model"), b"complete replacement").unwrap();
+            let mut failure = false;
+            let result = stage.promote_observed(
+                &AtomicBool::new(false),
+                |_| {},
+                |path, file| {
+                    if path == destination.parent().unwrap() {
+                        failure = true;
+                        return Err(std::io::Error::from_raw_os_error(libc::ENOSPC));
+                    }
+                    file.sync_all()
+                },
+            );
+            assert!(result.is_err());
+            assert!(failure);
+            assert!(!temporary.exists());
+            assert!(!StagingDirectory::journal(data.path(), "model-test").exists());
+            if replacing {
+                assert_eq!(
+                    std::fs::read(destination.join("model")).unwrap(),
+                    b"previous complete model"
+                );
+            } else {
+                assert!(!destination.exists());
+            }
+            let retry = Stage::new(data.path(), "model-test", destination.clone()).unwrap();
+            std::fs::write(retry.path().join("model"), b"complete successful retry").unwrap();
+            retry.promote(&AtomicBool::new(false)).unwrap();
+            assert_eq!(
+                std::fs::read(destination.join("model")).unwrap(),
+                b"complete successful retry"
+            );
         }
     }
 
@@ -1105,6 +1955,125 @@ mod tests {
             assert_eq!(unpack_tar(&tar, &root, || Ok(())).is_ok(), succeeds);
             if succeeds {
                 assert_eq!(std::fs::read(root.join("lib/library")).unwrap(), b"data");
+            }
+        }
+    }
+
+    #[test]
+    fn cancellation_delete_and_reset_interrupt_partial_tar_and_zip_extraction() {
+        for zipped in [false, true] {
+            for action in 0..3 {
+                let data = tempfile::tempdir().unwrap();
+                let archive = data.path().join("synthetic-archive");
+                let payload = vec![71u8; 2 * 1024 * 1024];
+                if zipped {
+                    let mut writer = zip::ZipWriter::new(File::create(&archive).unwrap());
+                    writer
+                        .start_file("model", zip::write::SimpleFileOptions::default())
+                        .unwrap();
+                    writer.write_all(&payload).unwrap();
+                    writer.finish().unwrap();
+                } else {
+                    let encoder = bzip2::write::BzEncoder::new(
+                        File::create(&archive).unwrap(),
+                        bzip2::Compression::fast(),
+                    );
+                    let mut writer = tar::Builder::new(encoder);
+                    let mut header = tar::Header::new_gnu();
+                    header.set_mode(0o600);
+                    header.set_size(payload.len() as u64);
+                    header.set_cksum();
+                    writer
+                        .append_data(&mut header, "model", &payload[..])
+                        .unwrap();
+                    writer.into_inner().unwrap().finish().unwrap();
+                }
+                let destination = data.path().join("models/test");
+                crate::private_fs::directory(&destination).unwrap();
+                std::fs::write(destination.join("model"), b"previous complete model").unwrap();
+                let stage = Stage::new(data.path(), "model-test", destination.clone()).unwrap();
+                let temporary = stage.path().to_owned();
+                let cancel = AtomicBool::new(false);
+                let begun = AtomicBool::new(false);
+                let mutation = std::sync::Mutex::new(None);
+                let check = || {
+                    if stage
+                        .path()
+                        .join("model")
+                        .metadata()
+                        .is_ok_and(|meta| meta.len() >= 65536)
+                        && !begun.swap(true, Ordering::AcqRel)
+                    {
+                        assert!(
+                            stage.path().join("model").metadata().unwrap().len()
+                                < payload.len() as u64
+                        );
+                        assert_eq!(
+                            std::fs::read(destination.join("model")).unwrap(),
+                            b"previous complete model"
+                        );
+                        if action == 0 {
+                            cancel.store(true, Ordering::Release);
+                        } else {
+                            let root = data.path().to_owned();
+                            let target = destination.clone();
+                            *mutation.lock().unwrap() = Some(std::thread::spawn(move || {
+                                if action == 1 {
+                                    delete(&root, "model-test", &target)
+                                } else {
+                                    crate::stt::clear_download_cache(&root)
+                                }
+                                .unwrap();
+                            }));
+                            let deadline = Instant::now() + Duration::from_secs(2);
+                            while stage.check(&cancel).is_ok() {
+                                assert!(
+                                    Instant::now() < deadline,
+                                    "extraction mutation did not revoke active writing"
+                                );
+                                std::thread::sleep(Duration::from_millis(2));
+                            }
+                        }
+                    }
+                    stage.check(&cancel)
+                };
+                let result = if zipped {
+                    unpack_zip(&archive, stage.path(), check)
+                } else {
+                    unpack_tar(&archive, stage.path(), check)
+                };
+                assert!(result.is_err());
+                assert!(begun.load(Ordering::Acquire));
+                let partial = stage.path().join("model").metadata().unwrap().len();
+                assert!(partial >= 65536 && partial < payload.len() as u64);
+                assert!(stage.promote(&cancel).is_err());
+                if let Some(task) = mutation.into_inner().unwrap() {
+                    task.join().unwrap();
+                }
+                assert!(!temporary.exists());
+                assert!(!StagingDirectory::journal(data.path(), "model-test").exists());
+                if action == 0 {
+                    assert_eq!(
+                        std::fs::read(destination.join("model")).unwrap(),
+                        b"previous complete model"
+                    );
+                } else {
+                    assert!(!destination.exists());
+                }
+                let retry = Stage::new(data.path(), "model-test", destination.clone()).unwrap();
+                if zipped {
+                    unpack_zip(&archive, retry.path(), || {
+                        retry.check(&AtomicBool::new(false))
+                    })
+                    .unwrap();
+                } else {
+                    unpack_tar(&archive, retry.path(), || {
+                        retry.check(&AtomicBool::new(false))
+                    })
+                    .unwrap();
+                }
+                retry.promote(&AtomicBool::new(false)).unwrap();
+                assert_eq!(std::fs::read(destination.join("model")).unwrap(), payload);
             }
         }
     }

@@ -500,15 +500,7 @@ pub fn clear_download_cache(data_dir: &Path) -> std::io::Result<()> {
     {
         cancel.store(true, Ordering::Release);
     }
-    let _reset = crate::artifact::reset(data_dir)?;
-    for name in ["models", "bin"] {
-        let path = data_dir.join(name);
-        if path.exists() {
-            std::fs::remove_dir_all(&path)?;
-        }
-        crate::private_fs::directory(&path)?;
-    }
-    Ok(())
+    crate::artifact::clear_cache(data_dir)
 }
 
 // ---------------------------------------------------------------- download
