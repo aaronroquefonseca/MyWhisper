@@ -109,10 +109,47 @@ pub fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     tmp.as_file()
         .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    #[cfg(test)]
+    replacement_fault::point("created", path);
     tmp.write_all(bytes)?;
+    #[cfg(test)]
+    replacement_fault::point("written", path);
     tmp.as_file().sync_all()?;
+    #[cfg(test)]
+    replacement_fault::point("file-synced", path);
     tmp.persist(path).map_err(|e| e.error)?;
-    File::open(parent)?.sync_all()
+    #[cfg(test)]
+    replacement_fault::point("renamed", path);
+    File::open(parent)?.sync_all()?;
+    #[cfg(test)]
+    replacement_fault::point("directory-synced", path);
+    Ok(())
+}
+
+// Test-only, thread-local barriers keep fault injection out of the production
+// binary and out of unrelated parallel tests. The child owning the barrier is
+// killed while the real replacement still owns its initialization lock.
+#[cfg(test)]
+pub(crate) mod replacement_fault {
+    use std::cell::RefCell;
+    use std::path::Path;
+
+    type Hook = Box<dyn Fn(&str, &Path)>;
+    thread_local! {
+        static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn install(hook: impl Fn(&str, &Path) + 'static) {
+        HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn point(phase: &str, path: &Path) {
+        HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow().as_ref() {
+                hook(phase, path);
+            }
+        });
+    }
 }
 
 #[cfg(test)]
