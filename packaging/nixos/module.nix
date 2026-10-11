@@ -13,7 +13,7 @@ in {
     enableDownloadedRuntimes = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Provide nix-ld and CPU libraries for the downloaded upstream local runtimes.";
+      description = "Provide nix-ld and CPU/Vulkan libraries for the downloaded upstream local runtimes.";
     };
   };
 

@@ -7,7 +7,7 @@
     system = "x86_64-linux";
     pkgs = import nixpkgs { inherit system; };
     manifest = builtins.fromTOML (builtins.readFile ../../Cargo.toml);
-    runtimeLibraries = with pkgs; [ stdenv.cc.cc alsa-lib zlib openssl ];
+    runtimeLibraries = with pkgs; [ stdenv.cc.cc alsa-lib zlib openssl vulkan-loader ];
     mywhisper = pkgs.rustPlatform.buildRustPackage {
       pname = "mywhisper";
       version = manifest.package.version;
@@ -55,6 +55,10 @@
     nixosModules.default = import ./module.nix { inherit mywhisper runtimeLibraries; };
     checks.${system} = {
       desktop = import ./desktop-test.nix {
+        inherit pkgs mywhisper;
+        module = self.nixosModules.default;
+      };
+      whisper-vulkan-loader = import ./runtime-loader-test.nix {
         inherit pkgs mywhisper;
         module = self.nixosModules.default;
       };

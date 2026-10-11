@@ -78,9 +78,10 @@ background processes never request an unlock prompt. Keyring requests have a fiv
 deadline. If an encrypted database key is missing, restore its original keyring entry;
 MyWhisper preserves the database and never substitutes a new key.
 The package provides its default clipboard, paste and PulseAudio tools.
-The NixOS module also supplies `nix-ld` and the CPU runtime libraries required by
+The NixOS module also supplies `nix-ld` and the CPU/Vulkan runtime libraries required by
 the downloaded upstream engines. Set `services.mywhisper.enableDownloadedRuntimes = false`
 when using only remote providers and supplying your own runtime environment.
+Vulkan inference additionally needs a working Vulkan driver for the selected device.
 CUDA engines additionally require the matching NVIDIA driver and CUDA/cuDNN
 libraries; MyWhisper reports missing libraries before starting the selected engine.
 
@@ -89,6 +90,7 @@ Run the packaged GTK logo check and a disposable NixOS/Sway desktop VM:
 ```bash
 nix build ./packaging/nixos#checks.x86_64-linux.symbolic-logo
 nix build ./packaging/nixos#checks.x86_64-linux.desktop
+nix build ./packaging/nixos#checks.x86_64-linux.whisper-vulkan-loader
 ```
 
 The VM checks System dark, GUI close, encrypted storage and repeated user-service
@@ -96,6 +98,8 @@ start/stop. It uses synthetic credentials and does not access the host keyring,
 microphone, input devices or personal data. Its screenshot is in the check output.
 Physical capture, authenticated providers and downloaded runtime compatibility
 need their separate integration checks.
+The loader check downloads the pinned upstream Vulkan server and verifies it
+starts through `nix-ld` as a normal VM user. It does not establish GPU inference.
 
 ## Build
 
