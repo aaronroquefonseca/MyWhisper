@@ -1,0 +1,90 @@
+Owned DNS cancellation stress pass 1/10
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 1 test
+test transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 264 filtered out; finished in 3.99s
+
+Owned DNS cancellation stress pass 2/10
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 1 test
+test transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 264 filtered out; finished in 3.99s
+
+Owned DNS cancellation stress pass 3/10
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 1 test
+test transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 264 filtered out; finished in 4.00s
+
+Owned DNS cancellation stress pass 4/10
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 1 test
+test transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 264 filtered out; finished in 3.98s
+
+Owned DNS cancellation stress pass 5/10
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 1 test
+test transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 264 filtered out; finished in 3.99s
+
+Owned DNS cancellation stress pass 6/10
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 1 test
+test transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 264 filtered out; finished in 4.00s
+
+Owned DNS cancellation stress pass 7/10
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 1 test
+test transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 264 filtered out; finished in 4.00s
+
+Owned DNS cancellation stress pass 8/10
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 1 test
+test transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 264 filtered out; finished in 4.02s
+
+Owned DNS cancellation stress pass 9/10
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 1 test
+test transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 264 filtered out; finished in 4.00s
+
+Owned DNS cancellation stress pass 10/10
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 1 test
+test transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 264 filtered out; finished in 3.99s
+

@@ -1,0 +1,112 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "source_commit": "6225d1758b90f69e8a27b91c18fe87d3e7bcfe7c",
+  "full_rust_native_nix_source_commit": "3e5711d339b3a3fe93f4287864d00be543d78e69",
+  "checkpoint_difference": "6225d17 changes only disposable.py and its Python tests; the five Python checks and real ENOSPC gate pass after that change. Host/native/Nix Rust checks are at 3e5711d.",
+  "groups": [
+    "R49",
+    "R50",
+    "R13",
+    "R36"
+  ],
+  "correction_commits": [
+    "9c170bd",
+    "20416d8",
+    "46f31e9",
+    "b7e8c95",
+    "0d2ed5e",
+    "3e5711d",
+    "6225d17"
+  ],
+  "classification": {
+    "installer": "Inspected interrupted-stage and fsync defects, demonstrated abandoned stage and ancestor-symlink ownership failures, with actual killed-process and ENOSPC acceptance.",
+    "runner": "Demonstrated detached descendant leaks and missing explicit temporary library input under namespace isolation.",
+    "dns_fixture": "Demonstrated empty readiness-file race; inspected join/proc thread-retirement timing and stronger exact-owned-TID barrier. Original extra thread identity was not captured, so its cause is not presented as proven."
+  },
+  "corrections": [
+    "Per-asset private bounded version-1 stage journals record relative path and device/inode ownership before payload writes; locked retry/delete/cache-clear recovery removes only identified owned stages/backups.",
+    "Flush payload files and nested directories before exchange, then parent directories. Roll back failed promotion durability before deleting the prior complete installation; failed rollback retains recovery evidence.",
+    "Reject symlinked or replaced managed ancestors before admission and after waits, and retain parent identity through promotion. Unrelated outside files are never adopted or deleted.",
+    "Disposable gates own descendants through a Linux PID namespace, including daemonized and SIGKILL cases; private /tmp prevents host display-lock ownership confusion; explicit argument/environment inputs are read-only.",
+    "Publish NSS readiness atomically; verify exact owned kernel tasks retire inside the unchanged cancellation budget before asserting full baseline task count."
+  ],
+  "regressions": [
+    "19 artifact tests pass, including real SIGKILL during partial staging and at three promotion boundaries, damaged/foreign journals, cleanup/retry, fsync faults, TAR/ZIP partial-extraction Cancel/Delete/Reset and replaced ancestor identity.",
+    "Real private 512 KiB tmpfs reaches ENOSPC after 8120 downloader bytes: old synthetic model bytes/inode preserved, private stage cleaned, free-space recovery and authenticated complete retry succeed.",
+    "Five runner tests pass: normal exit, nonzero exit, timeout, outer SIGKILL and read-only explicit environment input. Descendant ownership is checked with kernel peer credentials/pidfds.",
+    "Ten runs of the unchanged stalled-DNS cancellation/deletion/reset/redirect regression: 120 cancellation cycles pass with baseline threads/processes/staging restored."
+  ],
+  "executed_validation": [
+    "cargo fmt --all -- --check: pass",
+    "cargo clippy --locked --all-targets -- -D warnings: pass",
+    "cargo test --locked --all-targets: 260 passed, zero failed, five original opt-in ignores unchanged",
+    "cargo build --release --locked --bin mywhisper: pass",
+    "Current cargo-audit: 477 dependencies, 1296 advisories, zero vulnerabilities or advisory warnings",
+    "Both native UI configurations: eight general/recovery/reset invocations and two real CPU asset/trust/cancellation invocations pass sequentially",
+    "Real private Secret Service concurrent identity/key and locked/stalled key handling, cached input and encrypted sync/discovery lifecycle pass",
+    "Fourteen packaging checks pass",
+    "Fresh committed-source Nix build/check/install/fixup: 260 tests pass, original opt-in ignores unchanged; 370 dependency notices",
+    "Actual Nix artifact visible GTK open/normal-close, encrypted disposable store and wrapper-selected resolver pass"
+  ],
+  "packaged_artifact": "/nix/store/f07i36av4pzkfb34xyns66g566c2rm10-mywhisper-0.9.3",
+  "migration_compatibility": "No database, peer protocol, identity or key migration. New stage-journal format v1 is private. Legacy unjournaled directories and externally moved stages are preserved; prefix alone is never ownership. Managed ancestor symlinks are refused while external bytes are preserved; explicit Clear Cache can unlink managed links for retry. Recovery occurs on next locked asset operation or Clear Cache, not an automatic startup sweep. Supported regular manually supplied models remain supported.",
+  "isolation": "Disposable XDG roots, encrypted stores, synthetic speech/models, private Secret Service and namespace-contained child processes; actual disk pressure only on an explicitly identified private 512 KiB tmpfs. No real user data or system driver packages changed. No memory dumps, secret credentials or recordings are committed.",
+  "retained_failures": [
+    "The native concurrent-run failure records an Xvfb display-selection collision; unchanged gates pass when scheduled sequentially.",
+    "The native heartbeat exceeded 250 ms while a separate 24-job Nix build ran. Source inspection and sequential rerun do not prove its precise cause. Assertions/timeouts were not changed; broader responsiveness under load remains open.",
+    "The first Nix check failed on an empty NSS PID marker; atomic publication fixes that reproduced test-fixture race.",
+    "One full suite observed one extra task immediately after join. The initial task identity is unknown; exact owned-TID retirement now shares the original cancellation budget, with full baseline assertion preserved."
+  ],
+  "limitations": [
+    "Original 51 findings still have grouped/final acceptance requirements; this checkpoint is not a completed release audit.",
+    "SIGKILL and injected fsync errors do not establish physical power-loss behavior.",
+    "Remaining advertised asset downloads, bounded installer/UI admission, final repair/provider/resource compatibility paths remain open.",
+    "Production process shutdown, storage/privacy, sync concurrency/clock/discovery, physical device/compositor and live cloud/WSS/runtime gates remain open.",
+    "Linux bubblewrap plus user/PID namespaces are prerequisites for disposable gates; hosted CI execution is not established by the workflow change.",
+    "Nix artifact ran on local Arch kernel/display, not a clean booted NixOS desktop; clean desktop and running upgrades/final full review remain open.",
+    "Project LICENSE deferred by user, distribution held. No PR/tag/release created."
+  ],
+  "source_file_sha256": {
+    "src/artifact.rs": "34c10df915353ac87ec597d2849a7328f06c728f25b40cd677a512afc6e5b0cc",
+    "src/stt.rs": "a7a54bdad91449fd63a08955af6628f55869bff9c4c4db69cc3ac9eff1f6425e",
+    "src/transcribe.rs": "de037374bb20d2609cf3d0e0fcf951488da0a65341064369c5ddd58dbac8f3b8",
+    "src/test_fixtures/stalled_dns.c": "c28473d069eedf0fd37c4a42863f87dd18e27ff62b8490c6e2dc945ccce3ce3a",
+    "examples/installer_fs_probe.rs": "4059567ecce747463f809e180f161afe17b116e0f038cba1cd4d72c6b85d8694",
+    "scripts/installer-fs-smoke.sh": "1b537654899593fbc6d8820e30d0a0ed2d02772764fa2ab05043eaea8ab6658c",
+    "scripts/disposable.py": "1d40ccc95f15516badb57c7cbb9df3bf1fd6d87c1821b902ffd1ba024e2b6b71",
+    "scripts/test-disposable.py": "18c461f3a034c39bd5ce289cbf87f484f47c5b0f07cb64c5bb66b9d1fa7e96ed",
+    ".github/workflows/release.yml": "08f7649d10a52962662aa9c79bdcc155bc4a897fcca6fc8f02ab4bd7686192c6"
+  },
+  "evidence_sha256": {
+    "actual-enospc.log": "9a9b33ca3f1cddad65f840f3a421806716d7724434e753bc38642a54378796e4",
+    "all-targets.log": "2f065a82139020085ee33d198d5e05785e1ae093008a29e2e64436f38e5de96c",
+    "artifact-native.log": "63ea7eeda08279ef95cc3b7349cd144ad7df248f97136c2731e8e477fad1e85a",
+    "artifact-version.log": "74f568e9cf97672590d8a0fbc2ca234d2ab7ae6322ae44c4ac92b9b45e2f2bda",
+    "clippy.log": "1fbcc0471d835837c574c2b6cb40f0c89ab17e0f1b1c5eaa734cf93d2230d307",
+    "crash-after.log": "82f65d944e2983b6e1930c2a34aeda9faf8eb783671ecdf4264f8c7f1aff1e3b",
+    "crash-before.log": "878580f9d993cb90ca0663ddb8ead51dab5199aad4dd19e316ec354831d24d3e",
+    "dns-readiness-after.log": "06a5be46cd269849232bbd6bb3ad41b8f380c5f4748823e0d843e3627c679c25",
+    "dns-readiness-before.log": "e3a04610e00a691d28830b6a69e0ed74c4da3ef5eece8200aed8f567d70dc014",
+    "dns-stress.log": "a9a9b3b72634b8b40828a4f2b2b5b1bc9d804dba528068dfd185a4c34466ab22",
+    "dns-thread-count-before.log": "0c4a2e4fc239efa1a2c5743a5f5b6b804dfe3e61d4453e38171cf6bd522fd800",
+    "dns-thread-exit-after.log": "280b0aae9742b7063dbb233dad8f047c0e8e36dbb534273e8f4116722d7cea4b",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "installer-targeted.log": "436fddbfff5cc56ed629ff1073a9a01fb701482b2104e50788cfe47e808f4399",
+    "keyring-sync.log": "589610021c0a0b6c651ccb968f84c08a5eedccba749a710e6200bc7a08342af4",
+    "native-assets.log": "16b5d47c4678fd8748517a6ec14966ba02baf1bdf78ab0a179be9ad8414c3286",
+    "native-display-concurrent-failed.log": "026e570c5cbe9c8dacd3e191783f5a3e3a49c7d0abc309bd0263f881fa5ab3a5",
+    "native-heartbeat-load-failed.log": "356fa284ed1a13e5564879996555ba5e9629483795bd2eaf38a6ac32f4504005",
+    "native-ui.log": "a23ccef0b399ee25d30c4127bf3ed3644e6f58605bb2462ebbed5d8edf47e445",
+    "nix.log": "81eb23c2f2158d91203e6beb71ae6e166fce87ad7e808d944b88f2c401b9b468",
+    "packaging.log": "cbeead381cc03556263d328d6b6d204038cd9245b4735fe63f00a8792d083996",
+    "path-ownership-after.log": "10cd2622da95092b511d5aeab4d1e92dd4f5fd2294867a43ca8d5104302eb3f1",
+    "path-ownership-before.log": "93cfd40c17a79d616fcd4181b14484866851ff496d6343ac9b699c87dff416de",
+    "promotion-after.log": "64eafec91b05e1f9312897b4d6e21b0bc9ef83d9099020416c50cf7ceafeb3f0",
+    "release.log": "d8bdfcf74ae23757c4c7732eb0f63b60302c612738f89987d6874c7d76e1cf26",
+    "runner-after.log": "dbe55d6ce9e27f3d7adc568d8479b45a2a167650ff459136887e39a0a34b25f5",
+    "runner-input-before.log": "7cf5060d1c94651bd4bb87fdc82c7324ae36396939b1469546586edbf1813d2f",
+    "runner-ownership-before.log": "5182c8cf3dbd1a421eb9eae098f94c94f9ec3d18ea41f6a30b0aac567a04704d",
+    "security.log": "32b72be5ef2b0bab04080de3ae0ab0687decb7ae96e65e770bb66ef8a1a2f8a0"
+  }
+}
