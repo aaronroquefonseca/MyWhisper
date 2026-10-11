@@ -753,7 +753,13 @@ impl Store {
     /// every settings save would mint fresh versions and could clobber
     /// a peer's concurrent edit on the next sync.
     pub fn save_settings(&self, settings: &AppSettings) -> rusqlite::Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        // Acquire write ownership before reading the blob. A deferred read
+        // snapshot cannot upgrade after another process commits, even with
+        // busy_timeout; permissions and disjoint edits must save atomically.
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
         let old: Option<String> = tx
             .query_row("SELECT value FROM kv WHERE key='settings'", [], |r| {
                 r.get(0)
@@ -2653,6 +2659,66 @@ mod tests {
 
 #[cfg(test)]
 mod release_regressions {
+    #[test]
+    fn simultaneous_settings_writers_preserve_disjoint_changes_without_snapshot_upgrade_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("synthetic-settings.db");
+        let store = super::Store::open_with_key(&path, &[53; 32]).unwrap();
+        let mut raw = serde_json::to_value(store.load_settings()).unwrap();
+        raw["synthetic_future_field"] = serde_json::json!({"preserved":true});
+        store
+            .conn
+            .execute(
+                "UPDATE kv SET value=?1 WHERE key='settings'",
+                [raw.to_string()],
+            )
+            .unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let writers = [true, false].map(|privacy| {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let store = super::Store::open_with_key(&path, &[53; 32]).unwrap();
+                let mut failures = Vec::new();
+                for index in 0..64 {
+                    let mut settings = store.load_settings();
+                    if privacy {
+                        settings.privacy.history_enabled = index % 2 == 0;
+                    } else {
+                        settings.sync.enabled = index % 2 != 0;
+                    }
+                    barrier.wait();
+                    if let Err(error) = store.save_settings(&settings) {
+                        failures.push(format!("round {index}: {error:?}"));
+                    }
+                    barrier.wait();
+                }
+                failures
+            })
+        });
+        let failures = writers
+            .into_iter()
+            .flat_map(|writer| writer.join().unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            failures.is_empty(),
+            "simultaneous saves failed: {failures:?}"
+        );
+        let settings = store.load_settings();
+        assert!(!settings.privacy.history_enabled);
+        assert!(settings.sync.enabled);
+        let raw: String = store
+            .conn
+            .query_row("SELECT value FROM kv WHERE key='settings'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&raw).unwrap()["synthetic_future_field"]["preserved"],
+            true
+        );
+    }
+
     use super::*;
 
     #[test]
