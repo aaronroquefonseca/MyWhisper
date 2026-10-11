@@ -1,0 +1,22 @@
+gpgv: Signature made Fri Sep 11 08:10:35 2026 CEST
+gpgv:                using RSA key 882DCFE48E2051D48E2562ABF3B607488DB35A47
+gpgv: Good signature from "CachyOS <admin@cachyos.org>"
+Private matching library query: NVIDIA GeForce RTX 3090, 615.71.09
+Downloading authenticated CUDA prerequisite: cuda_cudart 1514676 bytes
+SHA-256 and exact size verified: cuda_cudart 1f6ad42d4f530b24bfa35894ccf6b7209d2354f59101fd62ec4a6192a184ce99
+Downloading authenticated CUDA prerequisite: libcublas 933611504 bytes
+libcublas 450920448 downloaded bytes; authentication pending
+libcublas 907460608 downloaded bytes; authentication pending
+SHA-256 and exact size verified: libcublas 546addc4a9d82b8f23aa9ba9274b6bc0429a63008a31c759884ac24880796057
+Starting actual pinned-model/download/readiness/CUDA/inference/cleanup gate
+verified download progress: 33436351/77691713 bytes
+installing verified artifact
+atomic installation completed
+verified download progress: 8948/218743566 bytes
+verified download progress: 62947328/218743566 bytes
+verified download progress: 139940746/218743566 bytes
+installing verified artifact
+atomic installation completed
+Real local runtime passed: model=tiny backend=cuda synthetic speech recognized; elapsed=25.8s; disposable resources removed on exit
+[stt] stopped whisper
+Actual CUDA acceptance passed; private libraries and synthetic speech removed

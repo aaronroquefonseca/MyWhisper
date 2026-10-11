@@ -1,0 +1,52 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "source_commit": "955320289fe5c5ddd65482597dfcb4edeb97196a",
+  "production_rust_source": "3e5711d339b3a3fe93f4287864d00be543d78e69",
+  "groups": [
+    "R13",
+    "R34",
+    "R35",
+    "R48",
+    "R49"
+  ],
+  "live_gate": "Whisper Tiny model, advertised whisper-cuda download, real local CUDA readiness/inference, server-owned GPU allocation, bounded server cleanup and disposable process exit.",
+  "device": "NVIDIA GeForce RTX 3090; loaded module 615.71.09",
+  "prerequisites": {
+    "driver_archive": "/var/cache/pacman/pkg/nvidia-utils-615.71.09-1-x86_64_v3.pkg.tar.zst",
+    "signature": "gpgv: Good signature from CachyOS <admin@cachyos.org>; trusted system public keyring /etc/pacman.d/gnupg/pubring.gpg; private GNUPGHOME",
+    "driver_key_fingerprint": "882DCFE48E2051D48E2562ABF3B607488DB35A47",
+    "cuda_metadata": "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.9.1.json",
+    "runtime_sha256": "1f6ad42d4f530b24bfa35894ccf6b7209d2354f59101fd62ec4a6192a184ce99",
+    "cublas_sha256": "546addc4a9d82b8f23aa9ba9274b6bc0429a63008a31c759884ac24880796057"
+  },
+  "executed_validation": [
+    "Fresh runtime_smoke build from current production Rust source passes",
+    "Final tracked CUDA prerequisite helper passes: signed matching driver, pinned exact-size/SHA-256 CUDA runtime and cuBLAS, synthetic 16 kHz mono speech, real model/runtime downloads and actual inference",
+    "Existing runtime_smoke ownership assertion verifies the recorded server PID owns nonzero GPU memory; accepting CPU fallback would fail this check",
+    "Real Tiny/CUDA gate completes in 25.8 s; all native inference assertions unchanged; owned Whisper server stopped before helper exits zero",
+    "Private library/audio directory destructor finishes before final success message; system driver/libraries not installed, downgraded or replaced",
+    "Optimized Python integrity guard remains active; py_compile and --help pass",
+    "Eight unchanged native UI/recovery/reset checks across both configurations pass again after explicit read-only runner input correction"
+  ],
+  "compatibility": "No production Rust, schema, protocol, key or settings changes. Helper requires a signed matching Arch driver archive and explicit trusted public keyring; it only prepares private acceptance prerequisites. Default host NVML mismatch and CUDA 13 libraries remain unchanged. The helper is not a packaged runtime dependency installer.",
+  "limitations": [
+    "This establishes Whisper Tiny CUDA, not Cohere CUDA or every advertised model/backend/language combination",
+    "Paid cloud credentials, successful authenticated WSS and remaining runtime/language gates remain open",
+    "This runs the local source-built probe, not final packaged inference on a clean booted NixOS desktop",
+    "Full production shutdown, storage/privacy/sync/compositor/upgrade/final review obligations remain open; no PR submitted"
+  ],
+  "source_file_sha256": {
+    "scripts/cuda-smoke.py": "6f0b432b638ace1b867863c0b7be019c5eb4e5a834797aef4faf993d08988c73",
+    "scripts/disposable.py": "1d40ccc95f15516badb57c7cbb9df3bf1fd6d87c1821b902ffd1ba024e2b6b71",
+    "examples/runtime_smoke.rs": "66ddf5adde8dd57a4fe6dfebcfa1705c5fc253070eb0dfefb2309382c427beef",
+    "src/stt.rs": "a7a54bdad91449fd63a08955af6628f55869bff9c4c4db69cc3ac9eff1f6425e",
+    "src/transcribe.rs": "de037374bb20d2609cf3d0e0fcf951488da0a65341064369c5ddd58dbac8f3b8",
+    "src/child.rs": "f01c5b37dd767fd5fa785406b112094fab0db922aa3361a7af7af2878d2be907"
+  },
+  "evidence_sha256": {
+    "live-cuda.log": "7c453f5f93398ff560d0e2e4faaa307c8a3fb9f848cd0a0fec2f83718a3f3268",
+    "native-runner-inputs.log": "66a361dfbc6e0d55e901efdc1bbdc50493cb0220bfc48459db5af62d61432b93",
+    "runtime-build.log": "83f9c84b5b1dc81c54ff6faff7daf96178078c4611f2b1f17de024ad7c32bc2b"
+  }
+}
