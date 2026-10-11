@@ -3,12 +3,13 @@
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
 
 
-def main():
+def main(timeout=120):
     if len(sys.argv) < 4:
         raise SystemExit("usage: disposable.py ROOT_ENV LABEL COMMAND [ARGS...]")
     root_variable, label, *command = sys.argv[1:]
@@ -29,6 +30,9 @@ def main():
             path.mkdir(mode=0o700)
             env[variable] = str(path)
         (root / "runtime/keyring").mkdir(mode=0o700)
+        temporary = root / "tmp"
+        temporary.mkdir(mode=0o700)
+        env["TMPDIR"] = str(temporary)
         portal = root / "config/xdg-desktop-portal"
         portal.mkdir(mode=0o700)
         (portal / "portals.conf").write_text("[preferred]\ndefault=none\n")
@@ -37,9 +41,30 @@ def main():
         for variable in ("DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY",
                          "WAYLAND_SOCKET", "NIRI_SOCKET", "MYWHISPER_DB_KEY"):
             env.pop(variable, None)
-        process = subprocess.Popen(command, env=env, start_new_session=True)
+        if shutil.which("bwrap") is None:
+            raise SystemExit("bubblewrap is required for disposable process ownership")
+        # A process group cannot contain setsid()/timeout/daemon descendants.
+        # The kernel's PID namespace owns every descendant, even if this runner
+        # is SIGKILLed. Its private /tmp also prevents namespace-local Xvfb PIDs
+        # from being mistaken for stale host display locks or socket owners.
+        owned_command = [
+            "bwrap", "--bind", "/", "/", "--unshare-user", "--unshare-pid",
+            "--proc", "/proc", "--dev-bind", "/dev", "/dev",
+            "--tmpfs", "/tmp", "--bind", str(root), str(root),
+            "--die-with-parent", "--new-session",
+        ]
+        # Explicit external /tmp inputs, such as the private Nix store or an
+        # acceptance-test rendezvous socket, remain readable. All gate outputs
+        # and temporary files belong in the writable, marked disposable root.
+        inputs = {Path(argument) for argument in command
+                  if argument.startswith("/tmp/") and Path(argument).exists()
+                  and not Path(argument).is_relative_to(root)}
+        for path in sorted(inputs, key=lambda path: (len(path.parts), str(path))):
+            owned_command.extend(["--ro-bind", str(path), str(path)])
+        owned_command.extend(["--", *command])
+        process = subprocess.Popen(owned_command, env=env, start_new_session=True)
         try:
-            return process.wait(timeout=120)
+            return process.wait(timeout=timeout)
         finally:
             # Only this runner's process group can be signalled. Keep its
             # leader unreaped until shutdown when it is still running.

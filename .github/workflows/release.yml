@@ -34,7 +34,7 @@ jobs:
           pacman -Syu --noconfirm
           pacman -S --noconfirm gtk4 libadwaita gtk4-layer-shell alsa-lib \
             pkgconf openssl curl ca-certificates github-cli git python \
-            xorg-server-xvfb xorg-xauth dbus gnome-keyring mesa
+            xorg-server-xvfb xorg-xauth dbus gnome-keyring mesa bubblewrap
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag || github.ref }}
@@ -64,6 +64,7 @@ jobs:
           cargo test --locked --all-targets
           python3 packaging/test-upgrade.py
           python3 packaging/test-release.py
+          python3 scripts/test-disposable.py
       - name: Current dependency security audit
         run: |
           cargo install --locked cargo-audit --version 0.22.2
