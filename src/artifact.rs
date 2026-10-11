@@ -9,13 +9,20 @@ use std::time::{Duration, Instant};
 fn epoch(path: &Path) -> Result<u64, String> {
     let file = match std::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
     {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(e) => return Err(e.to_string()),
     };
+    if !file
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .is_file()
+    {
+        return Err("installation epoch is not a regular file".into());
+    }
     let mut bytes = Vec::new();
     file.take(9)
         .read_to_end(&mut bytes)
@@ -36,9 +43,16 @@ fn shared_lock(path: &Path) -> Result<File, String> {
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
         .map_err(|e| e.to_string())?;
+    if !file
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .is_file()
+    {
+        return Err("installation reset lock is not a regular file".into());
+    }
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         match fs2::FileExt::try_lock_shared(&file) {
@@ -64,6 +78,60 @@ fn valid_key(key: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.'))
 }
 
+#[derive(Clone)]
+pub(crate) struct Authority {
+    data: PathBuf,
+    global_epoch: (PathBuf, u64),
+    asset_epoch: (PathBuf, u64),
+    locks: Vec<(PathBuf, (u64, u64))>,
+}
+pub(crate) fn observe_authority(data: &Path, key: &str) -> Result<Authority, String> {
+    use std::os::unix::fs::MetadataExt;
+    if !valid_key(key) {
+        return Err("invalid asset authority key".into());
+    }
+    let control = data.join(".install");
+    let global_epoch = control.join("epoch");
+    let asset_epoch = control.join(format!("{key}.epoch"));
+    let mut locks = Vec::new();
+    for path in [
+        control.join("reset.lock"),
+        control.join(format!("{key}.lock")),
+    ] {
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() => locks.push((path, (meta.dev(), meta.ino()))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err("invalid installation authority lock".into()),
+        }
+    }
+    Ok(Authority {
+        data: data.into(),
+        global_epoch: (global_epoch.clone(), epoch(&global_epoch)?),
+        asset_epoch: (asset_epoch.clone(), epoch(&asset_epoch)?),
+        locks,
+    })
+}
+impl Authority {
+    pub fn check(&self, cancel: &AtomicBool) -> Result<(), String> {
+        use std::os::unix::fs::MetadataExt;
+        if cancel.load(Ordering::Acquire)
+            || crate::reset::requested(&self.data).map_err(|error| error.to_string())?
+            || epoch(&self.global_epoch.0)? != self.global_epoch.1
+            || epoch(&self.asset_epoch.0)? != self.asset_epoch.1
+        {
+            return Err("asset operation cancelled".into());
+        }
+        for (path, identity) in &self.locks {
+            let current =
+                std::fs::symlink_metadata(path).map_err(|_| "installation control removed")?;
+            if !current.is_file() || (current.dev(), current.ino()) != *identity {
+                return Err("installation control replaced".into());
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct Stage {
     temporary: tempfile::TempDir,
     _global: File,
@@ -72,6 +140,7 @@ pub(crate) struct Stage {
     data: PathBuf,
     global_epoch: (PathBuf, u64),
     asset_epoch: (PathBuf, u64),
+    key: String,
 }
 impl Stage {
     pub fn new(data: &Path, key: &str, destination: PathBuf) -> Result<Self, String> {
@@ -110,20 +179,43 @@ impl Stage {
             data: data.to_owned(),
             global_epoch: (global_epoch, saved_global),
             asset_epoch: (asset_epoch, saved_asset),
+            key: key.to_owned(),
         })
     }
     pub fn path(&self) -> &Path {
         self.temporary.path()
     }
+    pub fn destination(&self) -> &Path {
+        &self.destination
+    }
+    pub fn data(&self) -> &Path {
+        &self.data
+    }
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+    pub fn authority(&self) -> Result<Authority, String> {
+        use std::os::unix::fs::MetadataExt;
+        let control = self.data.join(".install");
+        let locks = [
+            (&self._global, control.join("reset.lock")),
+            (&self._asset, control.join(format!("{}.lock", self.key))),
+        ]
+        .into_iter()
+        .map(|(file, path)| {
+            let metadata = file.metadata().map_err(|error| error.to_string())?;
+            Ok((path, (metadata.dev(), metadata.ino())))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+        Ok(Authority {
+            data: self.data.clone(),
+            global_epoch: self.global_epoch.clone(),
+            asset_epoch: self.asset_epoch.clone(),
+            locks,
+        })
+    }
     pub fn check(&self, cancel: &AtomicBool) -> Result<(), String> {
-        if cancel.load(Ordering::Acquire)
-            || crate::reset::requested(&self.data).map_err(|error| error.to_string())?
-            || epoch(&self.global_epoch.0)? != self.global_epoch.1
-            || epoch(&self.asset_epoch.0)? != self.asset_epoch.1
-        {
-            return Err("cancelled".into());
-        }
-        Ok(())
+        self.authority()?.check(cancel)
     }
     pub fn promote(self, cancel: &AtomicBool) -> Result<(), String> {
         use std::os::unix::ffi::OsStrExt;
@@ -176,6 +268,7 @@ pub(crate) fn delete(data: &Path, key: &str, destination: &Path) -> std::io::Res
     if !valid_key(key) {
         return Err(std::io::Error::other("invalid artifact key"));
     }
+    crate::installed_asset::invalidate(data, Some(key));
     let control = data.join(".install");
     crate::private_fs::directory(&control)?;
     let _global = shared_lock(&control.join("reset.lock")).map_err(std::io::Error::other)?;
@@ -191,6 +284,7 @@ pub(crate) fn delete(data: &Path, key: &str, destination: &Path) -> std::io::Res
 
 /// Cancel active/queued installations before taking exclusive reset ownership.
 pub(crate) fn reset(data: &Path) -> std::io::Result<File> {
+    crate::installed_asset::invalidate(data, None);
     let control = data.join(".install");
     crate::private_fs::directory(&control)?;
     let metadata = crate::private_fs::lock(&control.join("metadata.lock"))?;
@@ -224,12 +318,28 @@ async fn cancellable<F: std::future::Future>(
         }
     }
 }
+/// Evidence of the completed, length-checked and SHA-256-authenticated body.
+/// Its private fields prevent installation code from minting download proof.
+#[derive(Debug)]
+pub(crate) struct VerifiedDownload {
+    bytes: u64,
+    digest: String,
+}
+impl VerifiedDownload {
+    pub fn bytes(&self) -> u64 {
+        self.bytes
+    }
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+}
+
 pub(crate) fn download(
     source: Source<'_>,
     path: &Path,
     check: impl Fn() -> Result<(), String>,
     progress: impl Fn(u64, Option<u64>),
-) -> Result<u64, String> {
+) -> Result<VerifiedDownload, String> {
     use sha2::Digest;
     if source.sha256.len() != 64 || !source.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("artifact has no pinned SHA-256".into());
@@ -302,7 +412,10 @@ pub(crate) fn download(
             return Err("download SHA-256 mismatch".into());
         }
         file.sync_all().map_err(|e| e.to_string())?;
-        Ok(received)
+        Ok(VerifiedDownload {
+            bytes: received,
+            digest: hash,
+        })
     });
     runtime.shutdown_timeout(Duration::from_millis(100));
     result

@@ -62,11 +62,15 @@ cargo test --locked --all-targets
 cargo build --release --locked --bin mywhisper
 ```
 
-The current suite contains 165 passing tests and five unchanged opt-in runtime
-tests. Current RustSec auditing recorded zero vulnerabilities and warnings.
-Native UI smoke passed light/English and dark/Spanish with fatal GTK criticals;
-an earlier intermittent dictionary-dialog focus critical remains under
-investigation despite subsequent passing runs.
+The latest interim asset-verification snapshot passes 224 Rust tests and retains
+five unchanged opt-in runtime tests. Formatting, strict Clippy, the release
+build and current RustSec auditing pass with zero vulnerabilities or warnings.
+Both native UI configurations pass with fatal GTK criticals. The GTK focus
+lifetime correction and its failing-before/passing-after evidence are recorded
+under R46; the broader UI lifetime/final artifact review is still open.
+These are component-validation results, not completion of the release audit.
+See the matrix's independent-review table and validation-review-assets.json for
+current corrections and explicitly incomplete provider/compatibility paths.
 
 Use owned disposable databases, identities, keyrings, HOME/XDG directories and
 synthetic speech/transcripts. Never reset, migrate, clear or prune real user
@@ -90,11 +94,11 @@ close live integration requirements.
 
 ## Outstanding requirements
 
-The matrix lists remaining obligations for every finding, including paginated
-sync/protocol compatibility, cross-process policy barriers, interrupted
+The matrix lists remaining obligations for every finding, including oversized-record sync segmentation and final protocol compatibility,
+cross-process policy barriers, interrupted
 migration and filesystem recovery, microphone ownership/device changes,
 provider credentials and authenticated WSS/cloud contracts, remaining local
-runtime/backend integrations, compositor/clipboard behavior, UI focus lifetime,
+runtime/backend integrations, compositor/clipboard behavior, remaining UI lifetime checks,
 and clean installation/running-service upgrades and final artifact checks.
 
 No disposable cloud credentials have been identified. Do not assume that

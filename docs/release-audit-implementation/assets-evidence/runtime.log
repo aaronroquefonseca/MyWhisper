@@ -1,0 +1,8 @@
+verified download progress: 39794336/77691713 bytes
+installing verified artifact
+atomic installation completed
+verified download progress: 16384/1297401 bytes
+installing verified artifact
+atomic installation completed
+Real local runtime passed: model=tiny backend=cpu synthetic speech recognized; elapsed=6.9s; disposable resources removed on exit
+[stt] stopped whisper

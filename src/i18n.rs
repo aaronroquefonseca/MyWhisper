@@ -271,6 +271,18 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "action.installing" => ("Installing…", "Instalando…"),
         "action.retry" => ("Retry", "Reintentar"),
         "stt.dl.failed" => ("Failed: {err}", "Falló: {err}"),
+        "stt.asset.checking" => (
+            "Checking installed files…",
+            "Comprobando los archivos instalados…",
+        ),
+        "stt.asset.legacy" => (
+            "Existing installation needs integrity verification. Your files are kept.",
+            "La instalación existente requiere verificar su integridad. Se conservan los archivos.",
+        ),
+        "stt.asset.invalid" => (
+            "Could not verify installed files: {err}",
+            "No se pudieron verificar los archivos instalados: {err}",
+        ),
         "stt.sherpa.installed" => ("Installed", "Instalado"),
         "stt.gpu.title" => ("Runtimes", "Runtimes"),
         "stt.gpu.sherpa" => (

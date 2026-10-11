@@ -305,7 +305,9 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
             validate_local_language(entry.id, &s.language)?;
             let dir = stt::model_dir(data_dir, entry);
             let bin = dir.join(format!("ggml-{}.bin", stt::whisper_file_stem(entry.id)));
-            if !bin.exists() {
+            if !std::fs::metadata(&bin)
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+            {
                 return Err(missing(&format!("whisper model {}", entry.id)));
             }
             Ok(Plan::WhisperHttp {
@@ -342,13 +344,17 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
             validate_local_language(entry.id, &s.language)?;
             let dir = stt::model_dir(data_dir, entry);
             let model = dir.join("whistle.cact");
-            if !model.exists() {
+            if !std::fs::metadata(&model)
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+            {
                 return Err(missing("whistle model (download it in Language Models)"));
             }
             // The pinned verified engine is installed at bin/needle/needle;
             // existing manually placed engines remain supported.
             let engine = needle_engine_path(data_dir);
-            if !engine.exists() {
+            if !std::fs::metadata(&engine)
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+            {
                 return Err(missing(
                     "needle engine binary at bin/needle/needle (see Whistle docs)",
                 ));
@@ -363,7 +369,7 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
             validate_cohere_language(&s.language)?;
             let entry = stt::find_model("cohere-transcribe-03-2026").unwrap();
             let model_dir = stt::model_dir(data_dir, entry);
-            if !stt::is_installed(data_dir, entry) {
+            if !stt::model_present(data_dir, entry) {
                 return Err(missing("Cohere Transcribe model"));
             }
             Ok(Plan::SherpaOffline {
@@ -400,7 +406,9 @@ fn require_transducer_files(dir: &Path, id: &str) -> Result<(), String> {
         "joiner.int8.onnx",
         "tokens.txt",
     ] {
-        if !dir.join(f).exists() {
+        if !std::fs::metadata(dir.join(f))
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+        {
             return Err(missing(&format!("parakeet model {id} ({f})")));
         }
     }
@@ -7286,6 +7294,40 @@ while True:
         s.language = "es".into();
         std::fs::remove_file(dir.join("encoder.int8.onnx.data")).unwrap();
         assert!(plan_for(&s, root.path()).unwrap_err().contains("Cohere"));
+    }
+
+    #[test]
+    fn empty_transducer_files_are_not_an_installed_or_resolvable_model() {
+        let root = tempfile::tempdir().unwrap();
+        let entry = stt::find_model("parakeet-tdt-0.6b-v3").unwrap();
+        let model = stt::model_dir(root.path(), entry);
+        std::fs::create_dir_all(&model).unwrap();
+        for file in entry.required_files {
+            std::fs::write(model.join(file), b"").unwrap();
+        }
+        let settings = SttSettings {
+            local_provider: LocalSttProvider::Nvidia,
+            parakeet_model: entry.id.into(),
+            language: "en".into(),
+            ..SttSettings::default()
+        };
+        assert!(plan_for(&settings, root.path()).is_err());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match stt::model_status(root.path(), entry) {
+                crate::installed_asset::Status::Checking => {
+                    assert!(Instant::now() < deadline, "verification did not finish");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                crate::installed_asset::Status::Invalid(_) => break,
+                status => panic!("empty model must be rejected: {status:?}"),
+            }
+        }
+        assert!(!stt::is_installed(root.path(), entry));
+        for file in entry.required_files {
+            assert_eq!(std::fs::read(model.join(file)).unwrap(), b"");
+        }
+        crate::installed_asset::invalidate(root.path(), None);
     }
 
     #[test]

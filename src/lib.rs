@@ -15,6 +15,7 @@ mod diagnostics;
 mod focus;
 pub mod hotkey;
 pub mod i18n;
+mod installed_asset;
 mod maintenance;
 pub mod media;
 pub mod mic;

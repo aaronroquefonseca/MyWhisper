@@ -1,0 +1,13 @@
+test installed_asset::tests::concurrent_receipt_key_creators_reuse_one_private_authority ... ok
+test installed_asset::tests::raw_content_requires_exact_sha_and_cold_archive_presence_is_unverified ... ok
+test installed_asset::tests::verification_cancels_and_installer_authority_cannot_survive_control_replacement ... ok
+test installed_asset::tests::deletion_during_verification_retires_authority_before_another_chunk ... ok
+test private_fs::tests::bounded_read_rejects_oversized_files_and_symlinks_without_modifying_them ... ok
+test private_fs::tests::fifo_reads_and_locks_fail_without_waiting_for_a_writer ... ok
+test private_fs::tests::ordinary_reads_preserve_metadata_and_private_reads_protect_legacy_keys ... ok
+test installed_asset::tests::receipt_source_signature_and_local_authority_cannot_be_substituted ... ok
+test installed_asset::tests::verified_archive_detects_same_size_corruption_missing_libraries_and_extra_files ... ok
+test installed_asset::tests::runtime_executability_and_unsafe_installed_paths_are_rejected ... ok
+test transcribe::tests::empty_transducer_files_are_not_an_installed_or_resolvable_model ... ok
+test installed_asset::tests::rejected_staging_preserves_previous_installation_and_removes_temporary_content ... ok
+test result: ok. 224 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 11.94s

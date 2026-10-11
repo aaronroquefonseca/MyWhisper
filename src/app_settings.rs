@@ -1540,6 +1540,21 @@ fn attach_hotkey_capture(
     root.add_controller(ctl);
 }
 
+fn append_asset_feedback(container: &GtkBox, status: crate::installed_asset::Status) {
+    use crate::installed_asset::Status;
+    let text = match status {
+        Status::Checking => tr("stt.asset.checking").to_owned(),
+        Status::NeedsVerification => tr("stt.asset.legacy").to_owned(),
+        Status::Invalid(message) => trf("stt.asset.invalid", &[("err", &message)]),
+        Status::Missing | Status::Ready => return,
+    };
+    let label = Label::new(Some(&text));
+    label.add_css_class("dim");
+    label.set_wrap(true);
+    label.set_max_width_chars(40);
+    container.append(&label);
+}
+
 /// Registry model list for the active local engine: name, size,
 /// install state, download/delete/select actions. Rebuilt when the
 /// signature (selection, install set, download phases) moves;
@@ -1572,9 +1587,9 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
             None => "-".to_string(),
         };
         sig.push_str(&format!(
-            "{}:{}:{};",
+            "{}:{:?}:{};",
             m.id,
-            stt::is_installed(&data_dir, m),
+            stt::model_status(&data_dir, m),
             phase
         ));
     }
@@ -1637,6 +1652,7 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
             info.append(&explanation);
         }
 
+        append_asset_feedback(&card, stt::model_status(&data_dir, m));
         if let Some(dl) = stt::download_state(m.id) {
             let col = GtkBox::new(Orientation::Vertical, 4);
             match &dl.phase {
@@ -1804,9 +1820,9 @@ fn fill_sherpa_packs(container: &GtkBox, state: &Rc<AppState>) {
             None => "-".to_string(),
         };
         sig.push_str(&format!(
-            "{}:{}:{};",
+            "{}:{:?}:{};",
             pack.id,
-            stt::sherpa_installed(&data_dir, pack),
+            stt::sherpa_status(&data_dir, pack),
             phase
         ));
     }
@@ -1846,6 +1862,7 @@ fn fill_sherpa_packs(container: &GtkBox, state: &Rc<AppState>) {
         info.append(&sub);
         card.append(&info);
 
+        append_asset_feedback(&card, stt::sherpa_status(&data_dir, pack));
         if let Some(dl) = stt::download_state(pack.id) {
             let col = GtkBox::new(Orientation::Vertical, 4);
             match &dl.phase {
@@ -1935,9 +1952,9 @@ fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
             None => "-".to_string(),
         };
         sig.push_str(&format!(
-            "{}:{}:{};",
+            "{}:{:?}:{};",
             pack.id,
-            stt::gpu_installed(&data_dir, pack),
+            stt::gpu_status(&data_dir, pack),
             phase
         ));
     }
@@ -1985,6 +2002,7 @@ fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
         info.append(&sub);
         card.append(&info);
 
+        append_asset_feedback(&card, stt::gpu_status(&data_dir, pack));
         if let Some(dl) = stt::download_state(pack.id) {
             let col = GtkBox::new(Orientation::Vertical, 4);
             match &dl.phase {
@@ -2070,6 +2088,7 @@ fn refresh_needle_action(container: &GtkBox, state: &Rc<AppState>) {
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_default();
+    append_asset_feedback(container, stt::needle_status(&data_dir));
     if let Some(dl) = stt::download_state(stt::NEEDLE_ENGINE_ID) {
         let col = GtkBox::new(Orientation::Vertical, 4);
         match &dl.phase {
