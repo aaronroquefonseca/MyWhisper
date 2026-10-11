@@ -39,9 +39,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .prefix("mywhisper-runtime-audit-")
         .tempdir()?;
     let data = disposable.path().join("data/mywhisper");
+    std::fs::create_dir(disposable.path().join("home"))?;
     // SAFETY: this synthetic probe sets isolation before creating any threads.
     unsafe {
         for (name, directory) in [
+            ("HOME", "home"),
             ("XDG_DATA_HOME", "data"),
             ("XDG_CONFIG_HOME", "config"),
             ("XDG_STATE_HOME", "state"),
