@@ -5556,21 +5556,26 @@ mod tests {
                         header.push(byte[0]);
                     }
                     socket.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://mywhisper-review.invalid:9/asset\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    unsafe { libc::syscall(libc::SYS_gettid) }
                 });
                 (url, Some(server))
             };
-            let worker = std::thread::spawn(move || {
-                crate::artifact::download(
-                    crate::artifact::Source {
-                        url: &url,
-                        sha256: &"00".repeat(32),
-                        limit: 1024,
-                    },
-                    &stage.path().join("download.part"),
-                    || stage.check(&token),
-                    |_, _| {},
-                )
-            });
+            let worker = std::thread::Builder::new()
+                .name(format!("nss-download-{round}"))
+                .spawn(move || {
+                    let result = crate::artifact::download(
+                        crate::artifact::Source {
+                            url: &url,
+                            sha256: &"00".repeat(32),
+                            limit: 1024,
+                        },
+                        &stage.path().join("download.part"),
+                        || stage.check(&token),
+                        |_, _| {},
+                    );
+                    (result, unsafe { libc::syscall(libc::SYS_gettid) })
+                })
+                .unwrap();
             let deadline = Instant::now() + Duration::from_secs(2);
             while !marker.exists() {
                 assert!(Instant::now() < deadline, "NSS fixture was not reached");
@@ -5587,16 +5592,47 @@ mod tests {
                 1 => crate::artifact::delete(root.path(), "model-synthetic", &destination).unwrap(),
                 _ => drop(crate::artifact::reset(root.path()).unwrap()),
             }
-            assert!(worker.join().unwrap().is_err());
+            let (result, worker_tid) = worker.join().unwrap();
+            assert!(result.is_err());
+            let mut owned_tids = vec![worker_tid];
             if let Some(server) = redirect {
-                server.join().unwrap();
+                owned_tids.push(server.join().unwrap());
+            }
+            // pthread_join's futex wake precedes final kernel task removal.
+            // Account for the exact owned tasks retiring from /proc within
+            // the original cancellation budget, then assert the full count.
+            for tid in owned_tids {
+                while PathBuf::from(format!("/proc/self/task/{tid}")).exists() {
+                    assert!(
+                        start.elapsed() < Duration::from_millis(500),
+                        "joined download task {tid} did not retire inside its cleanup budget"
+                    );
+                    std::thread::sleep(Duration::from_millis(1));
+                }
             }
             assert!(start.elapsed() < Duration::from_millis(500));
             assert!(
                 !PathBuf::from(format!("/proc/{pid}")).exists(),
                 "cancelled download left the NSS resolver alive: pid={pid}"
             );
-            assert_eq!(threads(), baseline, "cancelled download leaked a thread");
+            let remaining = threads();
+            if remaining != baseline {
+                let tasks = std::fs::read_dir("/proc/self/task")
+                    .unwrap()
+                    .map(|entry| {
+                        let path = entry.unwrap().path();
+                        (
+                            path.file_name().unwrap().to_owned(),
+                            std::fs::read_to_string(path.join("comm")),
+                            std::fs::read_to_string(path.join("stat")),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                eprintln!(
+                    "round={round}, joined worker tid={worker_tid}, remaining tasks: {tasks:?}"
+                );
+            }
+            assert_eq!(remaining, baseline, "cancelled download leaked a thread");
             if round % 3 == 1 {
                 assert!(!destination.exists());
             } else {
