@@ -61,6 +61,8 @@ struct Hello {
     v: u32,
     #[serde(default)]
     pages: bool,
+    #[serde(default)]
+    segments: bool,
     node_id: String,
     name: String,
     #[serde(default)]
@@ -292,6 +294,11 @@ impl NoiseStream {
         if !allowed() {
             return Err("sync handshake cancelled".into());
         }
+        // Length frames and durable acknowledgements alternate. Buffering a
+        // small prefix behind a delayed TCP ACK adds a stall to every chunk.
+        stream
+            .set_nodelay(true)
+            .map_err(|e| format!("TCP progress setup: {e}"))?;
         stream
             .set_read_timeout(Some(IO_TIMEOUT))
             .map_err(|e| format!("timeout: {e}"))?;
@@ -592,6 +599,7 @@ pub fn exchange(
     let hello = Hello {
         v: PROTOCOL_V,
         pages: true,
+        segments: true,
         node_id: creds.node_id.clone(),
         name: name.to_string(),
         addresses: addresses.to_vec(),
@@ -688,6 +696,9 @@ pub fn exchange(
 
     permitted(store, &peer.node_id)?;
     SyncPolicy::install(session, store, &peer.node_id, policy_epoch)?;
+    if peer.pages && peer.segments {
+        return exchange_packets(session, store, creds, peer, policy_epoch, initiator);
+    }
     if peer.pages {
         return exchange_pages(session, store, creds, peer, policy_epoch, initiator);
     }
@@ -812,6 +823,98 @@ fn exchange_pages(
             done
         };
         outgoing = page.to;
+        if outgoing_done && incoming_done {
+            report.has_more = false;
+            break;
+        }
+    }
+    Ok(report)
+}
+
+fn exchange_packets(
+    session: &mut NoiseStream,
+    store: &Store,
+    creds: &SyncCreds,
+    peer: Hello,
+    epoch: i64,
+    initiator: bool,
+) -> Result<SyncReport, String> {
+    use crate::store::{SyncCursor, SyncManifest, SyncPacket};
+    let ours = store
+        .sync_manifest(&peer.node_id, epoch)
+        .map_err(|e| e.to_string())?;
+    let theirs: SyncManifest = if initiator {
+        session.send_json(&ours)?;
+        session.recv_json()?
+    } else {
+        let theirs = session.recv_json()?;
+        session.send_json(&ours)?;
+        theirs
+    };
+    let mut incoming = store
+        .sync_packet_cursor(&peer.node_id, epoch, &theirs)
+        .map_err(|e| e.to_string())?;
+    let mut outgoing: SyncCursor = if initiator {
+        session.send_json(&incoming)?;
+        session.recv_json()?
+    } else {
+        let outgoing = session.recv_json()?;
+        session.send_json(&incoming)?;
+        outgoing
+    };
+    if outgoing.committed < 0 || outgoing.committed > ours.upper {
+        return Err("invalid peer receive cursor".into());
+    }
+    let mut report = SyncReport {
+        peer_node: peer.node_id.clone(),
+        peer_name: peer.name,
+        words_in: 0,
+        snippets_in: 0,
+        history_in: 0,
+        introduced: 0,
+        has_more: true,
+    };
+    for _ in 0..1024 {
+        let packet = store
+            .export_sync_packet(&peer.node_id, epoch, &creds.node_id, &ours, &outgoing)
+            .map_err(|e| e.to_string())?;
+        let outgoing_done = packet.done();
+        let send = |session: &mut NoiseStream| -> Result<SyncCursor, String> {
+            session.send_json(&packet)?;
+            let ack: SyncCursor = session.recv_json()?;
+            if !packet.accepts(&ack) {
+                return Err("invalid page acknowledgement".into());
+            }
+            store
+                .acknowledge_packet(&peer.node_id, epoch, &ack)
+                .map_err(|e| e.to_string())?;
+            Ok(ack)
+        };
+        let mut receive = |session: &mut NoiseStream| -> Result<bool, String> {
+            let received: SyncPacket = session.recv_json()?;
+            session.progress_deadline()?;
+            if received.from() != incoming.committed {
+                return Err("unexpected packet position".into());
+            }
+            let applied = store
+                .apply_sync_packet(&peer.node_id, epoch, &creds.node_id, &theirs, &received)
+                .map_err(|e| e.to_string())?;
+            report.introduced += applied.introduced;
+            report.words_in += applied.words;
+            report.snippets_in += applied.snippets;
+            report.history_in += applied.history;
+            incoming = applied.cursor;
+            session.send_json(&incoming)?;
+            Ok(applied.done)
+        };
+        let incoming_done = if initiator {
+            outgoing = send(session)?;
+            receive(session)?
+        } else {
+            let done = receive(session)?;
+            outgoing = send(session)?;
+            done
+        };
         if outgoing_done && incoming_done {
             report.has_more = false;
             break;
@@ -1974,6 +2077,7 @@ mod tests {
                 .send_json(&Hello {
                     v: PROTOCOL_V,
                     pages: false,
+                    segments: false,
                     node_id: remote_id.node_id.clone(),
                     name: "synthetic remote".into(),
                     addresses: Vec::new(),
@@ -2049,6 +2153,7 @@ mod tests {
                 .send_json(&Hello {
                     v: PROTOCOL_V,
                     pages: false,
+                    segments: false,
                     node_id: remote.node_id.clone(),
                     name: "synthetic remote".into(),
                     addresses: Vec::new(),
@@ -2250,6 +2355,275 @@ mod tests {
     }
 
     #[test]
+    fn oversized_record_survives_throttled_encrypted_rounds_and_lost_ack() {
+        use crate::store::{HistoryRecord, SyncCursor, SyncManifest, SyncPacket};
+        let root = tempfile::tempdir().unwrap();
+        let a = DeviceIdentity::ephemeral().creds();
+        let b = DeviceIdentity::ephemeral().creds();
+        let db_a = root.path().join("a.db");
+        let db_b = root.path().join("b.db");
+        let store_a = Store::open(&db_a).unwrap();
+        let store_b = Store::open(&db_b).unwrap();
+        for store in [&store_a, &store_b] {
+            let mut settings = store.load_settings();
+            settings.sync.enabled = true;
+            store.save_settings(&settings).unwrap();
+        }
+        store_a
+            .upsert_peer(&b.node_id, "synthetic b", "", true)
+            .unwrap();
+        store_b
+            .upsert_peer(&a.node_id, "synthetic a", "", true)
+            .unwrap();
+        let original = HistoryRecord {
+            uuid: "synthetic oversized live record".into(),
+            text: "é🙂\\\0\n".repeat(2 * 1024 * 1024),
+            raw_text: "synthetic raw".into(),
+            words: 7,
+            duration_secs: 4,
+            deleted: false,
+            discarded: false,
+            recorded_at: 1_700_000_000,
+        };
+        store_a
+            .apply_history(std::slice::from_ref(&original))
+            .unwrap();
+        assert!(original.text.len() > CONTENT_CAP);
+        // Commit a fragment, drop the socket before its ACK, and reopen the
+        // receiver. A subsequent real negotiation must send the saved offset.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let receiver_db = db_b.clone();
+        let receiver_a = a.clone();
+        let receiver_b = b.clone();
+        let cut = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let (mut session, hash, _) =
+                NoiseStream::handshake(socket, &receiver_b.noise_static, false).unwrap();
+            let hello: Hello = session.recv_json().unwrap();
+            assert!(hello.pages && hello.segments);
+            session
+                .send_json(&Hello {
+                    v: PROTOCOL_V,
+                    pages: true,
+                    segments: true,
+                    node_id: receiver_b.node_id.clone(),
+                    name: "synthetic b".into(),
+                    addresses: Vec::new(),
+                    introducer: false,
+                    sig: DeviceIdentity::sign_session_static(&receiver_b.signing, &hash).to_vec(),
+                })
+                .unwrap();
+            let signature: [u8; 64] = hello.sig.try_into().unwrap();
+            assert!(DeviceIdentity::verify_session(
+                &hello.node_id,
+                &hash,
+                &signature
+            ));
+            session
+                .send_json(&Verdict {
+                    ok: true,
+                    error: String::new(),
+                })
+                .unwrap();
+            session.cap = CONTENT_CAP;
+            let store = Store::open_existing(&receiver_db).unwrap();
+            let theirs: SyncManifest = session.recv_json().unwrap();
+            let ours = store
+                .sync_manifest(&receiver_a.node_id, store.sync_epoch())
+                .unwrap();
+            session.send_json(&ours).unwrap();
+            let mut outgoing: SyncCursor = session.recv_json().unwrap();
+            session
+                .send_json(
+                    &store
+                        .sync_packet_cursor(&receiver_a.node_id, store.sync_epoch(), &theirs)
+                        .unwrap(),
+                )
+                .unwrap();
+            for _ in 0..16 {
+                let packet: SyncPacket = session.recv_json().unwrap();
+                let received = store
+                    .apply_sync_packet(
+                        &receiver_a.node_id,
+                        store.sync_epoch(),
+                        &receiver_b.node_id,
+                        &theirs,
+                        &packet,
+                    )
+                    .unwrap();
+                assert!(store.export_history().unwrap().is_empty());
+                if serde_json::to_value(&received.cursor).unwrap()["partial"].is_object() {
+                    drop(session);
+                    return;
+                }
+                session.send_json(&received.cursor).unwrap();
+                let packet = store
+                    .export_sync_packet(
+                        &receiver_a.node_id,
+                        store.sync_epoch(),
+                        &receiver_b.node_id,
+                        &ours,
+                        &outgoing,
+                    )
+                    .unwrap();
+                session.send_json(&packet).unwrap();
+                outgoing = session.recv_json().unwrap();
+                assert!(packet.accepts(&outgoing));
+                store
+                    .acknowledge_packet(&receiver_a.node_id, store.sync_epoch(), &outgoing)
+                    .unwrap();
+            }
+            panic!("large wire record did not begin a partial transfer");
+        });
+        assert!(
+            sync_now(
+                std::slice::from_ref(&address),
+                &db_a,
+                &a,
+                "synthetic a",
+                &b.node_id
+            )
+            .is_err()
+        );
+        cut.join().unwrap();
+        store_b.checkpoint().unwrap();
+        drop(store_b);
+        let store_b = Store::open_existing(&db_b).unwrap();
+        assert!(store_b.export_history().unwrap().is_empty());
+        fn relay(mut source: TcpStream, mut target: TcpStream, slow: bool) {
+            source
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            target
+                .set_write_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut buffer = [0u8; 8192];
+            loop {
+                let n = match source.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                if target.write_all(&buffer[..n]).is_err() {
+                    break;
+                }
+                if slow {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            let _ = source.shutdown(std::net::Shutdown::Both);
+            let _ = target.shutdown(std::net::Shutdown::Both);
+        }
+        let mut interrupted = 0;
+        let mut completed = false;
+        for _ in 0..24 {
+            let target = TcpListener::bind("127.0.0.1:0").unwrap();
+            let target_address = target.local_addr().unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let proxy = std::thread::spawn(move || {
+                let (client, _) = listener.accept().unwrap();
+                let peer = TcpStream::connect(target_address).unwrap();
+                client.set_nodelay(true).unwrap();
+                peer.set_nodelay(true).unwrap();
+                let client_in = client.try_clone().unwrap();
+                let peer_out = peer.try_clone().unwrap();
+                let outbound = std::thread::spawn(move || relay(client_in, peer_out, true));
+                relay(peer, client, true);
+                outbound.join().unwrap();
+            });
+            let receiver_db = db_b.clone();
+            let receiver_b = b.clone();
+            let server = std::thread::spawn(move || {
+                let (socket, _) = target.accept().unwrap();
+                let (mut session, hash, _) =
+                    NoiseStream::handshake(socket, &receiver_b.noise_static, false).unwrap();
+                // Shorten this fixture's deadline to force many interrupted
+                // rounds; production's 60-second budget is not increased.
+                session.deadline = std::time::Instant::now() + Duration::from_secs(2);
+                let store = Store::open_existing(&receiver_db).unwrap();
+                exchange(
+                    &mut session,
+                    &hash,
+                    &store,
+                    &receiver_b,
+                    "synthetic b",
+                    &[],
+                    false,
+                    None,
+                    None,
+                )
+            });
+            let result = sync_now(
+                std::slice::from_ref(&address),
+                &db_a,
+                &a,
+                "synthetic a",
+                &b.node_id,
+            );
+            let receiver = server.join().unwrap();
+            proxy.join().unwrap();
+            match (result, receiver) {
+                (Ok(sent), Ok(received)) if !sent.has_more && !received.has_more => {
+                    completed = true;
+                    break;
+                }
+                (left, right) => {
+                    assert!(
+                        left.is_err() || right.is_err(),
+                        "unexpected non-progress round"
+                    );
+                    let ours = store_a
+                        .sync_manifest(&b.node_id, store_a.sync_epoch())
+                        .unwrap();
+                    let theirs = store_b
+                        .sync_manifest(&a.node_id, store_b.sync_epoch())
+                        .unwrap();
+                    eprintln!(
+                        "synthetic deadline round: client={left:?} server={right:?} incoming_a={} incoming_b={}",
+                        serde_json::to_value(
+                            store_a
+                                .sync_packet_cursor(&b.node_id, store_a.sync_epoch(), &theirs)
+                                .unwrap()
+                        )
+                        .unwrap(),
+                        serde_json::to_value(
+                            store_b
+                                .sync_packet_cursor(&a.node_id, store_b.sync_epoch(), &ours)
+                                .unwrap()
+                        )
+                        .unwrap()
+                    );
+                    interrupted += 1;
+                }
+            }
+        }
+        assert!(
+            interrupted > 0,
+            "fixture never exercised its shortened progress deadline"
+        );
+        assert!(completed, "bounded slow-link retries did not converge");
+        assert_eq!(
+            store_b.export_history().unwrap().as_slice(),
+            std::slice::from_ref(&original)
+        );
+        assert_eq!(store_a.export_history().unwrap(), [original]);
+        for store in [&store_a, &store_b] {
+            let connection = rusqlite::Connection::open(store.path().unwrap()).unwrap();
+            connection
+                .execute_batch(&format!("PRAGMA key=\"x'{}'\"", "2a".repeat(32)))
+                .unwrap();
+            assert_eq!(
+                connection
+                    .query_row("SELECT count(*) FROM sync_transfer_parts", [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
     fn large_encrypted_history_resumes_after_committed_page_loses_ack_and_then_sends_only_deltas() {
         use crate::store::{HistoryRecord, SyncManifest, SyncPage};
         let root = tempfile::tempdir().unwrap();
@@ -2310,6 +2684,7 @@ mod tests {
                 .send_json(&Hello {
                     v: PROTOCOL_V,
                     pages: true,
+                    segments: false,
                     node_id: server_b.node_id.clone(),
                     name: "synthetic b".into(),
                     addresses: vec![],
@@ -2665,6 +3040,7 @@ mod tests {
         let forged = Hello {
             v: PROTOCOL_V,
             pages: false,
+            segments: false,
             node_id: id_victim.node_id.clone(),
             name: "attacker".to_string(),
             addresses: vec![],

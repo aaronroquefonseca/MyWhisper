@@ -21,6 +21,9 @@ use crate::settings::{AppSettings, HistoryEntry, Snippet};
 #[path = "sync_pages.rs"]
 mod pages;
 pub(crate) use pages::{SyncManifest, SyncPage};
+#[path = "sync_segments.rs"]
+mod segments;
+pub(crate) use segments::{SyncCursor, SyncPacket};
 
 /// Milliseconds since the Unix epoch (wall clock). Sync conflict
 /// resolution compares these; ties break on node id (total order).
@@ -263,7 +266,7 @@ fn migrate_plaintext_to_encrypted(path: &Path, key: &[u8; 32]) -> rusqlite::Resu
     let plain = Connection::open(path)?;
     plain.busy_timeout(std::time::Duration::from_secs(5))?;
     let version: i64 = plain.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version > 7 {
+    if version > 8 {
         return Err(rusqlite::Error::ToSqlConversionFailure(
             "database schema is newer than this build".into(),
         ));
@@ -397,7 +400,7 @@ impl Store {
             r.get::<_, i64>(0)
         })?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 7 {
+        if version > 8 {
             return Err(rusqlite::Error::ToSqlConversionFailure(
                 "database schema is newer than this MyWhisper build".into(),
             ));
@@ -405,7 +408,7 @@ impl Store {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON;",
         )?;
-        if version == 7 {
+        if version == 8 {
             return Ok(Self {
                 conn,
                 file_identity,
@@ -419,14 +422,15 @@ impl Store {
             |r| r.get::<_, i64>(0),
         )? == 0;
         let tx = conn.unchecked_transaction()?;
-        if (3..=6).contains(&version) {
+        if (3..=7).contains(&version) {
             tx.execute(
                 "UPDATE history SET text='',raw_text='',words=0 WHERE discarded=1",
                 [],
             )?;
             Self::initialize_settings_on(&tx, false)?;
             pages::initialize(&tx)?;
-            tx.execute_batch("PRAGMA user_version=7")?;
+            segments::initialize(&tx)?;
+            tx.execute_batch("PRAGMA user_version=8")?;
             tx.commit()?;
             return Ok(Self {
                 conn,
@@ -495,7 +499,8 @@ impl Store {
         tx.execute("UPDATE devices SET introducer=0", [])?;
         Self::initialize_settings_on(&tx, fresh)?;
         pages::initialize(&tx)?;
-        tx.execute_batch("PRAGMA user_version=7")?;
+        segments::initialize(&tx)?;
+        tx.execute_batch("PRAGMA user_version=8")?;
         tx.commit()?;
         Ok(Self {
             conn,
@@ -1003,7 +1008,8 @@ impl Store {
     /// (union-by-uuid would otherwise resurrect it from a peer).
     pub fn delete_history(&self, uuid: &str) -> rusqlite::Result<()> {
         let tx = self.conn.unchecked_transaction()?;
-        let changed=tx.execute("UPDATE history SET deleted=1,text='',raw_text='',words=0,duration_secs=0 WHERE uuid=?1 AND deleted=0",[uuid])?;
+        let pending=tx.execute("INSERT OR IGNORE INTO history(uuid,text,raw_text,words,duration_secs,deleted,discarded,recorded_at) SELECT record_key,'','',0,0,1,0,?2 FROM sync_transfers WHERE direction=1 AND kind=2 AND record_key=?1",(uuid,now_ms()/1000))?;
+        let changed=tx.execute("UPDATE history SET deleted=1,text='',raw_text='',words=0,duration_secs=0 WHERE uuid=?1 AND deleted=0",[uuid])? + pending;
         if changed > 0 {
             Self::invalidate_sync(&tx)?;
             bump_gen(&tx)?;
@@ -1040,10 +1046,15 @@ impl Store {
         &self,
         predicate: &str,
         params: impl rusqlite::Params,
-        _now: i64,
+        now: i64,
     ) -> rusqlite::Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
-        let count=tx.execute(&format!("UPDATE history SET deleted=1,text='',raw_text='',words=0,duration_secs=0 WHERE deleted=0 AND ({predicate})"),params)?;
+        let pending = if predicate == "1" {
+            tx.execute("INSERT OR IGNORE INTO history(uuid,text,raw_text,words,duration_secs,deleted,discarded,recorded_at) SELECT record_key,'','',0,0,1,0,?1 FROM sync_transfers WHERE direction=1 AND kind=2",[now])?
+        } else {
+            0
+        };
+        let count=tx.execute(&format!("UPDATE history SET deleted=1,text='',raw_text='',words=0,duration_secs=0 WHERE deleted=0 AND ({predicate})"),params)? + pending;
         if predicate == "1" {
             Self::invalidate_capture(&tx)?;
         }
@@ -1299,6 +1310,7 @@ impl Store {
 
     fn reset_on(tx: &Connection) -> rusqlite::Result<()> {
         let version = Self::next_version(tx)?;
+        tx.execute("INSERT OR IGNORE INTO history(uuid,text,raw_text,words,duration_secs,deleted,discarded,recorded_at) SELECT record_key,'','',0,0,1,0,recorded_at FROM sync_transfers WHERE direction=1 AND kind=2",[])?;
         tx.execute(
             "UPDATE history SET deleted=1, text='', raw_text='', words=0, duration_secs=0",
             [],
@@ -1441,8 +1453,11 @@ impl Store {
     /// left by a crash between writing a clip and committing its history row.
     pub(crate) fn maintain_retention_at(&self, now: i64) -> rusqlite::Result<(usize, usize)> {
         let Some(privacy) = self.retention_policy()? else {
+            self.expire_sync_transfers_at(now)?;
             return Ok((0, 0));
         };
+        let pending = self.expire_pending_history_at(now, privacy.transcript_auto_delete_days)?;
+        self.expire_sync_transfers_at(now)?;
         let count = if privacy.transcript_auto_delete_days > 0 {
             self.redact_history_where_at(
                 "recorded_at < ?1",
@@ -1452,7 +1467,7 @@ impl Store {
         } else {
             0
         };
-        Ok((count, self.prune_audio_vault_at(now)?))
+        Ok((count + pending, self.prune_audio_vault_at(now)?))
     }
 
     /// An incomplete or invalid configuration cannot authorize automatic
@@ -1854,10 +1869,12 @@ impl Store {
 
     pub fn open_memory() -> rusqlite::Result<Self> {
         let conn = Connection::open_in_memory()?;
+        conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;")?;
         conn.execute_batch(SCHEMA)?;
         Self::initialize_settings_on(&conn, true)?;
         pages::initialize(&conn)?;
-        conn.execute_batch("PRAGMA user_version=7")?;
+        segments::initialize(&conn)?;
+        conn.execute_batch("PRAGMA user_version=8")?;
         Ok(Self {
             conn,
             file_identity: None,
@@ -3151,7 +3168,7 @@ mod release_regressions {
                     .conn
                     .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                7
+                8
             );
         }
     }

@@ -39,6 +39,76 @@ pub(crate) struct SyncPage {
     pub content: ContentSnapshot,
 }
 
+#[derive(Debug)]
+struct SegmentationRequired;
+impl std::fmt::Display for SegmentationRequired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("individual record exceeds sync wire size; upgrade the peer for segmented transfer; local data preserved")
+    }
+}
+impl std::error::Error for SegmentationRequired {}
+pub(super) fn requires_segmentation(error: &rusqlite::Error) -> bool {
+    matches!(error, rusqlite::Error::ToSqlConversionFailure(inner) if inner.is::<SegmentationRequired>())
+}
+fn segment_required() -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(SegmentationRequired))
+}
+
+pub(super) fn record_on(
+    conn: &Connection,
+    kind: i64,
+    key: &str,
+    self_id: &str,
+    cap: i64,
+) -> rusqlite::Result<ContentSnapshot> {
+    let (table, column, lengths) = match kind {
+        0 => (
+            "words",
+            "word",
+            "length(CAST(word AS BLOB))+length(CAST(updated_by AS BLOB))",
+        ),
+        1 => (
+            "snippets",
+            "trigger",
+            "length(CAST(trigger AS BLOB))+length(CAST(replacement AS BLOB))+length(CAST(updated_by AS BLOB))",
+        ),
+        2 => (
+            "history",
+            "uuid",
+            "length(CAST(uuid AS BLOB))+length(CAST(text AS BLOB))+length(CAST(raw_text AS BLOB))",
+        ),
+        3 => (
+            "devices",
+            "node_id",
+            "length(CAST(node_id AS BLOB))+length(CAST(name AS BLOB))+length(CAST(addresses AS BLOB))+length(CAST(address AS BLOB))",
+        ),
+        _ => return Err(invalid("invalid sync change kind")),
+    };
+    let length: Option<i64> = conn
+        .query_row(
+            &format!("SELECT {lengths} FROM {table} WHERE {column}=?1"),
+            [key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if length.is_some_and(|length| length > cap) {
+        return Err(if cap == RECORD_TEXT_BYTES {
+            segment_required()
+        } else {
+            invalid("individual sync record exceeds the 64 MiB text budget; local data preserved")
+        });
+    }
+    let mut content = ContentSnapshot::default();
+    match kind {
+        0=>if let Some(record)=conn.query_row("SELECT word,updated_at,updated_by,deleted FROM words WHERE word=?1",[key],|row|Ok(WordRecord {word:row.get(0)?,updated_at:row.get(1)?,updated_by:row.get(2)?,deleted:row.get(3)?})).optional()? {content.words.push(record);},
+        1=>if let Some(record)=conn.query_row("SELECT trigger,replacement,updated_at,updated_by,deleted FROM snippets WHERE trigger=?1",[key],|row|Ok(SnippetRecord {trigger:row.get(0)?,replacement:row.get(1)?,updated_at:row.get(2)?,updated_by:row.get(3)?,deleted:row.get(4)?})).optional()? {content.snippets.push(record);},
+        2=>if let Some(record)=conn.query_row("SELECT uuid,text,raw_text,words,duration_secs,deleted,discarded,recorded_at FROM history WHERE uuid=?1",[key],|row|Ok(HistoryRecord {uuid:row.get(0)?,text:row.get(1)?,raw_text:row.get(2)?,words:row.get(3)?,duration_secs:row.get(4)?,deleted:row.get(5)?,discarded:row.get(6)?,recorded_at:row.get(7)?})).optional()? {content.history.push(record);},
+        3=>if key!=self_id && let Some(peer)=Store::peer_on(conn,key)?.filter(|peer|peer.trusted) {content.peers.push(PeerGossip {node_id:peer.node_id,name:peer.name,addresses:peer.addresses,last_seen:peer.last_seen});},
+        _=>unreachable!(),
+    }
+    Ok(content)
+}
+
 fn invalid(message: &'static str) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(message.into())
 }
@@ -205,53 +275,9 @@ impl Store {
                 |row| row.get(0),
             )?;
             let key = &key;
-            let mut row_content = ContentSnapshot::default();
-            let (table, column, lengths) = match kind {
-                0 => (
-                    "words",
-                    "word",
-                    "length(CAST(word AS BLOB))+length(CAST(updated_by AS BLOB))",
-                ),
-                1 => (
-                    "snippets",
-                    "trigger",
-                    "length(CAST(trigger AS BLOB))+length(CAST(replacement AS BLOB))+length(CAST(updated_by AS BLOB))",
-                ),
-                2 => (
-                    "history",
-                    "uuid",
-                    "length(CAST(uuid AS BLOB))+length(CAST(text AS BLOB))+length(CAST(raw_text AS BLOB))",
-                ),
-                3 => (
-                    "devices",
-                    "node_id",
-                    "length(CAST(node_id AS BLOB))+length(CAST(name AS BLOB))+length(CAST(addresses AS BLOB))+length(CAST(address AS BLOB))",
-                ),
-                _ => return Err(invalid("invalid sync change kind")),
-            };
-            let length: Option<i64> = tx
-                .query_row(
-                    &format!("SELECT {lengths} FROM {table} WHERE {column}=?1"),
-                    [key],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if length.is_some_and(|length| length > RECORD_TEXT_BYTES) {
-                return Err(invalid(
-                    "individual record exceeds safe sync page size; local data preserved",
-                ));
-            }
-            match kind {
-                0 => if let Some(record) = tx.query_row("SELECT word,updated_at,updated_by,deleted FROM words WHERE word=?1", [key], |row| Ok(WordRecord {word:row.get(0)?,updated_at:row.get(1)?,updated_by:row.get(2)?,deleted:row.get(3)?})).optional()? {row_content.words.push(record);},
-                1 => if let Some(record) = tx.query_row("SELECT trigger,replacement,updated_at,updated_by,deleted FROM snippets WHERE trigger=?1", [key], |row| Ok(SnippetRecord {trigger:row.get(0)?,replacement:row.get(1)?,updated_at:row.get(2)?,updated_by:row.get(3)?,deleted:row.get(4)?})).optional()? {row_content.snippets.push(record);},
-                2 => if let Some(record) = tx.query_row("SELECT uuid,text,raw_text,words,duration_secs,deleted,discarded,recorded_at FROM history WHERE uuid=?1", [key], |row| Ok(HistoryRecord {uuid:row.get(0)?,text:row.get(1)?,raw_text:row.get(2)?,words:row.get(3)?,duration_secs:row.get(4)?,deleted:row.get(5)?,discarded:row.get(6)?,recorded_at:row.get(7)?})).optional()? {row_content.history.push(record);},
-                3 => if key != self_id && let Some(record) = Self::peer_on(&tx, key)?.filter(|peer| peer.trusted) {row_content.peers.push(PeerGossip {node_id:record.node_id,name:record.name,addresses:record.addresses,last_seen:record.last_seen});},
-                _ => unreachable!(),
-            }
+            let row_content = record_on(&tx, *kind, key, self_id, RECORD_TEXT_BYTES)?;
             let mut encoded = EncodedSize(0);
-            serde_json::to_writer(&mut encoded, &row_content).map_err(|_| {
-                invalid("individual record exceeds sync wire size; local data preserved")
-            })?;
+            serde_json::to_writer(&mut encoded, &row_content).map_err(|_| segment_required())?;
             let row_bytes = encoded.0;
             if bytes + row_bytes > PAGE_BYTES {
                 break;
@@ -284,6 +310,25 @@ impl Store {
         manifest: &SyncManifest,
         page: &SyncPage,
     ) -> rusqlite::Result<usize> {
+        self.check_sync_identity()?;
+        let tx = self.conn.unchecked_transaction()?;
+        let (added, changed) = Self::merge_sync_page_on(&tx, peer, epoch, self_id, manifest, page)?;
+        tx.commit()?;
+        if changed {
+            bump_data_gen();
+        }
+        self.prune_audio_vault_at(now_ms() / 1000)?;
+        Ok(added)
+    }
+
+    pub(super) fn merge_sync_page_on(
+        tx: &Connection,
+        peer: &str,
+        epoch: i64,
+        self_id: &str,
+        manifest: &SyncManifest,
+        page: &SyncPage,
+    ) -> rusqlite::Result<(usize, bool)> {
         let content = &page.content;
         if content.words.len()
             + content.snippets.len()
@@ -301,9 +346,7 @@ impl Store {
         {
             return Err(invalid("invalid sync page progress"));
         }
-        self.check_sync_identity()?;
-        let tx = self.conn.unchecked_transaction()?;
-        Self::require_sync_authorized(&tx, peer, epoch)?;
+        Self::require_sync_authorized(tx, peer, epoch)?;
         let current = tx
             .query_row(
                 "SELECT cursor FROM sync_received WHERE peer=?1 AND stream=?2",
@@ -315,25 +358,24 @@ impl Store {
         if current != page.from {
             return Err(invalid("concurrent sync page advanced cursor; retry"));
         }
-        let changed = Self::apply_words_on(&tx, &content.words)?
-            + Self::apply_snippets_on(&tx, &content.snippets)?
-            + Self::apply_history_on(&tx, &content.history)?;
-        let introducer = Self::peer_on(&tx, peer)?.is_some_and(|peer| peer.introducer);
-        let added = Self::apply_gossip_on(&tx, &content.peers, introducer, self_id)?;
+        let changed = Self::apply_words_on(tx, &content.words)?
+            + Self::apply_snippets_on(tx, &content.snippets)?
+            + Self::apply_history_on(tx, &content.history)?;
+        let introducer = Self::peer_on(tx, peer)?.is_some_and(|peer| peer.introducer);
+        let added = Self::apply_gossip_on(tx, &content.peers, introducer, self_id)?;
         tx.execute("INSERT INTO sync_received(peer,stream,cursor) VALUES (?1,?2,?3) ON CONFLICT(peer) DO UPDATE SET stream=excluded.stream,cursor=excluded.cursor", params![peer,manifest.stream,page.to])?;
         tx.execute(
             "UPDATE devices SET last_sync=?2 WHERE node_id=?1",
             (peer, now_ms() / 1000),
         )?;
         if changed > 0 || added > 0 {
-            bump_gen(&tx)?;
+            bump_gen(tx)?;
         }
-        tx.commit()?;
-        if changed > 0 || added > 0 {
-            bump_data_gen();
-        }
-        self.prune_audio_vault_at(now_ms() / 1000)?;
-        Ok(added)
+        tx.execute(
+            "DELETE FROM sync_transfers WHERE peer=?1 AND direction=1",
+            [peer],
+        )?;
+        Ok((added, changed > 0 || added > 0))
     }
 }
 
