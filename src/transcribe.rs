@@ -5415,11 +5415,7 @@ mod tests {
             let root = tempfile::tempdir().unwrap();
             let source = root.path().join("synthetic-stalled-dns.c");
             let library = root.path().join("synthetic-stalled-dns.so");
-            std::fs::write(
-                &source,
-                include_str!("../docs/release-audit-implementation/review-f426c9a/stalled_dns.c"),
-            )
-            .unwrap();
+            std::fs::write(&source, include_str!("test_fixtures/stalled_dns.c")).unwrap();
             crate::child::run(
                 Command::new(std::env::var_os("CC").unwrap_or_else(|| "cc".into()))
                     .args(["-shared", "-fPIC"])
@@ -5788,6 +5784,18 @@ mod tests {
         }
     }
 
+    // Native/Nix checks use the same scripts without assuming an FHS Python.
+    fn fixture_python_script(script: &str) -> String {
+        let output = Command::new("python3")
+            .args(["-c", "import sys; print(sys.executable)"])
+            .output()
+            .expect("Python is required for the native provider fixture");
+        assert!(output.status.success());
+        let interpreter = std::str::from_utf8(&output.stdout).unwrap().trim();
+        assert!(Path::new(interpreter).is_file());
+        format!("#!{interpreter}\n{script}")
+    }
+
     fn pin_synthetic_asset(
         data: &Path,
         path: &Path,
@@ -5882,8 +5890,8 @@ mod tests {
         std::fs::write(&model, b"synthetic pinned weights").unwrap();
         std::fs::write(
             &binary,
-            r#"#!/usr/bin/python3
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            fixture_python_script(
+                r#"from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import sys, time
 model = sys.argv[sys.argv.index('--model') + 1]
@@ -5897,6 +5905,7 @@ class Handler(BaseHTTPRequestHandler):
   self.send_response(200); self.end_headers(); self.wfile.write(b'{"text":"must not be delivered"}')
 ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
 "#,
+            ),
         )
         .unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -6016,8 +6025,8 @@ ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
         std::fs::write(
             &binary,
-            r#"#!/usr/bin/python3
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            fixture_python_script(
+                r#"from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import json, sys, time
 model = sys.argv[sys.argv.index('--model') + 1]
@@ -6039,6 +6048,7 @@ class Handler(BaseHTTPRequestHandler):
   self.wfile.write(body)
 ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
 "#,
+            ),
         )
         .unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -6328,7 +6338,7 @@ while True:
                         "same-configuration".into(),
                         port,
                         || {
-                            let mut command = Command::new("/usr/bin/python3");
+                            let mut command = Command::new("python3");
                             command.arg(script).arg(port.to_string()).arg(signal);
                             spawn_supervised(command, &operation)
                         },
@@ -7141,9 +7151,9 @@ while True:
                         .unwrap();
                 let marker = root.path().join("owned-child-paths");
                 let marker_literal = serde_json::to_string(&marker.to_string_lossy()).unwrap();
-                let script = format!(
-                    "#!/usr/bin/env python3\nimport sys,time,os\na=sys.argv\np=[a[a.index('--audio')+1]]\nif '--audio-keywords' in a: p.append(a[a.index('--audio-keywords')+1])\nm={marker_literal}\nwith open(m+'.tmp','w') as f: f.write('\\n'.join(p+[str(os.getpid())]))\nos.replace(m+'.tmp',m)\ntime.sleep(60)\n"
-                );
+                let script = fixture_python_script(&format!(
+                    "import sys,time,os\na=sys.argv\np=[a[a.index('--audio')+1]]\nif '--audio-keywords' in a: p.append(a[a.index('--audio-keywords')+1])\nm={marker_literal}\nwith open(m+'.tmp','w') as f: f.write('\\n'.join(p+[str(os.getpid())]))\nos.replace(m+'.tmp',m)\ntime.sleep(60)\n"
+                ));
                 let (_engine_dir, engine) = fake_needle(&script);
                 std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o700)).unwrap();
                 let (done, result) = mpsc::channel();

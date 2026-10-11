@@ -1,0 +1,59 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "correction": "F09 native asset verification/trust acceptance and source-build fixture portability",
+  "tests": {
+    "passed": 243,
+    "failed": 0,
+    "original_ignored": 5
+  },
+  "passed": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo test --locked --all-targets",
+    "cargo build --release --locked --bin mywhisper",
+    "Both existing native configurations: eight smoke/recovery/reset invocations, with original heartbeat assertions",
+    "New native asset-dialog acceptance in light/en and dark/es: real pinned CPU runtime reference download/comparison and explicit manual trust",
+    "14 packaging/upgrade tests"
+  ],
+  "native_regressions": [
+    "Real pinned 1.3 MB CPU runtime installation is made legacy only by removing its disposable receipt; clicking Verify existing files downloads an authenticated reference, verifies it, and preserves the original executable bytes and inode",
+    "Tiny manual synthetic bytes fail managed integrity checks. Trust dialog exposes exact translated warning text and defaults close/escape to cancellation; cancelling creates no receipt",
+    "Confirmed manual trust preserves bytes, creates only an explicit locally_trusted receipt, and displays the local-trust label without claiming upstream authenticity or model accuracy",
+    "A same-length subsequent model mutation loses installation authority and displays verification/trust recovery; unrelated authenticated runtime stays valid",
+    "The real GTK buttons enqueue verification/trust without blocking; callback timing and GTK heartbeat assertions pass"
+  ],
+  "compatibility": "No production receipt/database/key/identity/peer migration in this checkpoint. The existing task runtime is initialized in the preview so asset status/worker behavior is exercised. Native test fixtures use the selected Python executable rather than fixed FHS paths. The stalled-DNS C fixture is copied byte-for-byte into src/test_fixtures so packaged source includes it; the historical original is unchanged. Nix check inputs explicitly provide getent for real NSS checks.",
+  "resource_privacy": "Synthetic manual model, disposable pinned runtime, receipt-signing key, database, HOME/XDG/D-Bus/Xvfb only. The manually trusted model is never run as an actual recognizer and the runtime is never executed by this UI acceptance; live Tiny CPU inference is separately recorded in the ownership checkpoint. All temporary roots are owned and cleaned by the preview/runner.",
+  "harness_history": [
+    "The first asset preview had no short-task runtime and stayed Checking; initialize the same existing runtime as production, without changing its worker count.",
+    "Concurrent Nix compilation reduced GTK timer cadence below the existing reset test heartbeat assertion. The check failed rather than being weakened; the full existing native suite passes after the heavy build stops.",
+    "Nix initially exceeded the /tmp disk quota; rerun uses a private build directory on the larger disk. Its next check exposed the omitted C fixture and fixed-interpreter assumptions, which are corrected here. A subsequent actual Nix test exposed the reproduced settings transaction defect, corrected separately in 2a3efc6. The final Nix build must still pass."
+  ],
+  "remaining": [
+    "Final composed Nix artifact and packaged native runtime acceptance are pending",
+    "R49 interrupted repair/promotion, disk-full/extraction, owned download DNS and complete queued cross-process installer/resource review",
+    "Remaining runtime/manual model integrations, live cloud/authenticated WSS, physical microphone/device-change and other supported compositor requirements",
+    "All remaining original audit requirements and full final diff/privacy/migration review; no PR submitted"
+  ],
+  "source_sha256": {
+    "examples/ui_preview.rs": "24eb4c7ed4560ebdf2098cb910f62c0aa3c3813c193fc25968eed4466ffecbc6",
+    "examples/ui_preview/asset_smoke.rs": "bdf007af5cec14ae21d680b8b9449f99ccc09529815b758de6e1b050a65df10a",
+    "scripts/ui-assets-smoke.sh": "3eeb42425fedadf83696f84634c8b526ffae3ddb9ce48594144ef0c92cd8e6f3",
+    "src/transcribe.rs": "c55e99023697fb2f0c32126d430e25323bca25716f2b6b0fa33778404a299090",
+    "src/test_fixtures/stalled_dns.c": "c236f72faf2ce165de521cc7c7395efec3184f7222e4a1030ca052b0c232dd89",
+    "packaging/nixos/flake.nix": "dd169b29fdf0fb66841eb986845a9a7cd9a78be0a32a84d73513988c9678156b"
+  },
+  "logs_sha256": {
+    "fmt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "clippy": "77fa9074a9aeafadaf2797a342864a276e7e67778bd2ec0febcf317477bbbe88",
+    "tests": "2380d7cd0cb678668d69793bb748677f0c34960468050286c85883ba016c3da6",
+    "release": "22dd132d9be9d0aac05dc6f06be64701bf2f2c6ca524e214f070bf20ca41834f",
+    "existing-ui": "6e7148ed920b2a47396a6453888bd63d1f74d96ddb1fc3af6dc01427785e1179",
+    "final": "6a01f17ed28dc1b77df5431eb6f79ee5142f4e47586988407b1d4424a490d34d",
+    "packaging": "157777097d774a2d8a37d2e2ce4eebb237385fea924c0ac13fa301afa010688b",
+    "upgrade": "650e4ea107738c91ba41b9239b6cda387f0fb650f9441c8d3daa6e5fa43c2392",
+    "build": "4b8162f9825685b95236849aa783e36e6ef41eb99809091928836a832c6cd701"
+  },
+  "historical_dns_fixture_sha256": "c236f72faf2ce165de521cc7c7395efec3184f7222e4a1030ca052b0c232dd89"
+}

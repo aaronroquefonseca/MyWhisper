@@ -24,7 +24,7 @@
       # Build against NixOS's own libraries instead of patching an Arch ABI.
       cargoBuildFlags = [ "--bin" "mywhisper" ];
       doCheck = true;
-      nativeCheckInputs = [ pkgs.python3 pkgs.cacert pkgs.dbus ];
+      nativeCheckInputs = [ pkgs.python3 pkgs.cacert pkgs.dbus pkgs.glibc.bin ];
       preCheck = ''
         export NO_PROXY=127.0.0.1,localhost,::1
         export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt

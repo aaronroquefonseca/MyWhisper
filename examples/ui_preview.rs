@@ -3,6 +3,8 @@
 use gtk4::prelude::*;
 use mywhisper::app::{AppState, apply_theme, build_app_window};
 
+#[path = "ui_preview/asset_smoke.rs"]
+mod asset_smoke;
 #[path = "ui_preview/reset_smoke.rs"]
 mod reset_smoke;
 #[path = "ui_preview/smoke.rs"]
@@ -15,6 +17,7 @@ fn main() -> gtk4::glib::ExitCode {
     unsafe {
         std::env::set_var("MYWHISPER_DB_KEY", "00".repeat(32));
     }
+    mywhisper::runtime::init().expect("preview task runtime");
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--reset-lock-owner") {
         reset_smoke::lock_owner(std::path::Path::new(&args[2]));
@@ -109,6 +112,9 @@ fn main() -> gtk4::glib::ExitCode {
         if args.iter().any(|arg| arg == "--reset-resume-smoke") {
             reset_smoke::prepare_recovery(&state);
         }
+        if args.iter().any(|arg| arg == "--asset-smoke") {
+            asset_smoke::prepare(&state);
+        }
         apply_theme(theme);
         let window = build_app_window(
             app,
@@ -131,6 +137,9 @@ fn main() -> gtk4::glib::ExitCode {
         }
         if args.iter().any(|a| a == "--toast-proof") {
             smoke::toast_proof(app, &window, theme == mywhisper::settings::Theme::Dark);
+        }
+        if args.iter().any(|a| a == "--asset-smoke") {
+            asset_smoke::run(app, &state, &window);
         }
         if args.iter().any(|a| a == "--smoke") {
             smoke::run(app, &state, &window);
