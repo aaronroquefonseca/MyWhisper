@@ -5465,6 +5465,153 @@ mod tests {
     }
 
     #[test]
+    fn download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset() {
+        use std::io::{Read, Write};
+        let name = "download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset";
+        if std::env::var("MYWHISPER_CAPTURE_PROBE").ok().as_deref() != Some(name) {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("synthetic-stalled-dns.c");
+            let library = root.path().join("synthetic-stalled-dns.so");
+            std::fs::write(&source, include_str!("test_fixtures/stalled_dns.c")).unwrap();
+            crate::child::run(
+                Command::new(std::env::var_os("CC").unwrap_or_else(|| "cc".into()))
+                    .args(["-shared", "-fPIC"])
+                    .arg(&source)
+                    .arg("-o")
+                    .arg(&library)
+                    .arg("-ldl"),
+                &[],
+                Duration::from_secs(10),
+                64 * 1024,
+            )
+            .unwrap();
+            assert!(!isolated_capture_probe_with(name, |command| {
+                command
+                    .env("LD_PRELOAD", &library)
+                    .env("MYWHISPER_RESOLVER_MARKER", root.path().join("started"));
+            }));
+            return;
+        }
+        let marker = PathBuf::from(std::env::var_os("MYWHISPER_RESOLVER_MARKER").unwrap());
+        let threads = || std::fs::read_dir("/proc/self/task").unwrap().count();
+        let baseline = threads();
+        for round in 0..12 {
+            let root = tempfile::tempdir().unwrap();
+            let destination = root.path().join("models/synthetic");
+            crate::private_fs::directory(&destination).unwrap();
+            std::fs::write(destination.join("model"), b"previous installation").unwrap();
+            let stage =
+                crate::artifact::Stage::new(root.path(), "model-synthetic", destination.clone())
+                    .unwrap();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let token = cancel.clone();
+            let (url, redirect) = if round % 2 == 0 {
+                ("http://mywhisper-review.invalid:9/asset".to_owned(), None)
+            } else {
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let url = format!("http://{}/asset", listener.local_addr().unwrap());
+                let server = std::thread::spawn(move || {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut header = Vec::new();
+                    while !header.ends_with(b"\r\n\r\n") {
+                        assert!(header.len() < 16 * 1024);
+                        let mut byte = [0];
+                        socket.read_exact(&mut byte).unwrap();
+                        header.push(byte[0]);
+                    }
+                    socket.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://mywhisper-review.invalid:9/asset\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                });
+                (url, Some(server))
+            };
+            let worker = std::thread::spawn(move || {
+                crate::artifact::download(
+                    crate::artifact::Source {
+                        url: &url,
+                        sha256: &"00".repeat(32),
+                        limit: 1024,
+                    },
+                    &stage.path().join("download.part"),
+                    || stage.check(&token),
+                    |_, _| {},
+                )
+            });
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !marker.exists() {
+                assert!(Instant::now() < deadline, "NSS fixture was not reached");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let pid: u32 = std::fs::read_to_string(&marker)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let start = Instant::now();
+            match round % 3 {
+                0 => cancel.store(true, Ordering::Release),
+                1 => crate::artifact::delete(root.path(), "model-synthetic", &destination).unwrap(),
+                _ => drop(crate::artifact::reset(root.path()).unwrap()),
+            }
+            assert!(worker.join().unwrap().is_err());
+            if let Some(server) = redirect {
+                server.join().unwrap();
+            }
+            assert!(start.elapsed() < Duration::from_millis(500));
+            assert!(
+                !PathBuf::from(format!("/proc/{pid}")).exists(),
+                "cancelled download left the NSS resolver alive: pid={pid}"
+            );
+            assert_eq!(threads(), baseline, "cancelled download leaked a thread");
+            if round % 3 == 1 {
+                assert!(!destination.exists());
+            } else {
+                assert_eq!(
+                    std::fs::read(destination.join("model")).unwrap(),
+                    b"previous installation"
+                );
+            }
+            assert!(
+                std::fs::read_dir(root.path().join("models"))
+                    .unwrap()
+                    .all(|entry| !entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".mywhisper-install-"))
+            );
+            std::fs::remove_file(&marker).unwrap();
+        }
+        // Exhausting the DNS budget must reap the resolver even without a
+        // cancellation, and must not create a partial destination file.
+        let root = tempfile::tempdir().unwrap();
+        let start = Instant::now();
+        assert!(
+            crate::artifact::download(
+                crate::artifact::Source {
+                    url: "http://mywhisper-review.invalid:9/asset",
+                    sha256: &"00".repeat(32),
+                    limit: 1024,
+                },
+                &root.path().join("download.part"),
+                || Ok(()),
+                |_, _| {},
+            )
+            .is_err()
+        );
+        assert!(start.elapsed() < Duration::from_secs(4));
+        let pid: u32 = std::fs::read_to_string(&marker)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
+        assert!(!root.path().join("download.part").exists());
+        assert_eq!(threads(), baseline);
+    }
+
+    #[test]
     fn websocket_resolver_cancellation_recovers_owned_task_budget() {
         let name = "websocket_resolver_cancellation_recovers_owned_task_budget";
         if std::env::var("MYWHISPER_CAPTURE_PROBE").ok().as_deref() != Some(name) {

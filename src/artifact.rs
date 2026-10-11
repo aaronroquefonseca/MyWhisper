@@ -370,12 +370,13 @@ pub(crate) fn download(
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let result = runtime.block_on(async {
+    runtime.block_on(async {
         check()?;
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .read_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(7200))
+            .dns_resolver(std::sync::Arc::new(crate::address::HttpResolver))
             .build()
             .map_err(|e| e.without_url().to_string())?;
         let mut response = cancellable(
@@ -438,9 +439,7 @@ pub(crate) fn download(
             bytes: received,
             digest: hash,
         })
-    });
-    runtime.shutdown_timeout(Duration::from_millis(100));
-    result
+    })
 }
 
 fn member(root: &Path, name: &Path) -> Result<PathBuf, String> {

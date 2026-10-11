@@ -136,12 +136,7 @@ pub(crate) fn resolve(
         };
         return Ok(vec![SocketAddrV6::new(ip, port, 0, zone_id).into()]);
     }
-    if host.is_empty()
-        || host.len() > 253
-        || !host
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"-._".contains(&byte))
-    {
+    if !valid_hostname(host) {
         return Err("invalid peer hostname".into());
     }
     let remaining = deadline
@@ -159,6 +154,80 @@ pub(crate) fn resolve(
     )?;
     parse_answers(&bytes, port)
 }
+
+fn valid_hostname(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 253
+        && host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-._".contains(&byte))
+}
+
+/// Request-owned resolution that yields to the HTTP cancellation loop. Dropping
+/// the request/runtime drops and reaps the NSS process, including descendants;
+/// no blocking-pool task can survive an abandoned transfer.
+pub(crate) struct HttpResolver;
+impl reqwest::dns::Resolve for HttpResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let addresses = http_addresses(name.as_str())
+                .await
+                .map_err(std::io::Error::other)?;
+            Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+async fn http_addresses(host: &str) -> Result<Vec<SocketAddr>, String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    if !valid_hostname(host) {
+        return Err("invalid HTTP hostname".into());
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut child = crate::child::OwnedChild::spawn(
+        Command::new("getent")
+            .args(["ahosts", host])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()),
+    )?;
+    let mut stdout = child.0.stdout.take().ok_or("resolver stdout unavailable")?;
+    crate::child::nonblocking(&stdout).map_err(|error| error.to_string())?;
+    let mut output = Vec::new();
+    let mut eof = false;
+    loop {
+        let mut buffer = [0; 8192];
+        match stdout.read(&mut buffer) {
+            Ok(0) => eof = true,
+            Ok(count) => {
+                if count > (64 * 1024usize).saturating_sub(output.len()) {
+                    return Err("resolver output limit exceeded".into());
+                }
+                output.extend_from_slice(&buffer[..count]);
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) => {}
+            Err(error) => return Err(format!("resolver output: {error}")),
+        }
+        if let Some(status) = child.try_status().map_err(|error| error.to_string())?
+            && eof
+        {
+            if !status.success() {
+                return Err("HTTP hostname resolution failed".into());
+            }
+            return parse_answers(&output, 0);
+        }
+        if Instant::now() >= deadline {
+            return Err("HTTP hostname resolution deadline exceeded".into());
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
+
 fn parse_answers(bytes: &[u8], port: u16) -> Result<Vec<SocketAddr>, String> {
     let output = std::str::from_utf8(bytes).map_err(|_| "resolver output is not UTF-8")?;
     let mut addresses = Vec::new();
