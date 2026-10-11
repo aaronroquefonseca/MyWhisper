@@ -83,7 +83,7 @@ struct Worker {
     sender: std::sync::mpsc::SyncSender<Request>,
     // The process owns one selection worker, rather than a child/reaper per
     // dictation. Its only retained data is the currently requested selection.
-    _thread: std::thread::JoinHandle<()>,
+    _thread: crate::runtime::OwnedThread,
 }
 static WORKER: std::sync::OnceLock<Worker> = std::sync::OnceLock::new();
 static WORKER_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -92,12 +92,21 @@ fn worker() -> Result<&'static Worker, String> {
     let _lock = WORKER_INIT
         .lock()
         .map_err(|_| "clipboard worker initialization failed")?;
+    if crate::runtime::closing() {
+        return Err("clipboard worker stopped".into());
+    }
     if WORKER.get().is_none() {
         let (sender, receiver) = mpsc::sync_channel::<Request>(4);
         let thread = crate::runtime::spawn_dedicated("clipboard-selection", move || {
             let mut selection: Option<crate::selection::Selection> = None;
             let mut fallback: Option<crate::selection::CliSelection> = None;
             loop {
+                if crate::runtime::closing() {
+                    if let Some(selection) = selection.as_mut() {
+                        selection.clear_if_owned();
+                    }
+                    return;
+                }
                 match receiver.recv_timeout(Duration::from_millis(2)) {
                     Ok(request) => {
                         let pipeline = matches!(&request.operation, Operation::Pipeline(..));
@@ -213,7 +222,7 @@ fn request(
     let _stop_on_return = StopOnDrop(stopped.clone());
     let stop = stopped.clone();
     let guarded: crate::selection::Guard =
-        Arc::new(move || !stop.load(Ordering::Acquire) && guard());
+        Arc::new(move || !crate::runtime::closing() && !stop.load(Ordering::Acquire) && guard());
     let (response, result) = mpsc::channel();
     worker
         .sender
@@ -260,7 +269,8 @@ pub(crate) fn copy_text_async(text: &str, sensitive: bool) -> Result<CopyTask, S
     };
     let cancelled = Arc::new(AtomicBool::new(false));
     let stop = cancelled.clone();
-    let guard: crate::selection::Guard = Arc::new(move || !stop.load(Ordering::Acquire));
+    let guard: crate::selection::Guard =
+        Arc::new(move || !crate::runtime::closing() && !stop.load(Ordering::Acquire));
     let (response, result) = mpsc::channel();
     worker()?
         .sender

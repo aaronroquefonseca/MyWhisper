@@ -124,7 +124,8 @@ impl Operation {
             self.cancel.store(true, Ordering::Release);
             return Err(reason.description().into());
         }
-        if self.cancel.load(Ordering::Acquire)
+        if crate::runtime::closing()
+            || self.cancel.load(Ordering::Acquire)
             || self
                 .parent_cancel
                 .as_ref()

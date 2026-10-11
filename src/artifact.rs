@@ -159,7 +159,8 @@ pub(crate) fn observe_authority(data: &Path, key: &str) -> Result<Authority, Str
 impl Authority {
     pub fn check(&self, cancel: &AtomicBool) -> Result<(), String> {
         use std::os::unix::fs::MetadataExt;
-        if cancel.load(Ordering::Acquire)
+        if crate::runtime::closing()
+            || cancel.load(Ordering::Acquire)
             || crate::reset::requested(&self.data).map_err(|error| error.to_string())?
             || epoch(&self.global_epoch.0)? != self.global_epoch.1
             || epoch(&self.asset_epoch.0)? != self.asset_epoch.1

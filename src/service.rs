@@ -100,8 +100,8 @@ pub fn set_sync_port(port: u16) {
 pub struct SyncEngine {
     stop: Arc<AtomicBool>,
     mdns: Option<crate::net::MdnsHandles>,
-    listener: Option<std::thread::JoinHandle<()>>,
-    watchers: Vec<std::thread::JoinHandle<()>>,
+    listener: Option<crate::runtime::OwnedThread>,
+    watchers: Vec<crate::runtime::OwnedThread>,
 }
 
 impl Drop for SyncEngine {

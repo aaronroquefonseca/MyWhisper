@@ -22,7 +22,7 @@ struct Shared<K, R> {
 }
 pub(crate) struct Coalescer<K, R> {
     shared: Arc<Shared<K, R>>,
-    workers: Vec<std::thread::JoinHandle<()>>,
+    workers: Vec<crate::runtime::OwnedThread>,
 }
 impl<K, R> Coalescer<K, R>
 where
@@ -108,7 +108,7 @@ where
             .state
             .lock()
             .map_err(|_| "sync scheduler unavailable")?;
-        if state.stopped {
+        if state.stopped || crate::runtime::closing() {
             return Err("sync scheduler stopped".into());
         }
         if let Some(entry) = state.entries.get_mut(&key) {
@@ -134,6 +134,14 @@ where
         state.ready.push_back(key);
         self.shared.ready.notify_one();
         Ok(true)
+    }
+
+    pub(crate) fn stop(&self) {
+        let mut state = self.shared.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.stopped = true;
+        state.entries.clear();
+        state.ready.clear();
+        self.shared.ready.notify_all();
     }
 }
 impl<K, R> Drop for Coalescer<K, R> {

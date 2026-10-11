@@ -19,6 +19,9 @@ pub(crate) fn nonblocking(fd: &impl AsRawFd) -> std::io::Result<()> {
 pub(crate) struct OwnedChild(pub Child);
 impl OwnedChild {
     pub fn spawn(cmd: &mut Command) -> Result<Self, String> {
+        if crate::runtime::closing() {
+            return Err("process launch cancelled by shutdown".into());
+        }
         let parent = std::process::id() as libc::pid_t;
         // SAFETY: pre_exec uses only async-signal-safe syscalls. The parent check
         // closes the race where it exits before the death signal is installed.
@@ -101,7 +104,7 @@ pub(crate) fn run_guarded(
     limit: usize,
     mut permitted: impl FnMut() -> bool,
 ) -> Result<Vec<u8>, String> {
-    if !permitted() {
+    if crate::runtime::closing() || !permitted() {
         return Err("process cancelled".into());
     }
     cmd.stdin(Stdio::piped())
@@ -120,7 +123,7 @@ pub(crate) fn run_guarded(
     let mut eof = false;
     let mut status = None;
     loop {
-        if !permitted() {
+        if crate::runtime::closing() || !permitted() {
             return Err("process cancelled".into());
         }
         if written == input.len() {

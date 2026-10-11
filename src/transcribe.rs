@@ -2874,6 +2874,13 @@ pub(crate) fn invalidate_all_capture() {
     *live_slot().lock().unwrap_or_else(|p| p.into_inner()) = None;
 }
 
+/// Off-GTK process teardown. Revoke every queued/active capture phase and
+/// stop only servers this process actually owns, never persisted foreign PIDs.
+pub fn shutdown(data: &Path) {
+    invalidate_all_capture();
+    drop_servers(data);
+}
+
 /// Latest live-preview text for the pill drain loop. Pumps overwrite
 /// on change; the drain takes (clears). Empty = nothing new.
 static LIVE_TEXT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -2962,6 +2969,9 @@ impl CaptureInput {
     }
 
     pub fn press(&self) -> Result<(), String> {
+        if crate::runtime::closing() {
+            return Err("capture cancelled by shutdown".into());
+        }
         let epoch = reserve_utterance();
         let cancel = Arc::new(AtomicBool::new(false));
         let result = (|| {
@@ -3633,7 +3643,7 @@ fn end_utterance_inner(
                 .lock()
                 .map(|r| r.last_stamp().map(|t| t > t_cut).unwrap_or(false))
                 .unwrap_or(true);
-            if past || waited >= cap_ms {
+            if crate::runtime::closing() || past || waited >= cap_ms {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));

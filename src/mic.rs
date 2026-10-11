@@ -56,7 +56,7 @@ impl ParecMic {
         let reader = crate::runtime::spawn_session("parec-reader", move || {
             let mut buf = [0u8; 1024];
             let mut carry = None;
-            while !stopping.load(Ordering::Acquire) {
+            while !crate::runtime::closing() && !stopping.load(Ordering::Acquire) {
                 let count = match stdout.read(&mut buf) {
                     Ok(0) => break,
                     Ok(count) => count,
@@ -305,6 +305,9 @@ struct CaptureDrain {
 }
 fn drain_capture(mut consumer: rtrb::Consumer<CaptureChunk>, stopping: &AtomicBool) {
     loop {
+        if crate::runtime::closing() {
+            break;
+        }
         match consumer.pop() {
             Ok(chunk) => {
                 if let Ok(mut recorder) = chunk.recorder.lock() {
@@ -676,7 +679,7 @@ impl CpalMic {
         };
         let deadline = Instant::now() + std::time::Duration::from_secs(2);
         while !ready.load(Ordering::Acquire) {
-            if cancel.load(Ordering::Acquire) {
+            if crate::runtime::closing() || cancel.load(Ordering::Acquire) {
                 return Err("microphone startup cancelled".into());
             }
             if !mic.health.load(Ordering::Acquire) {

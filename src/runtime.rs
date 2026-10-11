@@ -14,7 +14,7 @@
 //!   callers report admission failure and release the owning session;
 //!   optional feedback jobs may be skipped.
 //! - Jobs run under `catch_unwind`: a panicking job is logged and
-//!   the worker survives. Pool threads only exit at process end.
+//!   the worker survives. Closing disconnects queues and joins workers.
 //!
 //! Long-lived loops (hotkey listener, sync, mic readers) are NOT
 //! pool jobs — they would pin workers forever. They keep dedicated
@@ -22,7 +22,116 @@
 //! `Result`), never the panicking `thread::spawn`.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak, mpsc};
+
+static CLOSING: AtomicBool = AtomicBool::new(false);
+// Admission and handle publication share this lock. Shutdown cannot miss a
+// thread/job admitted just before the closing flag was published.
+static ADMISSION: Mutex<()> = Mutex::new(());
+static THREADS: Mutex<Vec<Arc<ThreadOwner>>> = Mutex::new(Vec::new());
+// Covers the eight-session budget, fixed workers, service/clipboard loops and
+// bounded inbound/outbound sync owners. Unjoined handles are never unbounded.
+const THREAD_OWNER_LIMIT: usize = 64;
+type StopState = (Mutex<bool>, Condvar);
+static STOPS: Mutex<Vec<Weak<StopState>>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+#[path = "runtime/shutdown_tests.rs"]
+mod shutdown_tests;
+
+pub fn closing() -> bool {
+    CLOSING.load(Ordering::Acquire)
+}
+
+fn admitted() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    let guard = ADMISSION.lock().unwrap_or_else(|p| p.into_inner());
+    if closing() {
+        return Err("application is shutting down".into());
+    }
+    Ok(guard)
+}
+
+/// Publish cancellation without waiting for workers or doing filesystem IO.
+/// Call on application quit/signal; actual joins happen after GTK returns.
+pub fn begin_shutdown() {
+    let stops = {
+        let _admission = ADMISSION.lock().unwrap_or_else(|p| p.into_inner());
+        CLOSING.store(true, Ordering::Release);
+        STOPS.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    };
+    for stop in stops.into_iter().filter_map(|stop| stop.upgrade()) {
+        *stop.0.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        stop.1.notify_all();
+    }
+}
+
+struct ThreadOwner {
+    handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+    session: bool,
+}
+impl ThreadOwner {
+    fn join(&self) -> std::thread::Result<()> {
+        // Keep the lock through the actual join, including thread-local
+        // destructors. A second joiner must not observe premature completion.
+        let mut handle = self.handle.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(handle) = handle.take() {
+            let result = handle.join();
+            if self.session {
+                SESSION_TASKS.fetch_sub(1, Ordering::AcqRel);
+            }
+            result
+        } else {
+            Ok(())
+        }
+    }
+    fn finished(&self) -> bool {
+        self.handle.try_lock().is_ok_and(|handle| {
+            handle
+                .as_ref()
+                .is_none_or(std::thread::JoinHandle::is_finished)
+        })
+    }
+    fn joined(&self) -> bool {
+        self.handle.try_lock().is_ok_and(|handle| handle.is_none())
+    }
+}
+
+/// The caller and process share the same actual handle. Dropping the caller
+/// cannot detach unfinished cleanup; either owner can join exactly once.
+pub struct OwnedThread(Arc<ThreadOwner>);
+impl OwnedThread {
+    pub fn join(self) -> std::thread::Result<()> {
+        self.0.join()
+    }
+    pub fn is_finished(&self) -> bool {
+        self.0.finished()
+    }
+}
+
+fn create_thread(
+    name: &str,
+    session: bool,
+    f: impl FnOnce() + Send + 'static,
+) -> Result<OwnedThread, String> {
+    let mut threads = THREADS.lock().unwrap_or_else(|p| p.into_inner());
+    // JoinHandle::is_finished can precede TLS destructors. Never join on an
+    // input/admission thread: remove only handles already joined by an owner.
+    threads.retain(|thread| !thread.joined());
+    if threads.len() >= THREAD_OWNER_LIMIT {
+        return Err("process thread ownership budget exhausted; wait for cleanup".into());
+    }
+    let handle = std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(f)
+        .map_err(|e| format!("[runtime] cannot spawn {name}: {e}"))?;
+    let owner = Arc::new(ThreadOwner {
+        handle: Mutex::new(Some(handle)),
+        session,
+    });
+    threads.push(owner.clone());
+    Ok(OwnedThread(owner))
+}
 
 /// Short-job workers. Streaming loops use owned SessionTasks, outgoing sync
 /// uses its per-peer scheduler, and finalization uses its ordered worker.
@@ -52,7 +161,9 @@ struct TrackedJob {
 }
 impl TrackedJob {
     fn run(mut self) {
-        if let Some(job) = self.job.take() {
+        if !closing()
+            && let Some(job) = self.job.take()
+        {
             job();
         }
     }
@@ -91,7 +202,7 @@ pub fn drain(timeout: std::time::Duration) -> Result<(), String> {
 }
 
 struct Pool {
-    tx: mpsc::SyncSender<Job>,
+    tx: Mutex<Option<mpsc::SyncSender<Job>>>,
 }
 
 static GLOBAL: OnceLock<Pool> = OnceLock::new();
@@ -102,30 +213,41 @@ static INIT_LOCK: Mutex<()> = Mutex::new(());
 /// design — better than limping into press handling.
 pub fn init() -> Result<(), String> {
     let _init = INIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _admission = admitted()?;
     if GLOBAL.get().is_some() {
         return Ok(());
     }
     let (tx, rx) = mpsc::sync_channel::<Job>(JOB_QUEUE_DEPTH);
     let rx = Arc::new(Mutex::new(rx));
+    let mut workers = Vec::new();
     for id in 0..POOL_WORKERS {
         let rx = rx.clone();
-        std::thread::Builder::new()
-            .name(format!("mywhisper-pool-{id}"))
-            .spawn(move || {
-                loop {
-                    let job = {
-                        let Ok(rx) = rx.lock() else { return };
-                        rx.recv()
-                    };
-                    let Ok(job) = job else { return }; // pool dropped
-                    if let Err(e) = catch_unwind(AssertUnwindSafe(job)) {
-                        eprintln!("[runtime] job panicked; worker survives: {e:?}");
-                    }
+        let result = create_thread(&format!("mywhisper-pool-{id}"), false, move || {
+            loop {
+                let job = {
+                    let Ok(rx) = rx.lock() else { return };
+                    rx.recv()
+                };
+                let Ok(job) = job else { return }; // pool dropped
+                if let Err(e) = catch_unwind(AssertUnwindSafe(job)) {
+                    eprintln!("[runtime] job panicked; worker survives: {e:?}");
                 }
-            })
-            .map_err(|e| format!("task runtime: cannot start workers: {e}"))?;
+            }
+        });
+        match result {
+            Ok(worker) => workers.push(worker),
+            Err(error) => {
+                drop(tx);
+                for worker in workers {
+                    let _ = worker.join();
+                }
+                return Err(error);
+            }
+        }
     }
-    let _ = GLOBAL.set(Pool { tx });
+    let _ = GLOBAL.set(Pool {
+        tx: Mutex::new(Some(tx)),
+    });
     Ok(())
 }
 
@@ -138,8 +260,12 @@ fn pool() -> Result<&'static Pool, String> {
 /// Queue a job. Never blocks, never panics. `Err` means the system
 /// is saturated (or shutting down): log it and degrade, never abort.
 pub fn submit(name: &'static str, job: impl FnOnce() + Send + 'static) -> Result<(), String> {
+    let _admission = admitted()?;
     let pool = pool()?;
-    pool.tx
+    let sender = pool.tx.lock().unwrap_or_else(|p| p.into_inner());
+    sender
+        .as_ref()
+        .ok_or("task runtime stopped")?
         .try_send(tracked(job))
         .map_err(|e| format!("[runtime] queue full, dropping {name}: {e}"))
 }
@@ -149,20 +275,30 @@ pub fn submit(name: &'static str, job: impl FnOnce() + Send + 'static) -> Result
 pub fn spawn_dedicated(
     name: &'static str,
     f: impl FnOnce() + Send + 'static,
-) -> Result<std::thread::JoinHandle<()>, String> {
-    std::thread::Builder::new()
-        .name(name.to_string())
-        .spawn(f)
-        .map_err(|e| format!("[runtime] cannot spawn {name}: {e}"))
+) -> Result<OwnedThread, String> {
+    let _admission = admitted()?;
+    create_thread(name, false, f)
 }
 
 /// Interruptible timer for an owned background loop. Stopping interrupts the
 /// current wait; an in-progress pass must finish before its owner can join it.
 #[derive(Clone)]
-pub struct StopToken(Arc<(Mutex<bool>, Condvar)>);
+pub struct StopToken(Arc<StopState>);
 impl StopToken {
+    pub(crate) fn new() -> Result<Self, String> {
+        let _admission = admitted()?;
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let mut stops = STOPS.lock().unwrap_or_else(|p| p.into_inner());
+        stops.retain(|stop| stop.strong_count() != 0);
+        stops.push(Arc::downgrade(&stop));
+        Ok(Self(stop))
+    }
+    pub(crate) fn stop(&self) {
+        *self.0.0.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        self.0.1.notify_all();
+    }
     pub fn stopped(&self) -> bool {
-        *self.0.0.lock().unwrap_or_else(|p| p.into_inner())
+        closing() || *self.0.0.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     pub fn wait(&self, delay: std::time::Duration) -> bool {
@@ -181,14 +317,14 @@ impl StopToken {
 #[must_use = "dropping a background task stops and joins its loop"]
 pub struct BackgroundTask {
     stop: StopToken,
-    handle: Option<std::thread::JoinHandle<()>>,
+    handle: Option<OwnedThread>,
 }
 impl BackgroundTask {
     pub fn spawn(
         name: &'static str,
         f: impl FnOnce(StopToken) + Send + 'static,
     ) -> Result<Self, String> {
-        let stop = StopToken(Arc::new((Mutex::new(false), Condvar::new())));
+        let stop = StopToken::new()?;
         let worker = stop.clone();
         let handle = spawn_dedicated(name, move || f(worker))?;
         Ok(Self {
@@ -198,8 +334,7 @@ impl BackgroundTask {
     }
 
     pub fn stop(&self) {
-        *self.stop.0.0.lock().unwrap_or_else(|p| p.into_inner()) = true;
-        self.stop.0.1.notify_all();
+        self.stop.stop();
     }
 }
 impl Drop for BackgroundTask {
@@ -216,15 +351,16 @@ impl Drop for BackgroundTask {
 /// Session loops have an explicit process budget and retain ownership
 /// until joined. They never occupy the short-job pool.
 pub struct SessionTask {
-    handle: Option<std::thread::JoinHandle<()>>,
+    handle: Option<OwnedThread>,
 }
 static SESSION_TASKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 const SESSION_TASK_LIMIT: usize = 8;
 enum ReaperMessage {
-    Join(std::thread::JoinHandle<()>),
+    Join(OwnedThread),
     Launch(Job),
 }
-static SESSION_REAPER: OnceLock<Result<mpsc::Sender<ReaperMessage>, String>> = OnceLock::new();
+struct ReaperQueue(Mutex<Option<mpsc::Sender<ReaperMessage>>>);
+static SESSION_REAPER: OnceLock<Result<ReaperQueue, String>> = OnceLock::new();
 static PROCESS_LAUNCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 struct LaunchPermit;
@@ -238,6 +374,7 @@ impl Drop for LaunchPermit {
 /// One launch may be queued/active, independently of the short-job pool.
 pub(crate) fn submit_process_launch(job: impl FnOnce() + Send + 'static) -> Result<(), String> {
     let owner = session_reaper()?;
+    let _admission = admitted()?;
     PROCESS_LAUNCH
         .compare_exchange(
             false,
@@ -247,7 +384,10 @@ pub(crate) fn submit_process_launch(job: impl FnOnce() + Send + 'static) -> Resu
         )
         .map_err(|_| "a supervised process launch is already pending")?;
     let permit = LaunchPermit;
-    owner
+    let sender = owner.0.lock().unwrap_or_else(|p| p.into_inner());
+    sender
+        .as_ref()
+        .ok_or("process ownership thread stopped")?
         .send(ReaperMessage::Launch(tracked(move || {
             let _permit = permit;
             job();
@@ -255,7 +395,7 @@ pub(crate) fn submit_process_launch(job: impl FnOnce() + Send + 'static) -> Resu
         .map_err(|_| "process ownership thread unavailable".into())
 }
 
-fn receive_owned_work(message: ReaperMessage, pending: &mut Vec<std::thread::JoinHandle<()>>) {
+fn receive_owned_work(message: ReaperMessage, pending: &mut Vec<OwnedThread>) {
     match message {
         ReaperMessage::Join(handle) => pending.push(handle),
         ReaperMessage::Launch(job) => {
@@ -266,37 +406,43 @@ fn receive_owned_work(message: ReaperMessage, pending: &mut Vec<std::thread::Joi
     }
 }
 
-fn session_reaper() -> Result<&'static mpsc::Sender<ReaperMessage>, String> {
+fn session_reaper() -> Result<&'static ReaperQueue, String> {
     SESSION_REAPER
         .get_or_init(|| {
+            let _admission = admitted()?;
             let (tx, rx) = mpsc::channel::<ReaperMessage>();
-            std::thread::Builder::new()
-                .name("session-reaper".into())
-                .spawn(move || {
-                    let mut pending = Vec::new();
-                    loop {
-                        if let Ok(message) = rx.recv_timeout(std::time::Duration::from_millis(20)) {
-                            receive_owned_work(message, &mut pending);
-                        }
-                        // The channel contains at most the eight owned joins
-                        // and the single launch permit. Reaping never waits
-                        // for a live session thread to exit.
-                        for message in rx.try_iter() {
-                            receive_owned_work(message, &mut pending);
-                        }
-                        let mut i = 0;
-                        while i < pending.len() {
-                            if pending[i].is_finished() {
-                                let _ = pending.swap_remove(i).join();
-                                SESSION_TASKS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                            } else {
-                                i += 1;
-                            }
+            create_thread("session-reaper", false, move || {
+                let mut pending = Vec::new();
+                let mut disconnected = false;
+                loop {
+                    match rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                        Ok(message) => receive_owned_work(message, &mut pending),
+                        Err(mpsc::RecvTimeoutError::Disconnected) => disconnected = true,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    }
+                    // The channel contains at most the eight owned joins
+                    // and the single launch permit. Reaping never waits
+                    // for a live session thread to exit.
+                    for message in rx.try_iter() {
+                        receive_owned_work(message, &mut pending);
+                    }
+                    let mut i = 0;
+                    while i < pending.len() {
+                        if pending[i].is_finished() {
+                            let _ = pending.swap_remove(i).join();
+                        } else {
+                            i += 1;
                         }
                     }
-                })
-                .map_err(|e| format!("session reaper: {e}"))?;
-            Ok(tx)
+                    if disconnected {
+                        if pending.is_empty() {
+                            return;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                }
+            })?;
+            Ok(ReaperQueue(Mutex::new(Some(tx))))
         })
         .as_ref()
         .map_err(Clone::clone)
@@ -307,6 +453,7 @@ pub fn spawn_session(
     f: impl FnOnce() + Send + 'static,
 ) -> Result<SessionTask, String> {
     let reaper = session_reaper()?;
+    let _admission = admitted()?;
     let old = SESSION_TASKS.try_update(
         std::sync::atomic::Ordering::AcqRel,
         std::sync::atomic::Ordering::Acquire,
@@ -315,7 +462,7 @@ pub fn spawn_session(
     if old.is_err() {
         return Err("session task budget exhausted; wait for cancellation cleanup".into());
     }
-    match spawn_dedicated(name, tracked(f)) {
+    match create_thread(name, true, tracked(f)) {
         Ok(handle) => {
             let _ = reaper;
             Ok(SessionTask {
@@ -334,7 +481,6 @@ impl SessionTask {
     pub fn join(mut self) {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
-            SESSION_TASKS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         }
     }
 }
@@ -342,9 +488,12 @@ impl SessionTask {
 impl Drop for SessionTask {
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take()
-            && let Ok(reaper) = session_reaper()
+            && let Some(Ok(reaper)) = SESSION_REAPER.get()
         {
-            let _ = reaper.send(ReaperMessage::Join(handle));
+            let sender = reaper.0.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(sender) = sender.as_ref() {
+                let _ = sender.send(ReaperMessage::Join(handle));
+            }
         }
     }
 }
@@ -468,28 +617,63 @@ mod tests {
 /// One bounded FIFO worker owns finalization through cleanup and delivery.
 /// Recording and streaming remain independent; slow cleanup cannot reorder
 /// later utterances or consume every short-job worker.
-static FINALIZATION_QUEUE: OnceLock<Result<mpsc::SyncSender<Job>, String>> = OnceLock::new();
+static FINALIZATION_QUEUE: OnceLock<Result<Pool, String>> = OnceLock::new();
 pub fn submit_finalization(job: impl FnOnce() + Send + 'static) -> Result<(), String> {
     let queue = FINALIZATION_QUEUE
         .get_or_init(|| {
+            let _admission = admitted()?;
             let (tx, rx) = mpsc::sync_channel::<Job>(4);
-            std::thread::Builder::new()
-                .name("utterance-finalization".into())
-                .spawn(move || {
-                    for job in rx {
-                        if catch_unwind(AssertUnwindSafe(job)).is_err() {
-                            eprintln!("[runtime] finalization panicked; worker survives");
-                        }
+            create_thread("utterance-finalization", false, move || {
+                for job in rx {
+                    if catch_unwind(AssertUnwindSafe(job)).is_err() {
+                        eprintln!("[runtime] finalization panicked; worker survives");
                     }
-                })
-                .map_err(|e| format!("cannot start finalization worker: {e}"))?;
-            Ok(tx)
+                }
+            })?;
+            Ok(Pool {
+                tx: Mutex::new(Some(tx)),
+            })
         })
         .as_ref()
         .map_err(Clone::clone)?;
-    queue
+    let _admission = admitted()?;
+    let sender = queue.tx.lock().unwrap_or_else(|p| p.into_inner());
+    sender
+        .as_ref()
+        .ok_or("finalization worker stopped")?
         .try_send(tracked(job))
         .map_err(|_| "finalization queue is full or stopped".into())
+}
+
+/// After producers are stopped, cancel active operations, disconnect queues
+/// and join every actual thread before SQLite/global library finalizers run.
+/// Call from the main thread outside GTK; never substitute dequeue sentinels.
+pub fn finish_shutdown() -> Result<(), String> {
+    begin_shutdown();
+    crate::net::shutdown_outgoing();
+    if let Some(pool) = GLOBAL.get() {
+        pool.tx.lock().unwrap_or_else(|p| p.into_inner()).take();
+    }
+    if let Some(Ok(pool)) = FINALIZATION_QUEUE.get() {
+        pool.tx.lock().unwrap_or_else(|p| p.into_inner()).take();
+    }
+    if let Some(Ok(reaper)) = SESSION_REAPER.get() {
+        reaper.0.lock().unwrap_or_else(|p| p.into_inner()).take();
+    }
+    let threads = std::mem::take(&mut *THREADS.lock().unwrap_or_else(|p| p.into_inner()));
+    let mut failed = false;
+    for thread in threads {
+        if thread.join().is_err() {
+            failed = true;
+            eprintln!("[runtime] owned thread exited after a panic during shutdown");
+        }
+    }
+    drain(std::time::Duration::ZERO)?;
+    if failed {
+        Err("a worker panicked during shutdown".into())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

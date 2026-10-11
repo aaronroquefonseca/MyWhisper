@@ -34,6 +34,7 @@ fn main() -> gtk4::glib::ExitCode {
     };
     let identity = mywhisper::device::DeviceIdentity::load_or_create(&paths.device_key_file())
         .expect("node identity");
+    let shutdown_store = store.clone();
     tracing::info!(
         node = %identity.node_id,
         db = ?paths.db_file(),
@@ -67,9 +68,12 @@ fn main() -> gtk4::glib::ExitCode {
         let app = gtk4::Application::builder()
             .application_id(SERVICE_APP_ID)
             .build();
+        let signals = ShutdownSignals::install(&app);
         let result = run_headless(app, &paths);
         drop(sync_watcher);
         mywhisper::service::stop_sync_engine();
+        let result = shutdown_app(&paths, &shutdown_store, result);
+        drop(signals);
         return result;
     }
 
@@ -87,9 +91,11 @@ fn main() -> gtk4::glib::ExitCode {
     > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
 
     let app = gtk4::Application::builder().application_id(APP_ID).build();
+    let signals = ShutdownSignals::install(&app);
 
-    {
+    let result = {
         let discovered_ui = discovered.clone();
+        let ui_db_path = paths.db_file();
         // Single window: repeat launches remote-activate this instance;
         // focus the existing window instead of building another.
         app.connect_activate(move |app| {
@@ -107,7 +113,7 @@ fn main() -> gtk4::glib::ExitCode {
             let state = AppState::load(
                 &store,
                 &identity.node_id,
-                &paths.db_file(),
+                &ui_db_path,
                 identity.creds(),
                 discovered_ui.clone(),
             );
@@ -131,7 +137,63 @@ fn main() -> gtk4::glib::ExitCode {
             mywhisper::app_settings::resume_pending_reset(&state);
         });
         app.run_with_args::<&str>(&[])
+    };
+    drop(app);
+    let result = shutdown_app(&paths, &shutdown_store, result);
+    drop(signals);
+    result
+}
+
+struct ShutdownSignals(Vec<gtk4::glib::SourceId>);
+impl ShutdownSignals {
+    fn install(app: &gtk4::Application) -> Self {
+        app.connect_shutdown(|_| mywhisper::runtime::begin_shutdown());
+        Self(
+            [libc::SIGINT, libc::SIGTERM]
+                .into_iter()
+                .map(|signal| {
+                    let app = app.downgrade();
+                    glib_unix::unix_signal_add_local(signal, move || {
+                        mywhisper::runtime::begin_shutdown();
+                        if let Some(app) = app.upgrade() {
+                            app.quit();
+                        }
+                        gtk4::glib::ControlFlow::Continue
+                    })
+                })
+                .collect(),
+        )
     }
+}
+impl Drop for ShutdownSignals {
+    fn drop(&mut self) {
+        for source in self.0.drain(..) {
+            source.remove();
+        }
+    }
+}
+
+fn shutdown_app(
+    paths: &mywhisper::paths::AppPaths,
+    store: &mywhisper::store::Store,
+    result: gtk4::glib::ExitCode,
+) -> gtk4::glib::ExitCode {
+    mywhisper::runtime::begin_shutdown();
+    mywhisper::hotkey::stop();
+    mywhisper::service::stop_sync_engine();
+    mywhisper::transcribe::shutdown(&paths.data_dir);
+    let stopped = mywhisper::runtime::finish_shutdown();
+    let checkpoint = store.checkpoint();
+    if let Err(error) = stopped {
+        eprintln!("[app] shutdown cleanup failed: {error}");
+        return gtk4::glib::ExitCode::FAILURE;
+    }
+    if let Err(error) = checkpoint {
+        eprintln!("[app] shutdown checkpoint failed; database preserved: {error}");
+        return gtk4::glib::ExitCode::FAILURE;
+    }
+    eprintln!("[app] owned shutdown complete; database checkpointed");
+    result
 }
 /// Headless engine: pill overlay + hotkeys + settings watcher, no
 /// window. The overlay and the poll loop live on the GTK thread; the
@@ -280,7 +342,16 @@ fn run_headless(
         }
     }
 
+    let timer = Rc::new(std::cell::RefCell::new(None::<gtk4::glib::SourceId>));
+    let timer_owner = timer.clone();
+    let hold = Rc::new(std::cell::RefCell::new(
+        None::<gtk4::gio::ApplicationHoldGuard>,
+    ));
+    let hold_owner = hold.clone();
     app.connect_activate(move |app| {
+        if hold_owner.borrow().is_some() {
+            return;
+        }
         eprintln!("[service] activate, headless engine");
         let overlay = mywhisper::overlay::VoiceOverlay::new(app);
         overlay.hide();
@@ -298,7 +369,8 @@ fn run_headless(
         let gen_hide = ugen.clone();
         let tx_done = tx.clone();
         let capture_input = capture_input.clone();
-        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        let poll_period = std::time::Duration::from_millis(50);
+        let source = gtk4::glib::timeout_add_local(poll_period, move || {
             // Live preview drain: pump-published partials reach the
             // pill here (option-gated at the pumps; silent otherwise).
             if let Some(text) = mywhisper::transcribe::take_live_text()
@@ -427,10 +499,16 @@ fn run_headless(
             }
             gtk4::glib::ControlFlow::Continue
         });
+        *timer_owner.borrow_mut() = Some(source);
         // No window: hold the application alive explicitly.
-        std::mem::forget(app.hold());
+        *hold_owner.borrow_mut() = Some(app.hold());
     });
     let result = app.run_with_args::<&str>(&[]);
+    if let Some(timer) = timer.borrow_mut().take() {
+        timer.remove();
+    }
+    hold.borrow_mut().take();
+    drop(app);
     for watcher in &watchers {
         watcher.stop();
     }

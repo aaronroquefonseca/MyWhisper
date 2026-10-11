@@ -119,7 +119,7 @@ fn write_until(
     allowed: &impl Fn() -> bool,
 ) -> Result<(), String> {
     while !bytes.is_empty() {
-        if !allowed() {
+        if crate::runtime::closing() || !allowed() {
             return Err("sync session cancelled".into());
         }
         stream
@@ -149,7 +149,7 @@ fn read_until(
     allowed: &impl Fn() -> bool,
 ) -> Result<(), String> {
     while !bytes.is_empty() {
-        if !allowed() {
+        if crate::runtime::closing() || !allowed() {
             return Err("sync session cancelled".into());
         }
         stream
@@ -367,6 +367,9 @@ impl NoiseStream {
     }
 
     fn progress_deadline(&mut self) -> Result<(), String> {
+        if crate::runtime::closing() {
+            return Err("sync cancelled by shutdown".into());
+        }
         if self
             .owner_stop
             .as_ref()
@@ -473,10 +476,13 @@ struct SyncPolicy {
     epoch: i64,
     owner_stop: Option<Arc<AtomicBool>>,
     stop: Arc<AtomicBool>,
-    watcher: Option<std::thread::JoinHandle<()>>,
+    watcher: Option<crate::runtime::OwnedThread>,
 }
 
 fn permitted(store: &Store, peer: &str) -> Result<(), String> {
+    if crate::runtime::closing() {
+        return Err("sync cancelled by shutdown".into());
+    }
     store
         .check_sync_identity()
         .map_err(|error| error.to_string())?;
@@ -969,9 +975,10 @@ fn sync_now_owned(
     owner_stop: Option<Arc<AtomicBool>>,
 ) -> Result<SyncReport, String> {
     let owner_running = || {
-        !owner_stop
-            .as_ref()
-            .is_some_and(|stop| stop.load(Ordering::Acquire))
+        !crate::runtime::closing()
+            && !owner_stop
+                .as_ref()
+                .is_some_and(|stop| stop.load(Ordering::Acquire))
     };
     if !owner_running() {
         return Err("sync owner stopped".into());
@@ -1085,9 +1092,9 @@ pub fn serve(
         eprintln!("[sync] listener database unavailable");
         return;
     };
-    let mut workers: Vec<(std::thread::JoinHandle<()>, TcpStream)> = Vec::new();
+    let mut workers: Vec<(crate::runtime::OwnedThread, TcpStream)> = Vec::new();
     for conn in listener.incoming() {
-        if stop.load(Ordering::Relaxed) {
+        if crate::runtime::closing() || stop.load(Ordering::Relaxed) {
             break;
         }
         match conn {
@@ -1301,6 +1308,9 @@ pub fn start_mdns(
     sink: Arc<Mutex<HashMap<String, Discovered>>>,
     advertise: bool,
 ) -> Result<MdnsHandles, String> {
+    if crate::runtime::closing() {
+        return Err("discovery cancelled by shutdown".into());
+    }
     let handles = MdnsHandles {
         _daemon: mdns_sd::ServiceDaemon::new().map_err(|e| format!("mdns: {e}"))?,
         stop: Arc::new(AtomicBool::new(false)),
@@ -1333,7 +1343,7 @@ pub fn start_mdns(
     let daemon = daemon.clone();
     let worker = crate::runtime::spawn_session("sync-mdns-browser", move || {
         let mut service_nodes = HashMap::new();
-        while !stop.load(Ordering::Acquire) {
+        while !crate::runtime::closing() && !stop.load(Ordering::Acquire) {
             let event = match browser.recv_timeout(Duration::from_millis(100)) {
                 Ok(event) => event,
                 Err(_) if browser.is_disconnected() => break,
@@ -1461,13 +1471,13 @@ pub fn sync_all_trusted(db_path: &Path, creds: &SyncCreds) -> Vec<String> {
 /// address. Failures just log; the next round retries.
 pub fn auto_sync_loop(db_path: PathBuf, creds: SyncCreds, stop: Arc<AtomicBool>) {
     for _ in 0..AUTO_SYNC_SECS {
-        if stop.load(Ordering::Relaxed) {
+        if crate::runtime::closing() || stop.load(Ordering::Relaxed) {
             return;
         }
         std::thread::sleep(Duration::from_secs(1));
     }
     loop {
-        if stop.load(Ordering::Relaxed) {
+        if crate::runtime::closing() || stop.load(Ordering::Relaxed) {
             return;
         }
         if let Ok(store) = Store::open_existing(&db_path) {
@@ -1480,7 +1490,7 @@ pub fn auto_sync_loop(db_path: PathBuf, creds: SyncCreds, stop: Arc<AtomicBool>)
             );
         }
         for _ in 0..AUTO_SYNC_SECS {
-            if stop.load(Ordering::Relaxed) {
+            if crate::runtime::closing() || stop.load(Ordering::Relaxed) {
                 return;
             }
             std::thread::sleep(Duration::from_secs(1));
@@ -1511,12 +1521,71 @@ enum BackgroundRequest {
 type BackgroundKey = (PathBuf, String);
 type Outgoing = crate::sync_jobs::Coalescer<BackgroundKey, BackgroundRequest>;
 static OUTGOING: std::sync::OnceLock<Result<Outgoing, String>> = std::sync::OnceLock::new();
+static OUTGOING_INIT: Mutex<()> = Mutex::new(());
 fn outgoing() -> Result<&'static Outgoing, String> {
+    let _init = OUTGOING_INIT.lock().unwrap_or_else(|p| p.into_inner());
+    if crate::runtime::closing() {
+        return Err("sync scheduler stopped".into());
+    }
     OUTGOING
         .get_or_init(|| Outgoing::new(4, 64, run_background))
         .as_ref()
         .map_err(Clone::clone)
 }
+pub(crate) fn shutdown_outgoing() {
+    let _init = OUTGOING_INIT.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(Ok(scheduler)) = OUTGOING.get() {
+        scheduler.stop();
+    }
+}
+// The catch-up delay belongs to the original engine. Closing or replacing that
+// owner must interrupt its wait before any database open or peer enumeration.
+fn wait_background_delay(after: std::time::Instant, cancelled: impl Fn() -> bool) -> bool {
+    let now = std::time::Instant::now();
+    let deadline = now
+        + after
+            .saturating_duration_since(now)
+            .min(Duration::from_secs(3));
+    loop {
+        if crate::runtime::closing() || cancelled() {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return true;
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(50)));
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn background_catchup_delay_interrupts_original_owner_before_database_io() {
+    let stopped = Arc::new(AtomicBool::new(false));
+    let worker_stop = stopped.clone();
+    let (entered, ready) = std::sync::mpsc::channel();
+    let (exited, done) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let first = AtomicBool::new(true);
+        let result =
+            wait_background_delay(std::time::Instant::now() + Duration::from_secs(3), || {
+                let cancelled = worker_stop.load(Ordering::Acquire);
+                if first.swap(false, Ordering::AcqRel) {
+                    // The first permission check has passed before cancellation.
+                    entered.send(()).unwrap();
+                }
+                cancelled
+            });
+        exited.send(result).unwrap();
+    });
+    ready.recv_timeout(Duration::from_secs(1)).unwrap();
+    stopped.store(true, Ordering::Release);
+    assert!(!done.recv_timeout(Duration::from_millis(250)).unwrap());
+    worker.join().unwrap();
+    assert!(wait_background_delay(std::time::Instant::now(), || false));
+    assert!(!wait_background_delay(std::time::Instant::now(), || true));
+}
+
 fn run_background(request: BackgroundRequest) {
     match request {
         BackgroundRequest::Enumerate {
@@ -1528,14 +1597,19 @@ fn run_background(request: BackgroundRequest) {
             offset,
             mut budget_reported,
         } => {
-            if owner_stop
-                .as_ref()
-                .is_some_and(|stop| stop.load(Ordering::Acquire))
+            if crate::runtime::closing()
+                || owner_stop
+                    .as_ref()
+                    .is_some_and(|stop| stop.load(Ordering::Acquire))
             {
                 return;
             }
-            if let Some(delay) = after.checked_duration_since(std::time::Instant::now()) {
-                std::thread::sleep(delay.min(Duration::from_secs(3)));
+            if !wait_background_delay(after, || {
+                owner_stop
+                    .as_ref()
+                    .is_some_and(|stop| stop.load(Ordering::Acquire))
+            }) {
+                return;
             }
             let store = match Store::open_existing(&db) {
                 Ok(store) => store,
@@ -1734,12 +1808,12 @@ pub fn watch_discovered(
     creds: SyncCreds,
     discovered: Arc<Mutex<HashMap<String, Discovered>>>,
     stop: Arc<AtomicBool>,
-) -> Result<std::thread::JoinHandle<()>, String> {
+) -> Result<crate::runtime::OwnedThread, String> {
     crate::runtime::spawn_dedicated("sync-discovery-watcher", move || {
         let mut known_present: std::collections::HashSet<String> = std::collections::HashSet::new();
         loop {
             for _ in 0..10 {
-                if stop.load(Ordering::Relaxed) {
+                if crate::runtime::closing() || stop.load(Ordering::Relaxed) {
                     return;
                 }
                 std::thread::sleep(Duration::from_secs(1));

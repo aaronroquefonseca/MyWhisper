@@ -4,16 +4,10 @@
 //! cleanup on GTK. Closing the owner interrupts its timer; any active pass
 //! finishes under the writer lock before the task is reaped.
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-struct Control {
-    stopped: Mutex<bool>,
-    wake: Condvar,
-}
-
 pub(crate) struct RetentionMaintenance {
-    control: Arc<Control>,
+    control: crate::runtime::StopToken,
     _task: crate::runtime::SessionTask,
 }
 
@@ -41,23 +35,15 @@ impl RetentionMaintenance {
     }
 
     fn spawn(interval: Duration, mut pass: impl FnMut() + Send + 'static) -> Result<Self, String> {
-        let control = Arc::new(Control {
-            stopped: Mutex::new(false),
-            wake: Condvar::new(),
-        });
+        let control = crate::runtime::StopToken::new()?;
         let worker = control.clone();
         let task = crate::runtime::spawn_session("retention-maintenance", move || {
             loop {
-                if *worker.stopped.lock().unwrap_or_else(|p| p.into_inner()) {
+                if worker.stopped() {
                     return;
                 }
                 pass();
-                let stopped = worker.stopped.lock().unwrap_or_else(|p| p.into_inner());
-                let (stopped, _) = worker
-                    .wake
-                    .wait_timeout_while(stopped, interval, |stopped| !*stopped)
-                    .unwrap_or_else(|p| p.into_inner());
-                if *stopped {
+                if worker.wait(interval) {
                     return;
                 }
             }
@@ -71,12 +57,7 @@ impl RetentionMaintenance {
 
 impl Drop for RetentionMaintenance {
     fn drop(&mut self) {
-        *self
-            .control
-            .stopped
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = true;
-        self.control.wake.notify_all();
+        self.control.stop();
     }
 }
 
@@ -84,6 +65,7 @@ impl Drop for RetentionMaintenance {
 mod tests {
     use super::*;
     use crate::store::{HistoryRecord, Store};
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicI64, Ordering};
     use std::sync::mpsc;
 
