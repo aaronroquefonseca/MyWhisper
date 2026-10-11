@@ -1,0 +1,420 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-ui-audit.rnkd53b0/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:21:09.205: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:21:09.212: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:21:09.212: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 18:21:09.281: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[poc] layer-shell supported: false
+[poc] WARNING: layer-shell not supported; using undecorated fallback window
+[poc] viz mark icon loaded: 18x18
+[poc] overlay state: Hidden -> Error
+[poc] anim 69x36 -> 93x48 220ms fade 0.00->1.00
+[poc] overlay shown (compact Error)
+[poc] fit window to content: 683x70
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] geom anim done (Error): window=0x0 compact=0x0 vis=false expanded=0x0 vis=false
+[hotkey] capture saw keycode=192 token=Some("F14")
+[hotkey] capture saw keycode=47 token=Some("Semicolon")
+[ui-smoke] release regressions passed: widget lifetime, remote language, malformed discovery
+[ui-smoke] step 0
+
+(ui_preview:20): Gdk-WARNING **: 18:21:17.947: (../gtk/gdk/gdkframetimings.c:443):gdk_frame_timings_throttling_hint: runtime check failed: (self->result != GDK_FRAME_PREPARING)
+[ui-smoke] step 1
+[sync] outgoing database path unavailable
+[ui-smoke] step 2
+[ui-smoke] step 3
+[ui-smoke] step 4
+[ui-smoke] step 5
+[ui-smoke] step 6
+[ui-smoke] step 7
+[ui-smoke] step 8
+[ui-smoke] step 9
+[sync] outgoing database path unavailable
+[ui-smoke] step 10
+[ui-smoke] step 11
+[sync] outgoing database path unavailable
+[sync] outgoing database path unavailable
+[ui-smoke] step 12
+[ui-smoke] step 13
+[ui-smoke] step 14
+[ui-smoke] step 15
+[ui-smoke] step 16
+[ui-smoke] step 17
+[ui-smoke] step 18
+[ui-smoke] step 19
+[ui-smoke] step 20
+[ui-smoke] step 21
+[ui-smoke] step 22
+[ui-smoke] step 23
+[ui-smoke] step 24
+[ui-smoke] step 25
+[ui-smoke] step 26
+[ui-smoke] step 27
+[ui-smoke] step 28
+[ui-smoke] step 29
+[ui-smoke] step 30
+[ui-smoke] step 31
+[ui-smoke] step 32
+[ui-smoke] step 33
+[ui-smoke] step 34
+[privacy] cleared 4 transcripts
+[sync] outgoing database path unavailable
+[ui-smoke] step 35
+[app] palette -> dark
+[app] theme state: dark=true system-supports-color-schemes=false scheme=ForceDark theme-name=Adwaita-empty
+[app] theme -> Dark
+[app] palette -> light
+[app] theme state: dark=false system-supports-color-schemes=false scheme=ForceLight theme-name=Adwaita-empty
+[app] theme -> Light
+[ui-smoke] step 36
+Native UI smoke passed: validation, draft retention, delete cancel/confirm, multiline snippet creation/editing, alias conflicts, search, deep links, separate model/cleanup settings, cleanup persistence, prompt draft cancel/close, explicit save, summary refresh, default restoration, model add/edit/remove, priority and selection across pages, bulk history clear, theme persistence, language rebuild.
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-modelload-audit.vklpwn17/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:21:35.458: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:21:35.462: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:21:35.462: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 18:21:35.505: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+Native model load: owned stalled-request cancellation, removed-button release and responsive callback passed.
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-modeledit-audit.fpyzl5gr/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:21:39.258: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:21:39.262: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:21:39.262: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 18:21:39.304: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+Native model load: input replacement cancels owned IO, preserves the new draft and rejects old results.
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-recovery-audit.t_0jz25r/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:21:43.055: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:21:43.059: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:21:43.059: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 18:21:43.101: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[ui-smoke] settings recovery passed: visible message, disabled permissions, unknown fields preserved after native save
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-ui-audit.dznh3z6g/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:21:46.990: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:21:46.993: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:21:46.993: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 18:21:47.034: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+[poc] layer-shell supported: false
+[poc] WARNING: layer-shell not supported; using undecorated fallback window
+[poc] viz mark icon loaded: 18x18
+[poc] overlay state: Hidden -> Error
+[poc] anim 69x36 -> 93x48 220ms fade 0.00->1.00
+[poc] overlay shown (compact Error)
+[poc] fit window to content: 592x70
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] geom anim done (Error): window=0x0 compact=0x0 vis=false expanded=0x0 vis=false
+[hotkey] capture saw keycode=192 token=Some("F14")
+[hotkey] capture saw keycode=47 token=Some("Semicolon")
+[ui-smoke] release regressions passed: widget lifetime, remote language, malformed discovery
+[ui-smoke] step 0
+
+(ui_preview:20): Gdk-WARNING **: 18:21:55.703: (../gtk/gdk/gdkframetimings.c:443):gdk_frame_timings_throttling_hint: runtime check failed: (self->result != GDK_FRAME_PREPARING)
+[ui-smoke] step 1
+[sync] outgoing database path unavailable
+[ui-smoke] step 2
+[ui-smoke] step 3
+[ui-smoke] step 4
+[ui-smoke] step 5
+[ui-smoke] step 6
+[ui-smoke] step 7
+[ui-smoke] step 8
+[ui-smoke] step 9
+[sync] outgoing database path unavailable
+[ui-smoke] step 10
+[ui-smoke] step 11
+[sync] outgoing database path unavailable
+[sync] outgoing database path unavailable
+[ui-smoke] step 12
+[ui-smoke] step 13
+[ui-smoke] step 14
+[ui-smoke] step 15
+[ui-smoke] step 16
+[ui-smoke] step 17
+[ui-smoke] step 18
+[ui-smoke] step 19
+[ui-smoke] step 20
+[ui-smoke] step 21
+[ui-smoke] step 22
+[ui-smoke] step 23
+[ui-smoke] step 24
+[ui-smoke] step 25
+[ui-smoke] step 26
+[ui-smoke] step 27
+[ui-smoke] step 28
+[ui-smoke] step 29
+[ui-smoke] step 30
+[ui-smoke] step 31
+[ui-smoke] step 32
+[ui-smoke] step 33
+[ui-smoke] step 34
+[privacy] cleared 4 transcripts
+[sync] outgoing database path unavailable
+[ui-smoke] step 35
+[app] palette -> light
+[app] theme state: dark=false system-supports-color-schemes=false scheme=ForceLight theme-name=Adwaita-empty
+[app] theme -> Light
+[ui-smoke] step 36
+Native UI smoke passed: validation, draft retention, delete cancel/confirm, multiline snippet creation/editing, alias conflicts, search, deep links, separate model/cleanup settings, cleanup persistence, prompt draft cancel/close, explicit save, summary refresh, default restoration, model add/edit/remove, priority and selection across pages, bulk history clear, theme persistence, language rebuild.
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-modelload-audit.ayajuxrb/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:13.220: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:13.226: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:13.226: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 18:22:13.274: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+Native model load: owned stalled-request cancellation, removed-button release and responsive callback passed.
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-modeledit-audit.2_y1wbes/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:17.012: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:17.016: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:17.016: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 18:22:17.058: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+Native model load: input replacement cancels owned IO, preserves the new draft and rejects old results.
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-recovery-audit._3bsg7xx/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:20.802: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:20.806: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:20.806: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 18:22:20.849: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+[ui-smoke] settings recovery passed: visible message, disabled permissions, unknown fields preserved after native save
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-reset-audit.i4gcg_zw/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:24.803: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:24.807: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:24.807: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 18:22:24.848: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[app] palette -> light
+[reset] reset committed; model cleanup is incomplete and can be retried
+[app] palette -> light
+[reset] reset committed; model cleanup is incomplete and can be retried
+[app] palette -> light
+[app] palette -> light
+[ui-smoke] reset passed: independent DB/installer stalls, GTK heartbeat, committed state after file failure, visible retry, preserved later edits
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-resetresume-audit.7qqsmioo/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:29.294: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:29.298: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:29.298: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 18:22:29.339: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[app] palette -> light
+[app] palette -> light
+[ui-smoke] startup reset recovery passed: muted pending state, owned recovery, preserved later edit, removed old assets
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-reset-audit.f_kqfsoa/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:33.044: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:33.048: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:33.048: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 18:22:33.090: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+[app] palette -> dark
+[app] palette -> light
+[reset] reset committed; model cleanup is incomplete and can be retried
+[app] palette -> light
+[reset] reset committed; model cleanup is incomplete and can be retried
+[app] palette -> light
+[app] palette -> light
+[ui-smoke] reset passed: independent DB/installer stalls, GTK heartbeat, committed state after file failure, visible retry, preserved later edits
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-resetresume-audit.8x6kvazb/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:37.581: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:37.585: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:22:37.585: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 18:22:37.626: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+[app] palette -> dark
+[app] palette -> light
+[app] palette -> light
+[ui-smoke] startup reset recovery passed: muted pending state, owned recovery, preserved later edit, removed old assets

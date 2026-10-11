@@ -1,0 +1,7 @@
+Private actual Ollama load/unload acceptance through native MyWhisper UI.
+
+Build ui_preview first. The runner imports a SHA-256-pinned public GGUF into
+a separate Ollama server, never the user's server/model directory. It does
+not claim Ollama's registry CLI pull succeeds; that separate failure is
+retained in the release-audit evidence.
+

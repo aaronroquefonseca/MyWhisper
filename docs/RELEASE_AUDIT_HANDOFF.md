@@ -62,15 +62,7 @@ cargo test --locked --all-targets
 cargo build --release --locked --bin mywhisper
 ```
 
-The latest interim asset-verification snapshot passes 224 Rust tests and retains
-five unchanged opt-in runtime tests. Formatting, strict Clippy, the release
-build and current RustSec auditing pass with zero vulnerabilities or warnings.
-Both native UI configurations pass with fatal GTK criticals. The GTK focus
-lifetime correction and its failing-before/passing-after evidence are recorded
-under R46; the broader UI lifetime/final artifact review is still open.
-These are component-validation results, not completion of the release audit.
-See the matrix's independent-review table and validation-review-assets.json for
-current corrections and explicitly incomplete provider/compatibility paths.
+The current production checkpoint `ce6b000` passes 263 Rust tests with five unchanged opt-in runtime ignores, formatting, strict Clippy, release build and current RustSec auditing. The later `0079d56` helper change makes CLI help side-effect free. Fourteen native UI/asset invocations across both configurations, fourteen packaging checks, real private-keyring/sync acceptance and a fresh Nix build/check phase pass. Actual private Ollama native load/unload and the new packaged GTK artifact smoke pass; registry CLI pull remains stalled. Earlier Whisper Tiny CUDA acceptance retains its exact earlier source checkpoint. See [current status](RELEASE_AUDIT_STATUS.md), [model-control evidence](release-audit-implementation/validation-review-model-load.json), [installer recovery evidence](release-audit-implementation/validation-review-install-recovery.json) and [CUDA evidence](release-audit-implementation/validation-review-cuda.json) for reproducible scope and retained failures. These are interim component checks, not completion of the release audit.
 
 Use owned disposable databases, identities, keyrings, HOME/XDG directories and
 synthetic speech/transcripts. Never reset, migrate, clear or prune real user

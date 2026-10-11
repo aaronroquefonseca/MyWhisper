@@ -1,0 +1,92 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "source_commit": "0079d56dc941daf8ae7af5d0c14fdd7862b8b74b",
+  "production_rust_source": "ce6b0004a09d523c4f6e606c73ae66fe352849c1",
+  "groups": [
+    "R13",
+    "R36",
+    "R38",
+    "R48",
+    "R49",
+    "R50"
+  ],
+  "root_cause": "Ollama Update Now used an unowned blocking request and strong widget timer, survived page removal/input changes, and treated HTTP header success as completed model control.",
+  "correction": "One page/input-owned, budgeted session task; immutable request snapshot; cancellation closes active IO; weak controls and pointer identity prevent stale UI completion; bounded authenticated body parsing requires done=true and no provider error.",
+  "compatibility": "No data/schema/key/identity/protocol migration. Existing model-default omission, numeric -1/0 and duration keep_alive, Bearer authentication and 60-second administrative deadline remain. Ordinary provider inference retains its prior 180-second deadline.",
+  "executed_validation": [
+    "Before correction native page removal fails the unchanged 500 ms socket-closure assertion; corrected page removal and model-input edit release old controls and cancel IO in both configurations.",
+    "Three added Rust regressions: four authentication/default/keep_alive contracts, five malformed or incomplete success replies without raw diagnostic leakage, and stalled-header/partial-body cancellation with peer EOF within 500 ms.",
+    "cargo fmt --all -- --check; cargo clippy --locked --all-targets -- -D warnings; cargo test --locked --all-targets: 263 passed, zero failed, five original opt-in ignores unchanged; cargo build --release --locked --bin mywhisper.",
+    "12 native UI invocations plus two native asset-control invocations across light/en and dark/es pass; five kernel-owned runner checks, real private-keyring/sync lifecycle and 9+5 packaging checks pass.",
+    "Current cargo audit: 477 locked dependencies, 1296 advisories, zero reported vulnerabilities/warnings.",
+    "Actual separate Ollama 0.40.2 server with private XDG/model storage imports exact-size/SHA-256 authenticated public SmolLM2:135m GGUF. Native MyWhisper load then unload succeeds; actual /api/ps confirms residency then removal; owned server terminates. User service and model directory untouched.",
+    "Fresh ce6b000 Nix build passes all 263 tests and yields /nix/store/4b9ndivzsi1qn5z1hg452g856vxnyqxc-mywhisper-0.9.3. Actual wrapped GTK executable passes visible window, normal WM_DELETE_WINDOW/zero exit, encrypted disposable database and packaged getent resolution.",
+    "Private Nix store relocation verifies copied metadata, database integrity, package-wrapper hash and every registered content hash before removing only the exact original owned temporary store. Unchanged host suite and Nix build pass sequentially after relocation."
+  ],
+  "live_model": {
+    "url": "https://registry.ollama.ai/v2/library/smollm2/blobs/sha256:f535f83ec568d040f88ddc04a199fa6da90923bbb41d4dcaed02caa924d6ef57",
+    "sha256": "f535f83ec568d040f88ddc04a199fa6da90923bbb41d4dcaed02caa924d6ef57",
+    "bytes": 270885952
+  },
+  "retained_failures": [
+    "Ollama CLI registry pull stalled at pulling manifest under the original 120-second outer bound and separate 40-second diagnostic bound. Authentic GGUF import establishes API load/unload only; registry CLI pull remains unresolved.",
+    "Concurrent fresh Nix/host checks hit /tmp per-user quota: Nix compilation reports EDQUOT; host suite has eight failures with contemporaneous SQLite IO/staging and child errors. Exact cause of every individual assertion is not independently proven. Relocation to owned disk-backed cache, content verification and unchanged sequential reruns recover.",
+    "First Nix flake invocation used the wrong subdirectory reference and failed pure evaluation; corrected whole-source path?dir=packaging/nixos is used for the passing build.",
+    "First artifact container omitted the root bind. Subsequent host Xvfb crashes in the NVIDIA EGL path with device-free /dev are retained. Passing artifact acceptance uses an owned displayfd-allocated Xvfb, explicit Mesa EGL and Cairo rendering, without input/audio devices."
+  ],
+  "limitations": [
+    "Page/input model-control ownership does not establish full production process shutdown, durable Reset All authority for every UI job, or all remaining GTK blocking paths.",
+    "No disposable paid-provider credentials established; authenticated WSS success and remaining model/thinking/runtime/language contracts remain open.",
+    "The Nix artifact was tested on the local Arch kernel with explicit software rendering, not a clean booted NixOS desktop or final packaged inference.",
+    "Original storage/privacy/sync/compositor/upgrade/final diff obligations remain open. LICENSE deferred as instructed. No PR, tag or release."
+  ],
+  "source_file_sha256": {
+    "src/model_load.rs": "fd8f2faa3ec1fcf15751577068759b5faa1d72d88161642451eb33cc0dce02f0",
+    "src/provider_io.rs": "52cfc481061b509cd6c635c014a6e7307609d7993cf9d04767198faf694d780f",
+    "src/app_settings.rs": "1ca80bbcd49125b7ca23c2c7aa39aaaee9c4daaccbe0277d393b4b1312db2edd",
+    "src/lib.rs": "8dfee979e8ae2d3255ddea8020bac7051b691971ddc8f0c3242cc5e06b316937",
+    "examples/ui_preview.rs": "d35cc04f734fd1dd4ee0be0d85da9c66749354ff5023f35d05d292dc64d3342e",
+    "examples/ui_preview/ollama_load_smoke.rs": "1bad0d8f2def1ac16153e3aa7f2bb7ac970addc1ea1d66a1fbf851462fabcb60",
+    "scripts/ui-smoke.sh": "37e6be92f582b2a24f466a12111925a2d811f0116b6219bfafa128e0e5993fd1",
+    "scripts/ollama-smoke.py": "b6b747e3fa339e04aab8ec2bb45aea81c9dd6ca06cd6b9ddaf97f4ea2a3fc223",
+    "scripts/disposable.py": "1d40ccc95f15516badb57c7cbb9df3bf1fd6d87c1821b902ffd1ba024e2b6b71",
+    "packaging/nixos/flake.nix": "ea0da31d3ace9bb9e46fb2a691b5b982566623e892580f64b79068ba596e60d0",
+    "packaging/nixos/flake.lock": "5f213ab5bbf96e6acca0a5b88c4a47c83e21dc176b3cf450e4bcd00c692202db"
+  },
+  "evidence_sha256": {
+    "after-native-owner.log": "71405d0e5ce0c2a543a383d210ec3f91907652b8a2c5adbc73ce782df7b23b87",
+    "all-targets.log": "778937255179f63070d13f9140edce0d83493cc853f91dcf62297877bbed91f5",
+    "before-native-failure.log": "16f179c16411220dc45e774c5880e2d341e8327345faf516c504764733324f98",
+    "clippy.log": "f82d0ae4280099c3d5bec081bbb04c0364371d5b5b532854bf75a6ff0a67251c",
+    "dependency-audit.log": "32b72be5ef2b0bab04080de3ae0ab0687decb7ae96e65e770bb66ef8a1a2f8a0",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "host-quota-failures.log": "f40dcd94ca4cfed175c009c7d9668058bb4cfeeddbda6094d630ca332a86cd1c",
+    "live-ollama.log": "48a582d51d3d84fc77a848deec247c8cc3c8b07b4b650336cb42015e8b92df69",
+    "native-assets.log": "720c9516cb3f547b39f856a394e226975584b7f3823f41b2ac3f55be2f0e5414",
+    "native-ui.log": "5c63da5d9738c492848a6f4672f8e52a61ce53287eda77da2f29dfb8c6eccb9d",
+    "nix-build.log": "226322ab94c42b51495cb3344f0467b87f24211f4e1bf6dfba0f38a526847865",
+    "nix-flake-reference-failure.log": "4ba89210a27b001427b285f6910c2b206f8b6df4ca63220077df6023648ef1d0",
+    "nix-quota-failure.log": "646511142bb751ef5870119167c11ca9475e89c31553725cff0e5f4dad9df90f",
+    "nix-relocation-first-failure.log": "0a10fabc68aae0da34e791ff9b6d1d7ad67fb0e0a9561826e1d036371d8d9e5d",
+    "nix-relocation-verified.log": "7103b9c71a55149d5acee3d19750de68765faead4899206c2bbde3c29c148e93",
+    "nix-result.log": "14998180a1b6c671fdf3cd98af1a67a73f0934907bb3c452f739f5c9c91ea303",
+    "ollama-help.log": "10827309218c93220d2067f65d51de1fb89036b04c312ef32e737f562790db41",
+    "packaged-artifact.log": "2da42bb3c577807bf96175dd2c535c8968f805f402709dc358bd7b00716310f8",
+    "packaged-artifact.py": "44fc001e8f4347ad3e52fc4e54502df77498cb9663ec6d406e73b43e3d14726b",
+    "packaged-display-failure.log": "6f317d2c7e0667828eb9829094dbb1b659f9c27dcc47b6e20c61e668185652a5",
+    "packaged-display.py": "b106976ddb146c687f58c6e762850e167ba3ea0c209d7348c8d442c98928c854",
+    "packaged-setup-failure.log": "f915fff89f51d32cffdebd95b431972684f831f677c62a1641d7c2241628b95b",
+    "packaged-window-failure.log": "a66c95b72b1a056f49dab09d8996c5a1414def2a7eb47a8ccad089d7c125953c",
+    "packaged-xvfb-failure.log": "09d8dc8ae0944dde33532bbaa197f5fc403af89e94ce1f1ad3ec92c930715d49",
+    "packaging-release.log": "b44f2b6d4aa9239f43eae5142f8dd846789f06a2713a0f6c82b6f698c392d8be",
+    "packaging-upgrade.log": "026bccc994ff1ec3f39e01c0cd9b212bb4e136bf1f410bb7a64855bd22dee490",
+    "real-keyring-sync.log": "2053f4d8b4571ba5b0d1de1d923632c5eb98459dc8885adce187df327cecbae8",
+    "registry-pull-diagnostic.log": "5c5e32a93907e247fa15b2b7686675767b9d0e3fecc164706491102c55e4fa9e",
+    "registry-pull-timeout.log": "57ebdb1a5b626216522c1dd15e8cfb11c7e026c82a07d9a736693db1814e1c9f",
+    "release-build.log": "a719265cb2ca40ec32a609bbfacb13464c9b2fe0bfb5ec1a70a441fd85ed3a2a",
+    "runner-ownership.log": "4b161878c2d7cd678a0fe74567995c9cb1741ef988569804fd6cf884de585c0d",
+    "targeted-tests.log": "061e674a5c0452a9fa6c39b80676285cb1191b2add7333e9a350d2164a53590e",
+    "README.md": "44d13699266a5c680586bc9da6ce9c0964d447b033f996fb25708d7027c02810"
+  }
+}

@@ -1,0 +1,11 @@
+   Compiling mywhisper v0.9.3 (/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.68s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 3 tests
+test model_load::tests::cancellation_closes_stalled_headers_and_partial_completion_bodies ... ok
+test model_load::tests::header_success_cannot_mask_incomplete_or_malformed_completion ... ok
+test model_load::tests::load_and_unload_preserve_authentication_and_model_default_contracts ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 265 filtered out; finished in 0.37s
+
