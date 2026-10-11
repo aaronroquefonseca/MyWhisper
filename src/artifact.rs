@@ -37,6 +37,13 @@ fn advance(path: &Path) -> Result<(), String> {
     crate::private_fs::replace(path, &next.to_le_bytes()).map_err(|e| e.to_string())
 }
 fn shared_lock(path: &Path) -> Result<File, String> {
+    shared_lock_guarded(path, || Ok(()))
+}
+fn shared_lock_guarded(
+    path: &Path,
+    mut check: impl FnMut() -> Result<(), String>,
+) -> Result<File, String> {
+    check()?;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -55,8 +62,12 @@ fn shared_lock(path: &Path) -> Result<File, String> {
     }
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
+        check()?;
         match fs2::FileExt::try_lock_shared(&file) {
-            Ok(()) => return Ok(file),
+            Ok(()) => {
+                check()?;
+                return Ok(file);
+            }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(e) => return Err(e.to_string()),
         }
@@ -143,28 +154,33 @@ pub(crate) struct Stage {
     key: String,
 }
 impl Stage {
+    #[cfg(test)]
     pub fn new(data: &Path, key: &str, destination: PathBuf) -> Result<Self, String> {
+        let request = observe_authority(data, key)?;
+        Self::new_requested(data, key, destination, &request, &AtomicBool::new(false))
+    }
+    pub fn new_requested(
+        data: &Path,
+        key: &str,
+        destination: PathBuf,
+        request: &Authority,
+        cancel: &AtomicBool,
+    ) -> Result<Self, String> {
         if !valid_key(key) {
             return Err("invalid artifact key".into());
         }
-        if crate::reset::requested(data).map_err(|error| error.to_string())? {
-            return Err("reset cleanup is pending; installation is disabled".into());
-        }
         let control = data.join(".install");
-        crate::private_fs::directory(&control).map_err(|e| e.to_string())?;
-        let global_epoch = control.join("epoch");
-        let asset_epoch = control.join(format!("{key}.epoch"));
-        let saved_global = epoch(&global_epoch)?;
-        let saved_asset = epoch(&asset_epoch)?;
-        let global = shared_lock(&control.join("reset.lock"))?;
-        let asset = crate::private_fs::lock(&control.join(format!("{key}.lock")))
-            .map_err(|e| e.to_string())?;
-        if crate::reset::requested(data).map_err(|error| error.to_string())?
-            || epoch(&global_epoch)? != saved_global
-            || epoch(&asset_epoch)? != saved_asset
-        {
-            return Err("installation cancelled before startup".into());
+        if request.data != data || request.asset_epoch.0 != control.join(format!("{key}.epoch")) {
+            return Err("installation request belongs to another asset".into());
         }
+        request.check(cancel)?;
+        crate::private_fs::directory(&control).map_err(|e| e.to_string())?;
+        let global = shared_lock_guarded(&control.join("reset.lock"), || request.check(cancel))?;
+        let asset = crate::private_fs::lock_guarded(&control.join(format!("{key}.lock")), || {
+            request.check(cancel).map_err(std::io::Error::other)
+        })
+        .map_err(|e| e.to_string())?;
+        request.check(cancel)?;
         let parent = destination.parent().ok_or("artifact has no parent")?;
         crate::private_fs::directory(parent).map_err(|e| e.to_string())?;
         let temporary = tempfile::Builder::new()
@@ -177,24 +193,10 @@ impl Stage {
             _asset: asset,
             destination,
             data: data.to_owned(),
-            global_epoch: (global_epoch, saved_global),
-            asset_epoch: (asset_epoch, saved_asset),
+            global_epoch: request.global_epoch.clone(),
+            asset_epoch: request.asset_epoch.clone(),
             key: key.to_owned(),
         })
-    }
-    pub fn new_requested(
-        data: &Path,
-        key: &str,
-        destination: PathBuf,
-        request: &Authority,
-        cancel: &AtomicBool,
-    ) -> Result<Self, String> {
-        request.check(cancel)?;
-        let stage = Self::new(data, key, destination)?;
-        // Waiting for installation locks cannot renew queued authority.
-        request.check(cancel)?;
-        stage.check(cancel)?;
-        Ok(stage)
     }
     pub fn path(&self) -> &Path {
         self.temporary.path()
@@ -236,7 +238,10 @@ impl Stage {
         self.check(cancel)?;
         // Serialize the final check/rename against delete/reset epoch changes.
         let metadata = self.global_epoch.0.parent().unwrap().join("metadata.lock");
-        let _metadata = crate::private_fs::lock(&metadata).map_err(|e| e.to_string())?;
+        let _metadata = crate::private_fs::lock_guarded(&metadata, || {
+            self.check(cancel).map_err(std::io::Error::other)
+        })
+        .map_err(|e| e.to_string())?;
         self.check(cancel)?;
         // Retire queued and active users of the old content before publishing
         // another installation under the same path, including first installs.
@@ -858,6 +863,178 @@ mod tests {
                 b"fresh request"
             );
         }
+    }
+
+    fn held_fixture_lock(path: &Path, marker: &Path) -> crate::child::OwnedChild {
+        use std::process::{Command, Stdio};
+        let child = crate::child::OwnedChild::spawn(
+            Command::new("python3")
+                .args(["-c", "import fcntl, pathlib, sys; f=open(sys.argv[1], 'a+'); fcntl.flock(f, fcntl.LOCK_EX); pathlib.Path(sys.argv[2]).touch(); sys.stdin.buffer.read(1)"])
+                .arg(path)
+                .arg(marker)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !marker.exists() {
+            assert!(child.try_status().unwrap().is_none());
+            assert!(Instant::now() < deadline, "fixture did not hold its lock");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        child
+    }
+
+    fn wait_for_lock_descriptor(path: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if std::fs::read_dir("/proc/self/fd").unwrap().any(|entry| {
+                entry
+                    .ok()
+                    .and_then(|entry| std::fs::read_link(entry.path()).ok())
+                    .is_some_and(|target| target == path)
+            }) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "installer did not open its lock");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn installer_wait_cancellation_and_revocation_do_not_wait_for_another_process() {
+        for mode in 0..4 {
+            let data = tempfile::tempdir().unwrap();
+            let destination = data.path().join("models/test");
+            crate::private_fs::directory(&destination).unwrap();
+            std::fs::write(destination.join("model"), b"previous").unwrap();
+            drop(Stage::new(data.path(), "model-test", destination.clone()).unwrap());
+            let request = observe_authority(data.path(), "model-test").unwrap();
+            let lock = data
+                .path()
+                .join(".install")
+                .join(if mode == 0 || mode == 3 {
+                    "reset.lock"
+                } else {
+                    "model-test.lock"
+                });
+            let holder = held_fixture_lock(&lock, &data.path().join("held"));
+            let cancel = Arc::new(AtomicBool::new(false));
+            let token = cancel.clone();
+            let queued = request.clone();
+            let root = data.path().to_owned();
+            let target = destination.clone();
+            let (done, received) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let result = Stage::new_requested(&root, "model-test", target, &queued, &token);
+                done.send(result.map(drop)).unwrap();
+            });
+            wait_for_lock_descriptor(&lock);
+            let start = Instant::now();
+            let mutation = if mode < 2 {
+                cancel.store(true, Ordering::Release);
+                None
+            } else {
+                let root = data.path().to_owned();
+                let target = destination.clone();
+                let task = std::thread::spawn(move || {
+                    if mode == 2 {
+                        delete(&root, "model-test", &target).unwrap();
+                    } else {
+                        drop(reset(&root).unwrap());
+                    }
+                });
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while request.check(&AtomicBool::new(false)).is_ok() {
+                    assert!(
+                        Instant::now() < deadline,
+                        "revocation did not precede cleanup"
+                    );
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Some(task)
+            };
+            let result = received.recv_timeout(Duration::from_millis(500));
+            let elapsed = start.elapsed();
+            let still_held = holder.try_status().unwrap().is_none();
+            // Release all owned fixture resources before asserting a failure.
+            drop(holder);
+            worker.join().unwrap();
+            if let Some(task) = mutation {
+                task.join().unwrap();
+            }
+            assert!(still_held);
+            assert!(
+                result.is_ok_and(|result| result.is_err()),
+                "queued installer stayed blocked: mode={mode}"
+            );
+            assert!(elapsed < Duration::from_millis(500));
+            if mode == 2 {
+                assert!(!destination.exists());
+            } else {
+                assert_eq!(
+                    std::fs::read(destination.join("model")).unwrap(),
+                    b"previous"
+                );
+            }
+            assert!(
+                Stage::new_requested(
+                    data.path(),
+                    "model-test",
+                    destination.clone(),
+                    &request,
+                    &cancel
+                )
+                .is_err()
+            );
+            let fresh = Stage::new(data.path(), "model-test", destination).unwrap();
+            drop(fresh);
+        }
+    }
+
+    #[test]
+    fn installer_wait_promotion_cancellation_preserves_previous_installation() {
+        let data = tempfile::tempdir().unwrap();
+        let destination = data.path().join("models/test");
+        crate::private_fs::directory(&destination).unwrap();
+        std::fs::write(destination.join("model"), b"previous").unwrap();
+        let stage = Stage::new(data.path(), "model-test", destination.clone()).unwrap();
+        std::fs::write(stage.path().join("model"), b"replacement").unwrap();
+        let original = stage.authority().unwrap();
+        let lock = data.path().join(".install/metadata.lock");
+        let holder = held_fixture_lock(&lock, &data.path().join("held"));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let token = cancel.clone();
+        let (done, received) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            done.send(stage.promote(&token).map(|_| ())).unwrap();
+        });
+        wait_for_lock_descriptor(&lock);
+        let start = Instant::now();
+        cancel.store(true, Ordering::Release);
+        let result = received.recv_timeout(Duration::from_millis(500));
+        let elapsed = start.elapsed();
+        let still_held = holder.try_status().unwrap().is_none();
+        drop(holder);
+        worker.join().unwrap();
+        assert!(still_held);
+        assert!(
+            result.is_ok_and(|result| result.is_err()),
+            "promotion stayed blocked after cancellation"
+        );
+        assert!(elapsed < Duration::from_millis(500));
+        original.check(&AtomicBool::new(false)).unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("model")).unwrap(),
+            b"previous"
+        );
+        assert_eq!(
+            std::fs::read_dir(destination.parent().unwrap())
+                .unwrap()
+                .count(),
+            1
+        );
     }
 
     fn archive(path: &Path, members: &[(&str, Option<&str>)]) {

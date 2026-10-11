@@ -667,8 +667,9 @@ pub fn start_download(data_dir: PathBuf, id: &'static str) {
     let Some(entry) = find_model(id) else {
         return;
     };
+    let request = crate::artifact::observe_authority(&data_dir, &format!("model-{}", entry.id));
     start_artifact_download(id, entry.expected_bytes, move |cancel, cb| {
-        download_model(&data_dir, entry, cancel, cb)
+        prepare_model(&data_dir, entry, cancel, cb, false, Some(&request?))
     });
 }
 
@@ -1151,8 +1152,9 @@ pub fn start_gpu_download(data_dir: PathBuf, id: &'static str) {
     let Some(pack) = GPU_PACKS.iter().find(|p| p.id == id) else {
         return;
     };
+    let request = crate::artifact::observe_authority(&data_dir, &format!("gpu-{}", pack.id));
     start_artifact_download(id, Some(pack.size_bytes), move |cancel, cb| {
-        download_gpu_pack(&data_dir, pack, cancel, cb)
+        prepare_gpu_pack(&data_dir, pack, cancel, cb, false, Some(&request?))
     });
 }
 
@@ -1429,8 +1431,24 @@ pub fn download_needle_pack(
     cancel: &AtomicBool,
     on_event: &DownloadCallback,
 ) -> Result<(), String> {
+    prepare_needle_pack(data_dir, cancel, on_event, None)
+}
+
+fn prepare_needle_pack(
+    data_dir: &Path,
+    cancel: &AtomicBool,
+    on_event: &DownloadCallback,
+    request: Option<&crate::artifact::Authority>,
+) -> Result<(), String> {
     let asset = needle_asset()?;
-    let stage = crate::artifact::Stage::new(data_dir, "needle", needle_bin_dir(data_dir))?;
+    let captured = crate::artifact::observe_authority(data_dir, "needle")?;
+    let stage = crate::artifact::Stage::new_requested(
+        data_dir,
+        "needle",
+        needle_bin_dir(data_dir),
+        request.unwrap_or(&captured),
+        cancel,
+    )?;
     let dir = stage.path().to_owned();
     let tmp = dir.join("download.part");
     let url = needle_url(asset.folder);
@@ -1479,10 +1497,11 @@ pub fn delete_needle_pack(data_dir: &Path) -> std::io::Result<()> {
 /// Start a needle engine download on the task runtime. No-op if
 /// running or when this arch has no build.
 pub fn start_needle_download(data_dir: PathBuf) {
+    let request = crate::artifact::observe_authority(&data_dir, "needle");
     start_artifact_download(
         NEEDLE_ENGINE_ID,
         needle_asset().ok().map(|asset| asset.size_bytes),
-        move |cancel, cb| download_needle_pack(&data_dir, cancel, cb),
+        move |cancel, cb| prepare_needle_pack(&data_dir, cancel, cb, Some(&request?)),
     );
 }
 
@@ -1491,7 +1510,8 @@ pub fn start_sherpa_download(data_dir: PathBuf, id: &'static str) {
     let Some(pack) = SHERPA_PACKS.iter().find(|p| p.id == id) else {
         return;
     };
+    let request = crate::artifact::observe_authority(&data_dir, &format!("sherpa-{}", pack.id));
     start_artifact_download(id, Some(pack.size_bytes), move |cancel, cb| {
-        download_sherpa_pack(&data_dir, pack, cancel, cb)
+        prepare_sherpa_pack(&data_dir, pack, cancel, cb, false, Some(&request?))
     });
 }

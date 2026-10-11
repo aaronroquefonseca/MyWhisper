@@ -41,11 +41,24 @@ pub fn try_lock(path: &Path) -> io::Result<File> {
 }
 
 pub fn lock(path: &Path) -> io::Result<File> {
+    lock_guarded(path, || Ok(()))
+}
+
+/// Keep authorization/cancellation active while waiting for another process.
+pub(crate) fn lock_guarded(
+    path: &Path,
+    mut check: impl FnMut() -> io::Result<()>,
+) -> io::Result<File> {
+    check()?;
     let file = lock_file(path)?;
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
+        check()?;
         match file.try_lock_exclusive() {
-            Ok(()) => return Ok(file),
+            Ok(()) => {
+                check()?;
+                return Ok(file);
+            }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10));
             }
