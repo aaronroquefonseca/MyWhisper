@@ -59,6 +59,15 @@ def main(timeout=120):
         inputs = {Path(argument) for argument in command
                   if argument.startswith("/tmp/") and Path(argument).exists()
                   and not Path(argument).is_relative_to(root)}
+        # Library/resolver/certificate fixtures can be supplied through these
+        # standard variables instead of positional arguments. Preserve their
+        # explicit inputs without making the host's whole /tmp visible.
+        for variable in ("PATH", "LD_LIBRARY_PATH", "LD_PRELOAD",
+                         "SSL_CERT_FILE", "SSL_CERT_DIR", "ALSA_CONFIG_PATH"):
+            for item in env.get(variable, "").split(os.pathsep):
+                path = Path(item)
+                if item.startswith("/tmp/") and path.exists() and not path.is_relative_to(root):
+                    inputs.add(path)
         for path in sorted(inputs, key=lambda path: (len(path.parts), str(path))):
             owned_command.extend(["--ro-bind", str(path), str(path)])
         owned_command.extend(["--", *command])

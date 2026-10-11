@@ -118,6 +118,33 @@ class DisposableOwnership(unittest.TestCase):
     def test_timeout_cleans_detached_descendants(self):
         self.run_case(0, timeout_runner=True)
 
+    def test_explicit_library_inputs_survive_private_tmp_without_becoming_writable(self):
+        with tempfile.TemporaryDirectory(prefix="mywhisper-runner-input-audit.") as directory:
+            source = Path(directory)
+            source.chmod(0o700)
+            (source / ".disposable").touch(mode=0o600)
+            (source / "synthetic-input").write_text("read-only synthetic input")
+            env = os.environ.copy()
+            env["LD_LIBRARY_PATH"] = str(source)
+            code = r"""
+import errno, os, pathlib
+source = pathlib.Path(os.environ['LD_LIBRARY_PATH']) / 'synthetic-input'
+assert source.read_text() == 'read-only synthetic input'
+try:
+    source.write_text('unauthorized fixture mutation')
+except OSError as error:
+    assert error.errno == errno.EROFS
+else:
+    raise AssertionError('external inputs became writable')
+root = pathlib.Path(os.environ['MYWHISPER_AUDIT_ROOT'])
+temporary = pathlib.Path(os.environ['TMPDIR'])
+assert temporary.is_relative_to(root)
+(temporary / 'owned-output').write_text('private synthetic output')
+"""
+            result = subprocess.run([sys.executable, str(RUNNER), "MYWHISPER_AUDIT_ROOT", "libraryinputs", sys.executable, "-c", code], env=env, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            self.assertEqual((source / "synthetic-input").read_text(), "read-only synthetic input")
+
 
 if __name__ == "__main__":
     unittest.main()
