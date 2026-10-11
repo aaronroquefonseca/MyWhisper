@@ -31,10 +31,11 @@ fn main() -> gtk4::glib::ExitCode {
         .build();
     let disposable = tempfile::tempdir().expect("disposable preview directory");
     let shutdown_data = disposable.path().to_path_buf();
+    let preview_data = shutdown_data.clone();
     app.connect_activate(move |app| {
         let mut state = AppState::fresh();
         state.settings.borrow_mut().sync.enabled = false;
-        std::rc::Rc::get_mut(&mut state).unwrap().db_path = disposable.path().join("state.db");
+        std::rc::Rc::get_mut(&mut state).unwrap().db_path = preview_data.join("state.db");
         if args
             .iter()
             .any(|arg| matches!(arg.as_str(), "--reset-smoke" | "--reset-resume-smoke"))
@@ -162,5 +163,6 @@ fn main() -> gtk4::glib::ExitCode {
     mywhisper::runtime::begin_shutdown();
     mywhisper::transcribe::shutdown(&shutdown_data);
     mywhisper::runtime::finish_shutdown().expect("preview owned shutdown");
+    drop(disposable);
     result
 }

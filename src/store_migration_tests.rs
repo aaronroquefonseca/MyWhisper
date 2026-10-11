@@ -37,7 +37,7 @@ fn seed(path: &Path) {
         .unwrap();
 }
 
-fn verify(path: &Path) {
+fn verify(path: &Path) -> Store {
     let store = Store::open_with_key(path, &KEY).unwrap();
     assert_eq!(store.load_words().unwrap(), ["synthetic original 世界"]);
     let snippets = store.load_snippets().unwrap();
@@ -60,9 +60,9 @@ fn verify(path: &Path) {
         serde_json::from_str::<serde_json::Value>(&raw).unwrap()["future_root"]["synthetic"],
         "preserved"
     );
-    store.checkpoint().unwrap();
     assert!(!std::fs::read(path).unwrap().starts_with(b"SQLite format 3"));
     assert_eq!(std::fs::metadata(path).unwrap().mode() & 0o777, 0o600);
+    store
 }
 
 fn wait_status(child: &crate::child::OwnedChild) -> std::process::ExitStatus {
@@ -166,7 +166,21 @@ fn killed_plaintext_migration_recovers_with_competing_fresh_processes() {
                 }
             });
         }
-        verify(&path);
+        let verified = verify(&path);
+        if let Some(index) = action.strip_prefix("recover-") {
+            let ready = root.join(format!("verified-{index}"));
+            let permit = root.join(format!("checkpoint-{index}"));
+            crate::private_fs::replace(&ready, b"content verified").unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while !permit.is_file() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "checkpoint owner not released"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        verified.checkpoint().expect("owned recovery checkpoint");
         return;
     }
     for phase in [
@@ -218,13 +232,45 @@ fn killed_plaintext_migration_recovers_with_competing_fresh_processes() {
         let recoveries = (0..4)
             .map(|index| child(&format!("recover-{index}")))
             .collect::<Vec<_>>();
-        for recovery in recoveries {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while (0..4).any(|index| !root.path().join(format!("verified-{index}")).is_file()) {
             assert!(
-                wait_status(&recovery).success(),
-                "fresh recovery failed: {phase}"
+                std::time::Instant::now() < deadline,
+                "concurrent verification did not complete"
             );
+            std::thread::sleep(Duration::from_millis(5));
         }
-        verify(&root.path().join("state.db"));
+        // Initialization and data checks compete in all four processes. Once
+        // every read is complete, give each checkpoint exclusive ownership and
+        // join its actual process before allowing the next checkpoint. Each
+        // original checkpoint assertion remains mandatory, without retries.
+        for (index, recovery) in recoveries.into_iter().enumerate() {
+            crate::private_fs::replace(
+                &root.path().join(format!("checkpoint-{index}")),
+                b"owned checkpoint",
+            )
+            .unwrap();
+            let status = wait_status(&recovery);
+            assert!(
+                status.success(),
+                "fresh recovery failed: {phase}; status={status}; logs={:?}",
+                (0..4)
+                    .map(|index| std::fs::read_to_string(
+                        root.path().join(format!("recover-{index}.log"))
+                    )
+                    .unwrap())
+                    .collect::<Vec<_>>()
+            );
+            drop(recovery);
+        }
+        // The parent owns checkpointing after joining every actual recovery
+        // process. Concurrent checkpointers can correctly report SQLITE_BUSY
+        // while another process still reads; do not suppress that error.
+        let verified = verify(&root.path().join("state.db"));
+        verified
+            .checkpoint()
+            .expect("quiescent recovery checkpoint");
+        drop(verified);
         for entry in std::fs::read_dir(root.path()).unwrap() {
             let entry = entry.unwrap();
             if !entry.file_name().to_string_lossy().starts_with(".tmp") {
