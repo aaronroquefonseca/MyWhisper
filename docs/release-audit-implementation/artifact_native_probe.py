@@ -11,6 +11,27 @@ import subprocess
 import sys
 import time
 
+# Resolve the actual application's icon data with a fresh native GTK theme.
+# The inspection helper uses the host GTK4/GI, while the visible application
+# above runs the package's GTK4. Both run against exactly the wrapper paths;
+# the screenshot/booted NixOS gate covers the package's renderer separately.
+ICON_PROBE = r'''
+import gi
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk, Gdk
+Gtk.init()
+theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
+icons = ["audio-input-microphone-symbolic", "view-list-symbolic",
+         "accessories-dictionary-symbolic", "computer-symbolic",
+         "preferences-system-symbolic"]
+missing = [name for name in icons if not theme.has_icon(name)]
+assert not missing, "Packaged fallback icons missing: " + repr(missing)
+for name in icons:
+    paintable = theme.lookup_icon(name, [], 24, 1, Gtk.TextDirection.NONE, Gtk.IconLookupFlags.FORCE_SYMBOLIC)
+    assert paintable.is_symbolic(), name
+print("All five packaged navigation icons resolve as symbolic icons without host icon files")
+'''
+
 root = Path(os.environ['MYWHISPER_AUDIT_ROOT']).resolve()
 assert root.name.startswith('mywhisper-artifactnative-audit.') and (root / '.disposable').is_file()
 assert root.stat().st_mode & 0o777 == 0o700
@@ -20,7 +41,10 @@ store, artifact = map(Path, sys.argv[1:])
 assert (store / 'store' / artifact.name / 'bin/.mywhisper-wrapped').is_file()
 assert str(artifact).startswith('/nix/store/')
 env = {**os.environ, 'MYWHISPER_DB_KEY': '00' * 32, 'GDK_BACKEND': 'x11', 'GTK_A11Y': 'none', 'G_DEBUG': 'fatal-criticals'}
+(root / 'empty-icon-data').mkdir(mode=0o700)
+env['XDG_DATA_DIRS'] = str(root / 'empty-icon-data')
 command = ['bwrap', '--ro-bind', '/', '/', '--bind', str(root), str(root), '--ro-bind', str(store), '/nix',
+           '--tmpfs', '/usr/share/icons', '--tmpfs', '/usr/share/pixmaps',
            '--unshare-user', '--unshare-pid', '--proc', '/proc', '--dev', '/dev', '--die-with-parent',
            str(artifact / 'bin/mywhisper')]
 with (root / 'application.log').open('w') as log:
@@ -43,6 +67,7 @@ with (root / 'application.log').open('w') as log:
         # rather than accidentally finding a host executable outside NixOS.
         pending = [process.pid]
         application_path = None
+        icon_data = None
         for _ in range(64):
             if not pending:
                 break
@@ -52,10 +77,14 @@ with (root / 'application.log').open('w') as log:
                 for field in (proc / 'environ').read_bytes().split(b'\0'):
                     if field.startswith(b'PATH='):
                         application_path = os.fsdecode(field[5:])
-                        break
+                    if field.startswith(b'XDG_DATA_DIRS='):
+                        icon_data = os.fsdecode(field.split(b'=', 1)[1])
                 break
             pending.extend(map(int, (proc / 'task' / str(pid) / 'children').read_text().split()))
         assert application_path is not None, 'Owned application environment was not found'
+        assert icon_data is not None, 'Owned application icon paths were not found'
+        subprocess.run(command[:-1] + ['/usr/bin/python3', '-c', ICON_PROBE],
+                       env={**env, 'XDG_DATA_DIRS': icon_data}, check=True, timeout=10)
         resolver = None
         for directory in application_path.split(os.pathsep):
             candidate = Path(directory) / 'getent'

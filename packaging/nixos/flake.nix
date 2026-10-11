@@ -42,6 +42,9 @@
         install -Dm644 assets/icons/symbolic.svg $out/share/icons/hicolor/symbolic/apps/com.mywhisper.App-symbolic.svg
       '';
       preFixup = ''
+        # GTK's built-in icons omit several navigation symbols. Include the
+        # fallback themes even on desktops with no host icon installation.
+        gappsWrapperArgs+=(--prefix XDG_DATA_DIRS : ${pkgs.lib.makeSearchPath "share" [ pkgs.adwaita-icon-theme pkgs.hicolor-icon-theme ]})
         gappsWrapperArgs+=(--prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.wl-clipboard pkgs.wtype pkgs.pulseaudio pkgs.coreutils pkgs.getent ]})
         gappsWrapperArgs+=(--prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibraries})
         gappsWrapperArgs+=(--set-default SSL_CERT_FILE ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt)
