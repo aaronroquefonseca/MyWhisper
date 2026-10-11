@@ -60,14 +60,17 @@ with (root / 'application.log').open('w') as log:
         for directory in application_path.split(os.pathsep):
             candidate = Path(directory) / 'getent'
             if candidate.is_relative_to('/nix/store'):
-                physical = store / candidate.relative_to('/nix')
-                if physical.is_file() and physical.stat().st_mode & 0o111:
+                # Nix tool outputs can contain absolute store symlinks. Test
+                # execution inside the same store mapping as the application.
+                result = subprocess.run(command[:-1] + [str(candidate), 'ahosts', 'localhost'],
+                                        env=env, text=True, capture_output=True, timeout=4)
+                if result.returncode == 0:
+                    assert any(ipaddress.ip_address(line.split()[0]).is_loopback
+                               for line in result.stdout.splitlines())
                     resolver = candidate
                     break
-        assert resolver is not None, 'Packaged wrapper has no getent resolver executable'
-        resolved = subprocess.check_output(command[:-1] + [str(resolver), 'ahosts', 'localhost'],
-                                           env=env, text=True, timeout=4)
-        assert any(ipaddress.ip_address(line.split()[0]).is_loopback for line in resolved.splitlines())
+        assert resolver is not None, ('Packaged wrapper has no getent resolver executable',
+                                     [p for p in application_path.split(os.pathsep) if p.startswith('/nix/store/')])
         # Request normal GTK close through WM_DELETE_WINDOW, not XDestroyWindow
         # or killing the client. No window manager is needed for this event.
         class MessageData(ctypes.Union):

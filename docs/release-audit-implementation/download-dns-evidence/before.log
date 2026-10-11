@@ -1,0 +1,34 @@
+   Compiling mywhisper v0.9.3 (/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.39s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 1 test
+
+thread 'transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset' (2333254) panicked at src/transcribe.rs:4881:9:
+capture probe download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset failed (exit status: 101): 
+running 1 test
+
+thread 'transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset' (2333261) panicked at src/transcribe.rs:5537:13:
+cancelled download left the NSS resolver alive: pid=2333260
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset ... FAILED
+
+failures:
+
+failures:
+    transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 248 filtered out; finished in 0.18s
+
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset ... FAILED
+
+failures:
+
+failures:
+    transcribe::tests::download_resolution_cancellation_reaps_nss_on_cancel_delete_and_reset
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 248 filtered out; finished in 0.27s
+
+error: test failed, to rerun pass `--lib`

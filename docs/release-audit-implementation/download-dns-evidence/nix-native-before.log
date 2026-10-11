@@ -1,0 +1,15 @@
+dbus-daemon[2502886]: [session uid=1000 pid=2502886 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=2503161 comm="/nix/store/47jcml2y5cl1hs0zjzkgdcp11sms56q1-mywhis")
+dbus-daemon[2502886]: [session uid=1000 pid=2502886 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=2503172 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[2502886]: [session uid=1000 pid=2502886 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[2502886]: [session uid=1000 pid=2502886 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=2503172 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[2502886]: [session uid=1000 pid=2502886 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+
+(/usr/lib/xdg-desktop-portal:2503172): xdg-desktop-portal-WARNING **: 13:58:04.870: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:2503172): xdg-desktop-portal-WARNING **: 13:58:04.870: The camera portal requires an access impl
+dbus-daemon[2502886]: [session uid=1000 pid=2502886 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+Traceback (most recent call last):
+  File "/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1/docs/release-audit-implementation/artifact_native_probe.py", line 72, in <module>
+    assert resolver is not None, ('Packaged wrapper has no getent resolver executable',
+           ^^^^^^^^^^^^^^^^^^^^
+AssertionError: ('Packaged wrapper has no getent resolver executable', ['/nix/store/fw0x68x7ag2vgicgzzqifl7p7ha274n1-wl-clipboard-2.3.0/bin', '/nix/store/1npk1bl9fsmmx8nfr474f5n68wixw31w-wtype-0.4/bin', '/nix/store/xmgw0ciyhzvi4ljas0p6afx9aqsi824a-pulseaudio-17.0/bin', '/nix/store/2gfxiwls9hbgwdwcy43mprchwsq36mg6-coreutils-9.11/bin', '/nix/store/srvyqaf88njyqsrs1ajz3hznvdqq8hlw-glibc-2.44-25-bin/bin'])

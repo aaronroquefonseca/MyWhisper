@@ -1,0 +1,77 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "source_commit": "623290d4694002a4423e7b9806b24e052417731e",
+  "finding": "R49 download DNS ownership (also relevant to F09 resource cleanup)",
+  "classification": "Demonstrated follow-up to the inspected audit defect",
+  "root_cause": "Default reqwest DNS schedules blocking NSS work. Dropping a cancelled request and shutting the runtime down with a timeout returns while that work remains alive.",
+  "correction": "An async-polled reqwest resolver owns a getent process group with a three-second DNS deadline, 64 KiB output bound and at most sixteen usable addresses. It yields to the existing download cancellation loop; request/runtime teardown kills and reaps the owned group. No abandoned blocking task or extra worker pool. Existing transfer budgets are unchanged.",
+  "regression": "Before-fix test fails after cancellation with stalled NSS still alive. Passing regression repeats twelve Cancel/Delete/Reset cycles, six resolving after redirects; asserts sub-500ms cancellation, disappeared resolver processes, exact thread-budget recovery, removed staging, preserved old installation on Cancel/Reset, and target removal on Delete. Natural DNS deadline expiry also reaps the resolver and creates no partial download.",
+  "executed_validation": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo test --locked --all-targets: 244 passed, zero failed, five original opt-in ignores unchanged",
+    "cargo build --release --locked --bin mywhisper",
+    "Current cargo-audit: 1296 advisories, RustSec 7eebec69c352c7191b1f13eb95dd510eeca5d1de, zero vulnerabilities or warnings",
+    "python3 packaging/test-release.py and test-upgrade.py: nine plus five tests pass",
+    "scripts/ui-smoke.sh: both light/en and dark/es; all eight smoke/recovery/reset invocations pass",
+    "scripts/ui-assets-smoke.sh: actual pinned CPU runtime download/reference verification, native local-trust/cancel/mutation acceptance pass in both configurations",
+    "Committed-source Nix build/check/install/fixup: 244 passed, zero failed, original five ignores unchanged; all 370 dependency notices complete",
+    "Actual packaged version reports mywhisper 0.9.3",
+    "Actual packaged GTK artifact: visible window, normal close/zero exit, encrypted disposable DB, no input/audio devices; resolver selected from its own running wrapper PATH successfully resolves localhost",
+    "Actual packaged getent successfully resolves github.com using real NSS/public DNS without credentials (bounded four-second integration command)"
+  ],
+  "migration_compatibility": "No database, protocol, identity/keyring or receipt migration; pinned integrity, atomic staging and user models remain supported. getent is an existing provider/sync resolver requirement. Actual Nix validation revealed that glibc.bin does not contain it: Nix splits getent into its own output. Commit 07a7f96 selects pkgs.getent for check and runtime wrapper PATH. Arch already supplies getent through its glibc dependency closure. HTTP redirects retain the same owned resolver and transfer resource limits.",
+  "isolation": "All databases, XDG roots, synthetic model bytes, signing receipts and native sessions are disposable. NSS faults run in process-isolated tests through a compiled LD_PRELOAD fixture; marker files contain only resolver PIDs. Immutable historical C evidence remains unchanged; its test copy gains an optional private PID marker.",
+  "remaining_requirements": [
+    "Queued cross-process installer ownership/admission and cancellation while waiting for locks",
+    "Interrupted promotion/repair, disk-full and extraction failure/cancellation recovery",
+    "Remaining advertised assets and final resource/privacy review",
+    "Full original 51-group requirements and live/final artifact gates; no PR submitted",
+    "These checks run a Nix-built artifact on the local Arch kernel/display stack; they do not establish a booted clean NixOS desktop or all final provider/runtime/compositor/upgrade integrations."
+  ],
+  "source_file_sha256": {
+    "src/address.rs": "ce8613cd8f0e3c48aa12603ee9ddaf762848a26a221461c38f27422ed9454b81",
+    "src/artifact.rs": "7579fe4d0dfdf518b7d380c684a2edac4670a402213e40df7b661fe087bb67f4",
+    "src/transcribe.rs": "b6c39d093c2face3de615fbea124801c162bbab4925ea41925b046eba308c182",
+    "src/test_fixtures/stalled_dns.c": "dd77a04c325e8f4022a28540239e7b7aad02634b4894d22ca5ccc5a81a4c0980",
+    "packaging/nixos/flake.nix": "ea0da31d3ace9bb9e46fb2a691b5b982566623e892580f64b79068ba596e60d0",
+    "docs/release-audit-implementation/artifact_native_probe.py": "2aeba17fbbbafaa1c0eaf9c53f9ba94155b92b91b4b80bf5a07b59b283eb4655"
+  },
+  "logs_sha256": {
+    "before.log": "1c82184b92d06043b9d796ff9d4962e52940bc8fc5db2693fd5d99befacc0c6b",
+    "after.log": "7009787b2cccaaf8e4d7c41b34f42d6cbada8c006c106c30101284488e23539a",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "clippy.log": "eb3036c2f8528ae0c4111de1019bae1728f0b121a2954948d95f1fcfdc03d773",
+    "tests.log": "ac2eae461c86db9dd3a4f9d15e774624e48cec80442599613dabde7fabb2eda6",
+    "release.log": "23090f605e887b5750cc69275fa885efec7c6e2bf21170b5c5c3d4af8529f148",
+    "packaging.log": "2d3174d0be394dd98178b811f55f3bab95b06c8cec3fe9e39b830278bbbfac26",
+    "upgrade.log": "eb3a944f96487134d1c5fb388649b1df9f9691de78f0705a6610dbc8ba4329a0",
+    "security.json": "c1fd5aed7215276b64781f0b19750419b3d763d31c3484b1b3eee5b80470a151",
+    "ui.log": "dc3a61159f35cd32f7a115225eaeada8304263afe16ec4cbbe1335755c771f80",
+    "assets-native.log": "45d08ed513bbaaa488907bba70fb57ebb08fb90ae4525b4ddc50e12221883b94",
+    "nix-before.log": "d2f1c2bd4fde1ef0c7680527cf2d44d79ab6e113654077c48f0470e21ecc467a",
+    "nix-native-before.log": "e6f47bcc32e38281fc121bb5b13441e7229f133cba70a85a51f87fe14a1cee2c",
+    "nix-after.log": "1d5ef55a0e967f06454ba78a5ab324c61fb7a43abfaff0cc60600df3752bedee",
+    "nix-native-after.log": "af9a76f31caa17306d0713d01823508c252333dcf3085700543db589035fb421",
+    "nix-version.log": "74f568e9cf97672590d8a0fbc2ca234d2ab7ae6322ae44c4ac92b9b45e2f2bda",
+    "nix-public-dns.log": "3d17a469e82d2a6e9ec459338c015bf472b8d7267b7e6027f43f0eb2d34bfea1"
+  },
+  "packaging_source_commit": "07a7f961671a48e5d01cdbd8421b68bab85451b7",
+  "failure_history": [
+    "Before-fix host NSS cancellation regression demonstrates an unreaped resolver job.",
+    "The first Nix package fails the new DNS readiness assertion because glibc.bin lacks getent; the previous actual artifact independently fails the unchanged wrapper-PATH resolver assertion. Corrected pkgs.getent dependency passes the complete sandbox tests and artifact resolver/startup gate. The probe also needed to execute absolute Nix symlinks within the same mapped store instead of checking them from the host namespace; after that fixture correction the same probe still rejects the previous artifact and passes the corrected artifact. No assertions weakened or ignored."
+  ],
+  "artifact": "/nix/store/j3jj08f1p6r4aph00r6kklvi02xhzp07-mywhisper-0.9.3",
+  "artifact_tests": {
+    "passed": 244,
+    "failed": 0,
+    "original_ignored": 5,
+    "seconds": 24.67,
+    "dependency_notices": 370
+  },
+  "artifact_sha256": {
+    "bin/mywhisper": "4690d2ba13525c228ded966bbd9c846dd9aab0766336cd8567acdc442540a5a6",
+    "bin/.mywhisper-wrapped": "2e7cbaafd7aef0fdcca6c89518cd5089195f1a2446f86a0e1cbf13548448362e"
+  }
+}
