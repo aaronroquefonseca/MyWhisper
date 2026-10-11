@@ -202,14 +202,21 @@ mod tests {
     fn private_bus() -> (tempfile::TempDir, crate::child::OwnedChild, String) {
         let root = tempfile::tempdir().unwrap();
         let config = root.path().join("session.conf");
+        // TMPDIR can exceed sockaddr_un's path limit in a Nix build. This
+        // Linux-only fixture uses a unique short abstract address; its owned
+        // daemon and explicit client address never touch the real session bus.
+        let address = format!(
+            "mywhisper-key-test-{}-{}",
+            std::process::id(),
+            root.path().file_name().unwrap().to_string_lossy()
+        );
         std::fs::write(
             &config,
             format!(
-                "<busconfig><type>session</type><listen>unix:tmpdir={}</listen>\
+                "<busconfig><type>session</type><listen>unix:abstract={address}</listen>\
                  <auth>EXTERNAL</auth><policy context=\"default\">\
                  <allow own=\"*\"/><allow send_destination=\"*\"/>\
-                 <allow receive_sender=\"*\"/></policy></busconfig>",
-                root.path().display()
+                 <allow receive_sender=\"*\"/></policy></busconfig>"
             ),
         )
         .unwrap();
@@ -220,7 +227,7 @@ mod tests {
                 .args(["--nofork", "--print-address=1", "--nopidfile"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null()),
+                .stderr(Stdio::inherit()),
         )
         .unwrap();
         let mut output = daemon.0.stdout.take().unwrap();
