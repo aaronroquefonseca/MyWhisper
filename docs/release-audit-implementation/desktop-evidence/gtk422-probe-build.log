@@ -1,0 +1,7 @@
+warning: Git tree '/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1' is dirty
+these 2 derivations will be built:
+  /nix/store/i9ssy86j97rgb6bzixk1lwx5mbx22mj5-svg-probe.c.drv
+  /nix/store/1pwfgi4nkia0jg5a08w0qf0xmdhhqxj5-mywhisper-svg-probe-1.drv
+building '/nix/store/i9ssy86j97rgb6bzixk1lwx5mbx22mj5-svg-probe.c.drv'...
+building '/nix/store/1pwfgi4nkia0jg5a08w0qf0xmdhhqxj5-mywhisper-svg-probe-1.drv'...
+/nix/store/w11m5mijp1cgw54z1v4gvjvzcnwivfhm-mywhisper-svg-probe-1

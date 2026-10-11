@@ -1,0 +1,42 @@
+warning: Git tree '/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1' is dirty
+these 4 derivations will be built:
+  /nix/store/2k0qnm3mrl13cb3h8j1r1x00pk7kfa55-test-script.drv
+  /nix/store/sapbkg6y68za1x6zs34hiwqgzawn6lcg-driverConfiguration.json.drv
+  /nix/store/x2mz58cbzd2x5difj165crp4f4m3ajky-nixos-test-driver-mywhisper-desktop.drv
+  /nix/store/qyriacs8zdfaghniywpx2gn6x53sw96b-vm-test-run-mywhisper-desktop.drv
+building '/nix/store/2k0qnm3mrl13cb3h8j1r1x00pk7kfa55-test-script.drv'...
+building '/nix/store/sapbkg6y68za1x6zs34hiwqgzawn6lcg-driverConfiguration.json.drv'...
+building '/nix/store/x2mz58cbzd2x5difj165crp4f4m3ajky-nixos-test-driver-mywhisper-desktop.drv'...
+building '/nix/store/qyriacs8zdfaghniywpx2gn6x53sw96b-vm-test-run-mywhisper-desktop.drv'...
+error: Cannot build '/nix/store/qyriacs8zdfaghniywpx2gn6x53sw96b-vm-test-run-mywhisper-desktop.drv'.
+       Reason: builder failed with exit code 1.
+       Output paths:
+         /nix/store/i9krqsrspkpnvjckr5454b7mcb5alrih-vm-test-run-mywhisper-desktop
+       Last 25 log lines:
+       > desktop: output: [
+       >   {
+       >     "success": true
+       >   },
+       >   {
+       >     "success": false,
+       >     "parse_error": true,
+       >     "error": "Unknown\/invalid command 'echo'"
+       >   }
+       > ]
+       >
+       > !!! Traceback (most recent call last):
+       > !!!   File "<string>", line 17, in <module>
+       > !!!     user("swaymsg exec " + shlex.quote(launch))
+       > !!!   File "<string>", line 5, in user
+       > !!!     return desktop.succeed("su - audit -c " + shlex.quote(environment + command))
+       > !!! 
+       > !!! RequestedAssertionFailed: command `su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus swaymsg exec '"'"'MYWHISPER_DB_KEY=0000000000000000000000000000000000000000000000000000000000000000 G_DEBUG=fatal-criticals /nix/store/xwqyj45s3g1xx81g0frfr3wvwhkz4p4s-mywhisper-0.9.3/bin/mywhisper > /home/audit/gui.log 2>&1; echo $? > /home/audit/gui.exit'"'"''` failed (exit code 2)
+       > cleanup
+       > kill QemuMachine (pid 187)
+       > desktop # qemu-system-x86_64: terminating on signal 15 from pid 180 (/nix/store/lb41b0anx1f98y9y5s9mdv97gjgsq740-python3-3.14.7/bin/python3.14)
+       > desktop # [2026-10-11T21:05:21Z INFO  virtiofsd] Client disconnected, shutting down
+       > desktop # [2026-10-11T21:05:21Z INFO  virtiofsd] Client disconnected, shutting down
+       > desktop # [2026-10-11T21:05:21Z INFO  virtiofsd] Client disconnected, shutting down
+       > (finished: cleanup, in 0.09 seconds)
+       For full logs, run:
+         nix log /nix/store/qyriacs8zdfaghniywpx2gn6x53sw96b-vm-test-run-mywhisper-desktop.drv
