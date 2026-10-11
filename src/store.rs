@@ -360,11 +360,7 @@ impl Store {
     /// Background maintenance must not recreate a database removed after its
     /// work was scheduled. Both file and SQLite opens exclude creation.
     pub(crate) fn open_existing(path: &Path) -> rusqlite::Result<Self> {
-        use std::os::unix::fs::OpenOptionsExt;
-        let existing = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
+        let existing = crate::private_fs::open_regular(path)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
         let _lock = crate::private_fs::lock(&path.with_extension("db.init.lock"))
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
@@ -388,12 +384,7 @@ impl Store {
 
     fn plaintext_header(path: &Path) -> rusqlite::Result<bool> {
         use std::io::Read;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = match std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-        {
+        let mut file = match crate::private_fs::open_regular(path) {
             Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(rusqlite::Error::ToSqlConversionFailure(e.into())),

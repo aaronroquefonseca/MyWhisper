@@ -79,14 +79,8 @@ pub fn read_private(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
 
 fn read_file(path: &Path, limit: usize, protect: bool) -> io::Result<Vec<u8>> {
     use std::io::Read;
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
+    let file = open_regular(path)?;
     let metadata = file.metadata()?;
-    if !metadata.is_file() {
-        return Err(io::Error::other("private data is not a regular file"));
-    }
     if protect && metadata.permissions().mode() & 0o777 != 0o600 {
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
@@ -99,6 +93,20 @@ fn read_file(path: &Path, limit: usize, protect: bool) -> io::Result<Vec<u8>> {
         ));
     }
     Ok(bytes)
+}
+
+/// Validate the opened descriptor before reading a prefix or changing modes.
+/// O_NONBLOCK prevents a FIFO from waiting for a writer even during open().
+pub(crate) fn open_regular(path: &Path) -> io::Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::other("private data is not a regular file"));
+    }
+    Ok(file)
 }
 
 pub fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {

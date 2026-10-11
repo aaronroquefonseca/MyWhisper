@@ -300,3 +300,92 @@ fn legacy_wal_reader_blocks_migration_without_losing_committed_data() {
         "synthetic private sentence 世界"
     );
 }
+
+#[test]
+fn special_database_files_fail_without_waiting_for_a_writer() {
+    const TEST: &str =
+        "store::migration_tests::special_database_files_fail_without_waiting_for_a_writer";
+    if let Some(root) = std::env::var_os("MYWHISPER_DBTYPE_TEST_ROOT") {
+        let root = std::path::PathBuf::from(root);
+        assert!(
+            root.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("mywhisper-dbtype-audit.")
+        );
+        let metadata = root.symlink_metadata().unwrap();
+        assert!(metadata.is_dir() && !metadata.file_type().is_symlink());
+        assert_eq!(metadata.uid(), unsafe { libc::getuid() });
+        assert_eq!(metadata.mode() & 0o777, 0o700);
+        assert!(root.join(".disposable").is_file());
+        let started = std::time::Instant::now();
+        for name in ["fifo.db", "directory.db", "link.db"] {
+            let path = root.join(name);
+            assert!(
+                Store::open_with_key(&path, &KEY).is_err(),
+                "invalid database type accepted: {name}"
+            );
+            assert!(
+                Store::open_existing(&path).is_err(),
+                "invalid existing database accepted: {name}"
+            );
+        }
+        assert!(started.elapsed() < Duration::from_millis(250));
+        return;
+    }
+    let root = tempfile::Builder::new()
+        .prefix("mywhisper-dbtype-audit.")
+        .tempdir()
+        .unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(root.path().join(".disposable"), b"").unwrap();
+    let fifo = root.path().join("fifo.db");
+    let name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    std::fs::create_dir(root.path().join("directory.db")).unwrap();
+    let target = root.path().join("preserved.txt");
+    std::fs::write(&target, b"synthetic preserved target").unwrap();
+    std::os::unix::fs::symlink(&target, root.path().join("link.db")).unwrap();
+    let target_before = std::fs::metadata(&target).unwrap();
+    let output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(root.path().join("child.log"))
+        .unwrap();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", TEST, "--nocapture"])
+        .env("MYWHISPER_DBTYPE_TEST_ROOT", root.path())
+        .stdout(output.try_clone().unwrap())
+        .stderr(output);
+    let child = crate::child::OwnedChild::spawn(&mut command).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        if let Some(status) = child.try_status().unwrap() {
+            assert!(
+                status.success(),
+                "{}",
+                std::fs::read_to_string(root.path().join("child.log")).unwrap()
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "database open waited for a writer on a private FIFO"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    drop(child);
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        b"synthetic preserved target"
+    );
+    let target_after = std::fs::metadata(&target).unwrap();
+    assert_eq!(target_before.mode(), target_after.mode());
+    assert_eq!(target_before.ino(), target_after.ino());
+    assert_eq!(
+        std::fs::symlink_metadata(fifo).unwrap().mode() & 0o777,
+        0o600
+    );
+}
