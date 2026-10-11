@@ -89,6 +89,40 @@ fn valid_key(key: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.'))
 }
 
+fn managed_parent(data: &Path, parent: &Path, create: bool) -> Result<(), String> {
+    let relative = parent
+        .strip_prefix(data)
+        .map_err(|_| "installation parent is outside app data")?;
+    if relative
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err("invalid installation parent".into());
+    }
+    let mut path = data.to_owned();
+    // Check each ancestor before proceeding into it. Checking only the final
+    // parent would let a managed models/ or bin/ link redirect deletion and
+    // staging into another directory belonging to the user.
+    for component in std::iter::once(None).chain(relative.components().map(Some)) {
+        if let Some(component) = component {
+            path.push(component.as_os_str());
+        }
+        if create {
+            crate::private_fs::directory(&path).map_err(|e| e.to_string())?;
+        }
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Err(error) if !create && error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            _ => {
+                return Err(
+                    "managed installation parent is not an owned directory; files preserved".into(),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub(crate) struct Authority {
     data: PathBuf,
@@ -227,15 +261,10 @@ impl StagingDirectory {
     }
 
     fn new(data: &Path, key: &str, parent: &Path) -> Result<Self, String> {
+        managed_parent(data, parent, true)?;
         let relative = parent
             .strip_prefix(data)
             .map_err(|_| "staging is outside app data")?;
-        if relative
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-        {
-            return Err("invalid installation parent".into());
-        }
         crate::private_fs::directory(&data.join(".install/staging")).map_err(|e| e.to_string())?;
         Self::recover(data, key, parent)?;
         let mut nonce = [0u8; 16];
@@ -358,6 +387,7 @@ pub(crate) struct Stage {
     global_epoch: (PathBuf, u64),
     asset_epoch: (PathBuf, u64),
     key: String,
+    parent_identity: DirectoryIdentity,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -494,6 +524,8 @@ impl Stage {
         if request.data != data || request.asset_epoch.0 != control.join(format!("{key}.epoch")) {
             return Err("installation request belongs to another asset".into());
         }
+        let parent = destination.parent().ok_or("artifact has no parent")?;
+        managed_parent(data, parent, false)?;
         request.check(cancel)?;
         crate::private_fs::directory(&control).map_err(|e| e.to_string())?;
         let global = shared_lock_guarded(&control.join("reset.lock"), || request.check(cancel))?;
@@ -502,9 +534,10 @@ impl Stage {
         })
         .map_err(|e| e.to_string())?;
         request.check(cancel)?;
-        let parent = destination.parent().ok_or("artifact has no parent")?;
-        crate::private_fs::directory(parent).map_err(|e| e.to_string())?;
         let temporary = StagingDirectory::new(data, key, parent)?;
+        let parent_identity = DirectoryIdentity::of(
+            &std::fs::symlink_metadata(parent).map_err(|_| "cannot inspect installation parent")?,
+        );
         Ok(Self {
             temporary,
             _global: global,
@@ -514,6 +547,7 @@ impl Stage {
             global_epoch: request.global_epoch.clone(),
             asset_epoch: request.asset_epoch.clone(),
             key: key.to_owned(),
+            parent_identity,
         })
     }
     pub fn path(&self) -> &Path {
@@ -549,6 +583,13 @@ impl Stage {
         })
     }
     pub fn check(&self, cancel: &AtomicBool) -> Result<(), String> {
+        let parent = self.destination.parent().unwrap();
+        managed_parent(&self.data, parent, false)?;
+        let current =
+            std::fs::symlink_metadata(parent).map_err(|_| "installation parent removed")?;
+        if DirectoryIdentity::of(&current) != self.parent_identity {
+            return Err("installation parent replaced; files preserved".into());
+        }
         self.authority()?.check(cancel)
     }
     pub fn promote(self, cancel: &AtomicBool) -> Result<Authority, String> {
@@ -625,6 +666,10 @@ pub(crate) fn delete(data: &Path, key: &str, destination: &Path) -> std::io::Res
     if !valid_key(key) {
         return Err(std::io::Error::other("invalid artifact key"));
     }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| std::io::Error::other("artifact has no parent"))?;
+    managed_parent(data, parent, false).map_err(std::io::Error::other)?;
     crate::installed_asset::invalidate(data, Some(key));
     let control = data.join(".install");
     crate::private_fs::directory(&control)?;
@@ -634,6 +679,7 @@ pub(crate) fn delete(data: &Path, key: &str, destination: &Path) -> std::io::Res
     drop(metadata);
     crate::transcribe::retire_invalid_assets(data);
     let _asset = crate::private_fs::lock(&control.join(format!("{key}.lock")))?;
+    managed_parent(data, parent, false).map_err(std::io::Error::other)?;
     StagingDirectory::recover(
         data,
         key,
@@ -1528,6 +1574,124 @@ mod tests {
                 std::fs::read(destination.join("model")).unwrap(),
                 b"complete successful retry"
             );
+        }
+    }
+
+    #[test]
+    fn managed_installer_paths_cannot_traverse_a_symlink_into_unowned_files() {
+        assert_managed_symlink_boundaries(false);
+    }
+
+    #[test]
+    fn managed_delete_paths_cannot_traverse_a_symlink_into_unowned_files() {
+        assert_managed_symlink_boundaries(true);
+    }
+
+    fn assert_managed_symlink_boundaries(deleting: bool) {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+        let data = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let foreign = external.path().join("whisper/test");
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::set_permissions(
+            foreign.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::fs::write(
+            foreign.join("model"),
+            b"synthetic user-managed model outside app data",
+        )
+        .unwrap();
+        let original = foreign.join("model").metadata().unwrap().ino();
+        symlink(external.path(), data.path().join("models")).unwrap();
+        let destination = data.path().join("models/whisper/test");
+        if deleting {
+            assert!(
+                delete(data.path(), "model-test", &destination).is_err(),
+                "Delete crossed a managed ancestor symlink"
+            );
+        } else {
+            assert!(
+                Stage::new(data.path(), "model-test", destination).is_err(),
+                "installer staged outside its owned data tree"
+            );
+        }
+        assert_eq!(
+            std::fs::read(foreign.join("model")).unwrap(),
+            b"synthetic user-managed model outside app data"
+        );
+        assert_eq!(foreign.join("model").metadata().unwrap().ino(), original);
+        assert_eq!(
+            foreign.parent().unwrap().metadata().unwrap().mode() & 0o777,
+            0o755
+        );
+        assert_eq!(std::fs::read_dir(external.path()).unwrap().count(), 1);
+        // Explicit cache clearing removes this managed link itself,
+        // preserving the external target and allowing a normal retry.
+        crate::stt::clear_download_cache(data.path()).unwrap();
+        assert!(
+            std::fs::symlink_metadata(data.path().join("models"))
+                .unwrap()
+                .is_dir()
+        );
+        assert_eq!(
+            std::fs::read(foreign.join("model")).unwrap(),
+            b"synthetic user-managed model outside app data"
+        );
+        drop(
+            Stage::new(
+                data.path(),
+                "model-test",
+                data.path().join("models/whisper/test"),
+            )
+            .unwrap(),
+        );
+    }
+
+    #[test]
+    fn replaced_managed_parent_cannot_redirect_an_active_promotion() {
+        use std::os::unix::fs::symlink;
+        for linked in [false, true] {
+            let data = tempfile::tempdir().unwrap();
+            let external = tempfile::tempdir().unwrap();
+            let destination = data.path().join("models/whisper/test");
+            crate::private_fs::directory(&destination).unwrap();
+            std::fs::write(destination.join("model"), b"previous complete model").unwrap();
+            let stage = Stage::new(data.path(), "model-test", destination.clone()).unwrap();
+            std::fs::write(stage.path().join("model"), b"complete staged replacement").unwrap();
+            let temporary_name = stage.path().file_name().unwrap().to_owned();
+            let parent = destination.parent().unwrap();
+            let moved = external.path().join("moved-whisper");
+            std::fs::rename(parent, &moved).unwrap();
+            if linked {
+                symlink(&moved, parent).unwrap();
+            } else {
+                crate::private_fs::directory(&destination).unwrap();
+                std::fs::write(
+                    destination.join("model"),
+                    b"user replacement at reused parent",
+                )
+                .unwrap();
+            }
+            assert!(stage.check(&AtomicBool::new(false)).is_err());
+            assert!(stage.promote(&AtomicBool::new(false)).is_err());
+            assert_eq!(
+                std::fs::read(moved.join("test/model")).unwrap(),
+                b"previous complete model"
+            );
+            if !linked {
+                assert_eq!(
+                    std::fs::read(destination.join("model")).unwrap(),
+                    b"user replacement at reused parent"
+                );
+                // A manually moved directory has left the application's tree;
+                // its missing old path is never used to search external data.
+                assert_eq!(
+                    std::fs::read(moved.join(temporary_name).join("model")).unwrap(),
+                    b"complete staged replacement"
+                );
+            }
         }
     }
 
