@@ -29,7 +29,7 @@ impl DeviceIdentity {
     /// Load the node key, creating and persisting one on first run.
     pub fn load_or_create(path: &Path) -> std::io::Result<Self> {
         let _lock = crate::private_fs::lock(&path.with_extension("key.lock"))?;
-        let bytes = match crate::private_fs::read_bounded(path, 64) {
+        let bytes = match crate::private_fs::read_private(path, 64) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e),

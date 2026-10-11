@@ -25,8 +25,11 @@ fn lock_file(path: &Path) -> io::Result<File> {
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("private lock is not a regular file"));
+    }
     file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     Ok(file)
 }
@@ -52,12 +55,28 @@ pub fn lock(path: &Path) -> io::Result<File> {
 }
 
 pub fn read_bounded(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
+    read_file(path, limit, false)
+}
+
+/// Identity migration explicitly protects legacy private material on its
+/// opened descriptor. Ordinary reads never chmod files or mutate timestamps.
+pub fn read_private(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
+    read_file(path, limit, true)
+}
+
+fn read_file(path: &Path, limit: usize, protect: bool) -> io::Result<Vec<u8>> {
     use std::io::Read;
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::other("private data is not a regular file"));
+    }
+    if protect && metadata.permissions().mode() & 0o777 != 0o600 {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
     let mut bytes = Vec::new();
     file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > limit {
@@ -81,4 +100,73 @@ pub fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
     tmp.as_file().sync_all()?;
     tmp.persist(path).map_err(|e| e.error)?;
     File::open(parent)?.sync_all()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt, symlink};
+
+    #[test]
+    fn ordinary_reads_preserve_metadata_and_private_reads_protect_legacy_keys() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("synthetic-key");
+        std::fs::write(&path, [17; 32]).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let before = std::fs::metadata(&path).unwrap();
+        assert_eq!(read_bounded(&path, 32).unwrap(), vec![17; 32]);
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(after.mode(), before.mode());
+        assert_eq!(
+            (after.ctime(), after.ctime_nsec()),
+            (before.ctime(), before.ctime_nsec())
+        );
+        assert_eq!(read_private(&path, 32).unwrap(), vec![17; 32]);
+        let protected = std::fs::metadata(&path).unwrap();
+        assert_eq!(protected.permissions().mode() & 0o777, 0o600);
+        read_private(&path, 32).unwrap();
+        let reread = std::fs::metadata(&path).unwrap();
+        assert_eq!(
+            (reread.ctime(), reread.ctime_nsec()),
+            (protected.ctime(), protected.ctime_nsec())
+        );
+    }
+
+    #[test]
+    fn bounded_read_rejects_oversized_files_and_symlinks_without_modifying_them() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("synthetic-data");
+        std::fs::write(&path, b"too large").unwrap();
+        assert_eq!(
+            read_bounded(&path, 2).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"too large");
+        let link = root.path().join("link");
+        symlink(&path, &link).unwrap();
+        assert!(read_bounded(&link, 32).is_err());
+        assert!(read_private(&link, 32).is_err());
+    }
+
+    #[test]
+    fn fifo_reads_and_locks_fail_without_waiting_for_a_writer() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("fifo");
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // No writer is opened: a blocking read would hang rather than reach
+        // the format bound. Keep the test process recoverable on regression.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let (send, receive) = std::sync::mpsc::channel();
+        let task = std::thread::spawn(move || {
+            let result = (
+                read_bounded(&path, 32),
+                read_private(&path, 32),
+                try_lock(&path),
+            );
+            send.send(result).unwrap();
+        });
+        let (read, private, lock) = receive.recv_timeout(Duration::from_millis(500)).unwrap();
+        assert!(read.is_err() && private.is_err() && lock.is_err());
+        task.join().unwrap();
+    }
 }
