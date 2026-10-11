@@ -22,7 +22,7 @@
 //! `Result`), never the panicking `thread::spawn`.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
 
 /// Short-job workers. Streaming loops use owned SessionTasks, outgoing sync
 /// uses its per-peer scheduler, and finalization uses its ordered worker.
@@ -32,6 +32,63 @@ pub const POOL_WORKERS: usize = 4;
 pub const JOB_QUEUE_DEPTH: usize = 16;
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
+
+static ACTIVE_WORK: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+
+struct WorkPermit;
+impl Drop for WorkPermit {
+    fn drop(&mut self) {
+        let mut pending = ACTIVE_WORK.0.lock().unwrap_or_else(|p| p.into_inner());
+        *pending -= 1;
+        ACTIVE_WORK.1.notify_all();
+    }
+}
+
+// Fields drop in declaration order. Rejected/abandoned jobs must drop their
+// captured stores and other resources before publishing completion as well.
+struct TrackedJob {
+    job: Option<Job>,
+    _permit: WorkPermit,
+}
+impl TrackedJob {
+    fn run(mut self) {
+        if let Some(job) = self.job.take() {
+            job();
+        }
+    }
+}
+
+fn tracked(job: impl FnOnce() + Send + 'static) -> Job {
+    *ACTIVE_WORK.0.lock().unwrap_or_else(|p| p.into_inner()) += 1;
+    let owned = TrackedJob {
+        job: Some(Box::new(job)),
+        _permit: WorkPermit,
+    };
+    Box::new(move || owned.run())
+}
+
+/// Observe completion of actual accepted jobs, including captured-resource
+/// destruction. Queue sentinels establish dequeue order, not completion order
+/// when several workers can run earlier jobs concurrently. Call off GTK.
+pub fn drain(timeout: std::time::Duration) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut pending = ACTIVE_WORK.0.lock().unwrap_or_else(|p| p.into_inner());
+    while *pending != 0 {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "{} owned tasks have not completed cleanup",
+                *pending
+            ));
+        }
+        pending = ACTIVE_WORK
+            .1
+            .wait_timeout(pending, remaining)
+            .unwrap_or_else(|p| p.into_inner())
+            .0;
+    }
+    Ok(())
+}
 
 struct Pool {
     tx: mpsc::SyncSender<Job>,
@@ -83,7 +140,7 @@ fn pool() -> Result<&'static Pool, String> {
 pub fn submit(name: &'static str, job: impl FnOnce() + Send + 'static) -> Result<(), String> {
     let pool = pool()?;
     pool.tx
-        .try_send(Box::new(job))
+        .try_send(tracked(job))
         .map_err(|e| format!("[runtime] queue full, dropping {name}: {e}"))
 }
 
@@ -97,6 +154,63 @@ pub fn spawn_dedicated(
         .name(name.to_string())
         .spawn(f)
         .map_err(|e| format!("[runtime] cannot spawn {name}: {e}"))
+}
+
+/// Interruptible timer for an owned background loop. Stopping interrupts the
+/// current wait; an in-progress pass must finish before its owner can join it.
+#[derive(Clone)]
+pub struct StopToken(Arc<(Mutex<bool>, Condvar)>);
+impl StopToken {
+    pub fn stopped(&self) -> bool {
+        *self.0.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub fn wait(&self, delay: std::time::Duration) -> bool {
+        let stopped = self.0.0.lock().unwrap_or_else(|p| p.into_inner());
+        *self
+            .0
+            .1
+            .wait_timeout_while(stopped, delay, |stopped| !*stopped)
+            .unwrap_or_else(|p| p.into_inner())
+            .0
+    }
+}
+
+/// Retain the actual thread and join it when its process-level owner ends.
+/// Drop outside GTK: shutdown must not race a watcher still using SQLite.
+#[must_use = "dropping a background task stops and joins its loop"]
+pub struct BackgroundTask {
+    stop: StopToken,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+impl BackgroundTask {
+    pub fn spawn(
+        name: &'static str,
+        f: impl FnOnce(StopToken) + Send + 'static,
+    ) -> Result<Self, String> {
+        let stop = StopToken(Arc::new((Mutex::new(false), Condvar::new())));
+        let worker = stop.clone();
+        let handle = spawn_dedicated(name, move || f(worker))?;
+        Ok(Self {
+            stop,
+            handle: Some(handle),
+        })
+    }
+
+    pub fn stop(&self) {
+        *self.stop.0.0.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        self.stop.0.1.notify_all();
+    }
+}
+impl Drop for BackgroundTask {
+    fn drop(&mut self) {
+        self.stop();
+        if let Some(handle) = self.handle.take()
+            && handle.join().is_err()
+        {
+            eprintln!("[runtime] owned background task exited after a panic");
+        }
+    }
 }
 
 /// Session loops have an explicit process budget and retain ownership
@@ -134,7 +248,7 @@ pub(crate) fn submit_process_launch(job: impl FnOnce() + Send + 'static) -> Resu
         .map_err(|_| "a supervised process launch is already pending")?;
     let permit = LaunchPermit;
     owner
-        .send(ReaperMessage::Launch(Box::new(move || {
+        .send(ReaperMessage::Launch(tracked(move || {
             let _permit = permit;
             job();
         })))
@@ -201,7 +315,7 @@ pub fn spawn_session(
     if old.is_err() {
         return Err("session task budget exhausted; wait for cancellation cleanup".into());
     }
-    match spawn_dedicated(name, f) {
+    match spawn_dedicated(name, tracked(f)) {
         Ok(handle) => {
             let _ = reaper;
             Ok(SessionTask {
@@ -303,6 +417,52 @@ mod tests {
         }
         assert_eq!(done.load(Ordering::SeqCst), 1);
     }
+
+    #[test]
+    fn background_owner_interrupts_idle_wait_and_joins_active_cleanup() {
+        let (ready, started) = mpsc::channel();
+        let (exited, finished) = mpsc::channel();
+        let owner = BackgroundTask::spawn("synthetic-idle-owner", move |stop| {
+            ready.send(()).unwrap();
+            assert!(stop.wait(Duration::from_secs(60)));
+            exited.send(()).unwrap();
+        })
+        .unwrap();
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        let began = std::time::Instant::now();
+        drop(owner);
+        assert!(began.elapsed() < Duration::from_millis(500));
+        finished.try_recv().unwrap();
+
+        // The actual encrypted connection must close before join returns,
+        // even when a stop request arrives during an in-progress pass.
+        let root = tempfile::tempdir().unwrap();
+        let store =
+            crate::store::Store::open_with_key(&root.path().join("state.db"), &[23; 32]).unwrap();
+        let (ready, started) = mpsc::channel();
+        let (release, waiting) = mpsc::channel();
+        let (closed, cleanup) = mpsc::channel();
+        let owner = BackgroundTask::spawn("synthetic-active-owner", move |stop| {
+            ready.send(()).unwrap();
+            waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(stop.stopped());
+            drop(store);
+            closed.send(()).unwrap();
+        })
+        .unwrap();
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        owner.stop();
+        let (joined, complete) = mpsc::channel();
+        let closer = std::thread::spawn(move || {
+            drop(owner);
+            joined.send(()).unwrap();
+        });
+        assert!(complete.recv_timeout(Duration::from_millis(20)).is_err());
+        release.send(()).unwrap();
+        complete.recv_timeout(Duration::from_secs(2)).unwrap();
+        cleanup.try_recv().unwrap();
+        closer.join().unwrap();
+    }
 }
 
 /// One bounded FIFO worker owns finalization through cleanup and delivery.
@@ -328,7 +488,7 @@ pub fn submit_finalization(job: impl FnOnce() + Send + 'static) -> Result<(), St
         .as_ref()
         .map_err(Clone::clone)?;
     queue
-        .try_send(Box::new(job))
+        .try_send(tracked(job))
         .map_err(|_| "finalization queue is full or stopped".into())
 }
 

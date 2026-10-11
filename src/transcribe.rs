@@ -610,11 +610,10 @@ pub fn keep_warm_timeout(value: &str) -> Option<Duration> {
 
 /// Background reaper: every 30 s, stop servers idle past keep-warm.
 /// No-op when unset (forever). Started once at service boot.
-pub fn spawn_server_reaper(data_dir: PathBuf) {
-    let _ = crate::runtime::spawn_dedicated("server-reaper", move || {
+pub fn spawn_server_reaper(data_dir: PathBuf) -> Result<crate::runtime::BackgroundTask, String> {
+    crate::runtime::BackgroundTask::spawn("server-reaper", move |stop| {
         let mut maintenance = Instant::now();
-        loop {
-            std::thread::sleep(Duration::from_millis(500));
+        while !stop.wait(Duration::from_millis(500)) {
             retire_invalid_assets(&data_dir);
             if maintenance.elapsed() < Duration::from_secs(30) {
                 continue;
@@ -657,7 +656,7 @@ pub fn spawn_server_reaper(data_dir: PathBuf) {
                 map.remove(&name);
             }
         }
-    });
+    })
 }
 
 static SERVERS: OnceLock<Mutex<HashMap<String, Supervised>>> = OnceLock::new();
@@ -6728,25 +6727,61 @@ while True:
         }
         // Keep the disposable database alive until optional queued warmups
         // and discard-marker work has exited, including all four workers.
-        let (drained, drain) = mpsc::channel();
-        for _ in 0..crate::runtime::POOL_WORKERS {
-            let deadline = Instant::now() + Duration::from_secs(3);
-            loop {
-                let drained = drained.clone();
-                if crate::runtime::submit("synthetic-drain", move || {
-                    drained.send(()).unwrap();
-                })
-                .is_ok()
-                {
-                    break;
-                }
-                assert!(Instant::now() < deadline);
-                std::thread::sleep(Duration::from_millis(2));
+        crate::runtime::drain(Duration::from_secs(3)).unwrap();
+    }
+
+    #[test]
+    fn task_completion_waits_for_earlier_work_and_capture_destruction() {
+        if !isolated_capture_probe("task_completion_waits_for_earlier_work_and_capture_destruction")
+        {
+            return;
+        }
+        crate::runtime::init().unwrap();
+        struct CapturedStore {
+            store: Option<crate::store::Store>,
+            dropping: mpsc::Sender<()>,
+            release: mpsc::Receiver<()>,
+        }
+        impl Drop for CapturedStore {
+            fn drop(&mut self) {
+                self.dropping.send(()).unwrap();
+                self.release.recv_timeout(Duration::from_secs(3)).unwrap();
+                drop(self.store.take());
             }
         }
+        let root = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let (dropping, dropped) = mpsc::channel();
+        let (release_drop, wait_drop) = mpsc::channel();
+        let owner = CapturedStore {
+            store: Some(store),
+            dropping,
+            release: wait_drop,
+        };
+        let (started, ready) = mpsc::channel();
+        let (release_body, wait_body) = mpsc::channel();
+        crate::runtime::submit("synthetic-owned-store", move || {
+            started.send(()).unwrap();
+            wait_body.recv_timeout(Duration::from_secs(3)).unwrap();
+            drop(owner);
+        })
+        .unwrap();
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (sentinel, passed) = mpsc::channel();
         for _ in 0..crate::runtime::POOL_WORKERS {
-            drain.recv_timeout(Duration::from_secs(3)).unwrap();
+            let sentinel = sentinel.clone();
+            crate::runtime::submit("synthetic-later-job", move || sentinel.send(()).unwrap())
+                .unwrap();
         }
+        for _ in 0..crate::runtime::POOL_WORKERS {
+            passed.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        assert!(crate::runtime::drain(Duration::from_millis(20)).is_err());
+        release_body.send(()).unwrap();
+        dropped.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(crate::runtime::drain(Duration::from_millis(20)).is_err());
+        release_drop.send(()).unwrap();
+        crate::runtime::drain(Duration::from_secs(2)).unwrap();
     }
 
     #[test]

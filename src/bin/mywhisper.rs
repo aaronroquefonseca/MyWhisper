@@ -56,11 +56,21 @@ fn main() -> gtk4::glib::ExitCode {
         // Sync engine obeys its toggle immediately: the watcher
         // starts/stops the stack as the setting moves (boot state
         // applies on the first tick, no restart needed).
-        mywhisper::service::spawn_sync_watcher(paths.db_file(), identity, discovered);
+        let sync_watcher =
+            match mywhisper::service::spawn_sync_watcher(paths.db_file(), identity, discovered) {
+                Ok(owner) => owner,
+                Err(error) => {
+                    eprintln!("[service] sync settings watcher unavailable: {error}");
+                    return gtk4::glib::ExitCode::FAILURE;
+                }
+            };
         let app = gtk4::Application::builder()
             .application_id(SERVICE_APP_ID)
             .build();
-        return run_headless(app, &paths);
+        let result = run_headless(app, &paths);
+        drop(sync_watcher);
+        mywhisper::service::stop_sync_engine();
+        return result;
     }
 
     // GUI: pure frontend. Engine state is only observed (for the
@@ -188,8 +198,6 @@ fn run_headless(
         up.clone(),
         cancel.clone(),
     );
-    mywhisper::service::spawn_hotkey_watcher(db_path.clone(), down, up, cancel);
-    mywhisper::service::spawn_pill_watcher(db_path.clone(), tx.clone());
     // Fixed task runtime first: every background job below flows
     // through it (bounded pool, no panicking spawns). If even this
     // fails the box cannot run threads at all: fail loud, not limp.
@@ -200,17 +208,33 @@ fn run_headless(
     // Reap crash orphans first (pidfile), then start the keep-warm
     // reaper. PDEATHSIG on every spawn is the real guarantee; this
     // cleans up runs that died before it existed.
-    {
+    let reaper_data = {
         let db_path = paths.db_file();
         let data_dir = db_path
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_default();
         mywhisper::transcribe::reap_stale_servers(&data_dir);
-        mywhisper::transcribe::spawn_server_reaper(data_dir);
-    }
-    // Service heartbeat for the home banner (5 s cadence).
-    mywhisper::service::spawn_heartbeat(paths.state_dir.clone());
+        data_dir
+    };
+    // The service retains every settings/timer owner until the GTK loop ends.
+    // Startup errors tear down already-created owners before returning.
+    let watchers = (|| -> Result<Vec<mywhisper::runtime::BackgroundTask>, String> {
+        Ok(vec![
+            mywhisper::service::spawn_hotkey_watcher(db_path.clone(), down, up, cancel)?,
+            mywhisper::service::spawn_pill_watcher(db_path.clone(), tx.clone())?,
+            mywhisper::transcribe::spawn_server_reaper(reaper_data)?,
+            mywhisper::service::spawn_heartbeat(paths.state_dir.clone())?,
+        ])
+    })();
+    let watchers = match watchers {
+        Ok(owners) => owners,
+        Err(error) => {
+            mywhisper::hotkey::stop();
+            eprintln!("[service] background maintenance unavailable: {error}");
+            return gtk4::glib::ExitCode::FAILURE;
+        }
+    };
     // Warm the configured STT engine now (model load takes seconds):
     // first press then only arms capture instead of cold-starting.
     {
@@ -406,7 +430,13 @@ fn run_headless(
         // No window: hold the application alive explicitly.
         std::mem::forget(app.hold());
     });
-    app.run_with_args::<&str>(&[])
+    let result = app.run_with_args::<&str>(&[]);
+    for watcher in &watchers {
+        watcher.stop();
+    }
+    drop(watchers);
+    mywhisper::hotkey::stop();
+    result
 }
 
 fn value_of(args: &[String], key: &str) -> Option<String> {

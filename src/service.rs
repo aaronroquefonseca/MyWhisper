@@ -233,15 +233,15 @@ pub fn spawn_sync_watcher(
     db_file: PathBuf,
     identity: DeviceIdentity,
     discovered: Arc<Mutex<HashMap<String, Discovered>>>,
-) {
-    std::thread::spawn(move || {
+) -> Result<crate::runtime::BackgroundTask, String> {
+    crate::runtime::BackgroundTask::spawn("sync-settings", move |stop| {
         let mut first = true;
         // Last applied (enabled, port, name, advertise): any move
         // restarts the engine, so all edits apply immediately.
         let mut applied: Option<(bool, u16, String, bool)> = None;
-        loop {
-            if !first {
-                std::thread::sleep(Duration::from_secs(2));
+        while !stop.stopped() {
+            if !first && stop.wait(Duration::from_secs(2)) {
+                return;
             }
             first = false;
             let Ok(store) = Store::open_existing(&db_file) else {
@@ -289,7 +289,7 @@ pub fn spawn_sync_watcher(
                 applied = Some(want);
             }
         }
-    });
+    })
 }
 
 /// Apply the persisted input gate and feedback preferences before accepting
@@ -306,11 +306,11 @@ pub fn spawn_hotkey_watcher(
     down: DictationHook,
     up: DictationHook,
     cancel: DictationHook,
-) {
+) -> Result<crate::runtime::BackgroundTask, String> {
     if let Some(data) = db_path.parent() {
         crate::hotkey::configure_capture_suspend(data);
     }
-    std::thread::spawn(move || {
+    crate::runtime::BackgroundTask::spawn("input-settings", move |stop| {
         let mut last: (Vec<(String, crate::settings::ActivationMode)>, u64) = (Vec::new(), 0);
         let mut first = true;
         let mut capture_epoch = Store::open_existing(&db_path)
@@ -325,8 +325,10 @@ pub fn spawn_hotkey_watcher(
         }
         let mut reset_recovery = crate::reset::Recovery::default();
         let mut next = std::time::Instant::now();
-        loop {
-            std::thread::sleep(next.saturating_duration_since(std::time::Instant::now()));
+        while !stop.stopped() {
+            if stop.wait(next.saturating_duration_since(std::time::Instant::now())) {
+                return;
+            }
             // Schedule before IO so an unavailable database cannot make
             // any continue path spin. The first pass has no initial delay.
             next = std::time::Instant::now() + Duration::from_secs(2);
@@ -429,7 +431,7 @@ pub fn spawn_hotkey_watcher(
                 );
             }
         }
-    });
+    })
 }
 
 /// Commands from background threads to the service's GTK thread.
@@ -450,11 +452,13 @@ pub enum PillCmd {
 
 /// Watch the database for pill preference changes (written by any
 /// frontend) and forward snapshots to the GTK thread.
-pub fn spawn_pill_watcher(db_path: PathBuf, tx: std::sync::mpsc::Sender<PillCmd>) {
-    std::thread::spawn(move || {
+pub fn spawn_pill_watcher(
+    db_path: PathBuf,
+    tx: std::sync::mpsc::Sender<PillCmd>,
+) -> Result<crate::runtime::BackgroundTask, String> {
+    crate::runtime::BackgroundTask::spawn("pill-settings", move |stop| {
         let mut last: Option<crate::settings::PillPrefs> = None;
-        loop {
-            std::thread::sleep(Duration::from_secs(2));
+        while !stop.wait(Duration::from_secs(2)) {
             let Ok(store) = Store::open_existing(&db_path) else {
                 continue;
             };
@@ -467,22 +471,21 @@ pub fn spawn_pill_watcher(db_path: PathBuf, tx: std::sync::mpsc::Sender<PillCmd>
                 }
             }
         }
-    });
+    })
 }
 
 /// Service heartbeat file for the home banner (`<state>/service.json`,
 /// 5 s cadence): pid, version, boot time, last beat, consecutive
 /// engine failures, hotkey listening. Stale/missing = not running.
-pub fn spawn_heartbeat(state_dir: PathBuf) {
+pub fn spawn_heartbeat(state_dir: PathBuf) -> Result<crate::runtime::BackgroundTask, String> {
     let path = state_dir.join("service.json");
     let boot = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let pid = std::process::id();
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(5));
+    crate::runtime::BackgroundTask::spawn("service-heartbeat", move |stop| {
+        while !stop.wait(Duration::from_secs(5)) {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
@@ -501,7 +504,7 @@ pub fn spawn_heartbeat(state_dir: PathBuf) {
             }
             let _ = std::fs::write(&path, body.to_string());
         }
-    });
+    })
 }
 
 /// Read someone else's heartbeat (GUI side). Ok only when fresh
