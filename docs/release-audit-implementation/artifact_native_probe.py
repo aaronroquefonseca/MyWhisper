@@ -5,6 +5,7 @@ service, capture, provider credentials, real settings or host keyring are used.
 import ctypes
 import ctypes.util
 import os
+import ipaddress
 from pathlib import Path
 import subprocess
 import sys
@@ -37,6 +38,36 @@ with (root / 'application.log').open('w') as log:
         geometry = subprocess.check_output(['xdotool', 'getwindowgeometry', '--shell', str(window)], text=True, timeout=2)
         dimensions = dict(line.split('=', 1) for line in geometry.splitlines() if '=' in line)
         assert int(dimensions['WIDTH']) > 0 and int(dimensions['HEIGHT']) > 0
+        # Inspect only descendants of our disposable bubblewrap process. The
+        # application must obtain getent from the package's actual wrapper PATH,
+        # rather than accidentally finding a host executable outside NixOS.
+        pending = [process.pid]
+        application_path = None
+        for _ in range(64):
+            if not pending:
+                break
+            pid = pending.pop()
+            proc = Path('/proc') / str(pid)
+            if (proc / 'exe').readlink().name == '.mywhisper-wrapped':
+                for field in (proc / 'environ').read_bytes().split(b'\0'):
+                    if field.startswith(b'PATH='):
+                        application_path = os.fsdecode(field[5:])
+                        break
+                break
+            pending.extend(map(int, (proc / 'task' / str(pid) / 'children').read_text().split()))
+        assert application_path is not None, 'Owned application environment was not found'
+        resolver = None
+        for directory in application_path.split(os.pathsep):
+            candidate = Path(directory) / 'getent'
+            if candidate.is_relative_to('/nix/store'):
+                physical = store / candidate.relative_to('/nix')
+                if physical.is_file() and physical.stat().st_mode & 0o111:
+                    resolver = candidate
+                    break
+        assert resolver is not None, 'Packaged wrapper has no getent resolver executable'
+        resolved = subprocess.check_output(command[:-1] + [str(resolver), 'ahosts', 'localhost'],
+                                           env=env, text=True, timeout=4)
+        assert any(ipaddress.ip_address(line.split()[0]).is_loopback for line in resolved.splitlines())
         # Request normal GTK close through WM_DELETE_WINDOW, not XDestroyWindow
         # or killing the client. No window manager is needed for this event.
         class MessageData(ctypes.Union):
@@ -62,7 +93,7 @@ with (root / 'application.log').open('w') as log:
         databases = list((root / 'config').rglob('*.db')) + list((root / 'data').rglob('*.db'))
         assert len(databases) == 1, databases
         assert not databases[0].read_bytes().startswith(b'SQLite format 3'), 'Artifact stored plaintext SQLite'
-        print('Actual Nix-packaged GTK artifact passed: visible window, normal close/zero exit, encrypted disposable database, no input/audio devices or capture')
+        print('Actual Nix-packaged GTK artifact passed: visible window, executable resolver from actual wrapper PATH, normal close/zero exit, encrypted disposable database, no input/audio devices or capture')
     finally:
         if process.poll() is None:
             process.terminate()

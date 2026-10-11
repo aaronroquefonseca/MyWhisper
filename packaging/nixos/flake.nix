@@ -24,7 +24,7 @@
       # Build against NixOS's own libraries instead of patching an Arch ABI.
       cargoBuildFlags = [ "--bin" "mywhisper" ];
       doCheck = true;
-      nativeCheckInputs = [ pkgs.python3 pkgs.cacert pkgs.dbus pkgs.glibc.bin ];
+      nativeCheckInputs = [ pkgs.python3 pkgs.cacert pkgs.dbus pkgs.getent ];
       preCheck = ''
         export NO_PROXY=127.0.0.1,localhost,::1
         export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
@@ -42,7 +42,7 @@
         install -Dm644 assets/icons/symbolic.svg $out/share/icons/hicolor/symbolic/apps/com.mywhisper.App-symbolic.svg
       '';
       preFixup = ''
-        gappsWrapperArgs+=(--prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.wl-clipboard pkgs.wtype pkgs.pulseaudio pkgs.coreutils pkgs.glibc.bin ]})
+        gappsWrapperArgs+=(--prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.wl-clipboard pkgs.wtype pkgs.pulseaudio pkgs.coreutils pkgs.getent ]})
         gappsWrapperArgs+=(--prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibraries})
         gappsWrapperArgs+=(--set-default SSL_CERT_FILE ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt)
       '';
