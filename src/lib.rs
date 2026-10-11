@@ -19,6 +19,7 @@ mod installed_asset;
 mod maintenance;
 pub mod media;
 pub mod mic;
+mod model_load;
 pub mod net;
 mod operation;
 pub mod overlay;

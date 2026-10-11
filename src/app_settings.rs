@@ -4046,6 +4046,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         None::<gtk4::Expression>,
     );
     keepalive_dd.set_valign(gtk4::Align::Center);
+    keepalive_dd.set_widget_name("lm-ollama-keepalive");
     // Tri-state: Default (omit, model decides) / On / Off.
     let thinking_opts = || {
         let dd = DropDown::new(
@@ -4115,11 +4116,40 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
             ollama_box.append(&b);
         }
         {
+            let pending = Rc::new(RefCell::new(None::<Rc<crate::model_load::ModelLoad>>));
+            let cancel = {
+                let pending = Rc::downgrade(&pending);
+                let button = update_btn.downgrade();
+                Rc::new(move || {
+                    let task = pending
+                        .upgrade()
+                        .and_then(|pending| pending.borrow_mut().take());
+                    if let Some(task) = task {
+                        task.cancel();
+                        if let Some(button) = button.upgrade() {
+                            button.set_sensitive(true);
+                            button.set_label(tr("action.updatenow"));
+                        }
+                    }
+                })
+            };
+            for entry in [&url_e, &ollama_model_e, &key_e] {
+                let cancel = cancel.clone();
+                entry.connect_changed(move |_| cancel());
+            }
+            {
+                let cancel = cancel.clone();
+                keepalive_dd.connect_selected_notify(move |_| cancel());
+            }
+            update_btn.connect_unmap(move |_| cancel());
             let url_e = url_e.clone();
             let ollama_model_e = ollama_model_e.clone();
             let keepalive_dd = keepalive_dd.clone();
             let key_e = key_e.clone();
             update_btn.connect_clicked(move |button| {
+                if let Some(task) = pending.borrow_mut().take() {
+                    task.cancel();
+                }
                 let url = url_e.text().trim().to_string();
                 let model = ollama_model_e.text().trim().to_string();
                 let token = key_e.text().trim().to_string();
@@ -4131,56 +4161,58 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
                     .get(keepalive_dd.selected() as usize)
                     .copied()
                     .unwrap_or("");
-                let result = std::sync::Arc::new(std::sync::Mutex::new(None));
-                let sender = result.clone();
+                let task = match crate::model_load::ModelLoad::start(url, model, token, keep) {
+                    Ok(task) => Rc::new(task),
+                    Err(_) => {
+                        super::app::toast(button, tr("lm.applyfailed"));
+                        return;
+                    }
+                };
+                *pending.borrow_mut() = Some(task.clone());
                 button.set_sensitive(false);
                 button.set_label(tr("lm.applying"));
-                // Empty messages load/unload the model without generating a reply.
-                std::thread::spawn(move || {
-                    let mut body =
-                        serde_json::json!({"model": model, "stream": false, "messages": []});
-                    if !keep.is_empty() {
-                        body["keep_alive"] = match keep {
-                            "-1" => serde_json::Value::from(-1),
-                            "0" => serde_json::Value::from(0),
-                            _ => serde_json::Value::String(keep.to_string()),
-                        };
+                let task = Rc::downgrade(&task);
+                let pending = Rc::downgrade(&pending);
+                let button = button.downgrade();
+                gtk4::glib::timeout_add_local(std::time::Duration::from_millis(20), move || {
+                    let (Some(task), Some(pending), Some(button)) =
+                        (task.upgrade(), pending.upgrade(), button.upgrade())
+                    else {
+                        return gtk4::glib::ControlFlow::Break;
+                    };
+                    if !pending
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|current| Rc::ptr_eq(current, &task))
+                    {
+                        return gtk4::glib::ControlFlow::Break;
                     }
-                    let success = reqwest::blocking::Client::builder()
-                        .timeout(std::time::Duration::from_secs(60))
-                        .build()
-                        .and_then(|client| {
-                            let mut request = client
-                                .post(format!("{}/api/chat", url.trim_end_matches('/')))
-                                .header("Content-Type", "application/json")
-                                .body(body.to_string());
-                            if !token.is_empty() {
-                                request = request.bearer_auth(token);
-                            }
-                            request
-                                .send()
-                                .and_then(|response| response.error_for_status())
-                        })
-                        .is_ok();
-                    *sender.lock().unwrap() = Some(success);
-                });
-                let button = button.clone();
-                gtk4::glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-                    if let Some(success) = result.lock().unwrap().take() {
+                    if !button.is_mapped() {
+                        task.cancel();
+                        pending.borrow_mut().take();
                         button.set_sensitive(true);
                         button.set_label(tr("action.updatenow"));
-                        super::app::toast(
-                            &button,
-                            tr(if success {
-                                "lm.applied"
-                            } else {
-                                "lm.applyfailed"
-                            }),
-                        );
-                        gtk4::glib::ControlFlow::Break
-                    } else {
-                        gtk4::glib::ControlFlow::Continue
+                        return gtk4::glib::ControlFlow::Break;
                     }
+                    let success = match task.result.try_recv() {
+                        Ok(result) => result.is_ok(),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            return gtk4::glib::ControlFlow::Continue;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+                    };
+                    pending.borrow_mut().take();
+                    button.set_sensitive(true);
+                    button.set_label(tr("action.updatenow"));
+                    super::app::toast(
+                        &button,
+                        tr(if success {
+                            "lm.applied"
+                        } else {
+                            "lm.applyfailed"
+                        }),
+                    );
+                    gtk4::glib::ControlFlow::Break
                 });
             });
         }

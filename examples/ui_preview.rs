@@ -5,6 +5,8 @@ use mywhisper::app::{AppState, apply_theme, build_app_window};
 
 #[path = "ui_preview/asset_smoke.rs"]
 mod asset_smoke;
+#[path = "ui_preview/ollama_load_smoke.rs"]
+mod ollama_load_smoke;
 #[path = "ui_preview/reset_smoke.rs"]
 mod reset_smoke;
 #[path = "ui_preview/smoke.rs"]
@@ -140,6 +142,15 @@ fn main() -> gtk4::glib::ExitCode {
         }
         if args.iter().any(|a| a == "--asset-smoke") {
             asset_smoke::run(app, &state, &window);
+        }
+        if args.iter().any(|a| a == "--ollama-live-smoke") {
+            ollama_load_smoke::live(app, &window);
+        }
+        if args.iter().any(|a| a == "--ollama-load-smoke") {
+            ollama_load_smoke::run(app, &window, false);
+        }
+        if args.iter().any(|a| a == "--ollama-load-edit-smoke") {
+            ollama_load_smoke::run(app, &window, true);
         }
         if args.iter().any(|a| a == "--smoke") {
             smoke::run(app, &state, &window);

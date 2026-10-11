@@ -35,6 +35,24 @@ pub(crate) fn post(
     operation: &Operation,
     description: &str,
 ) -> Result<String, String> {
+    post_with_timeout(
+        url,
+        headers,
+        body,
+        operation,
+        description,
+        crate::transcribe::INFERENCE_TIMEOUT,
+    )
+}
+
+pub(crate) fn post_with_timeout(
+    url: &str,
+    headers: &[(&str, &str)],
+    body: Vec<u8>,
+    operation: &Operation,
+    description: &str,
+    timeout: Duration,
+) -> Result<String, String> {
     operation.check()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -43,7 +61,7 @@ pub(crate) fn post(
     runtime.block_on(async {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
-            .timeout(crate::transcribe::INFERENCE_TIMEOUT)
+            .timeout(timeout)
             .dns_resolver(Arc::new(Resolver(operation.clone())))
             .build()
             .map_err(|error| crate::transcribe::http_error(description, &error))?;
