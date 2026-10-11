@@ -143,7 +143,7 @@ pub(crate) mod replacement_fault {
         HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
     }
 
-    pub(super) fn point(phase: &str, path: &Path) {
+    pub(crate) fn point(phase: &str, path: &Path) {
         HOOK.with(|slot| {
             if let Some(hook) = slot.borrow().as_ref() {
                 hook(phase, path);

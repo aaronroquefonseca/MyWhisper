@@ -262,35 +262,85 @@ fn key_pragma(key: &[u8; 32]) -> String {
 fn migrate_plaintext_to_encrypted(path: &Path, key: &[u8; 32]) -> rusqlite::Result<()> {
     let staging = tempfile::NamedTempFile::new_in(path.parent().unwrap_or(Path::new(".")))
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+    #[cfg(test)]
+    crate::private_fs::replacement_fault::point("migration-created", path);
     let tmp = staging.path();
-    let plain = Connection::open(path)?;
+    let mut plain = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
     plain.busy_timeout(std::time::Duration::from_secs(5))?;
-    let version: i64 = plain.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version > 8 {
+    let initial_version: i64 = plain.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if initial_version > 8 {
         return Err(rusqlite::Error::ToSqlConversionFailure(
             "database schema is newer than this build".into(),
         ));
     }
-    // Flush legacy WAL before atomically replacing the main file.
-    plain.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")?;
+    // A successful checkpoint is required before changing journal mode. A
+    // legacy reader/writer can prevent this; preserve the source and retry.
+    let busy: i64 = plain.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+    if busy != 0 {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            Some("legacy database checkpoint blocked; close the older app and retry".into()),
+        ));
+    }
+    let mode: String = plain.query_row("PRAGMA journal_mode=DELETE", [], |r| r.get(0))?;
+    if mode != "delete" {
+        return Err(rusqlite::Error::ToSqlConversionFailure(
+            "legacy database journal mode prevents safe migration".into(),
+        ));
+    }
+    // EXCLUSIVE locking mode retains the source lock after COMMIT, through
+    // DETACH, fsync and rename. A transaction alone releases it too early.
+    plain.execute_batch("PRAGMA locking_mode=EXCLUSIVE;")?;
     let attach = format!(
         "ATTACH DATABASE '{}' AS enc KEY \"x'{}'\"",
         tmp.to_string_lossy().replace('\'', "''"),
         hex_encode(key)
     );
     plain.execute_batch(&attach)?;
-    plain.query_row("SELECT sqlcipher_export('enc')", [], |_| Ok(()))?;
-    plain.execute_batch(&format!("PRAGMA enc.user_version={version}; DETACH enc"))?;
-    drop(plain);
+    let tx = plain.transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive)?;
+    let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version > 8 {
+        return Err(rusqlite::Error::ToSqlConversionFailure(
+            "database schema is newer than this build".into(),
+        ));
+    }
+    tx.query_row("SELECT sqlcipher_export('enc')", [], |_| Ok(()))?;
+    tx.execute_batch(&format!("PRAGMA enc.user_version={version}"))?;
+    tx.commit()?;
+    plain.execute_batch("DETACH enc")?;
+    #[cfg(test)]
+    crate::private_fs::replacement_fault::point("migration-exported", path);
+    let verified = Connection::open_with_flags(
+        tmp,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
+    verified.execute_batch(&key_pragma(key))?;
+    let integrity: String = verified.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+    if integrity != "ok" {
+        return Err(rusqlite::Error::ToSqlConversionFailure(
+            "encrypted migration verification failed; original database preserved".into(),
+        ));
+    }
+    drop(verified);
     staging
         .as_file()
         .sync_all()
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+    #[cfg(test)]
+    crate::private_fs::replacement_fault::point("migration-file-synced", path);
     std::fs::rename(tmp, path)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(format!("replace db: {e}").into()))?;
+    #[cfg(test)]
+    crate::private_fs::replacement_fault::point("migration-renamed", path);
     std::fs::File::open(path.parent().unwrap_or(Path::new(".")))
         .and_then(|parent| parent.sync_all())
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+    #[cfg(test)]
+    crate::private_fs::replacement_fault::point("migration-directory-synced", path);
+    drop(plain);
     Ok(())
 }
 
@@ -3639,6 +3689,10 @@ mod release_regressions {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "store_migration_tests.rs"]
+mod migration_tests;
 
 #[cfg(test)]
 mod capture_privacy_regressions {
