@@ -47,6 +47,8 @@ struct Claim {
     key: String,
     source_sha256: String,
     entries: Vec<Entry>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    locally_trusted: bool,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -83,6 +85,7 @@ fn stamp(path: &Path) -> Result<Stamp, String> {
 pub(crate) struct VerifiedAsset {
     paths: Vec<(PathBuf, Stamp)>,
     authority: crate::artifact::Authority,
+    locally_trusted: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -100,6 +103,7 @@ pub(crate) enum Status {
     Missing,
     Checking,
     Ready,
+    ReadyLocal,
     NeedsVerification,
     Invalid(String),
 }
@@ -222,8 +226,8 @@ pub(crate) fn status(spec: Spec) -> Status {
         entry.queued = false;
         match result {
             Ok(proof) => {
+                entry.value = proof.status();
                 entry.proof = Some(proof);
-                entry.value = Status::Ready;
                 if !reuse {
                     entry.full_check = Instant::now();
                 }
@@ -242,6 +246,25 @@ pub(crate) fn status(spec: Spec) -> Status {
         entry.queued = false;
     }
     value
+}
+
+/// Provider admission always verifies content anew on its owned worker. UI
+/// cache hints are never authority to execute an installed runtime/model.
+pub(crate) fn admit(
+    spec: &Spec,
+    check: impl Fn() -> Result<(), String>,
+) -> Result<Arc<VerifiedAsset>, String> {
+    check()?;
+    let proof = verify_spec(spec, &check).map_err(|status| match status {
+        Status::NeedsVerification => "Existing runtime files need verification in Language Models before use; files have been preserved".into(),
+        Status::Missing => "Required local files are missing; install them in Language Models".into(),
+        value => verification_error(value),
+    })?;
+    check()?;
+    if !proof.unchanged() {
+        return Err("installed content changed during provider admission".into());
+    }
+    Ok(Arc::new(proof))
 }
 
 fn verify_spec(
@@ -293,6 +316,13 @@ fn verify_spec(
         )
         .map_err(Status::Invalid)?;
         if actual != spec.source {
+            if spec.root.join(RECEIPT).exists() {
+                let local = verify(&spec.data, &spec.root, &spec.key, &spec.source, check)
+                    .map_err(Status::Invalid)?;
+                if local.locally_trusted {
+                    return Ok(local);
+                }
+            }
             return Err(Status::Invalid(
                 "installed file does not match its pinned SHA-256".into(),
             ));
@@ -303,6 +333,7 @@ fn verify_spec(
         return Ok(VerifiedAsset {
             paths: vec![(path, original)],
             authority,
+            locally_trusted: false,
         });
     }
     if !spec.root.join(RECEIPT).exists() {
@@ -322,8 +353,7 @@ pub(crate) fn install(stage: Stage, spec: Spec, cancel: &AtomicBool) -> Result<(
         ..spec.clone()
     };
     verify_spec(&staged, &|| stage.check(cancel)).map_err(verification_error)?;
-    let authority = stage.authority()?;
-    stage.promote(cancel)?;
+    let authority = stage.promote(cancel)?;
     publish(spec, || authority.check(cancel))
 }
 
@@ -363,7 +393,7 @@ pub(crate) fn publish(spec: Spec, check: impl Fn() -> Result<(), String>) -> Res
         id,
         Cached {
             spec,
-            value: Status::Ready,
+            value: proof.status(),
             proof: Some(Arc::new(proof)),
             queued: false,
             requested: Instant::now(),
@@ -374,12 +404,20 @@ pub(crate) fn publish(spec: Spec, check: impl Fn() -> Result<(), String>) -> Res
     Ok(())
 }
 impl VerifiedAsset {
+    fn status(&self) -> Status {
+        if self.locally_trusted {
+            Status::ReadyLocal
+        } else {
+            Status::Ready
+        }
+    }
     pub fn unchanged(&self) -> bool {
         self.authority.check(&AtomicBool::new(false)).is_ok()
             && self
                 .paths
                 .iter()
                 .all(|(path, expected)| stamp(path).as_ref() == Ok(expected))
+            && self.authority.check(&AtomicBool::new(false)).is_ok()
     }
 }
 
@@ -588,6 +626,120 @@ fn scan(root: &Path, check: &impl Fn() -> Result<(), String>) -> Result<Tree, St
     })
 }
 
+/// Verify an existing archive against a freshly authenticated, normalized
+/// reference. Only its receipt is added; the user's files and inodes survive.
+pub(crate) fn adopt_reference(stage: Stage, spec: Spec, cancel: &AtomicBool) -> Result<(), String> {
+    if spec.data != stage.data() || spec.key != stage.key() || spec.root != stage.destination() {
+        return Err("verification reference does not own installation".into());
+    }
+    let check = || stage.check(cancel);
+    let expected = verify_spec(
+        &Spec {
+            root: stage.path().into(),
+            ..spec.clone()
+        },
+        &check,
+    )
+    .map_err(verification_error)?;
+    if expected.locally_trusted {
+        return Err("verification reference is not authenticated upstream content".into());
+    }
+    let reference = scan(stage.path(), &check)?;
+    let original = scan(&spec.root, &check)?;
+    if original.entries != reference.entries {
+        return Err("Existing files differ from the verified source; files have been preserved. Download to repair or explicitly trust your local files.".into());
+    }
+    let encoded = crate::private_fs::read_bounded(&stage.path().join(RECEIPT), RECEIPT_CAP)
+        .map_err(|_| "cannot read authenticated reference receipt")?;
+    let _metadata = crate::private_fs::lock(&spec.data.join(".install/metadata.lock"))
+        .map_err(|_| "verification commit lock unavailable")?;
+    check()?;
+    if !expected.unchanged()
+        || original
+            .paths
+            .iter()
+            .any(|(path, saved)| stamp(path).as_ref() != Ok(saved))
+    {
+        return Err("installed files changed before verification commit".into());
+    }
+    crate::private_fs::replace(&spec.root.join(RECEIPT), &encoded)
+        .map_err(|_| "cannot persist verification receipt; model files preserved")?;
+    File::open(&spec.root)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| "cannot sync verification receipt")?;
+    check()?;
+    publish(spec, check)
+}
+
+/// Explicit local trust preserves custom/quantized models and manual engines.
+/// It attests to a stable local snapshot, never to upstream authenticity.
+pub(crate) fn trust_local(
+    spec: Spec,
+    cancel: &AtomicBool,
+    request: Option<&crate::artifact::Authority>,
+) -> Result<(), String> {
+    if cancel.load(Ordering::Acquire) {
+        return Err("local trust cancelled".into());
+    }
+    let captured = crate::artifact::observe_authority(&spec.data, &spec.key)?;
+    let request = request.unwrap_or(&captured);
+    let stage = Stage::new_requested(&spec.data, &spec.key, spec.root.clone(), request, cancel)?;
+    let check = || stage.check(cancel);
+    check()?;
+    // Required files and executable permissions remain mandatory, even when
+    // the user intentionally accepts a different local digest.
+    for required in &spec.required {
+        if !safe_path(required)
+            || !std::fs::metadata(spec.root.join(required))
+                .is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+        {
+            return Err("cannot trust missing or empty installed files".into());
+        }
+    }
+    for executable in &spec.executables {
+        if !safe_path(executable)
+            || !std::fs::metadata(spec.root.join(executable))
+                .is_ok_and(|meta| meta.is_file() && meta.len() > 0 && meta.mode() & 0o111 != 0)
+        {
+            return Err("cannot trust a runtime that is not executable".into());
+        }
+    }
+    let original = scan(&spec.root, &check)?;
+    let claim = Claim {
+        version: 1,
+        key: spec.key.clone(),
+        source_sha256: spec.source.clone(),
+        entries: original.entries,
+        locally_trusted: true,
+    };
+    let authority = provision_key(&spec.data)?;
+    let receipt = Receipt {
+        signature: authority.sign(&message(&claim)?).to_bytes().to_vec(),
+        claim,
+    };
+    let encoded = serde_json::to_vec(&receipt).map_err(|_| "cannot encode local trust receipt")?;
+    if encoded.len() > RECEIPT_CAP {
+        return Err("local trust receipt exceeds limit".into());
+    }
+    let _metadata = crate::private_fs::lock(&spec.data.join(".install/metadata.lock"))
+        .map_err(|_| "local trust commit lock unavailable")?;
+    check()?;
+    if original
+        .paths
+        .iter()
+        .any(|(path, saved)| stamp(path).as_ref() != Ok(saved))
+    {
+        return Err("local files changed before trust commit".into());
+    }
+    crate::private_fs::replace(&spec.root.join(RECEIPT), &encoded)
+        .map_err(|_| "cannot persist local trust receipt")?;
+    File::open(&spec.root)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| "cannot sync local trust receipt")?;
+    check()?;
+    publish(spec, check)
+}
+
 /// Called only on private staging after authenticated download and extraction.
 /// A crash before signing/promotion cannot make partial content look verified.
 pub(crate) fn seal(
@@ -605,6 +757,7 @@ pub(crate) fn seal(
         key: stage.key().into(),
         source_sha256: source.digest().into(),
         entries,
+        locally_trusted: false,
     };
     let authority = provision_key(stage.data())?;
     let signature = authority.sign(&message(&claim)?).to_bytes().to_vec();
@@ -672,6 +825,7 @@ pub(crate) fn verify(
     Ok(VerifiedAsset {
         paths,
         authority: authority_epoch,
+        locally_trusted: receipt.claim.locally_trusted,
     })
 }
 
@@ -774,6 +928,151 @@ mod tests {
         let (root, stage, spec) = prepared_fixture();
         install(stage, spec.clone(), &AtomicBool::new(false)).unwrap();
         (root, spec)
+    }
+
+    fn copy_legacy(stage: &Stage, spec: &Spec) {
+        std::fs::create_dir_all(spec.root.join("lib")).unwrap();
+        for file in ["model", "lib/runtime.so.1"] {
+            std::fs::copy(stage.path().join(file), spec.root.join(file)).unwrap();
+        }
+        std::os::unix::fs::symlink("runtime.so.1", spec.root.join("lib/runtime.so")).unwrap();
+    }
+
+    #[test]
+    fn legacy_comparison_preserves_files_and_refuses_changed_or_cancelled_reference() {
+        for case in ["matching", "changed", "extra", "cancelled"] {
+            let (_root, stage, spec) = prepared_fixture();
+            copy_legacy(&stage, &spec);
+            let path = spec.root.join("model");
+            if case == "changed" {
+                std::fs::write(&path, b"intentional local model").unwrap();
+            }
+            if case == "extra" {
+                std::fs::write(spec.root.join("personal-notes"), b"preserve me").unwrap();
+            }
+            let saved = std::fs::read(&path).unwrap();
+            let inode = stamp(&path).unwrap().ino;
+            let root_inode = stamp(&spec.root).unwrap().ino;
+            let temporary = stage.path().to_owned();
+            let result =
+                adopt_reference(stage, spec.clone(), &AtomicBool::new(case == "cancelled"));
+            assert_eq!(result.is_ok(), case == "matching", "{case}: {result:?}");
+            assert_eq!(std::fs::read(&path).unwrap(), saved);
+            assert_eq!(stamp(&path).unwrap().ino, inode);
+            assert_eq!(stamp(&spec.root).unwrap().ino, root_inode);
+            assert!(!temporary.exists());
+            if case == "matching" {
+                assert_eq!(admit(&spec, || Ok(())).unwrap().status(), Status::Ready);
+            } else {
+                assert!(!spec.root.join(RECEIPT).exists());
+                assert!(admit(&spec, || Ok(())).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_local_trust_preserves_manual_content_and_detects_later_corruption() {
+        let (_root, stage, mut spec) = prepared_fixture();
+        copy_legacy(&stage, &spec);
+        drop(stage);
+        spec.raw = Some("model".into());
+        let path = spec.root.join("model");
+        std::fs::write(&path, b"explicitly chosen manual model").unwrap();
+        let saved = std::fs::read(&path).unwrap();
+        let inode = stamp(&path).unwrap().ino;
+        assert!(admit(&spec, || Ok(())).is_err());
+        trust_local(spec.clone(), &AtomicBool::new(true), None).unwrap_err();
+        assert!(!spec.root.join(RECEIPT).exists());
+        trust_local(spec.clone(), &AtomicBool::new(false), None).unwrap();
+        let proof = admit(&spec, || Ok(())).unwrap();
+        assert_eq!(proof.status(), Status::ReadyLocal);
+        assert_eq!(std::fs::read(&path).unwrap(), saved);
+        assert_eq!(stamp(&path).unwrap().ino, inode);
+        let operation =
+            crate::operation::Operation::unrestricted().with_assets(vec![proof.clone()]);
+        operation.check().unwrap();
+        let mut altered = saved;
+        altered[0] ^= 1;
+        std::fs::write(&path, &altered).unwrap();
+        assert!(!proof.unchanged());
+        assert!(operation.check().is_err());
+        assert!(admit(&spec, || Ok(())).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), altered);
+    }
+
+    #[test]
+    fn local_trust_never_attests_missing_empty_or_non_executable_files() {
+        for case in ["missing", "empty", "permissions"] {
+            let (_root, stage, mut spec) = prepared_fixture();
+            copy_legacy(&stage, &spec);
+            drop(stage);
+            let path = spec.root.join("model");
+            match case {
+                "missing" => std::fs::remove_file(&path).unwrap(),
+                "empty" => std::fs::write(&path, b"").unwrap(),
+                "permissions" => spec.executables.push("model".into()),
+                _ => unreachable!(),
+            }
+            assert!(trust_local(spec.clone(), &AtomicBool::new(false), None).is_err());
+            assert!(!spec.root.join(RECEIPT).exists());
+        }
+    }
+
+    #[test]
+    fn queued_verification_and_trust_cannot_renew_deleted_or_reset_authority() {
+        for reset in [false, true] {
+            let (_root, stage, spec) = prepared_fixture();
+            copy_legacy(&stage, &spec);
+            let request = stage.authority().unwrap();
+            drop(stage);
+            if reset {
+                drop(crate::artifact::reset(&spec.data).unwrap());
+            } else {
+                crate::artifact::delete(&spec.data, &spec.key, &spec.root).unwrap();
+                std::fs::create_dir_all(spec.root.join("lib")).unwrap();
+                std::fs::write(
+                    spec.root.join("model"),
+                    b"new installation at the same path",
+                )
+                .unwrap();
+            }
+            assert!(
+                Stage::new_requested(
+                    &spec.data,
+                    &spec.key,
+                    spec.root.clone(),
+                    &request,
+                    &AtomicBool::new(false)
+                )
+                .is_err()
+            );
+            assert!(trust_local(spec.clone(), &AtomicBool::new(false), Some(&request)).is_err());
+            assert!(!spec.root.join(RECEIPT).exists());
+            assert!(spec.root.join("model").exists());
+        }
+    }
+
+    #[test]
+    fn promotion_retires_queued_and_active_asset_authority_without_losing_data() {
+        let (_root, stage, spec) = prepared_fixture();
+        copy_legacy(&stage, &spec);
+        let authority = crate::artifact::observe_authority(&spec.data, &spec.key).unwrap();
+        let paths = scan(&spec.root, &|| Ok(())).unwrap().paths;
+        let old = Arc::new(VerifiedAsset {
+            paths,
+            authority: authority.clone(),
+            locally_trusted: true,
+        });
+        let operation = crate::operation::Operation::unrestricted().with_assets(vec![old]);
+        operation.check().unwrap();
+        install(stage, spec.clone(), &AtomicBool::new(false)).unwrap();
+        assert!(authority.check(&AtomicBool::new(false)).is_err());
+        assert!(operation.check().is_err());
+        assert_eq!(
+            std::fs::read(spec.root.join("model")).unwrap(),
+            b"synthetic model weights"
+        );
+        assert_eq!(admit(&spec, || Ok(())).unwrap().status(), Status::Ready);
     }
 
     #[test]

@@ -424,6 +424,7 @@ struct Supervised {
     ready: bool,
     /// Last use (ensure hit): drives the keep-warm reaper.
     last_used: Instant,
+    assets: Vec<Arc<crate::installed_asset::VerifiedAsset>>,
 }
 
 /// Consecutive engine failures (worker errors without success).
@@ -578,6 +579,22 @@ pub fn drop_servers(data_dir: &Path) {
     let _ = std::fs::remove_file(pidfile(data_dir));
 }
 
+/// Remove only owned instances whose installed content authority was revoked.
+/// The same bounded sweep runs even with keep-warm=forever or active sessions.
+pub(crate) fn retire_invalid_assets(data: &Path) {
+    if let Ok(mut map) = servers().lock() {
+        let names = map
+            .iter()
+            .filter(|(_, server)| server.assets.iter().any(|asset| !asset.unchanged()))
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        for name in names {
+            map.remove(&name);
+            pidfile_remove(data, &name);
+        }
+    }
+}
+
 /// Parse keep-warm values («»/forever/never = none, else minutes).
 pub fn keep_warm_timeout(value: &str) -> Option<Duration> {
     match value.trim().to_lowercase().as_str() {
@@ -595,8 +612,14 @@ pub fn keep_warm_timeout(value: &str) -> Option<Duration> {
 /// No-op when unset (forever). Started once at service boot.
 pub fn spawn_server_reaper(data_dir: PathBuf) {
     let _ = crate::runtime::spawn_dedicated("server-reaper", move || {
+        let mut maintenance = Instant::now();
         loop {
-            std::thread::sleep(Duration::from_secs(30));
+            std::thread::sleep(Duration::from_millis(500));
+            retire_invalid_assets(&data_dir);
+            if maintenance.elapsed() < Duration::from_secs(30) {
+                continue;
+            }
+            maintenance = Instant::now();
             let keep = crate::store::Store::open_existing(&data_dir.join("state.db"))
                 .map(|store| store.load_settings().stt.keep_warm.clone())
                 .unwrap_or_default();
@@ -713,7 +736,7 @@ fn ensure_server(
     }
     if let Some(s) = map.get_mut(name) {
         let alive = s.child.try_status().map(|s| s.is_none()).unwrap_or(false);
-        if alive && s.ready && s.key == key {
+        if alive && s.ready && s.key == key && s.assets.iter().all(|asset| asset.unchanged()) {
             s.last_used = Instant::now();
             return Ok(());
         }
@@ -744,6 +767,7 @@ fn ensure_server(
             child,
             ready: false,
             last_used: Instant::now(),
+            assets: operation.assets.clone(),
         },
     );
     drop(map);
@@ -2691,7 +2715,7 @@ fn run_spec(
         let window = buffer.clone();
         let wav = wav_bytes_16k(&audio::f32_to_i16(&window));
         let decoded = (|| {
-            let _lease = match &engine {
+            let engine_use = match &engine {
                 Some(config) => ensure_owned(
                     &config.plan,
                     &data_dir,
@@ -2700,9 +2724,13 @@ fn run_spec(
                     &config.net,
                     &operation,
                 )?,
-                None => Some(EngineLease::acquire(&operation, true)?),
+                None => EngineUse {
+                    _lease: Some(EngineLease::acquire(&operation, true)?),
+                    operation: operation.clone(),
+                    instance: None,
+                },
             };
-            whisper_transcribe_owned(&wav, prompt.clone(), whisper_port, &operation)
+            whisper_transcribe_owned(&wav, prompt.clone(), whisper_port, &engine_use.operation)
         })();
         match decoded {
             Ok(hyp) => {
@@ -2931,6 +2959,13 @@ impl CaptureInput {
             let operation =
                 Operation::capture_reader(self.policy.clone(), privacy_epoch, cancel.clone())?;
             let plans = plans_for(&settings.stt, &self.data_dir)?;
+            let operation = bind_asset_requests(
+                &operation,
+                plans.iter().map(|(_, plan)| plan.clone()),
+                &self.data_dir,
+                settings.stt.gpu_backend,
+                settings.stt.sherpa_backend,
+            )?;
             publish_utterance(
                 epoch,
                 settings.stt,
@@ -2971,6 +3006,13 @@ pub fn begin_reserved_utterance(
             .map_err(|error| format!("capture policy unavailable: {error}"))?;
         let plans = plans_for(&stt, data_dir)?;
         let operation = Operation::capture(store, privacy_epoch, cancel.clone())?;
+        let operation = bind_asset_requests(
+            &operation,
+            plans.iter().map(|(_, plan)| plan.clone()),
+            data_dir,
+            stt.gpu_backend,
+            stt.sherpa_backend,
+        )?;
         Ok::<_, String>((privacy_epoch, plans, operation))
     })();
     let prepared = match prepared {
@@ -3131,7 +3173,7 @@ fn publish_utterance(
             if cancel_pump.load(Ordering::Acquire) {
                 return;
             }
-            let _lease = match ensure_owned(
+            let engine_use = match ensure_owned(
                 &plan,
                 &pump_data,
                 backend,
@@ -3145,6 +3187,7 @@ fn publish_utterance(
                     return;
                 }
             };
+            let pump_operation = engine_use.operation.clone();
             let open = match &plan {
                 Plan::SelfHostedWs { url, key } => {
                     OnlineSession::open_authorized(url, key, INFERENCE_TIMEOUT, &pump_operation)
@@ -3820,7 +3863,7 @@ fn finish_session(
     let mut last_err = String::new();
     for (name, plan) in attempts {
         operation.check()?;
-        let _lease = match ensure_owned(
+        let engine_use = match ensure_owned(
             plan,
             &sess.data_dir,
             sess.backend,
@@ -3836,9 +3879,9 @@ fn finish_session(
             }
         };
         operation.check()?;
-        match transcribe_blocking(plan, &f32s, words, &sess.net, operation) {
+        match transcribe_blocking(plan, &f32s, words, &sess.net, &engine_use.operation) {
             Ok(r) => {
-                operation.check()?;
+                engine_use.operation.check()?;
                 eprintln!(
                     "[stt] release: inference took {:.1}s ({name})",
                     t0.elapsed().as_secs_f64()
@@ -4051,6 +4094,128 @@ fn local_server(plan: &Plan) -> bool {
         Plan::WhisperHttp { .. } | Plan::SherpaOnline { .. } | Plan::SherpaOffline { .. }
     )
 }
+struct EngineUse {
+    _lease: Option<EngineLease>,
+    operation: Operation,
+    instance: Option<(String, u64)>,
+}
+impl Drop for EngineUse {
+    fn drop(&mut self) {
+        // A retired use can clean up only the server instance it acquired.
+        if self.operation.assets.iter().all(|asset| asset.unchanged()) {
+            return;
+        }
+        if let Some((name, instance)) = &self.instance
+            && let Ok(mut map) = servers().lock()
+            && map
+                .get(name)
+                .is_some_and(|server| server.instance == *instance)
+        {
+            map.remove(name);
+        }
+    }
+}
+
+fn plan_asset_specs(
+    plan: &Plan,
+    data: &Path,
+    backend: GpuBackendSetting,
+    sherpa_backend: SherpaBackendSetting,
+) -> Result<Vec<crate::installed_asset::Spec>, String> {
+    let model_spec = |path: &Path| -> Result<crate::installed_asset::Spec, String> {
+        #[cfg(test)]
+        if let Some(spec) = TEST_ASSETS.lock().unwrap().get(path).cloned() {
+            return Ok(spec);
+        }
+        stt::WHISPER_MODELS.iter().chain(stt::PARAKEET_MODELS).chain(stt::WHISTLE_MODELS)
+            .map(|entry| stt::model_spec(data, entry))
+            .find(|spec| spec.root == path || spec.raw.as_ref().is_some_and(|raw| spec.root.join(raw) == path))
+            .ok_or_else(|| "Local model path has no verified installation provenance; files have been preserved".into())
+    };
+    let runtime_spec = |spec: crate::installed_asset::Spec, file: &str| {
+        #[cfg(test)]
+        if let Some(spec) = TEST_ASSETS
+            .lock()
+            .unwrap()
+            .get(&spec.root.join(file))
+            .cloned()
+        {
+            return spec;
+        }
+        let _ = file;
+        spec
+    };
+    match plan {
+        Plan::WhisperHttp { model_bin, .. } => {
+            let id = match backend {
+                GpuBackendSetting::Cpu => "whisper-cpu",
+                GpuBackendSetting::Cuda => "whisper-cuda",
+                GpuBackendSetting::Vulkan => "whisper-vulkan",
+            };
+            let pack = stt::GPU_PACKS
+                .iter()
+                .find(|pack| pack.id == id)
+                .ok_or("unknown Whisper runtime")?;
+            Ok(vec![
+                model_spec(model_bin)?,
+                runtime_spec(stt::gpu_spec(data, pack), "whisper-server"),
+            ])
+        }
+        Plan::SherpaOnline { model_dir } | Plan::SherpaOffline { model_dir, .. } => {
+            let id = match sherpa_backend {
+                SherpaBackendSetting::Cpu => "sherpa-cpu",
+                SherpaBackendSetting::Cuda => "sherpa-cuda",
+            };
+            let pack = stt::SHERPA_PACKS
+                .iter()
+                .find(|pack| pack.id == id)
+                .ok_or("unknown sherpa runtime")?;
+            Ok(vec![model_spec(model_dir)?, stt::sherpa_spec(data, pack)])
+        }
+        Plan::WhistleCli { model, engine, .. } => {
+            let spec = stt::needle_spec(data)?;
+            if spec.root.join("needle") != *engine {
+                return Err("Whistle runtime path has no verified installation provenance; files have been preserved".into());
+            }
+            Ok(vec![model_spec(model)?, runtime_spec(spec, "needle")])
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn bind_asset_requests(
+    operation: &Operation,
+    plans: impl IntoIterator<Item = Plan>,
+    data: &Path,
+    backend: GpuBackendSetting,
+    sherpa_backend: SherpaBackendSetting,
+) -> Result<Operation, String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut authorities = Vec::new();
+    for plan in plans {
+        // A missing/invalid primary is still allowed to fall back. Each actual
+        // attempt will reject invalid content at admission, before execution.
+        if let Ok(specs) = plan_asset_specs(&plan, data, backend, sherpa_backend) {
+            for spec in specs {
+                if seen.insert(spec.key.clone()) {
+                    authorities.push(crate::artifact::observe_authority(data, &spec.key)?);
+                }
+            }
+        }
+    }
+    Ok(operation.with_permission(move || {
+        authorities
+            .iter()
+            .all(|authority| authority.check(&AtomicBool::new(false)).is_ok())
+    }))
+}
+
+// Synthetic runtimes use explicit content pins, not a verification bypass.
+// Every fixture goes through the same admission and active-use checks.
+#[cfg(test)]
+static TEST_ASSETS: std::sync::LazyLock<Mutex<HashMap<PathBuf, crate::installed_asset::Spec>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
 fn ensure_owned(
     plan: &Plan,
     data_dir: &Path,
@@ -4058,7 +4223,14 @@ fn ensure_owned(
     sherpa_backend: SherpaBackendSetting,
     net: &ServerNet,
     operation: &Operation,
-) -> Result<Option<EngineLease>, String> {
+) -> Result<EngineUse, String> {
+    let operation = bind_asset_requests(
+        operation,
+        [plan.clone()],
+        data_dir,
+        gpu_backend,
+        sherpa_backend,
+    )?;
     let generation = server_generation();
     let operation = operation.with_permission(move || server_generation() == generation);
     let lease = if local_server(plan) {
@@ -4066,8 +4238,23 @@ fn ensure_owned(
     } else {
         None
     };
-    ensure_servers_inner(plan, data_dir, gpu_backend, sherpa_backend, net, &operation)?;
-    Ok(lease)
+    let operation =
+        ensure_servers_inner(plan, data_dir, gpu_backend, sherpa_backend, net, &operation)?;
+    let instance = if local_server(plan) {
+        let map = servers()
+            .lock()
+            .map_err(|_| "server ownership unavailable")?;
+        map.iter()
+            .next()
+            .map(|(name, server)| (name.clone(), server.instance))
+    } else {
+        None
+    };
+    Ok(EngineUse {
+        _lease: lease,
+        operation,
+        instance,
+    })
 }
 #[derive(Clone)]
 struct WarmRequest {
@@ -4172,6 +4359,13 @@ fn warm_plan(
     net: &ServerNet,
     operation: &Operation,
 ) -> Result<(), String> {
+    let operation = bind_asset_requests(
+        operation,
+        [plan.clone()],
+        data_dir,
+        gpu_backend,
+        sherpa_backend,
+    )?;
     let generation = server_generation();
     let operation = operation.with_permission(move || server_generation() == generation);
     operation.check()?;
@@ -4195,7 +4389,7 @@ fn warm_plan(
     } else {
         None
     };
-    ensure_servers_inner(plan, data_dir, gpu_backend, sherpa_backend, net, &operation)
+    ensure_servers_inner(plan, data_dir, gpu_backend, sherpa_backend, net, &operation).map(|_| ())
 }
 
 fn ensure_servers_inner(
@@ -4205,17 +4399,23 @@ fn ensure_servers_inner(
     sherpa_backend: SherpaBackendSetting,
     net: &ServerNet,
     operation: &Operation,
-) -> Result<(), String> {
+) -> Result<Operation, String> {
+    operation.check()?;
+    let mut assets = Vec::new();
+    for spec in plan_asset_specs(plan, data_dir, gpu_backend, sherpa_backend)? {
+        assets.push(crate::installed_asset::admit(&spec, || operation.check())?);
+    }
+    let operation = operation.with_assets(assets);
     operation.check()?;
     match plan {
         Plan::WhisperHttp { model_bin, lang } => {
-            ensure_whisper(data_dir, gpu_backend, model_bin, lang, net, operation)
+            ensure_whisper(data_dir, gpu_backend, model_bin, lang, net, &operation)
         }
         Plan::SherpaOnline { model_dir } => {
-            ensure_sherpa_online(data_dir, sherpa_backend, model_dir, net, operation)
+            ensure_sherpa_online(data_dir, sherpa_backend, model_dir, net, &operation)
         }
         Plan::SherpaOffline { model_dir, lang } => {
-            ensure_sherpa_offline(data_dir, sherpa_backend, model_dir, lang, net, operation)
+            ensure_sherpa_offline(data_dir, sherpa_backend, model_dir, lang, net, &operation)
         }
         // CLI per utterance: nothing to keep running.
         // Self-hosted WS: foreign by definition, never spawned.
@@ -4223,7 +4423,9 @@ fn ensure_servers_inner(
         Plan::CloudOpenAiCompat { .. } | Plan::CloudDeepgram { .. } | Plan::CloudGemini { .. } => {
             Ok(())
         }
-    }
+    }?;
+    operation.check()?;
+    Ok(operation)
 }
 
 /// Default cleanup prompt (custom revision: bilingual examples,
@@ -5586,6 +5788,202 @@ mod tests {
         }
     }
 
+    fn pin_synthetic_asset(
+        data: &Path,
+        path: &Path,
+        key: &str,
+        executable: bool,
+    ) -> crate::installed_asset::Spec {
+        use sha2::Digest;
+        let file = path.file_name().unwrap().to_str().unwrap().to_owned();
+        let spec = crate::installed_asset::Spec {
+            data: data.into(),
+            root: path.parent().unwrap().into(),
+            key: key.into(),
+            source: sha2::Sha256::digest(std::fs::read(path).unwrap())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+            required: vec![file.clone()],
+            executables: if executable {
+                vec![file.clone()]
+            } else {
+                Vec::new()
+            },
+            raw: Some(file),
+        };
+        TEST_ASSETS
+            .lock()
+            .unwrap()
+            .insert(path.into(), spec.clone());
+        spec
+    }
+
+    #[test]
+    fn truncated_managed_whisper_is_rejected_before_provider_or_subprocess_use() {
+        if !isolated_capture_probe(
+            "truncated_managed_whisper_is_rejected_before_provider_or_subprocess_use",
+        ) {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let entry = stt::find_model("tiny").unwrap();
+        let spec = stt::model_spec(root.path(), entry);
+        std::fs::create_dir_all(&spec.root).unwrap();
+        let path = spec.root.join(spec.raw.as_ref().unwrap());
+        let bytes = entry.expected_bytes.unwrap() * 96 / 100;
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(bytes)
+            .unwrap();
+        let plan = local_plan(
+            &SttSettings {
+                whisper_model: entry.id.into(),
+                ..Default::default()
+            },
+            root.path(),
+        )
+        .unwrap();
+        let error = ensure_owned(
+            &plan,
+            root.path(),
+            GpuBackendSetting::Cpu,
+            SherpaBackendSetting::Cpu,
+            &ServerNet {
+                host: "127.0.0.1",
+                port_override: Some(1),
+            },
+            &Operation::unrestricted(),
+        )
+        .err()
+        .expect("corrupt model reached provider");
+        assert!(error.contains("SHA-256"), "{error}");
+        assert!(servers().lock().unwrap().is_empty());
+        assert_eq!(std::fs::metadata(path).unwrap().len(), bytes);
+    }
+
+    #[test]
+    fn active_asset_deletion_cancels_inference_and_stale_use_cannot_kill_replacement() {
+        if !isolated_capture_probe(
+            "active_asset_deletion_cancels_inference_and_stale_use_cannot_kill_replacement",
+        ) {
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let pack = stt::GPU_PACKS
+            .iter()
+            .find(|pack| pack.id == "whisper-cpu")
+            .unwrap();
+        let binary = stt::gpu_bin_dir(root.path(), pack).join("whisper-server");
+        let model = root.path().join("models/fixture/model.bin");
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(model.parent().unwrap()).unwrap();
+        std::fs::write(&model, b"synthetic pinned weights").unwrap();
+        std::fs::write(
+            &binary,
+            r#"#!/usr/bin/python3
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+import sys, time
+model = sys.argv[sys.argv.index('--model') + 1]
+port = int(sys.argv[sys.argv.index('--port') + 1])
+class Handler(BaseHTTPRequestHandler):
+ def log_message(self, *args): pass
+ def do_POST(self):
+  self.rfile.read(int(self.headers.get('Content-Length', '0')))
+  Path(model + '.started').touch()
+  time.sleep(10)
+  self.send_response(200); self.end_headers(); self.wfile.write(b'{"text":"must not be delivered"}')
+ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let model_spec = pin_synthetic_asset(root.path(), &model, "fixture-model", false);
+        pin_synthetic_asset(root.path(), &binary, "fixture-runtime", true);
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let net = ServerNet {
+            host: "127.0.0.1",
+            port_override: Some(socket.local_addr().unwrap().port()),
+        };
+        drop(socket);
+        let plan = Plan::WhisperHttp {
+            model_bin: model.clone(),
+            lang: "en".into(),
+        };
+        let owned = ensure_owned(
+            &plan,
+            root.path(),
+            GpuBackendSetting::Cpu,
+            SherpaBackendSetting::Cpu,
+            &net,
+            &Operation::unrestricted(),
+        )
+        .unwrap();
+        let pid = servers().lock().unwrap()["whisper"].child.0.id();
+        let port = net.port_override.unwrap();
+        let (result, receiver) = mpsc::channel();
+        let inference = std::thread::spawn(move || {
+            let answer = whisper_transcribe_owned(
+                &wav_bytes_16k(&[100; 16000]),
+                None,
+                port,
+                &owned.operation,
+            );
+            drop(owned);
+            result.send(answer).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !model.with_extension("bin.started").exists() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        crate::artifact::delete(root.path(), &model_spec.key, &model_spec.root).unwrap();
+        assert!(
+            receiver
+                .recv_timeout(Duration::from_millis(500))
+                .unwrap()
+                .is_err()
+        );
+        inference.join().unwrap();
+        assert!(crate::process_status::start_ticks(pid).is_none());
+        assert!(servers().lock().unwrap().is_empty());
+        std::fs::create_dir_all(&model_spec.root).unwrap();
+        std::fs::write(&model, b"synthetic pinned weights").unwrap();
+        // Leave a stale owner alive across an authorized replacement.
+        let mut stale = ensure_owned(
+            &plan,
+            root.path(),
+            GpuBackendSetting::Cpu,
+            SherpaBackendSetting::Cpu,
+            &net,
+            &Operation::unrestricted(),
+        )
+        .unwrap();
+        let old_instance = stale.instance.clone().unwrap().1;
+        drop(stale._lease.take());
+        std::fs::write(&model, b"new synthetic pinned weights").unwrap();
+        pin_synthetic_asset(root.path(), &model, "fixture-model", false);
+        retire_invalid_assets(root.path());
+        let newer = ensure_owned(
+            &plan,
+            root.path(),
+            GpuBackendSetting::Cpu,
+            SherpaBackendSetting::Cpu,
+            &net,
+            &Operation::unrestricted(),
+        )
+        .unwrap();
+        let new_instance = newer.instance.clone().unwrap().1;
+        assert_ne!(old_instance, new_instance);
+        drop(stale);
+        assert_eq!(servers().lock().unwrap()["whisper"].instance, new_instance);
+        newer.operation.check().unwrap();
+        drop(newer);
+        drop_servers(root.path());
+    }
+
     #[test]
     fn configuration_warmup_cannot_replace_active_inference() {
         if !isolated_capture_probe("configuration_warmup_cannot_replace_active_inference") {
@@ -5650,6 +6048,8 @@ ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
             b"fixture model consumed only by the synthetic runtime",
         )
         .unwrap();
+        pin_synthetic_asset(root.path(), &model, "fixture-model", false);
+        pin_synthetic_asset(root.path(), &binary, "fixture-runtime", true);
         let listen = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let net = ServerNet {
             host: "127.0.0.1",

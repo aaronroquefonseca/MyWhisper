@@ -182,6 +182,20 @@ impl Stage {
             key: key.to_owned(),
         })
     }
+    pub fn new_requested(
+        data: &Path,
+        key: &str,
+        destination: PathBuf,
+        request: &Authority,
+        cancel: &AtomicBool,
+    ) -> Result<Self, String> {
+        request.check(cancel)?;
+        let stage = Self::new(data, key, destination)?;
+        // Waiting for installation locks cannot renew queued authority.
+        request.check(cancel)?;
+        stage.check(cancel)?;
+        Ok(stage)
+    }
     pub fn path(&self) -> &Path {
         self.temporary.path()
     }
@@ -217,13 +231,19 @@ impl Stage {
     pub fn check(&self, cancel: &AtomicBool) -> Result<(), String> {
         self.authority()?.check(cancel)
     }
-    pub fn promote(self, cancel: &AtomicBool) -> Result<(), String> {
+    pub fn promote(mut self, cancel: &AtomicBool) -> Result<Authority, String> {
         use std::os::unix::ffi::OsStrExt;
         self.check(cancel)?;
         // Serialize the final check/rename against delete/reset epoch changes.
         let metadata = self.global_epoch.0.parent().unwrap().join("metadata.lock");
         let _metadata = crate::private_fs::lock(&metadata).map_err(|e| e.to_string())?;
         self.check(cancel)?;
+        // Retire queued and active users of the old content before publishing
+        // another installation under the same path, including first installs.
+        advance(&self.asset_epoch.0)?;
+        self.asset_epoch.1 = epoch(&self.asset_epoch.0)?;
+        crate::installed_asset::invalidate(&self.data, Some(&self.key));
+        crate::transcribe::retire_invalid_assets(&self.data);
         if self.destination.exists() {
             if std::fs::symlink_metadata(&self.destination)
                 .map_err(|e| e.to_string())?
@@ -260,7 +280,7 @@ impl Stage {
             .and_then(|parent| parent.sync_all())
             .map_err(|e| e.to_string())?;
         // TempDir now owns the previous installation after exchange.
-        Ok(())
+        self.authority()
     }
 }
 
@@ -275,6 +295,7 @@ pub(crate) fn delete(data: &Path, key: &str, destination: &Path) -> std::io::Res
     let metadata = crate::private_fs::lock(&control.join("metadata.lock"))?;
     advance(&control.join(format!("{key}.epoch"))).map_err(std::io::Error::other)?;
     drop(metadata);
+    crate::transcribe::retire_invalid_assets(data);
     let _asset = crate::private_fs::lock(&control.join(format!("{key}.lock")))?;
     if destination.exists() {
         std::fs::remove_dir_all(destination)?;
@@ -290,6 +311,7 @@ pub(crate) fn reset(data: &Path) -> std::io::Result<File> {
     let metadata = crate::private_fs::lock(&control.join("metadata.lock"))?;
     advance(&control.join("epoch")).map_err(std::io::Error::other)?;
     drop(metadata);
+    crate::transcribe::retire_invalid_assets(data);
     crate::private_fs::lock(&control.join("reset.lock"))
 }
 

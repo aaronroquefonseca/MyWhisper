@@ -426,7 +426,7 @@ pub fn model_dir(data_dir: &Path, entry: &ModelEntry) -> PathBuf {
     models_dir(data_dir).join(sub).join(entry.id)
 }
 
-fn model_spec(data: &Path, entry: &ModelEntry) -> crate::installed_asset::Spec {
+pub(crate) fn model_spec(data: &Path, entry: &ModelEntry) -> crate::installed_asset::Spec {
     let raw = match entry.kind {
         ModelKind::Whisper => Some(format!("ggml-{}.bin", whisper_file_stem(entry.id))),
         ModelKind::Whistle => Some("whistle.cact".into()),
@@ -468,7 +468,10 @@ pub(crate) fn model_status(data_dir: &Path, entry: &ModelEntry) -> crate::instal
     crate::installed_asset::status(model_spec(data_dir, entry))
 }
 pub fn is_installed(data_dir: &Path, entry: &ModelEntry) -> bool {
-    model_status(data_dir, entry) == crate::installed_asset::Status::Ready
+    matches!(
+        model_status(data_dir, entry),
+        crate::installed_asset::Status::Ready | crate::installed_asset::Status::ReadyLocal
+    )
 }
 
 pub fn whisper_file_stem(id: &str) -> &str {
@@ -528,10 +531,24 @@ pub fn download_model(
     cancel: &AtomicBool,
     on_event: &DownloadCallback,
 ) -> Result<(), String> {
-    let stage = crate::artifact::Stage::new(
+    prepare_model(data_dir, entry, cancel, on_event, false, None)
+}
+
+fn prepare_model(
+    data_dir: &Path,
+    entry: &ModelEntry,
+    cancel: &AtomicBool,
+    on_event: &DownloadCallback,
+    verification_only: bool,
+    request: Option<&crate::artifact::Authority>,
+) -> Result<(), String> {
+    let captured = crate::artifact::observe_authority(data_dir, &format!("model-{}", entry.id))?;
+    let stage = crate::artifact::Stage::new_requested(
         data_dir,
         &format!("model-{}", entry.id),
         model_dir(data_dir, entry),
+        request.unwrap_or(&captured),
+        cancel,
     )?;
     let dir = stage.path().to_owned();
     let tmp = dir.join("download.part");
@@ -589,7 +606,11 @@ pub fn download_model(
         }
     }
     crate::installed_asset::seal(&stage, &verified, || stage.check(cancel))?;
-    crate::installed_asset::install(stage, model_spec(data_dir, entry), cancel)?;
+    if verification_only {
+        crate::installed_asset::adopt_reference(stage, model_spec(data_dir, entry), cancel)?;
+    } else {
+        crate::installed_asset::install(stage, model_spec(data_dir, entry), cancel)?;
+    }
     on_event(DownloadEvent::Done);
     Ok(())
 }
@@ -648,6 +669,38 @@ pub fn start_download(data_dir: PathBuf, id: &'static str) {
     };
     start_artifact_download(id, entry.expected_bytes, move |cancel, cb| {
         download_model(&data_dir, entry, cancel, cb)
+    });
+}
+
+pub(crate) fn start_verification(data: PathBuf, id: &'static str) {
+    let key = if find_model(id).is_some() {
+        format!("model-{id}")
+    } else if GPU_PACKS.iter().any(|pack| pack.id == id) {
+        format!("gpu-{id}")
+    } else {
+        format!("sherpa-{id}")
+    };
+    let request = crate::artifact::observe_authority(&data, &key);
+    if let Some(entry) = find_model(id) {
+        start_artifact_download(id, entry.expected_bytes, move |cancel, callback| {
+            prepare_model(&data, entry, cancel, callback, true, Some(&request?))
+        });
+    } else if let Some(pack) = GPU_PACKS.iter().find(|pack| pack.id == id) {
+        start_artifact_download(id, None, move |cancel, callback| {
+            prepare_gpu_pack(&data, pack, cancel, callback, true, Some(&request?))
+        });
+    } else if let Some(pack) = SHERPA_PACKS.iter().find(|pack| pack.id == id) {
+        start_artifact_download(id, None, move |cancel, callback| {
+            prepare_sherpa_pack(&data, pack, cancel, callback, true, Some(&request?))
+        });
+    }
+}
+
+pub(crate) fn start_local_trust(spec: crate::installed_asset::Spec, id: &'static str) {
+    let request = crate::artifact::observe_authority(&spec.data, &spec.key);
+    start_artifact_download(id, None, move |cancel, callback| {
+        callback(DownloadEvent::Installing);
+        crate::installed_asset::trust_local(spec, cancel, Some(&request?))
     });
 }
 
@@ -930,9 +983,9 @@ pub fn gpu_bin_dir(data_dir: &Path, pack: &GpuPack) -> PathBuf {
         .join(pack.subdir)
 }
 
-/// Installed = whisper-server binary present in the pack dir.
-pub(crate) fn gpu_status(data_dir: &Path, pack: &GpuPack) -> crate::installed_asset::Status {
-    crate::installed_asset::status(crate::installed_asset::Spec {
+/// The runtime specification includes its complete authenticated tree.
+pub(crate) fn gpu_spec(data_dir: &Path, pack: &GpuPack) -> crate::installed_asset::Spec {
+    crate::installed_asset::Spec {
         data: data_dir.into(),
         root: gpu_bin_dir(data_dir, pack),
         key: format!("gpu-{}", pack.id),
@@ -940,10 +993,16 @@ pub(crate) fn gpu_status(data_dir: &Path, pack: &GpuPack) -> crate::installed_as
         required: vec!["whisper-server".into()],
         executables: vec!["whisper-server".into()],
         raw: None,
-    })
+    }
+}
+pub(crate) fn gpu_status(data_dir: &Path, pack: &GpuPack) -> crate::installed_asset::Status {
+    crate::installed_asset::status(gpu_spec(data_dir, pack))
 }
 pub fn gpu_installed(data_dir: &Path, pack: &GpuPack) -> bool {
-    gpu_status(data_dir, pack) == crate::installed_asset::Status::Ready
+    matches!(
+        gpu_status(data_dir, pack),
+        crate::installed_asset::Status::Ready | crate::installed_asset::Status::ReadyLocal
+    )
 }
 
 /// Detection is advisory only (never auto-selects): NVIDIA via
@@ -998,10 +1057,24 @@ pub fn download_gpu_pack(
     cancel: &AtomicBool,
     on_event: &DownloadCallback,
 ) -> Result<(), String> {
-    let stage = crate::artifact::Stage::new(
+    prepare_gpu_pack(data_dir, pack, cancel, on_event, false, None)
+}
+
+fn prepare_gpu_pack(
+    data_dir: &Path,
+    pack: &GpuPack,
+    cancel: &AtomicBool,
+    on_event: &DownloadCallback,
+    verification_only: bool,
+    request: Option<&crate::artifact::Authority>,
+) -> Result<(), String> {
+    let captured = crate::artifact::observe_authority(data_dir, &format!("gpu-{}", pack.id))?;
+    let stage = crate::artifact::Stage::new_requested(
         data_dir,
         &format!("gpu-{}", pack.id),
         gpu_bin_dir(data_dir, pack),
+        request.unwrap_or(&captured),
+        cancel,
     )?;
     let dir = stage.path().to_owned();
     let tmp = dir.join("download.part");
@@ -1055,19 +1128,11 @@ pub fn download_gpu_pack(
         return Err("whisper-server missing after extract".to_string());
     }
     crate::installed_asset::seal(&stage, &verified, || stage.check(cancel))?;
-    crate::installed_asset::install(
-        stage,
-        crate::installed_asset::Spec {
-            data: data_dir.into(),
-            root: gpu_bin_dir(data_dir, pack),
-            key: format!("gpu-{}", pack.id),
-            source: pack.sha256.into(),
-            required: vec!["whisper-server".into()],
-            executables: vec!["whisper-server".into()],
-            raw: None,
-        },
-        cancel,
-    )?;
+    if verification_only {
+        crate::installed_asset::adopt_reference(stage, gpu_spec(data_dir, pack), cancel)?;
+    } else {
+        crate::installed_asset::install(stage, gpu_spec(data_dir, pack), cancel)?;
+    }
     on_event(DownloadEvent::Done);
     Ok(())
 }
@@ -1162,9 +1227,9 @@ pub fn sherpa_bin_dir(data_dir: &Path, pack: &SherpaPack) -> PathBuf {
         .join(pack.subdir)
 }
 
-/// Installed = all required binaries present.
-pub(crate) fn sherpa_status(data_dir: &Path, pack: &SherpaPack) -> crate::installed_asset::Status {
-    crate::installed_asset::status(crate::installed_asset::Spec {
+/// Required executables supplement complete authenticated tree verification.
+pub(crate) fn sherpa_spec(data_dir: &Path, pack: &SherpaPack) -> crate::installed_asset::Spec {
+    crate::installed_asset::Spec {
         data: data_dir.into(),
         root: sherpa_bin_dir(data_dir, pack),
         key: format!("sherpa-{}", pack.id),
@@ -1177,10 +1242,16 @@ pub(crate) fn sherpa_status(data_dir: &Path, pack: &SherpaPack) -> crate::instal
             .map(|file| (*file).into())
             .collect(),
         raw: None,
-    })
+    }
+}
+pub(crate) fn sherpa_status(data_dir: &Path, pack: &SherpaPack) -> crate::installed_asset::Status {
+    crate::installed_asset::status(sherpa_spec(data_dir, pack))
 }
 pub fn sherpa_installed(data_dir: &Path, pack: &SherpaPack) -> bool {
-    sherpa_status(data_dir, pack) == crate::installed_asset::Status::Ready
+    matches!(
+        sherpa_status(data_dir, pack),
+        crate::installed_asset::Status::Ready | crate::installed_asset::Status::ReadyLocal
+    )
 }
 
 /// Download + sha256-verify + extract a sherpa pack. Blocking; run on
@@ -1192,10 +1263,24 @@ pub fn download_sherpa_pack(
     cancel: &AtomicBool,
     on_event: &DownloadCallback,
 ) -> Result<(), String> {
-    let stage = crate::artifact::Stage::new(
+    prepare_sherpa_pack(data_dir, pack, cancel, on_event, false, None)
+}
+
+fn prepare_sherpa_pack(
+    data_dir: &Path,
+    pack: &SherpaPack,
+    cancel: &AtomicBool,
+    on_event: &DownloadCallback,
+    verification_only: bool,
+    request: Option<&crate::artifact::Authority>,
+) -> Result<(), String> {
+    let captured = crate::artifact::observe_authority(data_dir, &format!("sherpa-{}", pack.id))?;
+    let stage = crate::artifact::Stage::new_requested(
         data_dir,
         &format!("sherpa-{}", pack.id),
         sherpa_bin_dir(data_dir, pack),
+        request.unwrap_or(&captured),
+        cancel,
     )?;
     let dir = stage.path().to_owned();
     let tmp = dir.join("download.part");
@@ -1251,24 +1336,11 @@ pub fn download_sherpa_pack(
         return Err(format!("missing after extract: {missing:?}"));
     }
     crate::installed_asset::seal(&stage, &verified, || stage.check(cancel))?;
-    crate::installed_asset::install(
-        stage,
-        crate::installed_asset::Spec {
-            data: data_dir.into(),
-            root: sherpa_bin_dir(data_dir, pack),
-            key: format!("sherpa-{}", pack.id),
-            source: pack.sha256.into(),
-            required: pack.binaries.iter().map(|file| (*file).into()).collect(),
-            executables: pack
-                .binaries
-                .iter()
-                .filter(|file| !file.ends_with(".so"))
-                .map(|file| (*file).into())
-                .collect(),
-            raw: None,
-        },
-        cancel,
-    )?;
+    if verification_only {
+        crate::installed_asset::adopt_reference(stage, sherpa_spec(data_dir, pack), cancel)?;
+    } else {
+        crate::installed_asset::install(stage, sherpa_spec(data_dir, pack), cancel)?;
+    }
     on_event(DownloadEvent::Done);
     Ok(())
 }
@@ -1324,14 +1396,10 @@ pub fn needle_bin_dir(data_dir: &Path) -> PathBuf {
         .join("needle")
 }
 
-/// Installed = engine binary present (executable bit set on install).
-pub(crate) fn needle_status(data_dir: &Path) -> crate::installed_asset::Status {
-    let Ok(asset) = needle_asset() else {
-        return crate::installed_asset::Status::Invalid(
-            "Needle is unavailable for this architecture".into(),
-        );
-    };
-    crate::installed_asset::status(crate::installed_asset::Spec {
+/// The engine is admitted using its pinned digest or explicit local trust.
+pub(crate) fn needle_spec(data_dir: &Path) -> Result<crate::installed_asset::Spec, String> {
+    let asset = needle_asset()?;
+    Ok(crate::installed_asset::Spec {
         data: data_dir.into(),
         root: needle_bin_dir(data_dir),
         key: "needle".into(),
@@ -1341,8 +1409,17 @@ pub(crate) fn needle_status(data_dir: &Path) -> crate::installed_asset::Status {
         raw: Some("needle".into()),
     })
 }
+pub(crate) fn needle_status(data_dir: &Path) -> crate::installed_asset::Status {
+    match needle_spec(data_dir) {
+        Ok(spec) => crate::installed_asset::status(spec),
+        Err(message) => crate::installed_asset::Status::Invalid(message),
+    }
+}
 pub fn needle_installed(data_dir: &Path) -> bool {
-    needle_status(data_dir) == crate::installed_asset::Status::Ready
+    matches!(
+        needle_status(data_dir),
+        crate::installed_asset::Status::Ready | crate::installed_asset::Status::ReadyLocal
+    )
 }
 
 /// Download + sha256-verify a needle engine binary. Blocking; run on

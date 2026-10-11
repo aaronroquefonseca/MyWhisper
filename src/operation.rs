@@ -8,6 +8,7 @@ pub(crate) struct Operation {
     parent_cancel: Option<Arc<AtomicBool>>,
     permitted: Arc<dyn Fn() -> Result<(), Denial> + Send + Sync>,
     denial: Arc<Mutex<Option<Denial>>>,
+    pub(crate) assets: Vec<Arc<crate::installed_asset::VerifiedAsset>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -34,6 +35,7 @@ impl Operation {
         Self {
             cancel,
             parent_cancel: None,
+            assets: Vec::new(),
             permitted: Arc::new(|| Ok(())),
             denial: Arc::new(Mutex::new(None)),
         }
@@ -68,6 +70,7 @@ impl Operation {
         let operation = Self {
             cancel,
             parent_cancel: None,
+            assets: Vec::new(),
             denial: Arc::new(Mutex::new(None)),
             permitted: Arc::new(move || {
                 if let Some((path, device, inode)) = &file {
@@ -125,7 +128,20 @@ impl Operation {
             self.cancel.store(true, Ordering::Release);
             return Err(reason.description().into());
         }
+        if self.assets.iter().any(|asset| !asset.unchanged()) {
+            self.cancel.store(true, Ordering::Release);
+            return Err("installed content was deleted, reset or changed during use".into());
+        }
         Ok(())
+    }
+
+    pub(crate) fn with_assets(
+        &self,
+        assets: Vec<Arc<crate::installed_asset::VerifiedAsset>>,
+    ) -> Self {
+        let mut operation = self.clone();
+        operation.assets.extend(assets);
+        operation
     }
 
     pub(crate) fn policy_unavailable(&self) -> bool {
@@ -147,6 +163,7 @@ impl Operation {
             parent_cancel: Some(self.cancel.clone()),
             permitted: self.permitted.clone(),
             denial: self.denial.clone(),
+            assets: self.assets.clone(),
         }
     }
 
@@ -170,6 +187,7 @@ impl Operation {
             parent_cancel: None,
             permitted: self.permitted.clone(),
             denial: self.denial.clone(),
+            assets: self.assets.clone(),
         }
     }
 }

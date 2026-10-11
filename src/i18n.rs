@@ -279,6 +279,24 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Existing installation needs integrity verification. Your files are kept.",
             "La instalación existente requiere verificar su integridad. Se conservan los archivos.",
         ),
+        "stt.asset.local" => (
+            "Locally trusted files; upstream authenticity has not been verified.",
+            "Archivos locales de confianza; no se ha verificado su autenticidad de origen.",
+        ),
+        "stt.asset.verify" => ("Verify existing files", "Verificar archivos existentes"),
+        "stt.asset.verifyhelp" => (
+            "Download a verified reference and compare it. Your existing model files are preserved.",
+            "Descargar una referencia verificada y compararla. Se conservan los archivos del modelo.",
+        ),
+        "stt.asset.trust" => ("Trust local files…", "Confiar en archivos locales…"),
+        "stt.asset.trusttitle" => (
+            "Trust this local installation?",
+            "¿Confiar en esta instalación local?",
+        ),
+        "stt.asset.trustbody" => (
+            "Use this only for models or runtimes you intentionally installed from a source you trust. MyWhisper will record their current contents and detect later changes. This does not verify upstream authenticity or guarantee that the files work. Executable runtimes can run code as your user. Your files will be kept.",
+            "Usa esta opción solo para modelos o runtimes instalados deliberadamente desde una fuente de confianza. MyWhisper registrará su contenido actual y detectará cambios posteriores. No verifica su autenticidad de origen ni garantiza que funcionen. Los runtimes ejecutables pueden ejecutar código como tu usuario. Se conservarán tus archivos.",
+        ),
         "stt.asset.invalid" => (
             "Could not verify installed files: {err}",
             "No se pudieron verificar los archivos instalados: {err}",

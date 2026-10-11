@@ -1544,6 +1544,7 @@ fn append_asset_feedback(container: &GtkBox, status: crate::installed_asset::Sta
     use crate::installed_asset::Status;
     let text = match status {
         Status::Checking => tr("stt.asset.checking").to_owned(),
+        Status::ReadyLocal => tr("stt.asset.local").to_owned(),
         Status::NeedsVerification => tr("stt.asset.legacy").to_owned(),
         Status::Invalid(message) => trf("stt.asset.invalid", &[("err", &message)]),
         Status::Missing | Status::Ready => return,
@@ -1553,6 +1554,43 @@ fn append_asset_feedback(container: &GtkBox, status: crate::installed_asset::Sta
     label.set_wrap(true);
     label.set_max_width_chars(40);
     container.append(&label);
+}
+
+fn append_asset_verification(
+    container: &GtkBox,
+    spec: crate::installed_asset::Spec,
+    id: &'static str,
+) {
+    if !matches!(
+        crate::installed_asset::status(spec.clone()),
+        crate::installed_asset::Status::NeedsVerification
+            | crate::installed_asset::Status::Invalid(_)
+    ) || crate::stt::download_state(id).is_some_and(|download| {
+        matches!(
+            download.phase,
+            crate::stt::DlPhase::Downloading | crate::stt::DlPhase::Installing
+        )
+    }) {
+        return;
+    }
+    // Pinned raw assets verify offline automatically. Legacy archives need
+    // an authenticated reference; comparison never replaces the local files.
+    if spec.raw.is_none() {
+        let verify = Button::with_label(tr("stt.asset.verify"));
+        verify.set_tooltip_text(Some(tr("stt.asset.verifyhelp")));
+        let data = spec.data.clone();
+        verify.connect_clicked(move |_| crate::stt::start_verification(data.clone(), id));
+        container.append(&verify);
+    }
+    let trust = Button::with_label(tr("stt.asset.trust"));
+    super::app::connect_confirmed(
+        &trust,
+        tr("stt.asset.trusttitle"),
+        tr("stt.asset.trustbody"),
+        tr("stt.asset.trust"),
+        move |_| crate::stt::start_local_trust(spec.clone(), id),
+    );
+    container.append(&trust);
 }
 
 /// Registry model list for the active local engine: name, size,
@@ -1653,6 +1691,7 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
         }
 
         append_asset_feedback(&card, stt::model_status(&data_dir, m));
+        append_asset_verification(&card, stt::model_spec(&data_dir, m), m.id);
         if let Some(dl) = stt::download_state(m.id) {
             let col = GtkBox::new(Orientation::Vertical, 4);
             match &dl.phase {
@@ -1863,6 +1902,7 @@ fn fill_sherpa_packs(container: &GtkBox, state: &Rc<AppState>) {
         card.append(&info);
 
         append_asset_feedback(&card, stt::sherpa_status(&data_dir, pack));
+        append_asset_verification(&card, stt::sherpa_spec(&data_dir, pack), pack.id);
         if let Some(dl) = stt::download_state(pack.id) {
             let col = GtkBox::new(Orientation::Vertical, 4);
             match &dl.phase {
@@ -2003,6 +2043,7 @@ fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
         card.append(&info);
 
         append_asset_feedback(&card, stt::gpu_status(&data_dir, pack));
+        append_asset_verification(&card, stt::gpu_spec(&data_dir, pack), pack.id);
         if let Some(dl) = stt::download_state(pack.id) {
             let col = GtkBox::new(Orientation::Vertical, 4);
             match &dl.phase {
@@ -2089,6 +2130,9 @@ fn refresh_needle_action(container: &GtkBox, state: &Rc<AppState>) {
         .map(|p| p.to_path_buf())
         .unwrap_or_default();
     append_asset_feedback(container, stt::needle_status(&data_dir));
+    if let Ok(spec) = stt::needle_spec(&data_dir) {
+        append_asset_verification(container, spec, stt::NEEDLE_ENGINE_ID);
+    }
     if let Some(dl) = stt::download_state(stt::NEEDLE_ENGINE_ID) {
         let col = GtkBox::new(Orientation::Vertical, 4);
         match &dl.phase {
