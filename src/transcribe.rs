@@ -438,157 +438,262 @@ fn kill_on_parent_death(cmd: &mut Command) {
     }
 }
 
-/// Supervised PIDs on disk: crash orphans are identifiable (cmdline
-/// match) and reaped at next boot. Written on spawn, cleared on
-/// clean replace; stale entries die here, never accumulate.
+/// Supervised servers on disk (status metadata only, never kill
+/// authority). Written on spawn, cleared on clean replace; stale
+/// entries are discarded, never signalled. Format is
+/// `{name: {pid, start_ticks, port}}`; legacy `{name: pid}` files
+/// still parse but never validate as managed (no start time/port).
 fn pidfile(data_dir: &Path) -> PathBuf {
     data_dir.join("servers.json")
 }
 
-fn pidfile_record(data_dir: &Path, name: &str, pid: u32) {
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+struct ServerRecord {
+    pid: u32,
+    start_ticks: u64,
+    port: u16,
+}
+
+fn pidfile_records(data_dir: &Path) -> HashMap<String, ServerRecord> {
+    let text = std::fs::read_to_string(pidfile(data_dir)).unwrap_or_default();
+    if text.trim().is_empty() {
+        return HashMap::new();
+    }
+    if let Ok(map) = serde_json::from_str::<HashMap<String, ServerRecord>>(&text) {
+        return map;
+    }
+    // Legacy PID-only metadata: kept for cleanup, never managed.
+    serde_json::from_str::<HashMap<String, u32>>(&text)
+        .map(|legacy| {
+            legacy
+                .into_iter()
+                .map(|(name, pid)| {
+                    (
+                        name,
+                        ServerRecord {
+                            pid,
+                            start_ticks: 0,
+                            port: 0,
+                        },
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn pidfile_record(data_dir: &Path, name: &str, pid: u32, port: u16) {
+    let Some(start_ticks) = proc_start_ticks(pid) else {
+        return;
+    };
     let path = pidfile(data_dir);
-    let mut map: HashMap<String, u32> = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
-    map.insert(name.to_string(), pid);
-    let _ = std::fs::write(&path, serde_json::to_string(&map).unwrap_or_default());
+    let mut map = pidfile_records(data_dir);
+    map.insert(
+        name.to_string(),
+        ServerRecord {
+            pid,
+            start_ticks,
+            port,
+        },
+    );
+    let _ = std::fs::write(&path, serde_json::to_vec(&map).unwrap_or_default());
 }
 
 fn pidfile_remove(data_dir: &Path, name: &str) {
     let path = pidfile(data_dir);
-    let mut map: HashMap<String, u32> = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
+    let mut map = pidfile_records(data_dir);
     if map.remove(name).is_some() {
-        let _ = std::fs::write(&path, serde_json::to_string(&map).unwrap_or_default());
+        if map.is_empty() {
+            let _ = std::fs::remove_file(&path);
+        } else {
+            let _ = std::fs::write(&path, serde_json::to_vec(&map).unwrap_or_default());
+        }
+    } else if std::fs::read_to_string(&path)
+        .map(|t| t.trim().is_empty())
+        .unwrap_or(true)
+    {
+        let _ = std::fs::remove_file(&path);
     }
 }
 
-/// Reap stale supervised children from a dead service run: PID in
-/// the pidfile whose cmdline still names our server binary. Then a
-/// /proc sweep for our EXACT server binaries: anything still alive
-/// here is untracked (predates pid tracking or hand-started) and —
-/// single-instance engine, so it cannot be another run's — dies.
-/// Exact binary names only: the packs' CLI tools are never touched.
-pub fn reap_stale_servers(data_dir: &Path) {
-    let path = pidfile(data_dir);
-    let map: HashMap<String, u32> = std::fs::read_to_string(&path)
+/// Control generation: bumped on every owned stop/replace so queued
+/// warmups from an older configuration abort instead of resurrecting
+/// it. Per-process (service authority); GUI Stop routes through the
+/// service DB command so the service bumps its own generation.
+static SERVER_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+pub fn server_generation() -> u64 {
+    SERVER_GENERATION.load(Ordering::Acquire)
+}
+
+fn bump_generation() {
+    SERVER_GENERATION.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Read-only Linux process identity + listening-socket evidence.
+/// Reused logic from fix/release-audit's process_status (inspected:
+/// std-only, bounded reads, no new deps): start-tick equality guards
+/// PID reuse, socket-inode matching guards port ownership. These
+/// checks never authorize signalling a process.
+fn proc_file_text(path: &str, limit: u64) -> Option<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(limit + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() as u64 <= limit).then_some(text)
+}
+
+fn proc_start_ticks(pid: u32) -> Option<u64> {
+    let stat = proc_file_text(&format!("/proc/{pid}/stat"), 8192)?;
+    stat.rsplit_once(") ")?
+        .1
+        .split_ascii_whitespace()
+        .nth(19)?
+        .parse()
         .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
-    if map.is_empty() {
-        return;
-    }
-    for (name, pid) in &map {
-        let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        if cmdline.contains("whisper-server") || cmdline.contains("sherpa-onnx") {
-            eprintln!("[stt] reaping stale {name} (pid {pid})");
-            unsafe {
-                libc_kill(*pid);
-            }
-        }
-    }
-    let _ = std::fs::remove_file(&path);
-    // Untracked strays: exact server binaries alive at boot that no
-    // pidfile named. Single-instance engine ⇒ not another run's.
-    for name in ["whisper", "sherpa-offline", "sherpa-online"] {
-        for pid in find_server_pids(server_binary_marker(name)) {
-            eprintln!("[stt] boot: killing untracked {name} (pid {pid})");
-            unsafe {
-                libc_kill(pid);
-            }
-        }
-    }
 }
 
-/// Exact server binary per supervised name. Exact match matters:
-/// the packs ship dozens of `sherpa-onnx-*` CLI tools that must
-/// never be mistaken for servers (adopt/reap/scan).
-fn server_binary_marker(name: &str) -> &str {
-    match name {
-        "whisper" => "whisper-server",
-        "sherpa-offline" => "sherpa-onnx-offline-websocket-server",
-        "sherpa-online" => "sherpa-onnx-online-websocket-server",
-        other => other,
+fn proc_listening_on(pid: u32, started: u64, port: u16) -> bool {
+    use std::collections::HashSet;
+    if proc_start_ticks(pid) != Some(started) {
+        return false;
     }
-}
-
-/// Pids whose cmdline names this server binary (ours or foreign).
-fn find_server_pids(marker: &str) -> Vec<u32> {
-    let own = std::process::id();
-    let mut out = Vec::new();
-    let Ok(proc) = std::fs::read_dir("/proc") else {
-        return out;
-    };
-    for entry in proc.flatten() {
-        let name = entry.file_name();
-        let Some(pid) = name.to_str().and_then(|n| n.parse::<u32>().ok()) else {
+    let mut inodes = HashSet::new();
+    for protocol in ["tcp", "tcp6"] {
+        let Some(text) = proc_file_text(&format!("/proc/{pid}/net/{protocol}"), 1024 * 1024) else {
             continue;
         };
-        if pid == own {
+        for line in text.lines().skip(1) {
+            let fields: Vec<_> = line.split_ascii_whitespace().take(10).collect();
+            if fields.len() != 10 || fields[3] != "0A" {
+                continue;
+            }
+            let Some((_, encoded)) = fields[1].rsplit_once(':') else {
+                continue;
+            };
+            if u16::from_str_radix(encoded, 16).ok() == Some(port)
+                && let Ok(inode) = fields[9].parse::<u64>()
+            {
+                inodes.insert(inode);
+                if inodes.len() > 32 {
+                    return false;
+                }
+            }
+        }
+    }
+    if inodes.is_empty() {
+        return false;
+    }
+    let Ok(files) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+        return false;
+    };
+    for file in files.take(4096).flatten() {
+        let Ok(target) = std::fs::read_link(file.path()) else {
             continue;
-        }
-        let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        if cmdline.contains(marker) {
-            out.push(pid);
+        };
+        let Some(inode) = target
+            .to_str()
+            .and_then(|p| p.strip_prefix("socket:["))
+            .and_then(|p| p.strip_suffix(']'))
+            .and_then(|p| p.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        if inodes.contains(&inode) {
+            return proc_start_ticks(pid) == Some(started);
         }
     }
-    out
+    false
 }
 
-unsafe fn libc_kill(pid: u32) {
-    unsafe extern "C" {
-        fn kill(pid: i32, sig: i32) -> i32;
-    }
-    unsafe {
-        kill(pid as i32, 15);
-    }
+/// Discard stale status metadata. PID files are never authority to
+/// signal: children die with the service via PDEATHSIG, so boot only
+/// drops the file. Unrelated processes are never touched.
+pub fn reap_stale_servers(data_dir: &Path) {
+    let _ = std::fs::remove_file(pidfile(data_dir));
 }
 
-/// Live servers: (name, managed) for every server whose port
-/// answers. `managed` = our supervised child (pidfile or live map);
-/// otherwise the port is held by a foreign process (started by hand
-/// or a dead service run) that we reuse but never kill.
-/// GUI-side status reads this cross-process: the GUI never owns the
-/// children, and a foreign server still serves traffic — reporting
-/// "none" while dictation works would be a lie.
+/// Live servers: one entry per answering listener, never one per
+/// engine name. With a custom port all engines share that port, so a
+/// naive per-engine TCP check reports whisper + sherpa-offline +
+/// sherpa-online for a single sherpa-online listener (the reported
+/// bug). Here distinct ports are checked once each; the entry name is
+/// the validated owner (live supervised child or pidfile record with
+/// matching start time + listening socket), otherwise a single
+/// `unknown :port` entry that invents no engine identity.
+/// GUI Stop/Cold-start key off this: Stop iff any managed, Cold iff
+/// empty (foreign listeners hide Cold but never show Stop).
 pub fn server_status(data_dir: &Path, net: &ServerNet) -> Vec<(String, bool)> {
-    let path = data_dir.join("servers.json");
-    let map: HashMap<String, u32> = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
-    let mut out = Vec::new();
-    for (name, port) in [
+    let records = pidfile_records(data_dir);
+    let engines = [
         ("whisper", engine_port(net, WHISPER_PORT)),
         ("sherpa-offline", engine_port(net, SHERPA_OFFLINE_PORT)),
         ("sherpa-online", engine_port(net, SHERPA_ONLINE_PORT)),
-    ] {
+    ];
+    // Deduplicate ports (custom override collapses all three).
+    let mut distinct: Vec<(u16, Vec<&str>)> = Vec::new();
+    for (name, port) in engines {
+        if let Some(slot) = distinct.iter_mut().find(|(p, _)| *p == port) {
+            slot.1.push(name);
+        } else {
+            distinct.push((port, vec![name]));
+        }
+    }
+    let mut out = Vec::new();
+    for (port, _names) in distinct {
         if !port_open(port) {
             continue;
         }
-        let pid_alive = map.get(name).map(|pid| {
-            let cmdline =
-                std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-            cmdline.contains("whisper-server") || cmdline.contains("sherpa-onnx")
-        });
-        // Local map (same process) is authoritative when present.
-        let local = servers().lock().ok().and_then(|mut m| {
-            m.get_mut(name)
-                .map(|s| s.child.try_wait().map(|s| s.is_none()).unwrap_or(false))
-        });
-        let managed = local.or(pid_alive).unwrap_or(false);
-        out.push((name.to_string(), managed));
+        // Managed claimant: live supervised child whose socket owns
+        // this port, else a pidfile record with matching start time
+        // and listening socket. Stale port/PID/start-time, stopped
+        // servers and PID reuse never validate.
+        let mut claimant: Option<String> = None;
+        if let Ok(mut map) = servers().lock() {
+            for (live_name, s) in map.iter_mut() {
+                let alive = s.child.try_wait().map(|e| e.is_none()).unwrap_or(false);
+                if !alive {
+                    continue;
+                }
+                let pid = s.child.id();
+                if let Some(started) = proc_start_ticks(pid)
+                    && proc_listening_on(pid, started, port)
+                {
+                    claimant = Some(live_name.clone());
+                    break;
+                }
+            }
+        }
+        if claimant.is_none() {
+            for (rec_name, rec) in &records {
+                if rec.port != port {
+                    continue;
+                }
+                if proc_listening_on(rec.pid, rec.start_ticks, port) {
+                    claimant = Some(rec_name.clone());
+                    break;
+                }
+            }
+        }
+        match claimant {
+            Some(name) => out.push((name, true)),
+            None => out.push((format!("unknown :{port}"), false)),
+        }
     }
     out
 }
 
-/// Stop every supervised server now (Stop button). Kills same-process
-/// children AND pidfile pids (cross-process: the GUI never owns
-/// these), clears the map + pidfile; next utterance respawns lazily.
+/// Stop only owned servers (same-process supervised children).
+/// Cross-process Stop routes GUI -> service via the `stt_server_cmd`
+/// DB row; the service calls this in its own process where it owns
+/// the children. Persisted PID metadata is never signalled, so stale
+/// entries and PID reuse cannot kill unrelated processes. Bumps the
+/// control generation so queued warmups abort.
 pub fn drop_servers(data_dir: &Path) {
+    bump_generation();
     let mut map = match servers().lock() {
         Ok(m) => m,
         Err(_) => return,
@@ -600,21 +705,9 @@ pub fn drop_servers(data_dir: &Path) {
         eprintln!("[stt] stopped {name}");
     }
     map.clear();
-    // Pids the pidfile still names (other process's children, e.g.
-    // the service's when Stop is pressed in the GUI): SIGTERM those
-    // whose cmdline still names our server binaries.
-    let leftovers: HashMap<String, u32> = std::fs::read_to_string(pidfile(data_dir))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
-    for (name, pid) in &leftovers {
-        let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        if cmdline.contains("whisper-server") || cmdline.contains("sherpa-onnx") {
-            unsafe {
-                libc_kill(*pid);
-            }
-            eprintln!("[stt] stopped {name} (pid {pid})");
-        }
+    // Drop any leftover metadata for names we owned (e.g. a replace
+    // that died before cleanup). Never signal the PIDs inside.
+    for name in ["whisper", "sherpa-offline", "sherpa-online"] {
         pidfile_remove(data_dir, name);
     }
 }
@@ -632,12 +725,30 @@ pub fn keep_warm_timeout(value: &str) -> Option<Duration> {
     }
 }
 
+/// Active recording or inference: press-held capture (`has_live`)
+/// or release worker transcribing (`BUSY`). Reconciliation and the
+/// keep-warm reaper defer while true (explicit safe policy: never
+/// replace/stop a server mid-utterance; the pending switch applies
+/// on the next idle tick).
+pub fn inference_active() -> bool {
+    has_live() || BUSY.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(crate) fn test_set_busy(active: bool) {
+    BUSY.store(active, Ordering::SeqCst);
+}
+
 /// Background reaper: every 30 s, stop servers idle past keep-warm.
-/// No-op when unset (forever). Started once at service boot.
+/// No-op when unset (forever) or while recording/inference is
+/// active. Started once at service boot. Owned children only.
 pub fn spawn_server_reaper(data_dir: PathBuf) {
     let _ = crate::runtime::spawn_dedicated("server-reaper", move || {
         loop {
             std::thread::sleep(Duration::from_secs(30));
+            if inference_active() {
+                continue;
+            }
             let keep = crate::store::Store::open(&data_dir.join("state.db"))
                 .map(|store| store.load_settings().stt.keep_warm.clone())
                 .unwrap_or_default();
@@ -696,6 +807,9 @@ fn threads_arg() -> String {
 /// a different `key` kills the old one first (model/language
 /// switches). `probe` runs only on fresh spawns: TCP-accept does not
 /// imply the model finished loading (sherpa listens early).
+/// Safety: only same-process supervised children are ever stopped;
+/// a port held by another process is an error (never reused,
+/// adopted, or killed based on port/cmdline substrings).
 fn ensure_server(
     data_dir: &Path,
     name: &str,
@@ -704,38 +818,32 @@ fn ensure_server(
     spawn: impl FnOnce() -> Result<Child, String>,
     probe: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
+    // Port is part of identity: a custom-port switch must replace,
+    // not reuse, the old listener.
+    let key = format!("{key}|port={port}");
     let mut map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
     // Single STT server at a time (one local configuration): any
-    // OTHER supervised server dies here, on every ensure — reuse or
+    // OTHER *owned* server dies here, on every ensure — reuse or
     // spawn. Fallback chains still work serially (each plan ensures
-    // its own server when tried).
+    // its own server when tried). Owned only: pidfile entries for
+    // other names are stale metadata and are forgotten, never
+    // signalled.
     let others: Vec<String> = map.keys().filter(|k| k.as_str() != name).cloned().collect();
     for other in others {
         if let Some(mut o) = map.remove(&other) {
             let _ = o.child.kill();
             let _ = o.child.wait();
+            pidfile_remove(data_dir, &other);
             eprintln!("[stt] single-server rule: stopped {other} for {name}");
+        } else {
+            pidfile_remove(data_dir, &other);
         }
     }
-    // Adopted/leftover pidfile entries for OTHER servers are ours
-    // too (spawned or adopted): SIGTERM those whose cmdline still
-    // names their server binary, then forget them.
-    let tracked: HashMap<String, u32> = std::fs::read_to_string(pidfile(data_dir))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
-    for (other, pid) in &tracked {
-        if other == name {
-            continue;
+    // Forget stale metadata for other names without signalling.
+    for other in ["whisper", "sherpa-offline", "sherpa-online"] {
+        if other != name {
+            pidfile_remove(data_dir, other);
         }
-        let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        if cmdline.contains(server_binary_marker(other)) {
-            unsafe {
-                libc_kill(*pid);
-            }
-            eprintln!("[stt] single-server rule: stopped {other} (pid {pid}) for {name}");
-        }
-        pidfile_remove(data_dir, other);
     }
     if let Some(s) = map.get_mut(name) {
         let alive = s.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
@@ -752,35 +860,21 @@ fn ensure_server(
         let _ = s.child.kill();
         let _ = s.child.wait();
         map.remove(name);
-        // pidfile refreshed on insert below; drop the stale entry now
-        // (data_dir captured via the callers' scope trick below is
-        // unavailable here — record() overwrites unconditionally).
-        let _ = name;
+        pidfile_remove(data_dir, name);
+        // Bump so warmups queued for the old key abort.
+        bump_generation();
     }
     if port_open(port) {
-        // Ours died but something answers: reuse it — and adopt it
-        // when it is unambiguously our server binary (exactly one
-        // match): from then on it is managed (Stop / keep-warm /
-        // boot-reap apply), never a silent foreigner again.
-        // (Model mismatch risk is logged, not fatal.)
-        eprintln!("[stt] port {port} already answers; reusing foreign {name}");
-        let marker = server_binary_marker(name);
-        match find_server_pids(marker).as_slice() {
-            [pid] => {
-                pidfile_record(data_dir, name, *pid);
-                eprintln!("[stt] adopted foreign {name} (pid {pid}) as managed");
-            }
-            pids => {
-                eprintln!(
-                    "[stt] foreign {name}: {} {marker} matches, not adopting",
-                    pids.len()
-                );
-            }
-        }
-        return Ok(());
+        // Never reuse/adopt: TCP connectivity proves nothing about
+        // engine identity or ownership. The caller (or the user)
+        // must free the port or pick another.
+        return Err(format!(
+            "port {port} is owned by another process; choose a free local port or configure a self-hosted endpoint"
+        ));
     }
     let child = spawn()?;
-    pidfile_record(data_dir, name, child.id());
+    let child_pid = child.id();
+    pidfile_record(data_dir, name, child_pid, port);
     map.insert(
         name.to_string(),
         Supervised {
@@ -2344,10 +2438,17 @@ pub fn begin_utterance(
     // Background warmup; the release worker re-ensures anyway.
     // Pool-submitted: a saturated system skips warmup instead of
     // dying (the worker will still try when the utterance ends).
+    // Generation-guarded: a settings switch/Stop between press and
+    // execution aborts instead of resurrecting the old config.
     {
         let plan = plan.clone();
         let data_dir = data_dir.clone();
+        let generation = server_generation();
         if let Err(e) = crate::runtime::submit("stt-warmup", move || {
+            if generation != server_generation() {
+                eprintln!("[stt] warmup: obsolete generation, skipping");
+                return;
+            }
             if let Err(e) = ensure_servers(&plan, &data_dir, backend, sherpa_backend, &warm_net) {
                 eprintln!("[stt] warmup: {e}");
             }
@@ -3080,6 +3181,145 @@ fn ensure_servers(
             Ok(())
         }
     }
+}
+
+/// Whether this plan needs a supervised localhost server.
+fn local_server(plan: &Plan) -> bool {
+    matches!(
+        plan,
+        Plan::WhisperHttp { .. } | Plan::SherpaOnline { .. } | Plan::SherpaOffline { .. }
+    )
+}
+
+/// Fingerprint of the running-relevant local configuration: primary
+/// plan description + network + autostart + local-enabled. The
+/// service watcher reconciles only when this moves, so unrelated
+/// edits (keep-warm, dictionary, cloud keys) never bounce servers.
+pub fn stt_fingerprint(stt: &SttSettings, data_dir: &Path) -> String {
+    format!(
+        "{}|auto={}",
+        stt_primary_id(stt, data_dir),
+        stt.auto_start_server
+    )
+}
+
+/// Primary local identity without the autostart flag: lets the
+/// watcher distinguish "config moved" (replace/stop) from "only the
+/// autostart toggle moved" (warm on enable, keep on disable).
+pub fn stt_primary_id(stt: &SttSettings, data_dir: &Path) -> String {
+    let local_on = stt
+        .entries
+        .iter()
+        .any(|e| matches!(e.kind, crate::settings::SttEntryKind::Local) && e.enabled);
+    let primary = plans_for(stt, data_dir)
+        .ok()
+        .and_then(|v| v.into_iter().next())
+        .map(|(_, p)| p.describe())
+        .unwrap_or_else(|| "none".to_string());
+    let net = server_net(stt);
+    format!(
+        "local_on={local_on}|primary={primary}|host={}|port={:?}|gpu={:?}|sherpa={:?}|prov={:?}|w={}|p={}",
+        net.host,
+        net.port_override,
+        stt.gpu_backend,
+        stt.sherpa_backend,
+        stt.local_provider,
+        stt.whisper_model,
+        stt.parakeet_model,
+    )
+}
+
+/// Any owned server (in-process child or validated listening record).
+pub fn owned_servers_running(data_dir: &Path) -> bool {
+    if servers().lock().map(|m| !m.is_empty()).unwrap_or(false) {
+        return true;
+    }
+    owned_listening(data_dir)
+}
+
+/// Service-owned reconciliation: make the running servers match the
+/// stored settings. Called from the service watcher (2 s poll), never
+/// from the GUI.
+///
+/// - Local-to-local: autostart warms the new server now (ensure
+///   replaces the old via the single-server rule); lazy stops the old
+///   and leaves the new cold until the next utterance.
+/// - Leaving local (cloud / self-hosted / Whistle / disabled / no
+///   resolvable plan): stop owned locals so the previous engine does
+///   not stay warm.
+/// - Active recording/inference (`inference_active`): defer, return
+///   `Ok(true)` (pending); the watcher retries on the next idle tick.
+/// - Obsolete queued warmups cannot resurrect: every stop/replace
+///   bumps `server_generation`; press warmups capture it and abort on
+///   mismatch.
+/// - Only owned children are stopped; foreign listeners are reported
+///   by `server_status` but never touched.
+///
+/// Returns `Ok(true)` when deferred, `Ok(false)` when applied.
+pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, String> {
+    if inference_active() {
+        return Ok(true);
+    }
+    let local_on = stt
+        .entries
+        .iter()
+        .any(|e| matches!(e.kind, crate::settings::SttEntryKind::Local) && e.enabled);
+    let primary = plans_for(stt, data_dir)
+        .ok()
+        .and_then(|v| v.into_iter().next())
+        .map(|(_, p)| p);
+    let want_local = local_on && primary.as_ref().is_some_and(local_server);
+    if !want_local {
+        // Leaving local operation (or nothing resolvable): stop owned.
+        if owned_servers_running(data_dir) {
+            drop_servers(data_dir);
+        } else {
+            // Still clear stale metadata without signalling.
+            for name in ["whisper", "sherpa-offline", "sherpa-online"] {
+                pidfile_remove(data_dir, name);
+            }
+        }
+        return Ok(false);
+    }
+    let plan = primary.unwrap();
+    if !stt.auto_start_server {
+        // Lazy: stop any owned server whose key no longer matches is
+        // handled by fingerprint change in the caller (stop-all on
+        // change). Here just ensure nothing is auto-started; if the
+        // current owned server already matches, keep it (no bounce).
+        // Without key introspection, the watcher stops on fingerprint
+        // change before calling here with lazy? Actually this path is
+        // for steady state: do nothing (next utterance warms).
+        // To avoid leaving a stale engine after a local-to-local
+        // switch, the watcher calls `drop_servers` on fingerprint
+        // change when lazy; steady-state ticks are no-ops.
+        return Ok(false);
+    }
+    let net = server_net(stt);
+    ensure_servers(&plan, data_dir, stt.gpu_backend, stt.sherpa_backend, &net)?;
+    Ok(false)
+}
+
+/// Any owned record still listening (used to decide stop-on-leave
+/// without relying on the in-process map alone).
+fn owned_listening(data_dir: &Path) -> bool {
+    for rec in pidfile_records(data_dir).values() {
+        if proc_listening_on(rec.pid, rec.start_ticks, rec.port) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Watcher-side helper for lazy switches: stop owned servers when the
+/// fingerprint moved but autostart is off. Steady-state lazy ticks
+/// (same fingerprint) are no-ops; active utterances defer.
+pub fn reconcile_lazy_switch(data_dir: &Path) -> Result<bool, String> {
+    if inference_active() {
+        return Ok(true);
+    }
+    drop_servers(data_dir);
+    Ok(false)
 }
 
 /// Default cleanup prompt (custom revision: bilingual examples,
@@ -3848,5 +4088,538 @@ mod tests {
         let text =
             sherpa_offline_transcribe(&vec![0.0f32; 16_000], SHERPA_OFFLINE_PORT).expect("decode");
         assert!(text.trim().is_empty(), "silence gave {text:?}");
+    }
+
+    // ---- Focused regressions: status + switching (synthetic only) ----
+    //
+    // Isolated storage (tempdir), synthetic runtimes (python socket
+    // listeners), private ports (127.0.0.1:0). No transcripts,
+    // credentials, microphones, or service restarts.
+    static SERIAL: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    fn python_available() -> bool {
+        std::process::Command::new("python3")
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// Disposable listener owned by `ensure_server`: binds `port`,
+    /// then sleeps. Real process + real socket, no model bytes.
+    fn spawn_owned(data_dir: &Path, name: &str, key: &str, port: u16) -> Result<u32, String> {
+        ensure_server(
+            data_dir,
+            name,
+            key.to_string(),
+            port,
+            || {
+                let mut cmd = Command::new("python3");
+                cmd.arg("-c")
+                    .arg(
+                        "import socket,sys,time\n\
+                         s=socket.socket()\n\
+                         s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n\
+                         s.bind(('127.0.0.1',int(sys.argv[1])))\n\
+                         s.listen(8)\n\
+                         time.sleep(30)",
+                    )
+                    .arg(port.to_string())
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                kill_on_parent_death(&mut cmd);
+                cmd.spawn().map_err(|e| format!("spawn synthetic: {e}"))
+            },
+            || Ok(()),
+        )?;
+        Ok(servers()
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get(name)
+            .map(|s| s.child.id())
+            .unwrap())
+    }
+
+    fn proc_gone(pid: u32) -> bool {
+        !Path::new(&format!("/proc/{pid}")).exists()
+    }
+
+    fn wait_gone(pid: u32) {
+        let start = Instant::now();
+        while !proc_gone(pid) && start.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_port_closed(port: u16) {
+        let start = Instant::now();
+        while port_open(port) && start.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn shared_custom_port_reports_single_owned_entry() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let port = free_port();
+        // Custom port 6006 scenario: all engines share one override.
+        let net = ServerNet {
+            host: "127.0.0.1",
+            port_override: Some(port),
+        };
+        let pid = spawn_owned(root.path(), "sherpa-online", "k1", port).unwrap();
+        let status = server_status(root.path(), &net);
+        // One listener -> one entry (the old bug reported three).
+        assert_eq!(status.len(), 1, "status={status:?}");
+        assert_eq!(status[0], ("sherpa-online".to_string(), true));
+        drop_servers(root.path());
+        wait_gone(pid);
+        wait_port_closed(port);
+        assert!(proc_gone(pid));
+        assert!(!port_open(port));
+        assert!(server_status(root.path(), &net).is_empty());
+    }
+
+    #[test]
+    fn unrelated_listener_reports_unknown_and_stays_untouched() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        // Foreign listener with a hostile cmdline (old substring
+        // predicate would have adopted/killed it).
+        let ready = root.path().join("foreign.port");
+        let mut child = Command::new("python3")
+            .args([
+                "-c",
+                "import socket,sys,time\n\
+                 s=socket.socket()\n\
+                 s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n\
+                 s.bind(('127.0.0.1',0))\n\
+                 s.listen(16)\n\
+                 open(sys.argv[1],'w').write(str(s.getsockname()[1]))\n\
+                 time.sleep(20)",
+            ])
+            .arg(&ready)
+            .args(["whisper-server", "sherpa-onnx", "--model=synthetic-marker"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let port = loop {
+            if let Ok(t) = std::fs::read_to_string(&ready)
+                && let Ok(p) = t.trim().parse::<u16>()
+            {
+                break p;
+            }
+            assert!(Instant::now() < deadline, "foreign fixture failed");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let foreign_pid = child.id();
+        let net = ServerNet {
+            host: "127.0.0.1",
+            port_override: Some(port),
+        };
+        // Legacy PID-only metadata must not grant ownership either.
+        std::fs::write(
+            root.path().join("servers.json"),
+            format!(r#"{{"whisper":{foreign_pid}}}"#),
+        )
+        .unwrap();
+        let status = server_status(root.path(), &net);
+        assert_eq!(status.len(), 1, "status={status:?}");
+        assert!(
+            status[0].0.starts_with("unknown"),
+            "invented identity: {status:?}"
+        );
+        assert!(!status[0].1);
+        // Never adopt/kill on port/cmdline substrings.
+        let err = ensure_server(
+            root.path(),
+            "whisper",
+            "synthetic".into(),
+            port,
+            || panic!("foreign port must not spawn"),
+            || panic!("foreign port must not probe"),
+        )
+        .unwrap_err();
+        assert!(err.contains("owned by another process"), "{err}");
+        drop_servers(root.path());
+        reap_stale_servers(root.path());
+        assert!(port_open(port), "foreign listener was touched");
+        let alive = child.try_wait().unwrap().is_none();
+        assert!(alive, "unrelated process was signalled");
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn stale_metadata_and_pid_reuse_never_validate() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        // Unrelated sleeper: its PID is used for stale entries.
+        let mut sleeper = Command::new("sleep")
+            .arg("20")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = sleeper.id();
+        let port = free_port();
+        let net = ServerNet {
+            host: "127.0.0.1",
+            port_override: Some(port),
+        };
+        // Wrong port + wrong start time + stopped server cases.
+        let started = proc_start_ticks(pid).unwrap();
+        let records = HashMap::from([
+            (
+                "whisper".to_string(),
+                ServerRecord {
+                    pid,
+                    start_ticks: started + 1,
+                    port,
+                },
+            ),
+            (
+                "sherpa-online".to_string(),
+                ServerRecord {
+                    pid,
+                    start_ticks: started,
+                    port: 1,
+                },
+            ),
+        ]);
+        std::fs::write(
+            root.path().join("servers.json"),
+            serde_json::to_vec(&records).unwrap(),
+        )
+        .unwrap();
+        // Port closed -> no entries even with metadata present.
+        assert!(server_status(root.path(), &net).is_empty());
+        // Foreign listener on the port + stale records -> unknown, not
+        // a stale engine name.
+        let listener = std::net::TcpListener::bind(format!("127.0.0.1:{port}")).unwrap();
+        let status = server_status(root.path(), &net);
+        assert_eq!(status.len(), 1, "{status:?}");
+        assert!(status[0].0.starts_with("unknown"));
+        assert!(!status[0].1);
+        drop(listener);
+        drop_servers(root.path());
+        reap_stale_servers(root.path());
+        assert!(sleeper.try_wait().unwrap().is_none(), "sleeper killed");
+        let _ = sleeper.kill();
+        let _ = sleeper.wait();
+    }
+
+    #[test]
+    fn replacement_removes_previous_owned_process_and_socket() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let port_a = free_port();
+        let mut port_b = free_port();
+        while port_b == port_a {
+            port_b = free_port();
+        }
+        let pid_a = spawn_owned(root.path(), "whisper", "key-a", port_a).unwrap();
+        assert!(port_open(port_a));
+        // Local-to-local switch: different engine + port.
+        let pid_b = spawn_owned(root.path(), "sherpa-online", "key-b", port_b).unwrap();
+        assert_ne!(pid_a, pid_b);
+        wait_gone(pid_a);
+        wait_port_closed(port_a);
+        assert!(proc_gone(pid_a), "previous owned process survived");
+        assert!(!port_open(port_a), "previous socket survived");
+        assert!(port_open(port_b));
+        // Same-name key change also replaces.
+        let pid_c = {
+            ensure_server(
+                root.path(),
+                "sherpa-online",
+                "key-c".into(),
+                port_b,
+                || {
+                    let mut cmd = Command::new("python3");
+                    cmd.arg("-c")
+                        .arg(
+                            "import socket,sys,time\n\
+                             s=socket.socket()\n\
+                             s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n\
+                             s.bind(('127.0.0.1',int(sys.argv[1])))\n\
+                             s.listen(8)\n\
+                             time.sleep(30)",
+                        )
+                        .arg(port_b.to_string())
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null());
+                    kill_on_parent_death(&mut cmd);
+                    cmd.spawn().map_err(|e| e.to_string())
+                },
+                || Ok(()),
+            )
+            .unwrap();
+            servers().lock().unwrap()["sherpa-online"].child.id()
+        };
+        assert_ne!(pid_b, pid_c);
+        wait_gone(pid_b);
+        assert!(proc_gone(pid_b));
+        drop_servers(root.path());
+        wait_gone(pid_c);
+        assert!(proc_gone(pid_c));
+        assert!(!port_open(port_b));
+    }
+
+    #[test]
+    fn leaving_local_operation_stops_owned() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let port = free_port();
+        let pid = spawn_owned(root.path(), "whisper", "k", port).unwrap();
+        assert!(port_open(port));
+        // Cloud primary (leaving local): reconcile must stop owned.
+        use crate::settings::{SttChainEntry, SttEntryKind};
+        let stt = SttSettings {
+            entries: vec![SttChainEntry {
+                id: "c".into(),
+                name: "cloud".into(),
+                kind: SttEntryKind::Cloud,
+                enabled: true,
+                provider: "OpenAI".into(),
+                url: String::new(),
+                model: "whisper-1".into(),
+                api_key: "k".into(),
+                streaming: true,
+            }],
+            auto_start_server: true,
+            ..Default::default()
+        };
+        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        wait_gone(pid);
+        wait_port_closed(port);
+        assert!(proc_gone(pid));
+        assert!(!port_open(port));
+        assert!(
+            server_status(
+                root.path(),
+                &ServerNet {
+                    host: "127.0.0.1",
+                    port_override: Some(port)
+                }
+            )
+            .is_empty()
+        );
+        // Disabled local entry also leaves local operation.
+        let pid2 = spawn_owned(root.path(), "whisper", "k2", port).unwrap();
+        let mut stt2 = SttSettings::default();
+        stt2.entries[0].enabled = false;
+        assert!(!reconcile_servers(&stt2, root.path()).unwrap());
+        wait_gone(pid2);
+        assert!(proc_gone(pid2));
+    }
+
+    #[test]
+    fn rapid_switches_obsolete_warmup_aborts() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let port = free_port();
+        let gen_before = server_generation();
+        let pid = spawn_owned(root.path(), "whisper", "v1", port).unwrap();
+        // Queued warmup captured the old generation; a Stop/switch
+        // bumps it, so the queued job must abort, not resurrect.
+        let captured = gen_before;
+        drop_servers(root.path());
+        let gen_after = server_generation();
+        assert_ne!(captured, gen_after, "generation did not bump on stop");
+        wait_gone(pid);
+        // Simulated queued warmup body:
+        let resurrected = if captured != server_generation() {
+            Err("obsolete generation, skipping".to_string())
+        } else {
+            spawn_owned(root.path(), "whisper", "v1-old", port).map(|_| ())
+        };
+        assert!(resurrected.is_err());
+        assert!(!port_open(port), "obsolete warmup resurrected config");
+        // Same-name replacement also bumps generation.
+        let pid2 = spawn_owned(root.path(), "whisper", "v2", port).unwrap();
+        let gen2 = server_generation();
+        ensure_server(
+            root.path(),
+            "whisper",
+            "v3".into(),
+            port,
+            || {
+                let mut cmd = Command::new("python3");
+                cmd.arg("-c")
+                    .arg(
+                        "import socket,sys,time\n\
+                         s=socket.socket()\n\
+                         s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n\
+                         s.bind(('127.0.0.1',int(sys.argv[1])))\n\
+                         s.listen(8)\n\
+                         time.sleep(30)",
+                    )
+                    .arg(port.to_string())
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                kill_on_parent_death(&mut cmd);
+                cmd.spawn().map_err(|e| e.to_string())
+            },
+            || Ok(()),
+        )
+        .unwrap();
+        assert_ne!(gen2, server_generation());
+        drop_servers(root.path());
+        wait_gone(pid2);
+    }
+
+    #[test]
+    fn switching_during_inference_defers() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let port = free_port();
+        let pid = spawn_owned(root.path(), "whisper", "k", port).unwrap();
+        // Active inference: reconcile defers, owned survives.
+        test_set_busy(true);
+        assert!(inference_active());
+        use crate::settings::{SttChainEntry, SttEntryKind};
+        let stt = SttSettings {
+            entries: vec![SttChainEntry {
+                id: "c".into(),
+                name: "cloud".into(),
+                kind: SttEntryKind::Cloud,
+                enabled: true,
+                provider: "OpenAI".into(),
+                url: String::new(),
+                model: "whisper-1".into(),
+                api_key: "k".into(),
+                streaming: true,
+            }],
+            auto_start_server: true,
+            ..Default::default()
+        };
+        assert!(reconcile_servers(&stt, root.path()).unwrap());
+        assert!(port_open(port));
+        assert!(!proc_gone(pid));
+        assert!(reconcile_lazy_switch(root.path()).unwrap());
+        assert!(port_open(port));
+        // Idle: the pending switch applies.
+        test_set_busy(false);
+        assert!(!inference_active());
+        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        wait_gone(pid);
+        assert!(proc_gone(pid));
+        assert!(!port_open(port));
+    }
+
+    #[test]
+    fn autostart_and_lazy_behavior() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        // Fingerprint ignores unrelated edits (keep-warm).
+        let a = SttSettings::default();
+        let mut b = a.clone();
+        b.keep_warm = "5m".into();
+        assert_eq!(
+            stt_primary_id(&a, root.path()),
+            stt_primary_id(&b, root.path())
+        );
+        // ... but moves on provider/model/port switches.
+        b.local_provider = LocalSttProvider::Nvidia;
+        assert_ne!(
+            stt_primary_id(&a, root.path()),
+            stt_primary_id(&b, root.path())
+        );
+        b = a.clone();
+        b.server_port = "6111".into();
+        assert_ne!(
+            stt_primary_id(&a, root.path()),
+            stt_primary_id(&b, root.path())
+        );
+        // Lazy switch stops old without starting new.
+        let port = free_port();
+        let pid = spawn_owned(root.path(), "whisper", "old", port).unwrap();
+        assert!(port_open(port));
+        assert!(!reconcile_lazy_switch(root.path()).unwrap());
+        wait_gone(pid);
+        assert!(proc_gone(pid));
+        assert!(!port_open(port));
+        // Lazy steady state is a no-op (next utterance warms).
+        // Use an isolated closed port: default ports may be held by
+        // the installed service on this host (never touch it).
+        let stt_lazy = SttSettings {
+            auto_start_server: false,
+            ..Default::default()
+        };
+        assert!(!reconcile_servers(&stt_lazy, root.path()).unwrap());
+        let closed = free_port();
+        let isolated = ServerNet {
+            host: "127.0.0.1",
+            port_override: Some(closed),
+        };
+        assert!(!port_open(closed));
+        assert!(server_status(root.path(), &isolated).is_empty());
     }
 }

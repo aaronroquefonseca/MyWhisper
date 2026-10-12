@@ -349,6 +349,103 @@ pub fn spawn_hotkey_watcher(
     });
 }
 
+/// Watch STT settings for provider switches and reconcile the
+/// running local servers (service-owned, 2 s poll).
+///
+/// - Local-to-local with autostart: warm the new engine now (ensure
+///   replaces the old); lazy: stop the old, leave the new cold until
+///   the next utterance.
+/// - Leaving local (cloud / self-hosted / Whistle / disabled /
+///   unresolvable): stop owned locals so the previous engine does not
+///   stay warm.
+/// - Autostart toggle alone: warm on enable (if local and idle),
+///   keep running on disable (no bounce).
+/// - Active recording/inference defers: the fingerprint is retried on
+///   the next idle tick, never mid-utterance.
+/// - Fallback chains key off the primary (first enabled) plan; the
+///   release worker still ensures fallbacks per-utterance.
+///
+/// Engine owner only: call from the service.
+pub fn spawn_stt_watcher(db_path: PathBuf) {
+    std::thread::spawn(move || {
+        let data_dir = db_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
+        // Boot state already warmed (or deliberately lazy) by
+        // run_headless; track it so the first tick is a no-op.
+        let (mut last_primary, mut last_auto) = match Store::open(&db_path) {
+            Ok(store) => {
+                let stt = store.load_settings().stt;
+                (
+                    crate::transcribe::stt_primary_id(&stt, &data_dir),
+                    stt.auto_start_server,
+                )
+            }
+            Err(_) => (String::new(), true),
+        };
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            let Ok(store) = Store::open(&db_path) else {
+                continue;
+            };
+            let stt = store.load_settings().stt;
+            let curr_primary = crate::transcribe::stt_primary_id(&stt, &data_dir);
+            let curr_auto = stt.auto_start_server;
+            if curr_primary == last_primary && curr_auto == last_auto {
+                continue;
+            }
+            if crate::transcribe::inference_active() {
+                eprintln!("[service] STT switch deferred (active utterance)");
+                continue;
+            }
+            if curr_primary != last_primary {
+                // Configuration moved.
+                let applied = if curr_auto {
+                    match crate::transcribe::reconcile_servers(&stt, &data_dir) {
+                        Ok(deferred) => !deferred,
+                        Err(e) => {
+                            eprintln!("[service] STT reconcile: {e}");
+                            true
+                        }
+                    }
+                } else {
+                    match crate::transcribe::reconcile_lazy_switch(&data_dir) {
+                        Ok(deferred) => !deferred,
+                        Err(e) => {
+                            eprintln!("[service] STT lazy stop: {e}");
+                            true
+                        }
+                    }
+                };
+                if applied {
+                    eprintln!("[service] STT config reconciled");
+                    last_primary = curr_primary;
+                    last_auto = curr_auto;
+                }
+            } else {
+                // Only the autostart toggle moved.
+                if curr_auto {
+                    match crate::transcribe::reconcile_servers(&stt, &data_dir) {
+                        Ok(deferred) => {
+                            if !deferred {
+                                last_auto = curr_auto;
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[service] STT autostart warm: {e}");
+                            last_auto = curr_auto;
+                        }
+                    }
+                } else {
+                    // Disable keeps the running server (no bounce).
+                    last_auto = curr_auto;
+                }
+            }
+        }
+    });
+}
+
 /// Commands from background threads to the service's GTK thread.
 /// `VoiceOverlay` is `!Send`, so everything pill-related crosses as
 /// a message and applies on the main loop.
