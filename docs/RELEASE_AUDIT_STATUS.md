@@ -1,6 +1,8 @@
 # Release audit status
 
-Source checkpoint: `a31e47a` (host, Nix package, clean NixOS desktop and downloaded Vulkan loader), 12 October 2026. Branch: `fix/release-audit`. Historical audit branch remains `f018ab855af41759e275c80708d67973f2890587`; current `main` is integrated. No PR has been submitted.
+Source checkpoint: `a31e47a` (host, Nix package, clean NixOS desktop and downloaded Vulkan loader), 12 October 2026. Branch: `fix/release-audit`. Historical audit branch remains `f018ab855af41759e275c80708d67973f2890587`; current `main` is integrated. No complete-audit PR has been submitted. The owner subsequently authorized the scoped stack described below.
+
+On 12 October the owner replaced the single-PR submission strategy with a scoped review stack. The first three PRs are open: [#5 — identity/private-file safety](https://github.com/aaronroquefonseca/MyWhisper/pull/5), [#6 — symbolic logo/toast feedback](https://github.com/aaronroquefonseca/MyWhisper/pull/6), and [#7 — packaging/Nix prerequisites](https://github.com/aaronroquefonseca/MyWhisper/pull/7). Bases are `main` → `fix/audit-identity-files` → `fix/audit-desktop-ui` → `fix/audit-packaging`. Each scoped branch passes its own local checks and preserves a findings matrix/evidence; their 83-test suites are subsets based on main, not substitutes for this integration branch’s expanded audit coverage. Hosted CI for #7 is running. No merge, deployment, release or tag was performed. The remaining original audit work stays on `fix/release-audit`; these PRs do not establish full R01–R51 completion.
 
 The work is unfinished. Earlier statements about “two remaining” concerned a subset of the independent review, not completion of the original release audit. Stopping at those checkpoints was premature. This status keeps the original scope visible.
 
