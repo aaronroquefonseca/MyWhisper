@@ -158,9 +158,19 @@ pub fn toast_proof(app: &gtk4::Application, window: &gtk4::ApplicationWindow, da
                     gtk4::gdk::RGBA::parse(if dark { "#242830" } else { "#ffffff" }).unwrap();
                 let expected = [card.red(), card.green(), card.blue()]
                     .map(|value| (value * 255.0).round() as u8);
+                // The translated label can overlap (24, 12). Sample the
+                // lower interior, below the label and away from rounded ends.
+                let background = texture_pixel(
+                    &normal,
+                    normal.width() as usize / 2,
+                    normal.height() as usize - 4,
+                );
+                eprintln!(
+                    "toast palette probe: original={normal_pixel:?} interior={background:?} expected={expected:?}"
+                );
                 for index in 0..3 {
                     assert!(
-                        normal_pixel[index].abs_diff(expected[index]) <= 2,
+                        background[index].abs_diff(expected[index]) <= 2,
                         "toast background must match the active card palette"
                     );
                 }
