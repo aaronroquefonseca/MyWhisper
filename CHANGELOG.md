@@ -15,6 +15,8 @@
   available before storage initialization, and verify release versions,
   dependency notices, artifact integrity, and isolated regression/UI checks.
   ([#7](https://github.com/aaronroquefonseca/MyWhisper/pull/7))
+- License MyWhisper under MIT and include the project license alongside
+  preserved third-party notices in release archives and installed packages.
 
 ## 0.9.3
 

@@ -11,6 +11,7 @@
     mywhisper = pkgs.rustPlatform.buildRustPackage {
       pname = "mywhisper";
       version = manifest.package.version;
+      meta.license = pkgs.lib.licenses.mit;
       src = pkgs.lib.fileset.toSource {
         root = ../../.;
         fileset = pkgs.lib.fileset.unions ([
