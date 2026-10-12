@@ -17,6 +17,7 @@
   ([#7](https://github.com/aaronroquefonseca/MyWhisper/pull/7))
 - License MyWhisper under MIT and include the project license alongside
   preserved third-party notices in release archives and installed packages.
+  ([#9](https://github.com/aaronroquefonseca/MyWhisper/pull/9))
 
 ## 0.9.3
 
