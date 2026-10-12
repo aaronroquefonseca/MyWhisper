@@ -871,16 +871,25 @@ impl Store {
         if let (Some(base), Some(next), Some(current_array)) =
             (base.as_array(), next.as_array(), current.as_array())
         {
+            // Empty IDs identify the single legacy model entry too. Ambiguous
+            // legacy lists retain positional matching rather than conflating
+            // multiple entries with the same ID.
+            fn entry_id(value: &serde_json::Value) -> Option<&str> {
+                value.get("id").and_then(serde_json::Value::as_str)
+            }
             let mut patched = Vec::with_capacity(next.len());
             for (index, value) in next.iter().enumerate() {
-                let id = value
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|id| !id.is_empty());
+                let id = entry_id(value).filter(|id| {
+                    [base, next, current_array].into_iter().all(|items| {
+                        items
+                            .iter()
+                            .filter(|item| entry_id(item) == Some(*id))
+                            .count()
+                            <= 1
+                    })
+                });
                 let find = |items: &[serde_json::Value]| match id {
-                    Some(id) => items.iter().position(|item| {
-                        item.get("id").and_then(serde_json::Value::as_str) == Some(id)
-                    }),
+                    Some(id) => items.iter().position(|item| entry_id(item) == Some(id)),
                     None => (base.len() == next.len())
                         .then_some(index)
                         .filter(|index| *index < items.len()),
@@ -891,7 +900,20 @@ impl Store {
                         Self::patch_changed(&base[old], value, &mut item);
                         patched.push(item);
                     }
+                    // An unobserved deletion wins over editing a stale entry;
+                    // restoring it requires an explicit addition with a new ID.
+                    (Some(_), None) if id.is_some() => {}
                     _ => patched.push(value.clone()),
+                }
+            }
+            // Entries added by another frontend are absent from this caller's
+            // baseline. Preserve them after the caller's explicit ordering.
+            for value in current_array {
+                if let Some(id) = entry_id(value)
+                    && !base.iter().any(|item| entry_id(item) == Some(id))
+                    && !next.iter().any(|item| entry_id(item) == Some(id))
+                {
+                    patched.push(value.clone());
                 }
             }
             *current = serde_json::Value::Array(patched);
@@ -3637,6 +3659,165 @@ mod release_regressions {
             })
             .unwrap();
         assert!(!json.contains("synthetic secret"));
+    }
+
+    #[test]
+    fn stale_frontend_provider_edits_preserve_concurrent_additions() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("synthetic.db");
+        let first = Store::open_with_key(&path, &[96; 32]).unwrap();
+        let second = Store::open_with_key(&path, &[96; 32]).unwrap();
+        let mut stale = first.try_load_settings().unwrap();
+        let mut concurrent = second.try_load_settings().unwrap();
+        let mut llm = concurrent.language_models.entries[0].clone();
+        llm.id = "synthetic-added-llm".into();
+        llm.name = "concurrently added LLM 世界".into();
+        let mut stt = concurrent.stt.entries[0].clone();
+        stt.id = "synthetic-added-stt".into();
+        stt.name = "concurrently added STT 世界".into();
+        concurrent.language_models.entries.push(llm);
+        concurrent.stt.entries.push(stt);
+        second.save_settings(&concurrent).unwrap();
+
+        for name in ["first stale edit", "second stale edit"] {
+            stale.language_models.entries[0].name = name.into();
+            stale.stt.entries[0].name = name.into();
+            first.save_settings(&stale).unwrap();
+            let fresh = Store::open_with_key(&path, &[96; 32]).unwrap();
+            let saved = fresh.try_load_settings().unwrap();
+            assert_eq!(saved.language_models.entries.len(), 2, "lost new LLM");
+            assert_eq!(saved.stt.entries.len(), 2, "lost new STT");
+            assert_eq!(saved.language_models.entries[0].name, name);
+            assert_eq!(saved.stt.entries[0].name, name);
+            assert_eq!(saved.language_models.entries[1].id, "synthetic-added-llm");
+            assert_eq!(
+                saved.language_models.entries[1].name,
+                "concurrently added LLM 世界"
+            );
+            assert_eq!(saved.stt.entries[1].id, "synthetic-added-stt");
+            assert_eq!(saved.stt.entries[1].name, "concurrently added STT 世界");
+        }
+    }
+
+    #[test]
+    fn stale_frontend_provider_edits_do_not_restore_deleted_credentials() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("synthetic.db");
+        let first = Store::open_with_key(&path, &[97; 32]).unwrap();
+        let mut seeded = first.try_load_settings().unwrap();
+        seeded.language_models.entries[0].api_key = "synthetic-deleted-llm-key".into();
+        seeded.stt.entries[0].api_key = "synthetic-deleted-stt-key".into();
+        first.save_settings(&seeded).unwrap();
+        let second = Store::open_with_key(&path, &[97; 32]).unwrap();
+        let mut stale = first.try_load_settings().unwrap();
+        let mut concurrent = second.try_load_settings().unwrap();
+        concurrent.language_models.entries[0].id = "synthetic-replacement-llm".into();
+        concurrent.language_models.entries[0].api_key.clear();
+        concurrent.stt.entries[0].id = "synthetic-replacement-stt".into();
+        concurrent.stt.entries[0].api_key.clear();
+        second.save_settings(&concurrent).unwrap();
+
+        stale.language_models.entries[0].name = "stale edit of deleted LLM".into();
+        stale.stt.entries[0].name = "stale edit of deleted STT".into();
+        stale.preferences.theme = crate::settings::Theme::Dark;
+        first.save_settings(&stale).unwrap();
+        let fresh = Store::open_with_key(&path, &[97; 32]).unwrap();
+        let saved = fresh.try_load_settings().unwrap();
+        assert_eq!(saved.language_models.entries.len(), 1);
+        assert_eq!(
+            saved.language_models.entries[0].id,
+            "synthetic-replacement-llm"
+        );
+        assert_eq!(saved.stt.entries.len(), 1);
+        assert_eq!(saved.stt.entries[0].id, "synthetic-replacement-stt");
+        assert_eq!(saved.preferences.theme, crate::settings::Theme::Dark);
+        let raw: String = fresh
+            .conn
+            .query_row("SELECT value FROM kv WHERE key='settings'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(!raw.contains("synthetic-deleted-llm-key"));
+        assert!(!raw.contains("synthetic-deleted-stt-key"));
+    }
+
+    #[test]
+    fn stale_frontend_provider_reordering_preserves_edits_and_explicit_deletion() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("synthetic.db");
+        let first = Store::open_with_key(&path, &[98; 32]).unwrap();
+        let mut seeded = first.try_load_settings().unwrap();
+        let mut entry = seeded.language_models.entries[0].clone();
+        entry.id = "synthetic-second".into();
+        seeded.language_models.entries.push(entry);
+        first.save_settings(&seeded).unwrap();
+        let second = Store::open_with_key(&path, &[98; 32]).unwrap();
+        let mut stale = first.try_load_settings().unwrap();
+        let mut concurrent = second.try_load_settings().unwrap();
+        concurrent.language_models.entries[1].thinking = None;
+        concurrent.language_models.entries[1].name = "concurrent edit 世界".into();
+        let mut added = concurrent.language_models.entries[1].clone();
+        added.id = "synthetic-third".into();
+        concurrent.language_models.entries.insert(0, added);
+        second.save_settings(&concurrent).unwrap();
+        let raw: String = second
+            .conn
+            .query_row("SELECT value FROM kv WHERE key='settings'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let mut raw: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        raw["language_models"]["entries"][2]["future_entry"] =
+            serde_json::json!({"synthetic":"preserve"});
+        second
+            .conn
+            .execute(
+                "UPDATE kv SET value=?1 WHERE key='settings'",
+                [raw.to_string()],
+            )
+            .unwrap();
+
+        stale.language_models.entries.swap(0, 1);
+        first.save_settings(&stale).unwrap();
+        let saved = second.try_load_settings().unwrap();
+        assert_eq!(
+            saved
+                .language_models
+                .entries
+                .iter()
+                .map(|e| e.id.as_str())
+                .collect::<Vec<_>>(),
+            ["synthetic-second", "", "synthetic-third"]
+        );
+        assert_eq!(
+            saved.language_models.entries[0].name,
+            "concurrent edit 世界"
+        );
+        assert_eq!(saved.language_models.entries[0].thinking, None);
+
+        stale.language_models.entries.remove(1);
+        first.save_settings(&stale).unwrap();
+        let saved = second.try_load_settings().unwrap();
+        assert_eq!(
+            saved
+                .language_models
+                .entries
+                .iter()
+                .map(|e| e.id.as_str())
+                .collect::<Vec<_>>(),
+            ["synthetic-second", "synthetic-third"]
+        );
+        let raw: String = second
+            .conn
+            .query_row("SELECT value FROM kv WHERE key='settings'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&raw).unwrap()["language_models"]["entries"]
+                [0]["future_entry"]["synthetic"],
+            "preserve"
+        );
     }
 
     #[test]
