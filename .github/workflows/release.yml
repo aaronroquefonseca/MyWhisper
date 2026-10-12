@@ -63,7 +63,14 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo clippy --locked --all-targets -- -D warnings
-          cargo test --locked --all-targets
+          cargo test --locked --all-targets --no-run
+          # The fixture belongs only to this child. Keep toolchain caches outside
+          # its private HOME, and never pass desktop keyring/session state.
+          python3 scripts/disposable.py MYWHISPER_AUDIT_ROOT rusttests \
+            env -u DISPLAY -u SSH_AUTH_SOCK CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
+            RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+            MYWHISPER_DB_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
+            cargo test --locked --all-targets
           python3 packaging/test-upgrade.py
           python3 packaging/test-release.py
           python3 scripts/test-disposable.py

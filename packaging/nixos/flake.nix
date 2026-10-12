@@ -26,6 +26,29 @@
       cargoBuildFlags = [ "--bin" "mywhisper" ];
       doCheck = true;
       nativeCheckInputs = [ pkgs.python3 pkgs.cacert pkgs.dbus pkgs.getent ];
+      # Retain the standard Cargo hook and all its flags/assertions. The
+      # subshell scopes the synthetic key and HOME to checking, never install
+      # hooks, wrappers or the resulting package.
+      checkPhase = ''
+        (
+          umask 077
+          storeFixture=$(mktemp -d "$TMPDIR/mywhisper-store-check.XXXXXXXX")
+          trap 'rm -rf -- "$storeFixture"' EXIT
+          export HOME="$storeFixture/home"
+          export XDG_CONFIG_HOME="$storeFixture/config"
+          export XDG_DATA_HOME="$storeFixture/data"
+          export XDG_CACHE_HOME="$storeFixture/cache"
+          export XDG_STATE_HOME="$storeFixture/state"
+          export XDG_RUNTIME_DIR="$storeFixture/runtime"
+          mkdir -m700 "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" \
+            "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR"
+          unset DBUS_SESSION_BUS_ADDRESS DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET \
+            NIRI_SOCKET GNOME_KEYRING_CONTROL SSH_AUTH_SOCK
+          export MYWHISPER_DB_KEY=0000000000000000000000000000000000000000000000000000000000000000
+          echo "Checking with disposable HOME/XDG state and explicit encrypted-store key (no desktop session)"
+          cargoCheckHook
+        )
+      '';
       preCheck = ''
         export NO_PROXY=127.0.0.1,localhost,::1
         export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
