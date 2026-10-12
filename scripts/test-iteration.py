@@ -192,6 +192,44 @@ class ReleasePreparation(Fixture):
             with self.assertRaises(subprocess.CalledProcessError):
                 prepare.remote_exists("refs/tags/v0.9.4")
 
+    def test_refresh_after_preparation_merge_preserves_version_and_historical_notes(self):
+        self.invoke("0.9.4", "--repo", "fixture/project", "--previous-tag", "v0.9.3", "--create-pr")
+        self.git("merge", "--ff-only", "release/v0.9.4-" + self.sha[:12])
+        old = (self.repo / "CHANGELOG.md").read_text()
+        old = old.replace("## 0.9.4", "## [0.9.4](https://example.invalid/tag) - 2026-10-12")
+        self.write(self.repo, "CHANGELOG.md", old)
+        self.write(self.repo, "README.md", "Another product improvement after preparation.\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "Improve after preparation")
+        self.git("push", "-q", "origin", "main")
+        self.sha = self.git("rev-parse", "HEAD")
+        self.notes = "## What's Changed\n* Include both reviewed improvements ([#5](https://example.invalid/pull/5)).\n"
+        self.invoke("0.9.4", "--refresh", "--repo", "fixture/project", "--previous-tag", "v0.9.3", "--create-pr")
+        self.git("merge", "--ff-only", "release/v0.9.4-" + self.sha[:12])
+        prepare.release.verify_notes_source(self.repo, "0.9.4")
+        changelog = (self.repo / "CHANGELOG.md").read_text()
+        self.assertEqual([v for v, _ in prepare.release.changelog_sections(changelog)].count("0.9.4"), 1)
+        self.assertIn("## [0.9.4](https://example.invalid/tag) - 2026-10-12", changelog)
+        self.assertIn("Include both reviewed improvements", changelog)
+        self.assertIn("Released behavior", changelog)
+        self.assertEqual(tomllib.loads((self.repo / "Cargo.toml").read_text())["package"]["version"], "0.9.4")
+        command = [sys.executable, str(HERE.parent / "packaging/release.py"), "v0.9.4",
+                   "--root", str(self.repo), "--compare-version-to", self.sha]
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.write(self.repo, "README.md", "Product work omitted from this refreshed snapshot.\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "Intervening product change")
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0, "stale same-version refresh passed CI")
+        self.assertIn("product changes", result.stderr)
+
+    def test_refresh_rejects_wrong_version_and_published_tags(self):
+        with self.assertRaisesRegex(ValueError, "current unpublished"):
+            prepare.version_updates(self.repo, "0.9.4", self.notes, refresh=True)
+        with self.assertRaisesRegex(ValueError, "tag already exists"):
+            self.invoke("0.9.3", "--refresh", "--repo", "fixture/project", "--previous-tag", "v0.9.3", "--create-pr")
+
 
 
 if __name__ == "__main__":

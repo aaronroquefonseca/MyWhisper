@@ -49,7 +49,7 @@ def preflight(root, tag):
             "notes": notes[0] + "\n"}
 
 
-def changelog_sections(text):
+def changelog_headings(text):
     """Recognize version headings; prose, lists and nested notes stay free-form."""
     headings = []
     for match in re.finditer(r"^##[ \t]+([^\n]+)\n?", text, re.MULTILINE):
@@ -60,6 +60,11 @@ def changelog_sections(text):
             candidate = heading[1] or heading[2]
             if VERSION.fullmatch(candidate):
                 headings.append((candidate, match.start(), match.end()))
+    return headings
+
+
+def changelog_sections(text):
+    headings = changelog_headings(text)
     return [(candidate, text[end:headings[index + 1][1] if index + 1 < len(headings) else len(text)])
             for index, (candidate, _, end) in enumerate(headings)]
 
@@ -329,13 +334,17 @@ def main():
         parser.error("a release tag is required")
     metadata = preflight(args.root, args.tag)
     changed_version = False
+    changed_notes_source = False
     if args.compare_version_to:
         if not re.fullmatch(r"[0-9a-f]{40}", args.compare_version_to):
             raise ValueError("invalid CI base commit")
         prior = subprocess.check_output(["git", "show", args.compare_version_to + ":Cargo.toml"],
                                         cwd=args.root, text=True, timeout=5)
         changed_version = tomllib.loads(prior)["package"]["version"] != metadata["version"]
-    if args.verify_tag or args.verify_notes_source or changed_version:
+        changed_notes_source = bool(subprocess.check_output(
+            ["git", "diff", "--name-only", args.compare_version_to, "--", ".github/release-source.json"],
+            cwd=args.root, timeout=5))
+    if args.verify_tag or args.verify_notes_source or changed_version or changed_notes_source:
         verify_notes_source(args.root, metadata["version"])
     if args.verify_tag:
         target = subprocess.check_output(["git", "rev-parse", f"refs/tags/{args.tag}^{{commit}}"],

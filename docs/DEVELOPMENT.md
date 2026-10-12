@@ -133,14 +133,22 @@ Release preparation requires Python 3.11+ only when run locally; the GitHub
 Actions preparation workflow supplies Python and can be used without a local
 interpreter. Normal Cargo development and the Bash PR tester do not require it.
 
-CI checks the source snapshot when the package version changes and when a tag
-is verified. If product/dependency changes were merged after preparation, it
+CI checks the source snapshot when the package version or snapshot changes and
+when a tag is verified. If product/dependency changes were merged after preparation, it
 blocks publication until the notes and source snapshot are refreshed. The
 snapshot may change only after those changes are included and reviewed in the
 release PR. You can also close the stale preparation PR and prepare a fresh one
 from the updated main commit; its existing branch is deliberately not replaced.
 The source suffix lets fresh preparation create a new branch without deleting
 or overwriting reviewed notes in the old PR. Close the superseded PR.
+
+If preparation has already merged but the version is still untagged, run
+`python3 scripts/prepare-release.py VERSION --refresh --create-pr`, or select
+`refresh_notes` in Actions. This opens a new preparation PR for the same version.
+It regenerates notes from the previous published release; review the diff and
+retain any manually expanded details. Use `--notes-file` to supply reviewed notes
+instead. Existing version headings and historical sections are preserved, and
+refresh refuses versions that already have a remote tag.
 
 The archive checksum cannot be known before the build. CI therefore generates
 and attaches a final `PKGBUILD` with the checked archive's checksum, and includes

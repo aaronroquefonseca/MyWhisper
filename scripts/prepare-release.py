@@ -44,16 +44,20 @@ def replace_one(pattern, replacement, text, description):
     return updated
 
 
-def version_updates(root, candidate, notes):
+def version_updates(root, candidate, notes, refresh=False):
     release.version(candidate)
     if not notes.strip() or len(notes.encode()) > 256 * 1024:
         raise ValueError("release notes must be nonempty and bounded")
     manifest = (root / "Cargo.toml").read_text()
     package = tomllib.loads(manifest)["package"]
-    if package["name"] != "mywhisper" or version_key(candidate) <= version_key(package["version"]):
+    if package["name"] != "mywhisper":
+        raise ValueError("expected the MyWhisper package")
+    if refresh and candidate != package["version"]:
+        raise ValueError("--refresh requires the current unpublished package version")
+    if not refresh and version_key(candidate) <= version_key(package["version"]):
         raise ValueError("choose a newer MyWhisper package version")
     changelog = (root / "CHANGELOG.md").read_text()
-    if any(value == candidate for value, _ in release.changelog_sections(changelog)):
+    if not refresh and any(value == candidate for value, _ in release.changelog_sections(changelog)):
         raise ValueError("this release already has a changelog section")
     section = re.search(r"(?ms)^\[package\][ \t]*\n(.*?)(?=^\[|\Z)", manifest)
     if section is None:
@@ -70,10 +74,19 @@ def version_updates(root, candidate, notes):
     # Generated GitHub Markdown and reviewed edits are retained verbatim. The
     # release parser recognizes only version headings, including dated/linked
     # forms; contributors need no special files or Markdown list syntax.
-    heading = re.search(r"(?m)^# Changelog[ \t]*\n", changelog)
-    if heading is None:
-        raise ValueError("missing changelog document heading")
-    changelog = changelog[:heading.end()] + f"\n## {candidate}\n\n{notes.strip()}\n\n" + changelog[heading.end():].lstrip("\n")
+    if refresh:
+        headings = release.changelog_headings(changelog)
+        matches = [(index, end) for index, (value, _, end) in enumerate(headings) if value == candidate]
+        if len(matches) != 1:
+            raise ValueError("--refresh needs exactly one current changelog section")
+        index, start = matches[0]
+        end = headings[index + 1][1] if index + 1 < len(headings) else len(changelog)
+        changelog = changelog[:start] + f"\n{notes.strip()}\n\n" + changelog[end:]
+    else:
+        heading = re.search(r"(?m)^# Changelog[ \t]*\n", changelog)
+        if heading is None:
+            raise ValueError("missing changelog document heading")
+        changelog = changelog[:heading.end()] + f"\n## {candidate}\n\n{notes.strip()}\n\n" + changelog[heading.end():].lstrip("\n")
     return {"Cargo.toml": manifest, "Cargo.lock": lock,
             "packaging/arch/PKGBUILD": pkgbuild, "CHANGELOG.md": changelog}
 
@@ -84,6 +97,7 @@ def main():
     parser.add_argument("--repo", help="owner/repo; defaults to gh's current repository")
     parser.add_argument("--previous-tag", help="last published stable release by default")
     parser.add_argument("--notes-file", type=Path, help="use previously reviewed Markdown instead of generated titles")
+    parser.add_argument("--refresh", action="store_true", help="refresh notes/source for the current version before it is tagged")
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--output", type=Path, help="write a reviewable patch/notes; no push or PR")
     action.add_argument("--create-pr", action="store_true", help="commit, push a new release branch and open its PR")
@@ -125,7 +139,7 @@ def main():
         worktree = Path(directory) / "source"
         run(["git", "-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", str(worktree), source_sha])
         try:
-            updates = version_updates(worktree, args.version, notes)
+            updates = version_updates(worktree, args.version, notes, refresh=args.refresh)
             updates[".github/release-source.json"] = json.dumps({
                 "schema": 1, "version": args.version, "source_sha": source_sha,
                 "previous_tag": previous, "previous_sha": previous_sha}, indent=2) + "\n"

@@ -15,6 +15,10 @@ on:
         description: Upload a reviewable patch and notes without creating a PR
         type: boolean
         default: false
+      refresh_notes:
+        description: Refresh the current unpublished version after more changes merged
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -42,9 +46,11 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           PREVIOUS_TAG: ${{ inputs.previous_tag }}
           PREVIEW_ONLY: ${{ inputs.preview_only }}
+          REFRESH_NOTES: ${{ inputs.refresh_notes }}
         run: |
           arguments=(--create-pr)
           if [[ "$PREVIEW_ONLY" == true ]]; then arguments=(--output .release-preview); fi
+          if [[ "$REFRESH_NOTES" == true ]]; then arguments+=(--refresh); fi
           python3 scripts/prepare-release.py "$RELEASE_VERSION" \
             --repo "$RELEASE_REPO" --previous-tag "$PREVIOUS_TAG" "${arguments[@]}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
