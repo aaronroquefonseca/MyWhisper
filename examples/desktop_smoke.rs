@@ -17,11 +17,15 @@ fn main() -> gtk4::glib::ExitCode {
         });
         let state = AppState::fresh();
         state.settings.borrow_mut().sync.enabled = false;
-        apply_theme(if dark {
+        let theme = if dark {
             mywhisper::settings::Theme::Dark
         } else {
             mywhisper::settings::Theme::Light
-        });
+        };
+        state.settings.borrow_mut().preferences.theme = theme;
+        state.settings.borrow_mut().preferences.ui_language = mywhisper::i18n::lang().code().into();
+        state.store.save_settings(&state.settings.borrow()).unwrap();
+        apply_theme(theme);
         let window = build_app_window(app, &state, "home", "Preferences");
         window.present();
         let mapped = window.clone();
