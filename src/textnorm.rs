@@ -1,18 +1,54 @@
 //! Pre-postprocessing text norms: dictionary prompt bias + snippet
-//! expansion. Faithful port of OpenWhispr's `dictionaryPromptCap`
+//! expansion. Port of OpenWhispr's `dictionaryPromptCap`
 //! budgets and `snippets.ts` matcher (regex-free: equivalent
-//! longest-first scan with the same boundary/folding rules).
+//! longest-first scan with the same boundary rules).
 //!
-//! Scope is deliberately pre-LLM: STT bias goes out with the next
-//! inference, snippet expansion rewrites the transcript before
-//! `post_process`. The LLM stage (when it lands) receives the
-//! expanded final, never re-substitutes.
+//! Pipeline position: snippet expansion runs ONCE, AFTER the LLM
+//! cleanup (`post_process` in [`crate::transcribe`]). The cleanup
+//! normalizes the raw STT text (accents, casing, spacing), then this
+//! single pass rewrites triggers literally. Consequences:
+//! - Replacements bypass the LLM: the model can neither mangle an
+//!   inserted expansion nor resurrect a trigger inside one.
+//! - Triggers the cleanup normalizes into existence (e.g. spaced
+//!   letters the model joins) still expand, because matching sees
+//!   the cleaned text.
+//! - No recursive substitution by construction: one pass never
+//!   rescans its own insertions, and there is no second pass to
+//!   rescan the first one's replacements.
+//!
+//! Matching is case- AND accent-insensitive on both sides, with one
+//! shared fold (`fold_char`/`norm_string`): `Ó`/`ó`/`O`/`o` all match,
+//! `İ`/`I`/`ı`/`i` all match. Decomposed combining marks are skipped
+//! so `o` + U+0301 matches `ó`. Boundary = start/end or
+//! non-(alphanumeric/`_`); the reference uses Unicode P/S
+//! categories. Equivalent for real text.
+//!
+//! Supported folding (snippet triggers only):
+//! - Latin accents fold to their bare base: `é`→`e`, `ó`→`o`,
+//!   `ü`→`u`, `ç`→`c`, and so on through the table in `fold_char`.
+//! - `ñ` folds with `n` (likewise `ń`/`ņ`/`ň`): trigger `ano`
+//!   matches text `año` and vice versa. This is a deliberate
+//!   fuzzy-match tradeoff, not a linguistic claim: `ñ` is its own
+//!   letter in Spanish, but for short dictated triggers an accent-
+//!   blind match misses fewer invocations. The spelling dictionary
+//!   below keeps `n`/`ñ` distinct.
+//! - Turkish dotted/dotless `İ`/`I`/`ı`/`i` all read as `i`, on both
+//!   the trigger and the transcript side.
+//! - `ß`/`æ`/`œ` stay distinct (their casefolds expand to `ss`/`ae`/
+//!   `oe` and can't map 1:1 back to the original span).
+//!
+//! Two identities, two functions: snippet-trigger matching is fuzzy
+//! (`norm_string`: case- and accent-insensitive), while spelling-
+//! dictionary identity is exact on accents (`dict_key`:
+//! case-insensitive, canonical composed/decomposed forms unified,
+//! but `si` ≠ `sí` and `ano` ≠ `año`).
 //!
 //! Deliberate simplifications vs the reference:
-//! - No NFC normalization (needs `unicode-normalization`; edge-case
-//!   combining marks may miss). Case/İ folding is manual and exact.
-//! - Boundary = start/end or non-(alphanumeric/`_`); the reference
-//!   uses Unicode P/S categories. Equivalent for real text.
+//! - No `unicode-normalization` crate: precomposed Latin accents fold
+//!   via table, decomposed marks via combining-range strip. Rare
+//!   scripts outside the table compare case-insensitively only.
+//! - 1:1 char folding: `ß`/`æ`/`œ` stay distinct (no `ss`/`ae`
+//!   expansion) so match spans map back to the original text.
 //! - No echo guards (STT parroting the hint list, LLM duplicating
 //!   output). Follow-up if bias loops ever appear.
 
@@ -45,8 +81,184 @@ pub fn dictionary_prompt(words: &[String], max_chars: usize) -> Option<String> {
     }
 }
 
-fn fold_capital_i_dot(s: &str) -> String {
-    s.replace('İ', "i")
+fn fold_char(c: char) -> char {
+    // Canonical fold for snippet-trigger matching and snippet
+    // duplicate detection: lowercase + Latin accent strip + Turkish
+    // dot fold (İ/I/ı/i all read as 'i', symmetric on both sides).
+    if c == 'İ' {
+        return 'i';
+    }
+    let l = c.to_lowercase().next().unwrap_or(c);
+    match l {
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' | 'ǎ' | 'ȁ' | 'ȃ' | 'ạ' | 'ả' | 'ấ'
+        | 'ầ' | 'ẩ' | 'ẫ' | 'ậ' | 'ắ' | 'ằ' | 'ẳ' | 'ẵ' | 'ặ' => 'a',
+        'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => 'c',
+        'ď' | 'đ' | 'ð' => 'd',
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' | 'ẹ' | 'ẻ' | 'ẽ' | 'ế' | 'ề' | 'ể'
+        | 'ễ' | 'ệ' => 'e',
+        'ĝ' | 'ğ' | 'ġ' | 'ģ' => 'g',
+        'ĥ' | 'ħ' => 'h',
+        'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' | 'ǐ' | 'ȉ' | 'ȋ' | 'ị' | 'ỉ' => {
+            'i'
+        }
+        'ĵ' => 'j',
+        'ķ' => 'k',
+        'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' => 'l',
+        'ñ' | 'ń' | 'ņ' | 'ň' | 'ŉ' => 'n',
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' | 'ǒ' | 'ȍ' | 'ȏ' | 'ọ' | 'ỏ' | 'ố'
+        | 'ồ' | 'ổ' | 'ỗ' | 'ộ' | 'ớ' | 'ờ' | 'ở' | 'ỡ' | 'ợ' | 'ơ' => 'o',
+        'ŕ' | 'ŗ' | 'ř' => 'r',
+        'ś' | 'ŝ' | 'ş' | 'š' | 'ș' => 's',
+        'ţ' | 'ť' | 'ŧ' | 'ț' | 'þ' => 't',
+        'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' | 'ǔ' | 'ȕ' | 'ȗ' | 'ụ' | 'ủ'
+        | 'ứ' | 'ừ' | 'ử' | 'ữ' | 'ự' | 'ư' => 'u',
+        'ŵ' => 'w',
+        'ý' | 'ÿ' | 'ŷ' | 'ỳ' | 'ỵ' | 'ỷ' | 'ỹ' => 'y',
+        'ź' | 'ż' | 'ž' => 'z',
+        // ß/æ/œ stay distinct: their casefolds expand (ss/ae/oe) and
+        // can't map 1:1 back to the original span.
+        _ => l,
+    }
+}
+
+fn is_combining(c: char) -> bool {
+    matches!(c,
+        '\u{0300}'..='\u{036F}'
+        | '\u{1AB0}'..='\u{1AFF}'
+        | '\u{1DC0}'..='\u{1DFF}'
+        | '\u{20D0}'..='\u{20FF}'
+        | '\u{FE20}'..='\u{FE2F}')
+}
+
+/// Normalized comparison form for snippet triggers: combining marks
+/// dropped, the rest folded. Shared by expansion matching and
+/// snippet duplicate detection so both agree on what "same trigger"
+/// means.
+pub fn norm_string(s: &str) -> String {
+    s.chars()
+        .filter(|c| !is_combining(*c))
+        .map(fold_char)
+        .collect()
+}
+
+/// Compose one common decomposed Latin pair (base + combining mark)
+/// back to its precomposed form, so `e` + U+0301 and `é` share one
+/// spelling-dictionary identity. Covers the everyday Latin marks;
+/// anything rarer compares by exact lowercase (still consistent on
+/// both sides of the comparison).
+fn compose_pair(base: char, mark: char) -> Option<char> {
+    let composed = match (base, mark) {
+        ('a', '\u{0300}') => 'à',
+        ('a', '\u{0301}') => 'á',
+        ('a', '\u{0302}') => 'â',
+        ('a', '\u{0303}') => 'ã',
+        ('a', '\u{0308}') => 'ä',
+        ('a', '\u{030A}') => 'å',
+        ('a', '\u{0304}') => 'ā',
+        ('a', '\u{0306}') => 'ă',
+        ('a', '\u{0328}') => 'ą',
+        ('a', '\u{030C}') => 'ǎ',
+        ('c', '\u{0301}') => 'ć',
+        ('c', '\u{0302}') => 'ĉ',
+        ('c', '\u{0307}') => 'ċ',
+        ('c', '\u{030C}') => 'č',
+        ('c', '\u{0327}') => 'ç',
+        ('e', '\u{0300}') => 'è',
+        ('e', '\u{0301}') => 'é',
+        ('e', '\u{0302}') => 'ê',
+        ('e', '\u{0308}') => 'ë',
+        ('e', '\u{0304}') => 'ē',
+        ('e', '\u{0306}') => 'ĕ',
+        ('e', '\u{0307}') => 'ė',
+        ('e', '\u{0328}') => 'ę',
+        ('e', '\u{030C}') => 'ě',
+        ('g', '\u{0302}') => 'ĝ',
+        ('g', '\u{0306}') => 'ğ',
+        ('g', '\u{0307}') => 'ġ',
+        ('i', '\u{0300}') => 'ì',
+        ('i', '\u{0301}') => 'í',
+        ('i', '\u{0302}') => 'î',
+        ('i', '\u{0308}') => 'ï',
+        ('i', '\u{0303}') => 'ĩ',
+        ('i', '\u{0304}') => 'ī',
+        ('i', '\u{0306}') => 'ĭ',
+        ('i', '\u{0328}') => 'į',
+        ('i', '\u{030C}') => 'ǐ',
+        ('n', '\u{0301}') => 'ń',
+        ('n', '\u{0327}') => 'ņ',
+        ('n', '\u{030C}') => 'ň',
+        ('n', '\u{0303}') => 'ñ',
+        ('o', '\u{0300}') => 'ò',
+        ('o', '\u{0301}') => 'ó',
+        ('o', '\u{0302}') => 'ô',
+        ('o', '\u{0303}') => 'õ',
+        ('o', '\u{0308}') => 'ö',
+        ('o', '\u{0304}') => 'ō',
+        ('o', '\u{0306}') => 'ŏ',
+        ('o', '\u{030C}') => 'ǒ',
+        ('r', '\u{0301}') => 'ŕ',
+        ('r', '\u{0327}') => 'ŗ',
+        ('r', '\u{030C}') => 'ř',
+        ('s', '\u{0301}') => 'ś',
+        ('s', '\u{0302}') => 'ŝ',
+        ('s', '\u{0327}') => 'ş',
+        ('s', '\u{030C}') => 'š',
+        ('t', '\u{0327}') => 'ţ',
+        ('t', '\u{030C}') => 'ť',
+        ('u', '\u{0300}') => 'ù',
+        ('u', '\u{0301}') => 'ú',
+        ('u', '\u{0302}') => 'û',
+        ('u', '\u{0308}') => 'ü',
+        ('u', '\u{0303}') => 'ũ',
+        ('u', '\u{0304}') => 'ū',
+        ('u', '\u{0306}') => 'ŭ',
+        ('u', '\u{030A}') => 'ů',
+        ('u', '\u{0328}') => 'ų',
+        ('u', '\u{030C}') => 'ǔ',
+        ('y', '\u{0301}') => 'ý',
+        ('y', '\u{0302}') => 'ŷ',
+        ('y', '\u{0308}') => 'ÿ',
+        ('z', '\u{0301}') => 'ź',
+        ('z', '\u{0307}') => 'ż',
+        ('z', '\u{030C}') => 'ž',
+        _ => return None,
+    };
+    Some(composed)
+}
+
+/// Spelling-dictionary identity: case-insensitive, composed and
+/// decomposed Latin unified, accents otherwise preserved. `si` and
+/// `sí` (likewise `ano`/`año`) are distinct entries; `CAMIÓN`,
+/// `camión` and `camio` + U+0301 + `n` are the same entry.
+/// `İ` folds to `i` (else its lowercase carries a combining dot);
+/// dotless `ı` stays distinct from `i`.
+pub fn dict_key(s: &str) -> String {
+    let lowered: Vec<char> = s
+        .trim()
+        .chars()
+        .map(|c| {
+            if c == 'İ' {
+                'i'
+            } else {
+                c.to_lowercase().next().unwrap_or(c)
+            }
+        })
+        .collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < lowered.len() {
+        if i + 1 < lowered.len()
+            && !is_combining(lowered[i])
+            && let Some(composed) = compose_pair(lowered[i], lowered[i + 1])
+        {
+            out.push(composed);
+            i += 2;
+        } else {
+            out.push(lowered[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn is_word_char(c: char) -> bool {
@@ -55,64 +267,29 @@ fn is_word_char(c: char) -> bool {
 
 /// One trigger, pre-folded for scanning.
 struct Trigger {
-    /// Lowercased folded pattern chars (with İ→i applied).
+    /// Folded pattern chars.
     pattern: Vec<char>,
-    /// Whether each pattern char accepts the dotless reading.
-    dotless_ok: Vec<bool>,
     replacement: String,
 }
 
 fn compile_trigger(trigger: &str, replacement: &str) -> Option<Trigger> {
-    let folded = fold_capital_i_dot(trigger.trim());
-    if folded.is_empty() {
+    let pattern: Vec<char> = norm_string(trigger.trim()).chars().collect();
+    if pattern.is_empty() {
         return None;
-    }
-    // Lowercase for matching; remember which positions came from an
-    // ASCII 'i' so the [iİ]/[ıI] readings apply there.
-    let lowered: Vec<char> = folded.chars().flat_map(|c| c.to_lowercase()).collect();
-    let raw: Vec<char> = trigger.trim().chars().collect();
-    let mut pattern = Vec::with_capacity(lowered.len());
-    let mut dotless_ok = Vec::with_capacity(lowered.len());
-    // Walk raw and lowered in lockstep (to_lowercase may expand İ,
-    // already folded above, so lengths match for our purposes; fall
-    // back to plain lowered on mismatch).
-    let raws: Vec<char> = raw;
-    for (ri, c) in lowered.into_iter().enumerate() {
-        let r = raws.get(ri).copied().unwrap_or('?');
-        pattern.push(c);
-        dotless_ok.push(r == 'i' || r == 'I');
-        // Advance raw once per lowered char (approximate for
-        // expansions; exact for ASCII + pre-folded text).
     }
     Some(Trigger {
         pattern,
-        dotless_ok,
         replacement: replacement.to_string(),
     })
 }
 
-fn fold_text_char(c: char) -> char {
-    // Mirror the trigger fold so both sides compare canonically.
-    if c == 'İ' {
-        'i'
-    } else {
-        c.to_lowercase().next().unwrap_or(c)
-    }
-}
-
-fn char_matches(pat: char, dotless: bool, text: char) -> bool {
-    let t = fold_text_char(text);
-    if t == pat {
-        return true;
-    }
-    // Turkish readings of an ASCII-i trigger position.
-    if !dotless {
-        return false;
-    }
-    (pat == 'i' && t == 'ı') || (pat == 'ı' && t == 'i')
-}
-
-/// Longest-first single pass. Returns the expanded text.
+/// Longest-first single pass. Matching runs in normalized space
+/// (case/accent-insensitive); replacements splice the ORIGINAL text
+/// spans so output keeps its own casing. Inserted replacements are
+/// never rescanned, within or across calls: run this once per
+/// transcript (after cleanup) and self-containing replacements
+/// (`go` → `go now`) or replacements naming other triggers expand
+/// exactly once. Returns the expanded text.
 pub fn expand_snippets(text: &str, snippets: &[(String, String)]) -> String {
     let mut triggers: Vec<Trigger> = snippets
         .iter()
@@ -124,28 +301,48 @@ pub fn expand_snippets(text: &str, snippets: &[(String, String)]) -> String {
     // Longest-first so "investor ask" wins over "ask".
     triggers.sort_by_key(|trigger| std::cmp::Reverse(trigger.pattern.len()));
     let chars: Vec<char> = text.chars().collect();
+    // Normalized view + back-map to original char indices
+    // (combining marks contribute no entry).
+    let mut norm: Vec<char> = Vec::with_capacity(chars.len());
+    let mut back: Vec<usize> = Vec::with_capacity(chars.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if is_combining(c) {
+            continue;
+        }
+        norm.push(fold_char(c));
+        back.push(i);
+    }
+    if norm.is_empty() {
+        return text.to_string();
+    }
     let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < chars.len() {
-        // Boundary before: start or non-word char.
-        let at_boundary = i == 0 || !is_word_char(chars[i - 1]);
+    let mut ni = 0;
+    // Original-char cursor: everything before it is emitted.
+    let mut oc = if back[0] > 0 {
+        for c in chars.iter().take(back[0]) {
+            out.push(*c);
+        }
+        back[0]
+    } else {
+        0
+    };
+    while ni < norm.len() {
+        // Boundary before: start or non-word char (normalized side,
+        // so decomposed accents don't split words).
+        let at_boundary = ni == 0 || !is_word_char(norm[ni - 1]);
         let mut hit: Option<&Trigger> = None;
         let mut hit_len = 0;
         if at_boundary {
             for tr in &triggers {
                 let n = tr.pattern.len();
-                if i + n > chars.len() {
+                if ni + n > norm.len() {
                     continue;
                 }
-                let mut ok = true;
-                for (k, (&p, &d)) in tr.pattern.iter().zip(tr.dotless_ok.iter()).enumerate() {
-                    if !char_matches(p, d, chars[i + k]) {
-                        ok = false;
-                        break;
-                    }
+                if norm[ni..ni + n] != tr.pattern[..] {
+                    continue;
                 }
                 // Boundary after: end or non-word char.
-                if ok && (i + n == chars.len() || !is_word_char(chars[i + n])) {
+                if ni + n == norm.len() || !is_word_char(norm[ni + n]) {
                     hit = Some(tr);
                     hit_len = n;
                     break; // longest-first: first hit wins
@@ -154,10 +351,25 @@ pub fn expand_snippets(text: &str, snippets: &[(String, String)]) -> String {
         }
         if let Some(tr) = hit {
             out.push_str(&tr.replacement);
-            i += hit_len;
+            // Skip the original span, swallowing trailing combining
+            // marks attached to its last base char.
+            let mut end = back[ni + hit_len - 1] + 1;
+            while end < chars.len() && is_combining(chars[end]) {
+                end += 1;
+            }
+            oc = end;
+            ni += hit_len;
         } else {
-            out.push(chars[i]);
-            i += 1;
+            let next_oc = if ni + 1 < back.len() {
+                back[ni + 1]
+            } else {
+                chars.len()
+            };
+            for c in chars.iter().take(next_oc).skip(oc) {
+                out.push(*c);
+            }
+            oc = next_oc;
+            ni += 1;
         }
     }
     out
@@ -202,6 +414,79 @@ mod tests {
     fn snippets_turkish_dot() {
         let snips = vec![("imza".to_string(), "SIGN".to_string())];
         assert_eq!(expand_snippets("İmza here", &snips), "SIGN here");
+        // Symmetric: dotless trigger matches dotted text and back.
+        let snips = vec![("kırmızı".to_string(), "RED".to_string())];
+        assert_eq!(expand_snippets("KIRMIZI here", &snips), "RED here");
+        let snips = vec![("KIRMIZI".to_string(), "RED".to_string())];
+        assert_eq!(expand_snippets("kırmızı here", &snips), "RED here");
+    }
+
+    #[test]
+    fn snippets_accent_and_case_insensitive() {
+        let snips = vec![("como estas".to_string(), "HOW ARE YOU".to_string())];
+        // Capitals + precomposed accents match a plain trigger.
+        assert_eq!(expand_snippets("¿Cómo estás?", &snips), "¿HOW ARE YOU?");
+        let snips = vec![("Óscar".to_string(), "OSCAR!".to_string())];
+        assert_eq!(expand_snippets("oscar llegó", &snips), "OSCAR! llegó");
+        assert_eq!(expand_snippets("ÓSCAR llegó", &snips), "OSCAR! llegó");
+        // Accented trigger matches plain transcription.
+        let snips = vec![("acción".to_string(), "ACTION".to_string())];
+        assert_eq!(
+            expand_snippets("la ACCION ahora", &snips),
+            "la ACTION ahora"
+        );
+        // ñ folds with n on both sides.
+        let snips = vec![("ano".to_string(), "YEAR".to_string())];
+        assert_eq!(expand_snippets("el año pasado", &snips), "el YEAR pasado");
+        // Decomposed (o + combining acute) matches precomposed.
+        let snips = vec![("café".to_string(), "COFFEE".to_string())];
+        assert_eq!(expand_snippets("cafe\u{301} time", &snips), "COFFEE time");
+        // Inside-word still never matches, accented or not.
+        assert_eq!(expand_snippets("basket task", &snips), "basket task");
+        assert_eq!(expand_snippets("acafés here", &snips), "acafés here");
+        // Surrounding text keeps its own casing/accents.
+        let snips = vec![("hola".to_string(), "HI".to_string())];
+        assert_eq!(
+            expand_snippets("Él dijo HOLA, ¿qué tal?", &snips),
+            "Él dijo HI, ¿qué tal?"
+        );
+    }
+
+    #[test]
+    fn snippets_never_expand_recursively() {
+        // Self-containing replacement: one original trigger, one
+        // insertion. A pipeline that rescans replacements would
+        // yield "go now now".
+        let snips = vec![("go".to_string(), "go now".to_string())];
+        assert_eq!(expand_snippets("go", &snips), "go now");
+        assert_eq!(expand_snippets("go go", &snips), "go now go now");
+        // Replacement naming another trigger stays literal.
+        let snips = vec![
+            ("signature".to_string(), "Regards, Oscar".to_string()),
+            ("Oscar".to_string(), "ANOTHER SNIPPET".to_string()),
+        ];
+        assert_eq!(expand_snippets("signature", &snips), "Regards, Oscar");
+        // A genuine original trigger still expands.
+        assert_eq!(
+            expand_snippets("signature from Oscar", &snips),
+            "Regards, Oscar from ANOTHER SNIPPET"
+        );
+    }
+
+    #[test]
+    fn dict_key_keeps_accents_but_unifies_case_and_canonical_forms() {
+        // Meaningful accent distinctions survive.
+        assert_ne!(dict_key("si"), dict_key("sí"));
+        assert_ne!(dict_key("ano"), dict_key("año"));
+        // Case does not create a new entry.
+        assert_eq!(dict_key("CAMIÓN"), dict_key("camión"));
+        assert_eq!(dict_key("  MyWhisper "), dict_key("mywhisper"));
+        // Composed and decomposed spellings are one entry.
+        assert_eq!(dict_key("café"), dict_key("cafe\u{301}"));
+        assert_eq!(dict_key("año"), dict_key("an\u{303}o"));
+        // Turkish İ folds to i; dotless ı stays its own letter.
+        assert_eq!(dict_key("İMZA"), dict_key("imza"));
+        assert_ne!(dict_key("kırmızı"), dict_key("kirmizi"));
     }
 
     #[test]

@@ -3359,6 +3359,32 @@ fn http_post_json(
     res.text().map_err(|e| format!("llm body: {e}"))
 }
 
+/// Final transcript for one utterance: LLM cleanup first, snippet
+/// expansion last, in a single pass. Ordering matters:
+/// - The cleanup normalizes the raw STT text (accents, casing,
+///   spacing), so triggers match the cleaned wording — including
+///   triggers the cleanup itself normalizes into existence.
+/// - Replacements bypass the LLM entirely: the model can neither
+///   mangle an inserted expansion nor plant a new trigger inside one.
+/// - One pass never rescans its insertions, so self-containing
+///   replacements (`go` → `go now`) and replacements naming other
+///   triggers expand exactly once. A pre-cleanup pass plus a
+///   post-cleanup pass would rescan the first pass's replacements
+///   (`go` → `go now now`) and is deliberately not used.
+fn finalize_transcript(
+    raw: &str,
+    lm: &crate::settings::LanguageModelSettings,
+    words: &[String],
+    snips: &[(String, String)],
+) -> String {
+    let cleaned = post_process(raw, lm, words);
+    let text = crate::textnorm::expand_snippets(&cleaned, snips);
+    if text != cleaned {
+        eprintln!("[stt] snippets expanded");
+    }
+    text
+}
+
 /// Store in history (raw + final text, never audio) and paste the
 /// FINAL transcript via the configured clipboard pipeline.
 /// Retention: history off pastes without storing; auto-delete purges
@@ -3380,23 +3406,21 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
         }
     };
     let settings = store.load_settings();
-    // Snippet expansion BEFORE post-processing: deterministic
-    // trigger rewrites on the STT text. Raw stays pure for the raw
-    // view; final carries expansions into the LLM stage later.
+    // Snippets keyed per trigger (comma-separated aliases flatten to
+    // one entry each). Expansion happens once inside
+    // finalize_transcript, AFTER cleanup. Raw stays pure for the raw
+    // view; final carries literal replacements past the LLM stage.
     let snips: Vec<(String, String)> = settings
         .dictionary
         .snippets
         .iter()
         .flat_map(|s| s.triggers().into_iter().map(|t| (t, s.replacement.clone())))
         .collect();
-    let expanded = crate::textnorm::expand_snippets(&raw, &snips);
-    if expanded != raw {
-        eprintln!("[stt] snippets expanded");
-    }
-    let text = post_process(
-        &expanded,
+    let text = finalize_transcript(
+        &raw,
         &settings.language_models,
         &settings.dictionary.words,
+        &snips,
     );
     eprintln!("[stt] final: {text}");
     if settings.privacy.keep_audio_recordings && settings.privacy.audio_retention_days > 0 {
@@ -3817,6 +3841,77 @@ mod tests {
         }
         let text = stream.finish().expect("finish");
         eprintln!("whistle stream text: {text:?}");
+    }
+
+    /// Pipeline regression: one post-cleanup expansion pass in every
+    /// cleanup mode (disabled, enabled-but-empty, chain-failed).
+    /// Fixtures are disposable (no transcripts, credentials, or
+    /// services; the failing chain errors without network).
+    #[test]
+    fn pipeline_expands_once_after_cleanup() {
+        use crate::settings::{CloudLlm, LanguageModelSettings, LlmEntry, LlmKind};
+        // Cleanup disabled: raw passes through.
+        let off = LanguageModelSettings {
+            cleanup_enabled: false,
+            ..Default::default()
+        };
+        // Cleanup enabled but no options: passthrough with a log line.
+        let empty = LanguageModelSettings {
+            cleanup_enabled: true,
+            entries: Vec::new(),
+            ..Default::default()
+        };
+        // Cleanup enabled but the chain fails (Local kind errors
+        // without touching the network): raw is kept.
+        let failing = LanguageModelSettings {
+            cleanup_enabled: true,
+            entries: vec![LlmEntry {
+                id: "t".to_string(),
+                name: "t".to_string(),
+                kind: LlmKind::Local,
+                enabled: true,
+                url: String::new(),
+                model: "m".to_string(),
+                provider: CloudLlm::OpenAI,
+                api_key: String::new(),
+                keep_alive: String::new(),
+                num_ctx: None,
+                thinking: None,
+            }],
+            ..Default::default()
+        };
+        let words: Vec<String> = Vec::new();
+        // Self-containing replacement: exactly one insertion in every
+        // cleanup mode. A pre+post pipeline doubles it whenever the
+        // cleanup is a passthrough ("go" -> "go now now").
+        let snips = vec![("go".to_string(), "go now".to_string())];
+        for lm in [&off, &empty, &failing] {
+            assert_eq!(finalize_transcript("go", lm, &words, &snips), "go now");
+        }
+        // Replacement naming another trigger stays literal.
+        let snips = vec![
+            ("signature".to_string(), "Regards, Oscar".to_string()),
+            ("Oscar".to_string(), "ANOTHER SNIPPET".to_string()),
+        ];
+        for lm in [&off, &empty, &failing] {
+            assert_eq!(
+                finalize_transcript("signature", lm, &words, &snips),
+                "Regards, Oscar"
+            );
+        }
+        // Cleanup-normalized trigger: the cleanup repairs the raw
+        // wording into a trigger ("O M W" -> "OMW"), and expansion
+        // sees that cleaned text. The cleaned form expands literally.
+        let snips = vec![("omw".to_string(), "On my way!".to_string())];
+        assert_eq!(
+            crate::textnorm::expand_snippets("OMW", &snips),
+            "On my way!"
+        );
+        // Passthrough modes otherwise keep the raw wording.
+        assert_eq!(
+            finalize_transcript("plain talk", &off, &words, &[]),
+            "plain talk"
+        );
     }
 
     /// Live engine check (needs sherpa-cpu pack + orukeet on disk):
