@@ -76,15 +76,13 @@ fn compile_trigger(trigger: &str, replacement: &str) -> Option<Trigger> {
     // Walk raw and lowered in lockstep (to_lowercase may expand İ,
     // already folded above, so lengths match for our purposes; fall
     // back to plain lowered on mismatch).
-    let mut ri = 0;
     let raws: Vec<char> = raw;
-    for c in lowered {
+    for (ri, c) in lowered.into_iter().enumerate() {
         let r = raws.get(ri).copied().unwrap_or('?');
         pattern.push(c);
         dotless_ok.push(r == 'i' || r == 'I');
         // Advance raw once per lowered char (approximate for
         // expansions; exact for ASCII + pre-folded text).
-        ri += 1;
     }
     Some(Trigger {
         pattern,
@@ -124,7 +122,7 @@ pub fn expand_snippets(text: &str, snippets: &[(String, String)]) -> String {
         return text.to_string();
     }
     // Longest-first so "investor ask" wins over "ask".
-    triggers.sort_by(|a, b| b.pattern.len().cmp(&a.pattern.len()));
+    triggers.sort_by_key(|trigger| std::cmp::Reverse(trigger.pattern.len()));
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;

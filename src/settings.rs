@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppSettings {
     pub preferences: Preferences,
     pub hotkeys: HotkeySettings,
@@ -16,21 +16,6 @@ pub struct AppSettings {
     pub system: SystemSettings,
     pub dictionary: Dictionary,
     pub sync: SyncSettings,
-}
-
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            preferences: Preferences::default(),
-            hotkeys: HotkeySettings::default(),
-            stt: SttSettings::default(),
-            language_models: LanguageModelSettings::default(),
-            privacy: PrivacySettings::default(),
-            system: SystemSettings::default(),
-            dictionary: Dictionary::default(),
-            sync: SyncSettings::default(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -92,15 +77,10 @@ pub enum MicSelection {
     Specific,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum CopyBackend {
+    #[default]
     WlCopy,
-}
-
-impl Default for CopyBackend {
-    fn default() -> Self {
-        CopyBackend::WlCopy
-    }
 }
 
 fn default_true() -> bool {
@@ -115,29 +95,19 @@ fn default_spec_overlap() -> f32 {
     1.0
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum PasteBackend {
+    #[default]
     Wtype,
     Ydotool,
 }
 
-impl Default for PasteBackend {
-    fn default() -> Self {
-        PasteBackend::Wtype
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum PasteCombo {
+    #[default]
     CtrlShiftV,
     CtrlV,
     ShiftInsert,
-}
-
-impl Default for PasteCombo {
-    fn default() -> Self {
-        PasteCombo::CtrlShiftV
-    }
 }
 
 /// Pill visualizer preferences. Defaults mirror the service runtime
@@ -809,19 +779,13 @@ impl Default for PrivacySettings {
 // System
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SystemSettings {
     /// Placeholder for future system knobs. The model cache lives at
     /// `<data>/models` (+ `<data>/bin` runtimes) and is shown, not
     /// configured: relocating it would invalidate every download,
     /// server, and pipeline path.
     pub _reserved: bool,
-}
-
-impl Default for SystemSettings {
-    fn default() -> Self {
-        Self { _reserved: false }
-    }
 }
 
 // ---------------------------------------------------------------------------

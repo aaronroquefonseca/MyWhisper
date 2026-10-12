@@ -26,6 +26,7 @@
 //!   if upstream drifts, the server error surfaces in the log.)
 //! - Cloud Deepgram → `POST {base}/v1/listen` (pre-recorded REST).
 //! - Cloud Gemini → `generateContent` with inline WAV (REST).
+//!
 //! Language: whisper-server gets `-l` at spawn; OpenAI-compatible
 //! endpoints get the `language` field, Deepgram a `&language=`
 //! query, Gemini a prompt hint ("auto" omits everywhere). The
@@ -45,12 +46,13 @@ use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{
+    Arc, Mutex, OnceLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
-    mpsc, Arc, Mutex, OnceLock,
+    mpsc,
 };
 use std::time::{Duration, Instant};
 
-use crate::audio::{self, wav_bytes_16k, Recorder, Resampler, ENGINE_RATE, MIN_SAMPLES_16K};
+use crate::audio::{self, ENGINE_RATE, MIN_SAMPLES_16K, Recorder, Resampler, wav_bytes_16k};
 use crate::settings::{GpuBackendSetting, LocalSttProvider, SherpaBackendSetting, SttSettings};
 use crate::stt;
 
@@ -633,36 +635,38 @@ pub fn keep_warm_timeout(value: &str) -> Option<Duration> {
 /// Background reaper: every 30 s, stop servers idle past keep-warm.
 /// No-op when unset (forever). Started once at service boot.
 pub fn spawn_server_reaper(data_dir: PathBuf) {
-    let _ = crate::runtime::spawn_dedicated("server-reaper", move || loop {
-        std::thread::sleep(Duration::from_secs(30));
-        let keep = crate::store::Store::open(&data_dir.join("state.db"))
-            .map(|store| store.load_settings().stt.keep_warm.clone())
-            .unwrap_or_default();
-        let Some(timeout) = keep_warm_timeout(&keep) else {
-            continue;
-        };
-        let mut map = match servers().lock() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let mut dead = Vec::new();
-        for (name, s) in map.iter_mut() {
-            if s.last_used.elapsed() < timeout {
+    let _ = crate::runtime::spawn_dedicated("server-reaper", move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(30));
+            let keep = crate::store::Store::open(&data_dir.join("state.db"))
+                .map(|store| store.load_settings().stt.keep_warm.clone())
+                .unwrap_or_default();
+            let Some(timeout) = keep_warm_timeout(&keep) else {
                 continue;
-            }
-            let alive = s.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
-            if !alive {
+            };
+            let mut map = match servers().lock() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let mut dead = Vec::new();
+            for (name, s) in map.iter_mut() {
+                if s.last_used.elapsed() < timeout {
+                    continue;
+                }
+                let alive = s.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
+                if !alive {
+                    dead.push(name.clone());
+                    continue;
+                }
+                eprintln!("[stt] keep-warm expired for {name}; stopping");
+                let _ = s.child.kill();
+                let _ = s.child.wait();
+                pidfile_remove(&data_dir, name);
                 dead.push(name.clone());
-                continue;
             }
-            eprintln!("[stt] keep-warm expired for {name}; stopping");
-            let _ = s.child.kill();
-            let _ = s.child.wait();
-            pidfile_remove(&data_dir, name);
-            dead.push(name.clone());
-        }
-        for name in dead {
-            map.remove(&name);
+            for name in dead {
+                map.remove(&name);
+            }
         }
     });
 }
@@ -787,8 +791,8 @@ fn ensure_server(
         },
     );
     drop(map); // the wait loop re-locks per iteration (non-reentrant)
-               // Wait for listen, but fail fast when the child dies first (e.g.
-               // cuda binary with no CUDA libs exits 127 in ms — no 20 s mystery).
+    // Wait for listen, but fail fast when the child dies first (e.g.
+    // cuda binary with no CUDA libs exits 127 in ms — no 20 s mystery).
     let start = Instant::now();
     loop {
         if port_open(port) {
@@ -1580,19 +1584,18 @@ fn whistle_parse_stdout(stdout: &str) -> Option<String> {
     if stdout.is_empty() {
         return None;
     }
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(stdout) {
-        if let Some(t) = v
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(stdout)
+        && let Some(t) = v
             .get("text")
             .or_else(|| v.get("audio_text"))
             .and_then(|t| t.as_str())
-        {
-            let t = t.trim();
-            return if t.is_empty() {
-                None
-            } else {
-                Some(t.to_string())
-            };
-        }
+    {
+        let t = t.trim();
+        return if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        };
     }
     Some(stdout.to_string())
 }
@@ -1671,14 +1674,14 @@ impl WhistleStream {
             use std::io::BufRead;
             let reader = std::io::BufReader::new(stdout);
             for line in reader.lines().map_while(Result::ok) {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                    if let Some(t) = v.get("text").and_then(|t| t.as_str()) {
-                        let t = t.trim();
-                        if !t.is_empty() {
-                            if let Ok(mut c) = committed_r.lock() {
-                                *c = t.to_string();
-                            }
-                        }
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line)
+                    && let Some(t) = v.get("text").and_then(|t| t.as_str())
+                {
+                    let t = t.trim();
+                    if !t.is_empty()
+                        && let Ok(mut c) = committed_r.lock()
+                    {
+                        *c = t.to_string();
                     }
                 }
             }
@@ -1842,12 +1845,11 @@ fn pump_whistle(
             let _ = tx.send(Err(e));
             return;
         }
-        if preview {
-            if let Ok(c) = stream.committed.lock() {
-                if !c.trim().is_empty() {
-                    set_live_text(c.clone());
-                }
-            }
+        if preview
+            && let Ok(c) = stream.committed.lock()
+            && !c.trim().is_empty()
+        {
+            set_live_text(c.clone());
         }
     }
     if cancel.load(Ordering::Relaxed) {
@@ -1936,11 +1938,11 @@ pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>, port: u16) -> Resu
     let boundary = "mywhisperwav";
     let mut fields = vec![("temperature", "0.0"), ("response_format", "json")];
     let prompt_owned;
-    if let Some(p) = prompt.as_ref() {
-        if !p.is_empty() {
-            prompt_owned = p.clone();
-            fields.push(("prompt", prompt_owned.as_str()));
-        }
+    if let Some(p) = prompt.as_ref()
+        && !p.is_empty()
+    {
+        prompt_owned = p.clone();
+        fields.push(("prompt", prompt_owned.as_str()));
     }
     let body = multipart_body(
         boundary,
@@ -1999,10 +2001,10 @@ fn openai_compat_transcribe(
     if let Some(l) = lang_param(lang) {
         fields.push(("language", l));
     }
-    if let Some(p) = prompt {
-        if !p.is_empty() {
-            fields.push(("prompt", p));
-        }
+    if let Some(p) = prompt
+        && !p.is_empty()
+    {
+        fields.push(("prompt", p));
     }
     let body = multipart_body(
         boundary,
@@ -2146,16 +2148,25 @@ const SPEC_UNSTABLE_AUDIO: usize = 32_000;
 /// Background speculative loop. Snapshots (never drains) so the
 /// recorder stays whole for fallback; single inference at a time by
 /// construction (next pass only after the previous lands).
+struct SpecConfig {
+    update_secs: f32,
+    overlap: usize,
+    whisper_port: u16,
+}
+
 fn run_spec(
     rec: Arc<Mutex<Recorder>>,
     stop: Arc<AtomicBool>,
     data_dir: PathBuf,
-    update_secs: f32,
-    overlap: usize,
+    config: SpecConfig,
     tx: mpsc::Sender<(String, usize, Vec<f32>)>,
-    whisper_port: u16,
     settled: Arc<AtomicBool>,
 ) {
+    let SpecConfig {
+        update_secs,
+        overlap,
+        whisper_port,
+    } = config;
     let words = crate::store::Store::open(&data_dir.join("state.db"))
         .ok()
         .map(|store| store.load_words().unwrap_or_default())
@@ -2276,10 +2287,10 @@ fn live_slot() -> &'static Mutex<Option<String>> {
 
 /// Publish a preview update (streaming pumps, option-gated by them).
 pub fn set_live_text(text: String) {
-    if let Ok(mut slot) = live_slot().lock() {
-        if slot.as_ref() != Some(&text) {
-            *slot = Some(text);
-        }
+    if let Ok(mut slot) = live_slot().lock()
+        && slot.as_ref() != Some(&text)
+    {
+        *slot = Some(text);
     }
 }
 
@@ -2368,10 +2379,12 @@ pub fn begin_utterance(
                 rec,
                 sstop,
                 data,
-                update,
-                overlap,
+                SpecConfig {
+                    update_secs: update,
+                    overlap,
+                    whisper_port: spec_port,
+                },
                 tx,
-                spec_port,
                 spec_settled,
             );
         }) {
@@ -2601,10 +2614,10 @@ pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
     )));
     let od = on_done.clone();
     let finish = move || {
-        if let Ok(mut g) = od.lock() {
-            if let Some(done) = g.take() {
-                done();
-            }
+        if let Ok(mut g) = od.lock()
+            && let Some(done) = g.take()
+        {
+            done();
         }
     };
     if crate::runtime::submit("stt-cancel", move || {
@@ -2616,7 +2629,7 @@ pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
                 return;
             }
         };
-        let keep = match crate::store::Store::open(&paths.db_file()) {
+        match crate::store::Store::open(&paths.db_file()) {
             Ok(store) => {
                 let stt = store.load_settings();
                 let save = stt.privacy.save_discarded_transcriptions
@@ -2637,16 +2650,15 @@ pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
             }
             Err(e) => eprintln!("[stt] cancel: store: {e}"),
         };
-        let _ = keep;
         finish();
     })
     .is_err()
     {
         eprintln!("[stt] cancel: runtime saturated");
-        if let Ok(mut g) = on_done.lock() {
-            if let Some(done) = g.take() {
-                done();
-            }
+        if let Ok(mut g) = on_done.lock()
+            && let Some(done) = g.take()
+        {
+            done();
         }
     }
 }
@@ -2774,20 +2786,20 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
                     eprintln!("[stt] transcription failed: {e}");
                 }
             }
-            if let Ok(mut g) = od.lock() {
-                if let Some(done) = g.take() {
-                    done();
-                }
+            if let Ok(mut g) = od.lock()
+                && let Some(done) = g.take()
+            {
+                done();
             }
         }) {
             // Saturated: release the guard and hide the pill now; the
             // utterance is dropped, but the app survives to dictate again.
             BUSY.store(false, Ordering::SeqCst);
             eprintln!("[stt] release: {e}");
-            if let Ok(mut g) = on_done.lock() {
-                if let Some(done) = g.take() {
-                    done();
-                }
+            if let Ok(mut g) = on_done.lock()
+                && let Some(done) = g.take()
+            {
+                done();
             }
         }
     });
@@ -2795,10 +2807,12 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
 
 /// Blocking finalization for one utterance. `Ok(None)` = nothing to
 /// paste (too short / empty result).
+type FinishedTranscript = (String, f64, Option<Vec<u8>>);
+
 fn finish_session(
     sess: LiveUtterance,
     words: &[String],
-) -> Result<Option<(String, f64, Option<Vec<u8>>)>, String> {
+) -> Result<Option<FinishedTranscript>, String> {
     let secs = sess.started.elapsed().as_secs_f64();
     // Engine warmup finishes here (cold first press waits, later
     // ones sail through an already-running server). Cloud plans are
@@ -3396,10 +3410,10 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
             eprintln!("[stt] audio auto-delete: {n} files");
         }
     }
-    if settings.privacy.transcript_auto_delete_days > 0 {
-        if let Err(e) = store.purge_old_history(settings.privacy.transcript_auto_delete_days) {
-            eprintln!("[stt] auto-delete: {e}");
-        }
+    if settings.privacy.transcript_auto_delete_days > 0
+        && let Err(e) = store.purge_old_history(settings.privacy.transcript_auto_delete_days)
+    {
+        eprintln!("[stt] auto-delete: {e}");
     }
     if settings.privacy.history_enabled {
         let words = text.split_whitespace().count() as u32;
@@ -3537,8 +3551,10 @@ mod tests {
 
     #[test]
     fn whistle_plan_needs_files() {
-        let mut s = SttSettings::default();
-        s.local_provider = LocalSttProvider::Whistle;
+        let s = SttSettings {
+            local_provider: LocalSttProvider::Whistle,
+            ..Default::default()
+        };
         let err = plan_for(&s, Path::new("/nonexistent")).unwrap_err();
         assert!(err.contains("whistle"), "{err}");
     }
@@ -3570,10 +3586,12 @@ mod tests {
                 r,
                 s,
                 data,
-                1.0,
-                16_000,
+                SpecConfig {
+                    update_secs: 1.0,
+                    overlap: 16_000,
+                    whisper_port: 8080,
+                },
                 tx,
-                8080,
                 Arc::new(AtomicBool::new(true)),
             )
         });
@@ -3626,8 +3644,10 @@ mod tests {
 
     #[test]
     fn plan_cohere_unsupported() {
-        let mut s = SttSettings::default();
-        s.local_provider = LocalSttProvider::Cohere;
+        let s = SttSettings {
+            local_provider: LocalSttProvider::Cohere,
+            ..Default::default()
+        };
         let err = plan_for(&s, Path::new("/nonexistent")).unwrap_err();
         assert!(err.contains("Cohere"), "{err}");
     }
@@ -3635,9 +3655,11 @@ mod tests {
     #[test]
     fn plan_routing_needs_files() {
         // Whisper tiny not under /nonexistent → actionable missing error.
-        let mut s = SttSettings::default();
-        s.local_provider = LocalSttProvider::OpenAi;
-        s.whisper_model = "tiny".to_string();
+        let mut s = SttSettings {
+            local_provider: LocalSttProvider::OpenAi,
+            whisper_model: "tiny".to_string(),
+            ..Default::default()
+        };
         let err = plan_for(&s, Path::new("/nonexistent")).unwrap_err();
         assert!(err.contains("whisper model tiny"), "{err}");
         // NVIDIA without model files → same treatment.
@@ -3666,20 +3688,26 @@ mod tests {
             streaming,
         };
         // ws:// + streaming = sherpa-protocol plan (never spawned).
-        let mut s = SttSettings::default();
-        s.entries = vec![entry("ws://127.0.0.1:6006", true, "")];
+        let s = SttSettings {
+            entries: vec![entry("ws://127.0.0.1:6006", true, "")],
+            ..Default::default()
+        };
         let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
         assert!(matches!(plans[0].1, Plan::SelfHostedWs { .. }));
         assert!(plans[0].1.streaming());
         // wss:// resolves the same (TLS at connect time).
-        let mut s = SttSettings::default();
-        s.entries = vec![entry("wss://example.com:6006", true, "")];
+        let s = SttSettings {
+            entries: vec![entry("wss://example.com:6006", true, "")],
+            ..Default::default()
+        };
         let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
         assert!(matches!(plans[0].1, Plan::SelfHostedWs { .. }));
         // http + token = OpenAI-compat with bearer key; streaming
         // toggle inert for http.
-        let mut s = SttSettings::default();
-        s.entries = vec![entry("http://127.0.0.1:8080", true, "tok")];
+        let s = SttSettings {
+            entries: vec![entry("http://127.0.0.1:8080", true, "tok")],
+            ..Default::default()
+        };
         let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
         match &plans[0].1 {
             Plan::CloudOpenAiCompat { key, .. } => assert_eq!(key, "tok"),
@@ -3687,8 +3715,10 @@ mod tests {
         }
         assert!(!plans[0].1.streaming());
         // ws:// + streaming off = compat fallback.
-        let mut s = SttSettings::default();
-        s.entries = vec![entry("ws://127.0.0.1:6006", false, "")];
+        let s = SttSettings {
+            entries: vec![entry("ws://127.0.0.1:6006", false, "")],
+            ..Default::default()
+        };
         let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
         assert!(matches!(plans[0].1, Plan::CloudOpenAiCompat { .. }));
     }
@@ -3696,18 +3726,20 @@ mod tests {
     #[test]
     fn plan_cloud_needs_key() {
         use crate::settings::{SttChainEntry, SttEntryKind};
-        let mut s = SttSettings::default();
-        s.entries = vec![SttChainEntry {
-            id: "t".to_string(),
-            name: "t".to_string(),
-            kind: SttEntryKind::Cloud,
-            enabled: true,
-            provider: "OpenAI".to_string(),
-            url: String::new(),
-            model: "whisper-1".to_string(),
-            api_key: String::new(),
-            streaming: true,
-        }];
+        let s = SttSettings {
+            entries: vec![SttChainEntry {
+                id: "t".to_string(),
+                name: "t".to_string(),
+                kind: SttEntryKind::Cloud,
+                enabled: true,
+                provider: "OpenAI".to_string(),
+                url: String::new(),
+                model: "whisper-1".to_string(),
+                api_key: String::new(),
+                streaming: true,
+            }],
+            ..Default::default()
+        };
         let err = plan_for(&s, Path::new("/nonexistent")).unwrap_err();
         assert!(err.contains("API key"), "{err}");
     }
@@ -3717,31 +3749,33 @@ mod tests {
         use crate::settings::{SttChainEntry, SttEntryKind};
         // First entry unresolvable (missing files), second fine is
         // covered by plans_for collecting only Ok plans.
-        let mut s = SttSettings::default();
-        s.entries = vec![
-            SttChainEntry {
-                id: "bad".to_string(),
-                name: "bad-local".to_string(),
-                kind: SttEntryKind::Local,
-                enabled: true,
-                provider: String::new(),
-                url: String::new(),
-                model: String::new(),
-                api_key: String::new(),
-                streaming: true,
-            },
-            SttChainEntry {
-                id: "ok".to_string(),
-                name: "ok-cloud".to_string(),
-                kind: SttEntryKind::Cloud,
-                enabled: true,
-                provider: "OpenAI".to_string(),
-                url: String::new(),
-                model: "whisper-1".to_string(),
-                api_key: "k".to_string(),
-                streaming: true,
-            },
-        ];
+        let s = SttSettings {
+            entries: vec![
+                SttChainEntry {
+                    id: "bad".to_string(),
+                    name: "bad-local".to_string(),
+                    kind: SttEntryKind::Local,
+                    enabled: true,
+                    provider: String::new(),
+                    url: String::new(),
+                    model: String::new(),
+                    api_key: String::new(),
+                    streaming: true,
+                },
+                SttChainEntry {
+                    id: "ok".to_string(),
+                    name: "ok-cloud".to_string(),
+                    kind: SttEntryKind::Cloud,
+                    enabled: true,
+                    provider: "OpenAI".to_string(),
+                    url: String::new(),
+                    model: "whisper-1".to_string(),
+                    api_key: "k".to_string(),
+                    streaming: true,
+                },
+            ],
+            ..Default::default()
+        };
         // Local default provider with missing model dir fails; the
         // cloud entry resolves: plans_for returns just it.
         let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
@@ -3770,7 +3804,9 @@ mod tests {
             let raw = std::fs::read("/tmp/wtest16k.wav").expect("harness wav");
             assert!(raw.len() > 44);
             raw[44..]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| i16::from_le_bytes([c[0], c[1]]))
                 .collect()
         };

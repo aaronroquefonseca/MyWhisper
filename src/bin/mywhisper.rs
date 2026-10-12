@@ -243,10 +243,10 @@ fn run_headless(
         gtk4::glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
             // Live preview drain: pump-published partials reach the
             // pill here (option-gated at the pumps; silent otherwise).
-            if let Some(text) = mywhisper::transcribe::take_live_text() {
-                if !text.trim().is_empty() {
-                    overlay.set_live_text(&text);
-                }
+            if let Some(text) = mywhisper::transcribe::take_live_text()
+                && !text.trim().is_empty()
+            {
+                overlay.set_live_text(&text);
             }
             if let Ok(rx) = rx.lock() {
                 while let Ok(cmd) = rx.try_recv() {

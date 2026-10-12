@@ -184,7 +184,7 @@ impl NoiseStream {
                     break;
                 }
             }
-        } else if {
+        } else {
             loop {
                 let msg = read_frame(&mut stream)?;
                 hs.read_message(&msg, &mut payload)
@@ -197,8 +197,6 @@ impl NoiseStream {
                     .map_err(|e| format!("handshake write: {e}"))?;
                 write_frame(&mut stream, &buf[..n])?;
             }
-            false
-        } {
         }
         let hash = hs.get_handshake_hash().to_vec();
         let remote: [u8; 32] = hs
@@ -355,19 +353,19 @@ pub fn exchange(
             return Err("identity proof failed".to_string());
         }
     }
-    if let Some(expected) = expect_node {
-        if peer.node_id != expected {
-            return Err("peer node id mismatch".to_string());
-        }
+    if let Some(expected) = expect_node
+        && peer.node_id != expected
+    {
+        return Err("peer node id mismatch".to_string());
     }
 
     // Contact bookkeeping: unknown nodes become pending requests,
     // known ones refresh addresses.
     let mut contact_addrs: Vec<String> = peer.addresses.clone();
-    if let Some(remote) = remote {
-        if !contact_addrs.contains(&remote) {
-            contact_addrs.push(remote);
-        }
+    if let Some(remote) = remote
+        && !contact_addrs.contains(&remote)
+    {
+        contact_addrs.push(remote);
     }
     let is_new = store
         .record_seen(&peer.node_id, &peer.name, &contact_addrs)
@@ -1027,7 +1025,8 @@ mod tests {
             let (mut session, hash, _remote) =
                 NoiseStream::handshake(stream, &creds_vk.noise_static, false).unwrap();
             let store = Store::open(&db_v2).unwrap();
-            let res = exchange(
+
+            exchange(
                 &mut session,
                 &hash,
                 &store,
@@ -1037,8 +1036,7 @@ mod tests {
                 false,
                 None,
                 None,
-            );
-            res
+            )
         });
 
         // Attacker crafts a hello claiming the victim id, but can only

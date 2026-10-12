@@ -712,10 +712,8 @@ fn clipboard_page(state: &Rc<AppState>) -> GtkBox {
         dd.set_tooltip_text(Some(copy_backend_deps()));
         {
             let state = state.clone();
-            dd.connect_selected_notify(move |dd| {
-                state.settings.borrow_mut().preferences.copy_backend = match dd.selected() {
-                    _ => CopyBackend::WlCopy,
-                };
+            dd.connect_selected_notify(move |_| {
+                state.settings.borrow_mut().preferences.copy_backend = CopyBackend::WlCopy;
                 persist_prefs(state.clone())();
             });
         }
@@ -1489,10 +1487,10 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
                 let state = state.clone();
                 let id = m.id;
                 connect_download_delete(&del, move || {
-                    if let Some(data_dir) = state.db_path.parent() {
-                        if let Some(entry) = stt::find_model(id) {
-                            return stt::delete_model(data_dir, entry);
-                        }
+                    if let Some(data_dir) = state.db_path.parent()
+                        && let Some(entry) = stt::find_model(id)
+                    {
+                        return stt::delete_model(data_dir, entry);
                     }
                     Ok(())
                 });
@@ -1674,10 +1672,10 @@ fn fill_sherpa_packs(container: &GtkBox, state: &Rc<AppState>) {
                 let state = state.clone();
                 let id = pack.id;
                 connect_download_delete(&del, move || {
-                    if let Some(data_dir) = state.db_path.parent() {
-                        if let Some(pack) = stt::SHERPA_PACKS.iter().find(|p| p.id == id) {
-                            return stt::delete_sherpa_pack(data_dir, pack);
-                        }
+                    if let Some(data_dir) = state.db_path.parent()
+                        && let Some(pack) = stt::SHERPA_PACKS.iter().find(|p| p.id == id)
+                    {
+                        return stt::delete_sherpa_pack(data_dir, pack);
                     }
                     Ok(())
                 });
@@ -1809,10 +1807,10 @@ fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
                 let state = state.clone();
                 let id = pack.id;
                 connect_download_delete(&del, move || {
-                    if let Some(data_dir) = state.db_path.parent() {
-                        if let Some(pack) = stt::GPU_PACKS.iter().find(|p| p.id == id) {
-                            return stt::delete_gpu_pack(data_dir, pack);
-                        }
+                    if let Some(data_dir) = state.db_path.parent()
+                        && let Some(pack) = stt::GPU_PACKS.iter().find(|p| p.id == id)
+                    {
+                        return stt::delete_gpu_pack(data_dir, pack);
                     }
                     Ok(())
                 });
@@ -2263,8 +2261,8 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     // ---- Engine: whisper / parakeet / cloud / self-hosted ----
     // Section visibility refreshes on engine change; the holder is
     // filled after all cards exist (handler below runs later).
-    let refresh_holder: Rc<std::cell::RefCell<Option<Rc<dyn Fn()>>>> =
-        Rc::new(std::cell::RefCell::new(None));
+    type RefreshHolder = Rc<std::cell::RefCell<Option<Rc<dyn Fn()>>>>;
+    let refresh_holder: RefreshHolder = Rc::new(std::cell::RefCell::new(None));
     // ---- Engines chain: one local option at most (toggle) plus
     // ordered remote options (self-hosted / cloud). First enabled
     // entry wins, failures fall through.
@@ -3182,22 +3180,21 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         while let Some(row_box) = child {
             let mut c = row_box.first_child();
             while let Some(w) = c {
-                if let Ok(spin) = w.clone().downcast::<SpinButton>() {
-                    if !spin.is_sensitive() {
-                        spin.set_sensitive(true);
-                        let state = state.clone();
-                        let is_update = wired == 0;
-                        spin.connect_value_changed(move |s| {
-                            if is_update {
-                                state.settings.borrow_mut().stt.spec_update_secs = s.value() as f32;
-                            } else {
-                                state.settings.borrow_mut().stt.spec_overlap_secs =
-                                    s.value() as f32;
-                            }
-                            persist_prefs(state.clone())();
-                        });
-                        wired += 1;
-                    }
+                if let Ok(spin) = w.clone().downcast::<SpinButton>()
+                    && !spin.is_sensitive()
+                {
+                    spin.set_sensitive(true);
+                    let state = state.clone();
+                    let is_update = wired == 0;
+                    spin.connect_value_changed(move |s| {
+                        if is_update {
+                            state.settings.borrow_mut().stt.spec_update_secs = s.value() as f32;
+                        } else {
+                            state.settings.borrow_mut().stt.spec_overlap_secs = s.value() as f32;
+                        }
+                        persist_prefs(state.clone())();
+                    });
+                    wired += 1;
                 }
                 c = w.next_sibling();
             }
@@ -4647,12 +4644,11 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
                 }
                 for sub in ["models", "bin", "audio"] {
                     let dir = data_dir.join(sub);
-                    if dir.exists() {
-                        if let Err(e) =
+                    if dir.exists()
+                        && let Err(e) =
                             std::fs::remove_dir_all(&dir).and(std::fs::create_dir_all(&dir))
-                        {
-                            eprintln!("[system] reset {sub}: {e}");
-                        }
+                    {
+                        eprintln!("[system] reset {sub}: {e}");
                     }
                 }
                 {

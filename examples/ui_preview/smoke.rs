@@ -19,10 +19,8 @@ pub fn expand(window: &gtk4::ApplicationWindow, snippets: bool) {
         if let Some(expander) = widget.downcast_ref::<gtk4::Expander>() {
             expander.set_expanded(true);
         }
-        if snippets {
-            if let Some(notebook) = widget.downcast_ref::<gtk4::Notebook>() {
-                notebook.set_current_page(Some(1));
-            }
+        if snippets && let Some(notebook) = widget.downcast_ref::<gtk4::Notebook>() {
+            notebook.set_current_page(Some(1));
         }
     }
 }
@@ -144,7 +142,7 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                     .upsert_word("RemoteTerm", "other-device")
                     .unwrap();
             }
-            3 | 4 | 5 => {}
+            3..=5 => {}
             6 => {
                 assert!(
                     descendants(&root).iter().any(|widget| {

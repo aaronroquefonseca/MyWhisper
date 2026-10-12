@@ -86,6 +86,10 @@ impl Recorder {
         self.samples.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
     pub fn rate(&self) -> u32 {
         self.rate
     }

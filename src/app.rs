@@ -314,12 +314,11 @@ pub fn navigate(from: &impl IsA<gtk4::Widget>, page: &str, section: &str) {
     if let Some(stack) = find_named(&root, "main-pages").and_then(|w| w.downcast::<Stack>().ok()) {
         stack.set_visible_child_name(page);
     }
-    if page == "settings" {
-        if let Some(stack) =
+    if page == "settings"
+        && let Some(stack) =
             find_named(&root, "settings-pages").and_then(|w| w.downcast::<Stack>().ok())
-        {
-            stack.set_visible_child_name(section);
-        }
+    {
+        stack.set_visible_child_name(section);
     }
 }
 

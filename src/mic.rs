@@ -68,7 +68,7 @@ impl ParecMic {
                 }
                 let mut pcm = [0i16; 512];
                 let mut sum = 0f64;
-                for (i, chunk) in buf.chunks_exact(2).enumerate() {
+                for (i, chunk) in buf.as_chunks::<2>().0.iter().enumerate() {
                     let v = i16::from_le_bytes([chunk[0], chunk[1]]);
                     pcm[i] = v;
                     let f = v as f64 / 32768.0;
@@ -155,30 +155,29 @@ pub fn input_sources() -> Vec<AudioSource> {
     if let Ok(out) = std::process::Command::new("pactl")
         .args(["list", "sources"])
         .output()
+        && out.status.success()
     {
-        if out.status.success() {
-            let text = String::from_utf8_lossy(&out.stdout);
-            let mut sources = Vec::new();
-            let mut name: Option<String> = None;
-            for line in text.lines() {
-                let line = line.trim();
-                if let Some(n) = line.strip_prefix("Name: ") {
-                    name = Some(n.to_string());
-                } else if let Some(d) = line.strip_prefix("Description: ") {
-                    if let Some(n) = name.take() {
-                        let is_monitor = n.ends_with(".monitor") || d.starts_with("Monitor of ");
-                        if !is_monitor {
-                            sources.push(AudioSource {
-                                name: n,
-                                description: d.to_string(),
-                            });
-                        }
-                    }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut sources = Vec::new();
+        let mut name: Option<String> = None;
+        for line in text.lines() {
+            let line = line.trim();
+            if let Some(n) = line.strip_prefix("Name: ") {
+                name = Some(n.to_string());
+            } else if let Some(d) = line.strip_prefix("Description: ")
+                && let Some(n) = name.take()
+            {
+                let is_monitor = n.ends_with(".monitor") || d.starts_with("Monitor of ");
+                if !is_monitor {
+                    sources.push(AudioSource {
+                        name: n,
+                        description: d.to_string(),
+                    });
                 }
             }
-            if !sources.is_empty() {
-                return sources;
-            }
+        }
+        if !sources.is_empty() {
+            return sources;
         }
     }
     cpal::default_host()
@@ -276,7 +275,7 @@ impl CpalMic {
             cpal::SampleFormat::F32 => {
                 let bits = level_bits.clone();
                 device.build_input_stream(
-                    cfg.clone().into(),
+                    cfg.into(),
                     move |data: &[f32], _| {
                         push_rms(data, &bits);
                         // f32 [-1,1] -> s16 for the capture tap.
@@ -293,7 +292,7 @@ impl CpalMic {
             cpal::SampleFormat::I16 => {
                 let bits = level_bits.clone();
                 device.build_input_stream(
-                    cfg.clone().into(),
+                    cfg.into(),
                     move |data: &[i16], _| {
                         push_rms(data, &bits);
                         tap_samples(data, rate);
@@ -305,7 +304,7 @@ impl CpalMic {
             cpal::SampleFormat::U16 => {
                 let bits = level_bits.clone();
                 device.build_input_stream(
-                    cfg.clone().into(),
+                    cfg.into(),
                     move |data: &[u16], _| {
                         push_rms(data, &bits);
                         let pcm: Vec<i16> =
@@ -481,13 +480,13 @@ impl LevelSource for MicInput {
     fn sample(&mut self, _dt: f32) -> f32 {
         if !self.wanted {
             // Warm hold countdown runs here (this ticks continuously).
-            if let Some(deadline) = self.warm_until {
-                if Instant::now() >= deadline {
-                    eprintln!("[mic] warm hold expired, capture closed");
-                    self.real_cpal = None;
-                    self.real_parec = None;
-                    self.warm_until = None;
-                }
+            if let Some(deadline) = self.warm_until
+                && Instant::now() >= deadline
+            {
+                eprintln!("[mic] warm hold expired, capture closed");
+                self.real_cpal = None;
+                self.real_parec = None;
+                self.warm_until = None;
             }
             return 0.0;
         }
@@ -510,6 +509,12 @@ impl LevelSource for MicInput {
         // Meaningless for a live mic (it hears what it hears) but
         // harmless: also kicks the sim so `burst` demos the pill.
         self.sim.burst();
+    }
+}
+
+impl Default for MicInput {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
