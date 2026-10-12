@@ -1,0 +1,131 @@
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=25 comm="/home/aaronroque/.cache/mywhisper-pr-extract.ie8am")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=30 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=30 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-desktopui-audit.kywmtotv/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 15:15:55.642: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 15:15:55.646: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 15:15:55.646: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(desktop_smoke:25): Gdk-WARNING **: 15:15:55.687: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[ui-smoke] embedded logo renders in both symbolic foregrounds
+Native toast palette/close-hover/dismiss regression passed; visual evidence: /tmp/mywhisper-desktopui-audit.kywmtotv/tmp/mywhisper-toast-proof-qyXJno
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=25 comm="/home/aaronroque/.cache/mywhisper-pr-extract.ie8am")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=30 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=30 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-desktopui-audit.2z5p92_x/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 15:16:00.485: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 15:16:00.489: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 15:16:00.489: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(desktop_smoke:25): Gdk-WARNING **: 15:16:00.539: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+[ui-smoke] embedded logo renders in both symbolic foregrounds
+
+thread 'main' (25) panicked at examples/desktop_smoke.rs:162:21:
+toast background must match the active card palette
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (25) panicked at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/panicking.rs:225:5:
+panic in a function that cannot unwind
+stack backtrace:
+   0:     0x557e90247941 - std[c29fa2d9dbea2b0e]::backtrace_rs::backtrace::libunwind::trace
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9
+   1:     0x557e90247941 - std[c29fa2d9dbea2b0e]::backtrace_rs::backtrace::trace_unsynchronized::<std[c29fa2d9dbea2b0e]::sys::backtrace::_print_fmt::{closure#1}>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/../../backtrace/src/backtrace/mod.rs:66:14
+   2:     0x557e90247941 - std[c29fa2d9dbea2b0e]::sys::backtrace::_print_fmt
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/backtrace.rs:74:9
+   3:     0x557e90247941 - <<std[c29fa2d9dbea2b0e]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[a9090a07a7fa7517]::fmt::Display>::fmt
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/backtrace.rs:44:26
+   4:     0x557e9026164a - <core[a9090a07a7fa7517]::fmt::rt::Argument>::fmt
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/fmt/rt.rs:152:76
+   5:     0x557e9026164a - core[a9090a07a7fa7517]::fmt::write
+   6:     0x557e9024dcec - core[a9090a07a7fa7517]::io::write::default_write_fmt::<std[c29fa2d9dbea2b0e]::sys::stdio::unix::Stderr>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/io/write.rs:402:11
+   7:     0x557e9024dcec - <std[c29fa2d9dbea2b0e]::sys::stdio::unix::Stderr as core[a9090a07a7fa7517]::io::write::Write>::write_fmt
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/io/write.rs:335:13
+   8:     0x557e902219b6 - <std[c29fa2d9dbea2b0e]::sys::backtrace::BacktraceLock>::print
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/backtrace.rs:47:9
+   9:     0x557e902219b6 - std[c29fa2d9dbea2b0e]::panicking::default_hook::{closure#0}
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:292:27
+  10:     0x557e9023f641 - std[c29fa2d9dbea2b0e]::panicking::default_hook
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:319:9
+  11:     0x557e9023f96b - std[c29fa2d9dbea2b0e]::panicking::panic_with_hook
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:815:13
+  12:     0x557e90221a94 - std[c29fa2d9dbea2b0e]::panicking::panic_handler::{closure#0}
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:681:13
+  13:     0x557e9021a289 - std[c29fa2d9dbea2b0e]::sys::backtrace::__rust_end_short_backtrace::<std[c29fa2d9dbea2b0e]::panicking::panic_handler::{closure#0}, !>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/backtrace.rs:182:18
+  14:     0x557e902227fd - __rustc[9d087a5ab36ea756]::rust_begin_unwind
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:679:5
+  15:     0x557e90261c6d - core[a9090a07a7fa7517]::panicking::panic_nounwind_fmt::runtime
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/panicking.rs:122:22
+  16:     0x557e90261c6d - core[a9090a07a7fa7517]::panicking::panic_nounwind_fmt
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/intrinsics/mod.rs:2636:9
+  17:     0x557e90261beb - core[a9090a07a7fa7517]::panicking::panic_nounwind
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/panicking.rs:225:5
+  18:     0x557e90261d77 - core[a9090a07a7fa7517]::panicking::panic_cannot_unwind
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/panicking.rs:350:5
+  19:     0x557e8edb7693 - glib[c30c21a7c745d72c]::source::trampoline_local::<glib[c30c21a7c745d72c]::source::fnmut_callback_wrapper_local<desktop_smoke[dade5eeee447800b]::toast_proof::{closure#0}::{closure#2}::{closure#3}>::{closure#0}>
+                               at /home/aaronroque/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/glib-0.22.10/src/source.rs:87:1
+  20:     0x7f11358e8cf1 - <unknown>
+  21:     0x7f11358e6ffd - <unknown>
+  22:     0x7f11358e8438 - <unknown>
+  23:     0x7f11358e8592 - g_main_context_iteration
+  24:     0x7f1135af521e - g_application_run
+  25:     0x557e8edb0395 - <gtk4[16020661e161a291]::auto::application::Application as gio[cdfd4b251c71caab]::application::ApplicationExtManual>::run_with_args::<&str>
+                               at /home/aaronroque/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gio-0.22.10/src/application.rs:31:13
+  26:     0x557e8edbc0d1 - desktop_smoke[dade5eeee447800b]::main
+                               at /home/aaronroque/.cache/mywhisper-pr-extract.ie8ambq6/desktop/examples/desktop_smoke.rs:37:9
+  27:     0x557e8edb2c8b - <fn() -> glib[c30c21a7c745d72c]::exit_code::ExitCode as core[a9090a07a7fa7517]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/ops/function.rs:250:5
+  28:     0x557e8edb593e - std[c29fa2d9dbea2b0e]::sys::backtrace::__rust_begin_short_backtrace::<fn() -> glib[c30c21a7c745d72c]::exit_code::ExitCode, glib[c30c21a7c745d72c]::exit_code::ExitCode>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/backtrace.rs:166:18
+  29:     0x557e8edabf81 - std[c29fa2d9dbea2b0e]::rt::lang_start::<glib[c30c21a7c745d72c]::exit_code::ExitCode>::{closure#0}
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/rt.rs:206:18
+  30:     0x557e9023e3a9 - <&dyn core[a9090a07a7fa7517]::ops::function::Fn<(), Output = i32> + core[a9090a07a7fa7517]::marker::Sync + core[a9090a07a7fa7517]::panic::unwind_safe::RefUnwindSafe as core[a9090a07a7fa7517]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/ops/function.rs:287:21
+  31:     0x557e9023e3a9 - std[c29fa2d9dbea2b0e]::panicking::catch_unwind::do_call::<&dyn core[a9090a07a7fa7517]::ops::function::Fn<(), Output = i32> + core[a9090a07a7fa7517]::marker::Sync + core[a9090a07a7fa7517]::panic::unwind_safe::RefUnwindSafe, i32>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:576:43
+  32:     0x557e9023e3a9 - std[c29fa2d9dbea2b0e]::panicking::catch_unwind::<i32, &dyn core[a9090a07a7fa7517]::ops::function::Fn<(), Output = i32> + core[a9090a07a7fa7517]::marker::Sync + core[a9090a07a7fa7517]::panic::unwind_safe::RefUnwindSafe>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:544:19
+  33:     0x557e9023e3a9 - std[c29fa2d9dbea2b0e]::panic::catch_unwind::<&dyn core[a9090a07a7fa7517]::ops::function::Fn<(), Output = i32> + core[a9090a07a7fa7517]::marker::Sync + core[a9090a07a7fa7517]::panic::unwind_safe::RefUnwindSafe, i32>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panic.rs:359:14
+  34:     0x557e9023e3a9 - std[c29fa2d9dbea2b0e]::rt::lang_start_internal::{closure#0}
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/rt.rs:175:24
+  35:     0x557e9023e3a9 - std[c29fa2d9dbea2b0e]::panicking::catch_unwind::do_call::<std[c29fa2d9dbea2b0e]::rt::lang_start_internal::{closure#0}, isize>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:576:43
+  36:     0x557e9023e3a9 - std[c29fa2d9dbea2b0e]::panicking::catch_unwind::<isize, std[c29fa2d9dbea2b0e]::rt::lang_start_internal::{closure#0}>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:544:19
+  37:     0x557e9023e3a9 - std[c29fa2d9dbea2b0e]::panic::catch_unwind::<std[c29fa2d9dbea2b0e]::rt::lang_start_internal::{closure#0}, isize>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panic.rs:359:14
+  38:     0x557e9023e3a9 - std[c29fa2d9dbea2b0e]::rt::lang_start_internal
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/rt.rs:171:5
+  39:     0x557e8edabf67 - std[c29fa2d9dbea2b0e]::rt::lang_start::<glib[c30c21a7c745d72c]::exit_code::ExitCode>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/rt.rs:205:5
+  40:     0x557e8edbc12e - main
+  41:     0x7f1135427d0e - <unknown>
+  42:     0x7f1135427e4b - __libc_start_main
+  43:     0x557e8edabce5 - _start
+  44:                0x0 - <unknown>
+thread caused non-unwinding panic. aborting.
+timeout: the monitored command dumped core
+/usr/bin/xvfb-run: line 180:    24 Aborted                    DISPLAY=:$SERVERNUM XAUTHORITY=$AUTHFILE "$@"
