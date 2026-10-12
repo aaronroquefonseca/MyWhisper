@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.4
+
+- Preserve device identity during legacy-key migration and concurrent
+  startups. Protect private files with atomic writes, restrictive
+  permissions, and checks against symlinks and non-regular files.
+  ([#5](https://github.com/aaronroquefonseca/MyWhisper/pull/5))
+- Fix symbolic logo visibility and toast contrast in light and dark
+  themes, including close-button hover, pressed, and dismissal behavior.
+  ([#6](https://github.com/aaronroquefonseca/MyWhisper/pull/6))
+- Harden upgrades with stable-version selection, authenticated download
+  checksums, archive validation, and service restart verification.
+  Complete Nix build/runtime prerequisites, make CLI help and version
+  available before storage initialization, and verify release versions,
+  dependency notices, artifact integrity, and isolated regression/UI checks.
+  ([#7](https://github.com/aaronroquefonseca/MyWhisper/pull/7))
+
 ## 0.9.3
 
 - Refreshed desktop UI with persistent Dictation, Activity,
