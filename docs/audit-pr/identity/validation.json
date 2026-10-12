@@ -1,0 +1,38 @@
+{
+  "title": "Identity and private-file safety",
+  "base": "main",
+  "code_commit": "44e97e08ae235d0fddd136629bb98ae64652ff42",
+  "passed": [
+    "fmt",
+    "strict Clippy all targets",
+    "83 Rust tests, zero failures, five unchanged opt-in ignores",
+    "release binary",
+    "two existing native UI configurations",
+    "six real grabbed-uinput hotkey cases including listener startup/dispatch/descriptor retirement",
+    "five owned-runner exit/fault cases",
+    "current dependency auditing: zero vulnerabilities and warnings"
+  ],
+  "full_release_audit_complete": false,
+  "project_license_deferred": true,
+  "source_sha256": {
+    "Cargo.toml": "b66eed51047002dbaaa60e53743ba404009cb50c1ca760486c0096881aec9fbc",
+    "Cargo.lock": "9bf2b1263e14b811aeb179c917678e85fdbe8013929ba7ce06d737ebdeccca2a",
+    "src/device.rs": "6a634f855cdfdaa02575194114b86fd744c1a4882efb9e72723e4b5b9875527e",
+    "src/private_fs.rs": "e4f1888d3ef870ece42cd6a7664f262df0c6223877c95a2bcd23cbfa1dbb49e6",
+    "src/paths.rs": "b629aa15b1b2dbadd32d4e00927e4f83ec0ceecacf1db58737f7f21639bf42e0",
+    "src/hotkey.rs": "4f8672a11b40bcb963f6e055fb0c3605c7a48e1da7e6d6428352e4143e09ebf4",
+    "scripts/disposable.py": "1d40ccc95f15516badb57c7cbb9df3bf1fd6d87c1821b902ffd1ba024e2b6b71",
+    "scripts/native-hotkey-smoke.sh": "457fe7dcff5bec4c6790cb3ae93aabddae292a96726cc3c835fff1b9da3fb903"
+  },
+  "evidence_sha256": {
+    "clippy.log": "cde81cfb97ec812b88cfc58d4d2f76c5fc3932bc5db6895537765e0bf772f65e",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "native-input.log": "411c3b03b13c55b744049b4ec0a010c2ead9ca9c4a21a37f727079b816b61410",
+    "native-ui.log": "6ee0e9a478e5a4904e1480ecbac83fdafb0a7f08d59b50e65ebf9029870b4a96",
+    "owned-runner.log": "e22fb7c05a2de956639a00f8596a6aa71568851f2f18808910833a37ef513c65",
+    "release.log": "3f1adb28f930e737d6dcd8761474b49a38239fae607b18bfde14487daec1d41a",
+    "rust-tests.log": "4dd39b4a7a2fe148098fc77c66ed5377d037e11fd21d82ae91a45024b695689b",
+    "security.json": "b6e3648d1abbe8a1d60fff5d4e1aef41c8b553595d427eaee02280a01ca610b5"
+  },
+  "release_binary_sha256": "3a82ae5a1e27578c7b3289c1f12418315fc282fd0a16a3ded7238b2dd2bc2ee3"
+}
