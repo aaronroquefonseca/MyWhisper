@@ -1,0 +1,22 @@
+{
+  "run": "https://github.com/aaronroquefonseca/MyWhisper/actions/runs/38275850206",
+  "head": "803ff3da2f47a978c752db63a7ae2df012da222f",
+  "artifact_root": "/home/aaronroque/.cache/mywhisper-pr7-ci-artifact.vkv_n_bg",
+  "release_metadata": {
+    "tag": "v0.9.3",
+    "version": "0.9.3",
+    "prerelease": false,
+    "source_sha": "c5a36893f6c48aa33c51c6cb019bc76f5809081e",
+    "source_dirty": false,
+    "project_license_established": false,
+    "dependency_notices_complete": true,
+    "asset": "mywhisper-v0.9.3-x86_64-unknown-linux-gnu.tar.gz",
+    "sha256": "7a62295d84e341ffd56fd4023463e86f168a622eb9b5969c170ca6aadcec35ca"
+  },
+  "archive_digest_matches": true,
+  "artifact_validation_passed": true,
+  "source_tree_matches_pr_head": true,
+  "security_vulnerabilities": 0,
+  "security_warnings": 0,
+  "publication_hold_preserved": true
+}

@@ -1,7 +1,7 @@
 {
   "title": "Packaging, installation and Nix prerequisites",
   "base": "fix/audit-desktop-ui",
-  "code_commit": "3cc92d950476a611a29182a908ba28e9fc08027e",
+  "code_commit": "f52058e503765d3ee56add14ac9477ed387eec42",
   "passed": [
     "fmt",
     "strict Clippy all targets",
@@ -33,7 +33,7 @@
     "packaging/nixos/runtime-loader-test.nix": "2636da2681dc36dce56d8a57cd79dd01a0943ac9e27df7f28b8bd29d30abbe18",
     "packaging/release.py": "6d754567b4d458d57443ae900fc4ec2928a7f1266533a735e83a8c8bc0409206",
     ".github/workflows/release.yml": "11635548d350e88999d0b16e36fff3b6d13bf05c43c7a1e57a3bec055b29cce9",
-    "packaging/test-release.py": "b13c6f5c9d085c53b046fc4d9638bf6b6fe2b1d6dbece67c5aff48de098f6c8d"
+    "packaging/test-release.py": "57a49a869d19ff15e11e4e473599d2fab4e201269929f5001c93c6b736e985a5"
   },
   "evidence_sha256": {
     "arch.log": "65e56079044334817f87a2e8de5397a5cd108208c4226617e798979b7c67b40a",
@@ -100,7 +100,11 @@
     "pr7-git-trust/runner-lifecycle.log": "2461ce93f9738113ae42adb68ab44bf8b753d2c8fd4977355d89e2b4dd8cc9a2",
     "pr7-git-trust/cli.log": "54e54cadfb7d24030c9537799d3fe77bf1795214a224c35c71da244f306e4cae",
     "pr7-git-trust/native-ui.log": "e568c8af04673b81478b4fa1e186476e0663e626c23e363a4b8e4d54d690d11d",
-    "pr7-git-trust/COMMANDS.md": "5d61bb66b5e633f4818c881bae18b4ead773a6272368f8433ecbf4b4a003d071"
+    "pr7-git-trust/COMMANDS.md": "de21a316d342e78edc893c47d9035a56f6f0b980820bb435134973d7186b4597",
+    "pr7-git-trust/caller-git-isolation.log": "a395819106a5d2d7894972085772a7e4f7c236fcac61991343962dc79e1c65a2",
+    "pr7-git-trust/hosted-passed.log": "b65c0dc28462b4ec9b19d3ca0c5adb0123ea806fa477469f952b8bbbb0d73d4e",
+    "pr7-git-trust/hosted-passed.json": "eee7442b5245ea04cd71b084fbdff1ce60126d974273245bf414f92fcf3495ee",
+    "pr7-git-trust/hosted-artifact.json": "17bedc087da9061b9319ceaa7d127d85bdcc27be63c7ad37c763aa799c349f68"
   },
   "release_binary_sha256": "b8eb1972474b2186d4032670b0125642261a8de0f3fa21bec0102af56f3034b3",
   "tested_source_commit_before_stack_documentation": "b7d4b4a171054831bcfd9ffa0be21e51a1208c4c",
@@ -141,7 +145,10 @@
     "hosted_ci": {
       "first_rerun": "https://github.com/aaronroquefonseca/MyWhisper/actions/runs/38272434319",
       "first_rerun_result": "Encrypted-store fixture, regression/security/release/CLI/native UI stages pass; later candidate provenance fails on container checkout ownership. Full evidence under pr7-git-trust.",
-      "final_head_results": "See PR #7 description/checks for final tested SHA, immutable passing workflow URL and candidate evidence."
+      "final_head_results": "See PR #7 description/checks for final tested SHA, immutable passing workflow URL and candidate evidence.",
+      "passing_rerun": "https://github.com/aaronroquefonseca/MyWhisper/actions/runs/38275850206",
+      "passing_rerun_head": "803ff3da2f47a978c752db63a7ae2df012da222f",
+      "passing_rerun_result": "All checks success, publication skipped; downloaded candidate digest/layout/source tree/notices/security/owner-license hold independently verified. This precedes only final Python fixture isolation."
     },
     "prior_artifact_provenance": "Existing Arch/artifact records above remain historical. This correction changes only check configuration and evidence; all Rust, package install and runtime sources are byte-identical to the reviewed head."
   },
@@ -151,6 +158,9 @@
     "trust_scope": "Actual GITHUB_WORKSPACE in ephemeral container HOME; never wildcard safe.directory",
     "regression": "Actual Git ownership failure, candidate creation blocked; explicit fixture workspace trust preserves exact source SHA/clean state; second repository remains untrusted; license hold unchanged",
     "local_validation": "83 Rust tests, zero failures, five unchanged ignores; formatting, strict all-target Clippy, release build, ten release/five upgrade/five lifecycle regressions, keyring-free CLI, both broad/focused UI configurations all pass",
-    "nix_provenance": "Fresh fixture-tested package/check source unchanged from 09af73966ddf549b836fba0080df00eee3f89ccb; no Nix product/check source changed in this follow-up."
+    "nix_provenance": "Fresh fixture-tested package/check source unchanged from 09af73966ddf549b836fba0080df00eee3f89ccb; no Nix product/check source changed in this follow-up.",
+    "final_fixture_source": "f52058e503765d3ee56add14ac9477ed387eec42",
+    "caller_isolation": "All inherited Git context removed before first command; ten tests pass even with foreign caller GIT_DIR/WORK_TREE and mandatory unavailable signer; caller HEAD/status unchanged.",
+    "passing_hosted_run": "https://github.com/aaronroquefonseca/MyWhisper/actions/runs/38275850206"
   }
 }

@@ -46,3 +46,54 @@ checks already passed with the unchanged Cargo lockfile.
 Final-head hosted status, immutable workflow URL, candidate integrity evidence
 and tested SHA are recorded in PR #7's description/checks. Historical failing
 logs here must not be mistaken for a passing run.
+
+## Final fixture isolation
+
+Final regression-test source: `f52058e503765d3ee56add14ac9477ed387eec42`.
+The Git regression now selects private HOME/global configuration before its
+first Git command and removes all inherited GIT_* context, including GIT_DIR,
+GIT_WORK_TREE, templates and command configuration. This prevents local signing
+policies or a caller repository from influencing synthetic commits. Actual
+ownership simulation is applied only after fixture initialization.
+
+An additional clean runner created a disposable caller repository and recorded
+its HEAD, then invoked the complete ten-test suite with inherited GIT_DIR and
+GIT_WORK_TREE pointing to that caller and a global config requiring a nonexistent
+signing program. All ten tests passed. The caller HEAD and clean status remained
+unchanged. Exact setup (inside `scripts/disposable.py ... gitconfig env -u DISPLAY
+-u SSH_AUTH_SOCK bash -e -c`) was:
+
+```sh
+git init -q "$MYWHISPER_AUDIT_ROOT/caller"
+git -C "$MYWHISPER_AUDIT_ROOT/caller" -c user.name=Disposable \
+  -c user.email=fixture@example.invalid commit --allow-empty -qm 'Caller fixture'
+callerHead=$(git -C "$MYWHISPER_AUDIT_ROOT/caller" rev-parse HEAD)
+printf '[commit]\n gpgsign = true\n[gpg]\n program = /nonexistent-disposable-signer\n' > "$MYWHISPER_AUDIT_ROOT/caller.gitconfig"
+GIT_DIR="$MYWHISPER_AUDIT_ROOT/caller/.git" \
+GIT_WORK_TREE="$MYWHISPER_AUDIT_ROOT/caller" \
+GIT_CONFIG_GLOBAL="$MYWHISPER_AUDIT_ROOT/caller.gitconfig" \
+  python3 packaging/test-release.py
+test "$(git -C "$MYWHISPER_AUDIT_ROOT/caller" rev-parse HEAD)" = "$callerHead"
+test -z "$(git -C "$MYWHISPER_AUDIT_ROOT/caller" status --porcelain)"
+```
+
+Only Python test setup changed after the complete clean local run at `3cc92d9`;
+all Rust, Cargo, workflow and Nix sources are unchanged. The complete affected
+release test suite was rerun, including all existing assertions. No real desktop
+Git configuration, repository, signing identity or agent is used.
+
+## Passing hosted run
+
+[Workflow 38275850206](https://github.com/aaronroquefonseca/MyWhisper/actions/runs/38275850206)
+passed on `803ff3da2f47a978c752db63a7ae2df012da222f`: formatting, strict all-target
+lint, 83 Rust tests, ten release/five upgrade/five lifecycle regressions,
+security auditing, release/CLI checks, both broad/focused UI configurations,
+candidate integrity and artifact upload. Publication was skipped.
+
+The downloaded private candidate was independently checked with SHA256SUMS and
+`packaging/validate-artifact.py`; digest, clean source tree, complete dependency
+notices, absent owner license and zero security advisories/warnings all match.
+GitHub's checked merge tree equals the PR head tree. Exact metadata is in
+`hosted-artifact.json`, job/step metadata in `hosted-passed.json`, and full logs
+in `hosted-passed.log`. This passing run precedes only the final test-isolation
+refinement at `f52058e`; final-head CI is also checked and linked from PR #7.
