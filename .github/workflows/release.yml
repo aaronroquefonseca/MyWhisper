@@ -25,6 +25,8 @@ jobs:
     timeout-minutes: 45
     container:
       image: archlinux:base-devel
+      # Disposable gates own descendants through user/PID namespaces.
+      options: --security-opt seccomp=unconfined --security-opt apparmor=unconfined
     outputs:
       tag: ${{ steps.candidate.outputs.tag }}
       source-sha: ${{ steps.candidate.outputs.source-sha }}
