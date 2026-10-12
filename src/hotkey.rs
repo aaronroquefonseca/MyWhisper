@@ -274,7 +274,19 @@ fn is_keyboard(dev: &Device) -> bool {
     }
 }
 
+#[cfg(test)]
+type NativeFixture = Option<Vec<(std::path::PathBuf, Device)>>;
+#[cfg(test)]
+static KEYBOARD_FIXTURE: std::sync::Mutex<NativeFixture> = std::sync::Mutex::new(None);
+#[cfg(test)]
+static NATIVE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn open_keyboards() -> (Vec<(std::path::PathBuf, Device)>, bool) {
+    #[cfg(test)]
+    if let Some(devices) = KEYBOARD_FIXTURE.lock().unwrap().as_mut() {
+        return (std::mem::take(devices), false);
+    }
+
     let mut devices = Vec::new();
     let mut denied = false;
     let dir = match std::fs::read_dir("/dev/input") {
@@ -317,9 +329,9 @@ fn open_keyboards() -> (Vec<(std::path::PathBuf, Device)>, bool) {
 /// Merge a rescan into the live set: keep existing fds untouched
 /// (their buffered events and held state survive), open only new
 /// nodes, drop vanished ones.
-fn merge_devices(
-    devices: &mut Vec<(std::path::PathBuf, Device)>,
-    found: Vec<(std::path::PathBuf, Device)>,
+fn merge_devices<D>(
+    devices: &mut Vec<(std::path::PathBuf, D)>,
+    found: Vec<(std::path::PathBuf, D)>,
 ) {
     for (path, dev) in found {
         if !devices.iter().any(|(p, _)| p == &path) {
@@ -384,16 +396,25 @@ struct Watched {
 /// 60 s we had before amputated exactly those sessions (log-proven).
 const MAX_PUSH_SECS: u64 = 900;
 
-fn poll_events(
-    devices: &mut Vec<(std::path::PathBuf, Device)>,
+trait KeyDevice {
+    fn events(&mut self) -> std::io::Result<Vec<evdev::InputEvent>>;
+}
+impl KeyDevice for Device {
+    fn events(&mut self) -> std::io::Result<Vec<evdev::InputEvent>> {
+        self.fetch_events().map(|events| events.collect())
+    }
+}
+
+fn poll_events<D: KeyDevice>(
+    devices: &mut Vec<(std::path::PathBuf, D)>,
     held: &mut HashSet<KeyCode>,
     watched: &mut [Watched],
     on_event: &HotkeyCallback,
 ) {
     let mut dead = Vec::new();
     for (i, (_, dev)) in devices.iter_mut().enumerate() {
-        let events: Vec<_> = match dev.fetch_events() {
-            Ok(it) => it.collect(),
+        let events = match dev.events() {
+            Ok(events) => events,
             // Nonblocking fds report WouldBlock when idle: not death.
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
             Err(_) => {
@@ -769,22 +790,57 @@ mod tests {
         assert!(!mods_ok(&c, &held));
     }
 
-    /// Rescans must merge, never replace: no path is ever opened
-    /// twice (dup fds would split one device's event stream), and a
-    /// merge is idempotent. Counts are not asserted: other tests
-    /// create virtual keyboards concurrently, so the device set
-    /// churns mid-suite by design.
+    /// Descriptor ownership uses deterministic files in every build. The required
+    /// native companion additionally uses an exclusively grabbed owned keyboard.
     #[test]
     fn rescan_merge_keeps_fds() {
-        use std::collections::HashSet;
-        let mut live = Vec::new();
+        use std::os::fd::AsRawFd;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("keyboard");
+        std::fs::write(&path, b"buffered event").unwrap();
+        let original = std::fs::File::open(&path).unwrap();
+        let fd = original.as_raw_fd();
+        let mut live = vec![(path.clone(), original)];
         for _ in 0..3 {
-            let (found, _) = open_keyboards();
-            merge_devices(&mut live, found);
+            merge_devices(
+                &mut live,
+                vec![(path.clone(), std::fs::File::open(&path).unwrap())],
+            );
             let paths: HashSet<_> = live.iter().map(|(p, _)| p).collect();
             assert_eq!(paths.len(), live.len(), "merge must never duplicate an fd");
+            assert_eq!(
+                live[0].1.as_raw_fd(),
+                fd,
+                "rescan must retain the original descriptor"
+            );
         }
-        assert!(!live.is_empty(), "needs a real keyboard to test against");
+        assert!(!live.is_empty(), "synthetic keyboard is present");
+        use std::io::Read;
+        let mut buffered = String::new();
+        live[0].1.read_to_string(&mut buffered).unwrap();
+        assert_eq!(buffered, "buffered event", "rescan lost buffered events");
+        std::fs::remove_file(&path).unwrap();
+        merge_devices(&mut live, Vec::new());
+        assert!(live.is_empty(), "unplug must drop the original descriptor");
+        if std::env::var_os("MYWHISPER_NATIVE_HOTKEY_GATE").is_some() {
+            let _native_owner = NATIVE_TEST_LOCK.lock().unwrap();
+            let (virtual_keyboard, path, owned) = native_keyboard();
+            let fd = owned.as_raw_fd();
+            let mut live = vec![(path.clone(), owned)];
+            for _ in 0..3 {
+                let (found, _) = open_keyboards();
+                merge_devices(&mut live, found);
+                let paths: HashSet<_> = live.iter().map(|(p, _)| p).collect();
+                assert_eq!(paths.len(), live.len(), "merge must never duplicate an fd");
+                assert_eq!(
+                    live.iter().find(|(p, _)| p == &path).unwrap().1.as_raw_fd(),
+                    fd
+                );
+            }
+            assert!(!live.is_empty(), "native keyboard must remain present");
+            drop(live);
+            drop(virtual_keyboard);
+        }
     }
 
     #[test]
@@ -806,69 +862,148 @@ mod tests {
         }
     }
 
-    /// End-to-end through a virtual uinput keyboard: press/release F13
-    /// must surface as Down/Up. Needs /dev/uinput write access (the
-    /// `input` group has it on this machine).
-    #[test]
-    fn virtual_keyboard_fires_down_up() {
+    /// Production event dispatch with deterministic frames in every build and
+    /// real grabbed uinput in the required native companion; all edge assertions
+    /// run in both modes, with no host listener receiving synthetic events.
+    struct SyntheticKeyboard(std::collections::VecDeque<Vec<evdev::InputEvent>>);
+    impl KeyDevice for SyntheticKeyboard {
+        fn events(&mut self) -> std::io::Result<Vec<evdev::InputEvent>> {
+            self.0
+                .pop_front()
+                .ok_or_else(|| std::io::ErrorKind::WouldBlock.into())
+        }
+    }
+    fn native_keyboard() -> (evdev::uinput::VirtualDevice, std::path::PathBuf, Device) {
         use evdev::uinput::VirtualDevice;
-        use std::sync::Mutex;
-
         let mut keys = evdev::AttributeSet::<KeyCode>::new();
-        keys.insert(KeyCode::KEY_A); // keyboard filter requires it
+        keys.insert(KeyCode::KEY_A);
         keys.insert(KeyCode::KEY_F13);
-        let mut virt = VirtualDevice::builder()
+        let mut virtual_keyboard = VirtualDevice::builder()
             .unwrap()
-            .name("mywhisper-hotkey-test")
+            .name("mywhisper-disposable-hotkey-gate")
             .with_keys(&keys)
             .unwrap()
             .build()
             .unwrap();
-        // Let udev settle so the device node exists before we start.
-        std::thread::sleep(Duration::from_millis(500));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "owned virtual keyboard did not appear"
+            );
+            let paths: Vec<_> = virtual_keyboard
+                .enumerate_dev_nodes_blocking()
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            for path in paths {
+                if let Ok(mut device) = Device::open(&path) {
+                    // Exclusive ownership precedes every emitted event. No
+                    // host listener can receive these synthetic shortcuts.
+                    device.grab().unwrap();
+                    device.set_nonblocking(true).unwrap();
+                    return (virtual_keyboard, path, device);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 
-        let seen: Arc<Mutex<Vec<HotkeyEvent>>> = Arc::new(Mutex::new(Vec::new()));
-        let seen_cb = seen.clone();
-        let mut bindings = HashMap::new();
-        bindings.insert(
+    fn assert_edges(seen: &[HotkeyEvent]) {
+        let down = HotkeyEvent::Down(
             HotkeyAction::DictationToggle,
-            vec![crate::settings::HotkeyBinding {
-                combo: "F13".to_string(),
-                mode: crate::settings::ActivationMode::Push,
-            }],
+            crate::settings::ActivationMode::Push,
         );
-        start(
-            bindings,
-            Arc::new(move |ev| {
-                seen_cb.lock().unwrap().push(ev);
-            }),
-            Arc::new(|_| {}),
+        let up = HotkeyEvent::Up(
+            HotkeyAction::DictationToggle,
+            crate::settings::ActivationMode::Push,
         );
-        std::thread::sleep(Duration::from_millis(500));
-
-        let syn = evdev::InputEvent::new(0, 0, 0); // EV_SYN / SYN_REPORT
+        assert!(seen.contains(&down), "no Down, got {seen:?}");
+        assert!(seen.contains(&up), "no Up, got {seen:?}");
+        assert_eq!(seen, [down, up], "edges must occur once and in order");
+    }
+    #[test]
+    fn virtual_keyboard_fires_down_up() {
+        use std::sync::Mutex;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let callback: HotkeyCallback = Arc::new(move |event| sink.lock().unwrap().push(event));
+        let mut watched = [Watched {
+            action: HotkeyAction::DictationToggle,
+            combo: parse_combo("F13").unwrap(),
+            mode: crate::settings::ActivationMode::Push,
+            active: false,
+            active_since: None,
+        }];
+        let mut held = HashSet::new();
+        let syn = evdev::InputEvent::new(0, 0, 0);
         let press = evdev::InputEvent::new(EventType::KEY.0, KeyCode::KEY_F13.0, 1);
+        let repeat = evdev::InputEvent::new(EventType::KEY.0, KeyCode::KEY_F13.0, 2);
         let release = evdev::InputEvent::new(EventType::KEY.0, KeyCode::KEY_F13.0, 0);
-        virt.emit(&[press, syn]).unwrap();
-        std::thread::sleep(Duration::from_millis(300));
-        virt.emit(&[release, syn]).unwrap();
-        std::thread::sleep(Duration::from_millis(300));
-        stop();
-
-        let seen = seen.lock().unwrap();
-        assert!(
-            seen.contains(&HotkeyEvent::Down(
+        let mut devices = vec![(
+            "synthetic-keyboard".into(),
+            SyntheticKeyboard(std::collections::VecDeque::from([
+                vec![press, syn],
+                vec![repeat, syn],
+                vec![release, syn],
+            ])),
+        )];
+        for _ in 0..4 {
+            poll_events(&mut devices, &mut held, &mut watched, &callback);
+        }
+        assert_edges(&seen.lock().unwrap());
+        if std::env::var_os("MYWHISPER_NATIVE_HOTKEY_GATE").is_some() {
+            let _native_owner = NATIVE_TEST_LOCK.lock().unwrap();
+            struct FixtureGuard;
+            impl Drop for FixtureGuard {
+                fn drop(&mut self) {
+                    stop();
+                    *KEYBOARD_FIXTURE.lock().unwrap() = None;
+                }
+            }
+            let _fixture = FixtureGuard;
+            seen.lock().unwrap().clear();
+            let (mut keyboard, path, device) = native_keyboard();
+            use std::os::fd::AsRawFd;
+            let fd = device.as_raw_fd();
+            *KEYBOARD_FIXTURE.lock().unwrap() = Some(vec![(path.clone(), device)]);
+            // Exercise original startup/rescan/dispatch through the listener
+            // thread. Its first scan receives the already-grabbed owned fd;
+            // it never scans or emits into a host keyboard.
+            let mut bindings = HashMap::new();
+            bindings.insert(
                 HotkeyAction::DictationToggle,
-                crate::settings::ActivationMode::Push
-            )),
-            "no Down, got {seen:?}"
-        );
-        assert!(
-            seen.contains(&HotkeyEvent::Up(
-                HotkeyAction::DictationToggle,
-                crate::settings::ActivationMode::Push
-            )),
-            "no Up, got {seen:?}"
-        );
+                vec![crate::settings::HotkeyBinding {
+                    combo: "F13".into(),
+                    mode: crate::settings::ActivationMode::Push,
+                }],
+            );
+            start(bindings, callback.clone(), Arc::new(|_| {}));
+            for event in [press, release] {
+                keyboard.emit(&[event, syn]).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                let expected = if event.value() == 1 { 1 } else { 2 };
+                while seen.lock().unwrap().len() < expected {
+                    assert!(
+                        Instant::now() < deadline,
+                        "native listener did not deliver its edge"
+                    );
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+            stop();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while std::fs::read_link(format!("/proc/self/fd/{fd}"))
+                .is_ok_and(|target| target == path)
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "native listener retained its owned descriptor"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert_edges(&seen.lock().unwrap());
+            drop(keyboard);
+        }
     }
 }
