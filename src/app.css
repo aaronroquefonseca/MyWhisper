@@ -93,5 +93,11 @@ progressbar progress { background: @app_accent; border-radius: 4px; }
 .heat-2 { background: alpha(@app_accent, 0.6); }
 .heat-3 { background: @app_accent; }
 .heat:hover { outline: 2px solid @app_accent; }
-toast { background: @app_fg; color: @app_bg; border-radius: 10px; }
-toast label { color: @app_bg; }
+/* Feedback belongs to the active palette. Its close control must not inherit
+   the filled, rectangular styling of page buttons. */
+toast { background: @app_card; color: @app_fg; border: 1px solid @app_borders; border-radius: 10px; }
+toast label, toast button image { color: @app_fg; }
+toast button { background: transparent; color: @app_fg; border-color: transparent; box-shadow: none; }
+toast button.circular { border-radius: 50%; padding: 0; min-width: 32px; min-height: 32px; }
+toast button:hover { background: alpha(@app_fg, 0.10); }
+toast button:active { background: alpha(@app_fg, 0.16); }
