@@ -1,8 +1,7 @@
 {
   "title": "Packaging, installation and Nix prerequisites",
   "base": "fix/audit-desktop-ui",
-  "code_commit": "b7d4b4a171054831bcfd9ffa0be21e51a1208c4c",
-  "compiled_code_commit": "8d4f999d01f29ff5ae18ec2a78a06c3f81618f84",
+  "code_commit": "712cd89f62d36b1cd43af07aba716a190a1f277f",
   "passed": [
     "fmt",
     "strict Clippy all targets",
@@ -16,7 +15,8 @@
     "clean booted NixOS System-dark GUI/normal close/encrypted store/private key and two service start/stop cycles",
     "unchanged pinned Vulkan ELF starts as a normal NixOS VM user",
     "actual GTK 4.22 symbolic check",
-    "CI-like Arch container nested user/PID namespace and proc mount prerequisite"
+    "CI-like Arch container nested user/PID namespace and proc mount prerequisite",
+    "authenticated existing published v0.9.3 archive passes the hardened updater layout check without executing or installing it"
   ],
   "full_release_audit_complete": false,
   "project_license_deferred": true,
@@ -56,7 +56,27 @@
     "release.log": "a0f465090848f26a155b2a3a9e4b8b62b4fc1a43be0f257208c620de4400945f",
     "rust-tests.log": "f2c97138ea63a20af929dfd579edf221b641adaf9b1fba10fcdebe674b8326d5",
     "symbolic-check.log": "3a2446ad30f05118a853fc638aac8e5c2fbedc97bfea7ab55f12aea0c0b5725e",
-    "upgrade-regressions.log": "81efbe57122569f630c5174a1b940193c1ad92add292436eae32aca083f492f4"
+    "upgrade-regressions.log": "81efbe57122569f630c5174a1b940193c1ad92add292436eae32aca083f492f4",
+    "final-candidate.log": "9971d98887b87ced4213a83c121e06b6ce17a1165e8565830c32e763c1847e02",
+    "final-artifact.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "final-candidate.json": "90cdfa23541964fbc1d9cfe81c83d59d87e1eb8f5a46bbd88ab1bddffd142fb1",
+    "published-compatibility.log": "d085fc1eba37ced4fd5c1d934036c0604114bf77bcf90f4b29f8aceef2897556"
   },
-  "release_binary_sha256": "b8eb1972474b2186d4032670b0125642261a8de0f3fa21bec0102af56f3034b3"
+  "release_binary_sha256": "b8eb1972474b2186d4032670b0125642261a8de0f3fa21bec0102af56f3034b3",
+  "tested_source_commit_before_stack_documentation": "b7d4b4a171054831bcfd9ffa0be21e51a1208c4c",
+  "compiled_source_commit_before_stack_documentation": "8d4f999d01f29ff5ae18ec2a78a06c3f81618f84",
+  "stack_rebase": "Only ancestry/documentation changed; tested product and packaging source hashes are identical. The later workflow-only namespace prerequisite was separately reproduced.",
+  "final_artifact": {
+    "tag": "v0.9.3",
+    "version": "0.9.3",
+    "prerelease": false,
+    "source_sha": "6d20c921a8facacd3072e495f5944e27128f7abf",
+    "source_dirty": false,
+    "project_license_established": false,
+    "dependency_notices_complete": true,
+    "asset": "mywhisper-v0.9.3-x86_64-unknown-linux-gnu.tar.gz",
+    "sha256": "6c630a38f1c973ddac3218475b6aa51b263f02c33867bba39c0408c8a9582c31",
+    "arch_verified_contents_match": true
+  },
+  "arch_provenance": "The Arch install/upgrade used the earlier candidate; every final archive member is byte-identical to that verified archive. Final metadata records the later reachable documentation checkpoint."
 }
