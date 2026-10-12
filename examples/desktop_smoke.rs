@@ -10,14 +10,24 @@ fn main() -> gtk4::glib::ExitCode {
         .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
         .build();
     app.connect_activate(move |app| {
-        mywhisper::i18n::set_lang(if dark { mywhisper::i18n::UiLang::Es } else { mywhisper::i18n::UiLang::En });
+        mywhisper::i18n::set_lang(if dark {
+            mywhisper::i18n::UiLang::Es
+        } else {
+            mywhisper::i18n::UiLang::En
+        });
         let state = AppState::fresh();
         state.settings.borrow_mut().sync.enabled = false;
-        apply_theme(if dark { mywhisper::settings::Theme::Dark } else { mywhisper::settings::Theme::Light });
+        apply_theme(if dark {
+            mywhisper::settings::Theme::Dark
+        } else {
+            mywhisper::settings::Theme::Light
+        });
         let window = build_app_window(app, &state, "home", "Preferences");
         window.present();
         let mapped = window.clone();
-        gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || symbolic_logo(&mapped));
+        gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+            symbolic_logo(&mapped)
+        });
         toast_proof(app, &window, dark);
     });
     app.run_with_args::<&str>(&[])
@@ -32,7 +42,6 @@ fn descendants(root: &gtk4::Widget) -> Vec<gtk4::Widget> {
     }
     all
 }
-
 
 fn symbolic_logo(window: &gtk4::ApplicationWindow) {
     let mark = descendants(window.upcast_ref())
@@ -85,7 +94,6 @@ fn symbolic_logo(window: &gtk4::ApplicationWindow) {
     eprintln!("[ui-smoke] embedded logo renders in both symbolic foregrounds");
 }
 
-
 pub fn toast_proof(app: &gtk4::Application, window: &gtk4::ApplicationWindow, dark: bool) {
     let app = app.clone();
     let window = window.clone();
@@ -101,6 +109,9 @@ pub fn toast_proof(app: &gtk4::Application, window: &gtk4::ApplicationWindow, da
             .unwrap();
         let toast = libadwaita::Toast::new(tr("feedback.deleted"));
         toast.set_timeout(0);
+        let dismissed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observed = dismissed.clone();
+        toast.connect_dismissed(move |_| observed.set(true));
         feedback.add_toast(toast);
         gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(350), move || {
             let toast = descendants(window.upcast_ref())
@@ -156,6 +167,7 @@ pub fn toast_proof(app: &gtk4::Application, window: &gtk4::ApplicationWindow, da
                     "close hover must still provide feedback"
                 );
                 close.emit_clicked();
+                assert!(dismissed.get(), "close did not dismiss the actual toast");
                 println!(
                     "Native toast palette/close-hover/dismiss regression passed; visual evidence: {}",
                     directory.display()
