@@ -223,8 +223,9 @@ impl Store {
         let probe = conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
             r.get::<_, i64>(0)
         });
-        if probe.is_err() && !fresh {
-            let err = probe.unwrap_err();
+        if let Err(err) = probe
+            && !fresh
+        {
             if is_not_a_database(&err) {
                 drop(conn);
                 eprintln!("[store] plaintext database found, encrypting in place");
@@ -451,9 +452,8 @@ impl Store {
     /// Delete history rows with no duration (pre-fix data that pins
     /// words-per-minute at 0). Returns rows removed.
     pub fn delete_zero_duration_history(&self) -> rusqlite::Result<usize> {
-        Ok(self
-            .conn
-            .execute("DELETE FROM history WHERE duration_secs <= 0", [])?)
+        self.conn
+            .execute("DELETE FROM history WHERE duration_secs <= 0", [])
     }
 
     /// Clear all transcript history (tombstones survive: dropping

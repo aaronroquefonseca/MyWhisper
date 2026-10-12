@@ -204,10 +204,10 @@ fn reap(child: std::process::Child) {
     let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
     let s = slot.clone();
     if crate::runtime::submit("reap", move || {
-        if let Ok(mut g) = s.lock() {
-            if let Some(mut c) = g.take() {
-                let _ = c.wait();
-            }
+        if let Ok(mut g) = s.lock()
+            && let Some(mut c) = g.take()
+        {
+            let _ = c.wait();
         }
     })
     .is_err()

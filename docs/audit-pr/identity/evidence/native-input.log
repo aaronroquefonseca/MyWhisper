@@ -1,0 +1,15 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+
+running 6 tests
+[hotkey] WARNING: unknown key "Nope" in "Nope+NotAKey"
+test hotkey::tests::smart_tap_holds_toggle ... ok
+test hotkey::tests::parses_f13_and_combos ... ok
+test hotkey::tests::evdev_codes_roundtrip_through_parser ... ok
+test hotkey::tests::mods_gate_correctly ... ok
+[hotkey] watching "F13" (Push) for DictationToggle
+[hotkey] watching 1 keyboard(s): mywhisper-disposable-hotkey-gate
+test hotkey::tests::virtual_keyboard_fires_down_up ... ok
+test hotkey::tests::rescan_merge_keeps_fds ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 82 filtered out; finished in 1.82s
+

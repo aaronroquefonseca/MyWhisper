@@ -489,13 +489,13 @@ pub fn download_model(
     }
     drop(file);
 
-    if let Some(expected) = entry.expected_bytes {
-        if received < (expected * 95) / 100 {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!(
-                "size mismatch: got {received} bytes, expected ~{expected}"
-            ));
-        }
+    if let Some(expected) = entry.expected_bytes
+        && received < (expected * 95) / 100
+    {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!(
+            "size mismatch: got {received} bytes, expected ~{expected}"
+        ));
     }
 
     on_event(DownloadEvent::Installing);
@@ -514,9 +514,8 @@ pub fn download_model(
             }
         }
         ModelKind::Parakeet => {
-            extract_tar_bz2(&tmp, &dir).map_err(|e| {
+            extract_tar_bz2(&tmp, &dir).inspect_err(|_e| {
                 let _ = std::fs::remove_file(&tmp);
-                e
             })?;
             let _ = std::fs::remove_file(&tmp);
             // Flatten one level when the archive nests everything
@@ -579,12 +578,11 @@ pub struct DlSnapshot {
     pub phase: DlPhase,
 }
 
-static DOWNLOADS: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<String, (DlSnapshot, Arc<AtomicBool>)>>,
-> = std::sync::OnceLock::new();
+type DownloadMap =
+    std::sync::Mutex<std::collections::HashMap<String, (DlSnapshot, Arc<AtomicBool>)>>;
+static DOWNLOADS: std::sync::OnceLock<DownloadMap> = std::sync::OnceLock::new();
 
-fn downloads()
--> &'static std::sync::Mutex<std::collections::HashMap<String, (DlSnapshot, Arc<AtomicBool>)>> {
+fn downloads() -> &'static DownloadMap {
     DOWNLOADS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -601,10 +599,10 @@ pub fn download_state(id: &str) -> Option<DlSnapshot> {
 pub fn start_download(data_dir: PathBuf, id: &'static str) {
     {
         let map = downloads().lock().unwrap();
-        if let Some((snap, _)) = map.get(id) {
-            if matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing) {
-                return;
-            }
+        if let Some((snap, _)) = map.get(id)
+            && matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing)
+        {
+            return;
         }
     }
     let Some(entry) = find_model(id) else {
@@ -625,17 +623,17 @@ pub fn start_download(data_dir: PathBuf, id: &'static str) {
     );
     std::thread::spawn(move || {
         let cb: DownloadCallback = Arc::new(move |ev| {
-            if let Ok(mut map) = downloads().lock() {
-                if let Some((snap, _)) = map.get_mut(id) {
-                    match ev {
-                        DownloadEvent::Progress { received, total } => {
-                            snap.received = received;
-                            snap.total = total;
-                            snap.phase = DlPhase::Downloading;
-                        }
-                        DownloadEvent::Installing => snap.phase = DlPhase::Installing,
-                        DownloadEvent::Done => {}
+            if let Ok(mut map) = downloads().lock()
+                && let Some((snap, _)) = map.get_mut(id)
+            {
+                match ev {
+                    DownloadEvent::Progress { received, total } => {
+                        snap.received = received;
+                        snap.total = total;
+                        snap.phase = DlPhase::Downloading;
                     }
+                    DownloadEvent::Installing => snap.phase = DlPhase::Installing,
+                    DownloadEvent::Done => {}
                 }
             }
         });
@@ -657,10 +655,10 @@ pub fn start_download(data_dir: PathBuf, id: &'static str) {
 
 /// Cancel an in-flight download.
 pub fn cancel_download(id: &str) {
-    if let Ok(map) = downloads().lock() {
-        if let Some((_, cancel)) = map.get(id) {
-            cancel.store(true, Ordering::SeqCst);
-        }
+    if let Ok(map) = downloads().lock()
+        && let Some((_, cancel)) = map.get(id)
+    {
+        cancel.store(true, Ordering::SeqCst);
     }
 }
 
@@ -861,17 +859,16 @@ pub fn detect_gpu() -> GpuDetect {
     if let Ok(info) = std::process::Command::new("nvidia-smi")
         .args(["--query-gpu=name", "--format=csv,noheader"])
         .output()
+        && info.status.success()
     {
-        if info.status.success() {
-            let name = String::from_utf8_lossy(&info.stdout)
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if !name.is_empty() {
-                out.nvidia_gpu = Some(name);
-            }
+        let name = String::from_utf8_lossy(&info.stdout)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !name.is_empty() {
+            out.nvidia_gpu = Some(name);
         }
     }
     out.vulkan_tools = std::process::Command::new("vulkaninfo")
@@ -1029,10 +1026,10 @@ pub fn delete_gpu_pack(data_dir: &Path, pack: &GpuPack) -> std::io::Result<()> {
 pub fn start_gpu_download(data_dir: PathBuf, id: &'static str) {
     {
         let map = downloads().lock().unwrap();
-        if let Some((snap, _)) = map.get(id) {
-            if matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing) {
-                return;
-            }
+        if let Some((snap, _)) = map.get(id)
+            && matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing)
+        {
+            return;
         }
     }
     let Some(pack) = GPU_PACKS.iter().find(|p| p.id == id) else {
@@ -1053,17 +1050,17 @@ pub fn start_gpu_download(data_dir: PathBuf, id: &'static str) {
     );
     std::thread::spawn(move || {
         let cb: DownloadCallback = Arc::new(move |ev| {
-            if let Ok(mut map) = downloads().lock() {
-                if let Some((snap, _)) = map.get_mut(id) {
-                    match ev {
-                        DownloadEvent::Progress { received, total } => {
-                            snap.received = received;
-                            snap.total = total;
-                            snap.phase = DlPhase::Downloading;
-                        }
-                        DownloadEvent::Installing => snap.phase = DlPhase::Installing,
-                        DownloadEvent::Done => {}
+            if let Ok(mut map) = downloads().lock()
+                && let Some((snap, _)) = map.get_mut(id)
+            {
+                match ev {
+                    DownloadEvent::Progress { received, total } => {
+                        snap.received = received;
+                        snap.total = total;
+                        snap.phase = DlPhase::Downloading;
                     }
+                    DownloadEvent::Installing => snap.phase = DlPhase::Installing,
+                    DownloadEvent::Done => {}
                 }
             }
         });
@@ -1225,9 +1222,8 @@ pub fn download_sherpa_pack(
     }
 
     on_event(DownloadEvent::Installing);
-    extract_tar_bz2(&tmp, &dir).map_err(|e| {
+    extract_tar_bz2(&tmp, &dir).inspect_err(|_e| {
         let _ = std::fs::remove_file(&tmp);
-        e
     })?;
     let _ = std::fs::remove_file(&tmp);
     // Flatten the single top dir when present.
@@ -1249,12 +1245,12 @@ pub fn download_sherpa_pack(
                 continue;
             }
             let bin = dir.join(b);
-            if bin.exists() {
-                if let Ok(meta) = std::fs::metadata(&bin) {
-                    let mut perms = meta.permissions();
-                    perms.set_mode(0o755);
-                    let _ = std::fs::set_permissions(&bin, perms);
-                }
+            if bin.exists()
+                && let Ok(meta) = std::fs::metadata(&bin)
+            {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o755);
+                let _ = std::fs::set_permissions(&bin, perms);
             }
         }
     }
@@ -1414,10 +1410,10 @@ pub fn delete_needle_pack(data_dir: &Path) -> std::io::Result<()> {
 pub fn start_needle_download(data_dir: PathBuf) {
     {
         let map = downloads().lock().unwrap();
-        if let Some((snap, _)) = map.get(NEEDLE_ENGINE_ID) {
-            if matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing) {
-                return;
-            }
+        if let Some((snap, _)) = map.get(NEEDLE_ENGINE_ID)
+            && matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing)
+        {
+            return;
         }
     }
     let size = needle_asset().map(|a| a.size_bytes).unwrap_or(0);
@@ -1437,17 +1433,17 @@ pub fn start_needle_download(data_dir: PathBuf) {
     let id = NEEDLE_ENGINE_ID;
     if crate::runtime::submit("dl-needle", move || {
         let cb: DownloadCallback = Arc::new(move |ev| {
-            if let Ok(mut map) = downloads().lock() {
-                if let Some((snap, _)) = map.get_mut(id) {
-                    match ev {
-                        DownloadEvent::Progress { received, total } => {
-                            snap.received = received;
-                            snap.total = total;
-                            snap.phase = DlPhase::Downloading;
-                        }
-                        DownloadEvent::Installing => snap.phase = DlPhase::Installing,
-                        DownloadEvent::Done => {}
+            if let Ok(mut map) = downloads().lock()
+                && let Some((snap, _)) = map.get_mut(id)
+            {
+                match ev {
+                    DownloadEvent::Progress { received, total } => {
+                        snap.received = received;
+                        snap.total = total;
+                        snap.phase = DlPhase::Downloading;
                     }
+                    DownloadEvent::Installing => snap.phase = DlPhase::Installing,
+                    DownloadEvent::Done => {}
                 }
             }
         });
@@ -1466,12 +1462,10 @@ pub fn start_needle_download(data_dir: PathBuf) {
         }
     })
     .is_err()
+        && let Ok(mut map) = downloads().lock()
+        && let Some((snap, _)) = map.get_mut(id)
     {
-        if let Ok(mut map) = downloads().lock() {
-            if let Some((snap, _)) = map.get_mut(id) {
-                snap.phase = DlPhase::Failed("task runtime saturated".to_string());
-            }
-        }
+        snap.phase = DlPhase::Failed("task runtime saturated".to_string());
     }
 }
 
@@ -1479,10 +1473,10 @@ pub fn start_needle_download(data_dir: PathBuf) {
 pub fn start_sherpa_download(data_dir: PathBuf, id: &'static str) {
     {
         let map = downloads().lock().unwrap();
-        if let Some((snap, _)) = map.get(id) {
-            if matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing) {
-                return;
-            }
+        if let Some((snap, _)) = map.get(id)
+            && matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing)
+        {
+            return;
         }
     }
     let Some(pack) = SHERPA_PACKS.iter().find(|p| p.id == id) else {
@@ -1503,17 +1497,17 @@ pub fn start_sherpa_download(data_dir: PathBuf, id: &'static str) {
     );
     std::thread::spawn(move || {
         let cb: DownloadCallback = Arc::new(move |ev| {
-            if let Ok(mut map) = downloads().lock() {
-                if let Some((snap, _)) = map.get_mut(id) {
-                    match ev {
-                        DownloadEvent::Progress { received, total } => {
-                            snap.received = received;
-                            snap.total = total;
-                            snap.phase = DlPhase::Downloading;
-                        }
-                        DownloadEvent::Installing => snap.phase = DlPhase::Installing,
-                        DownloadEvent::Done => {}
+            if let Ok(mut map) = downloads().lock()
+                && let Some((snap, _)) = map.get_mut(id)
+            {
+                match ev {
+                    DownloadEvent::Progress { received, total } => {
+                        snap.received = received;
+                        snap.total = total;
+                        snap.phase = DlPhase::Downloading;
                     }
+                    DownloadEvent::Installing => snap.phase = DlPhase::Installing,
+                    DownloadEvent::Done => {}
                 }
             }
         });

@@ -369,13 +369,13 @@ impl Visualizer {
     /// first use; returns false (stays on sim) if none is available.
     pub fn set_mic_source(&self, real: bool) -> bool {
         let mut st = self.state.borrow_mut();
-        let ok = if real {
+
+        if real {
             st.mic.use_real()
         } else {
             st.mic.use_sim();
             true
-        };
-        ok
+        }
     }
 
     pub fn burst(&self) {
@@ -523,7 +523,7 @@ fn tick(st: &mut VizState) {
     }
 
     // Sample history/tape buffers at ~100 ms.
-    if st.ticks % HISTORY_EVERY_N_TICKS == 0 {
+    if st.ticks.is_multiple_of(HISTORY_EVERY_N_TICKS) {
         st.hist.push_front(level);
         st.hist.truncate(32);
     }
@@ -774,4 +774,16 @@ fn draw_mic(cr: &cairo::Context, x: f64, height: f64) {
     cr.move_to(cx - 3.5, top + 16.0);
     cr.line_to(cx + 3.5, top + 16.0);
     let _ = cr.stroke();
+}
+
+impl Default for SimMic {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for Visualizer {
+    fn default() -> Self {
+        Self::new()
+    }
 }

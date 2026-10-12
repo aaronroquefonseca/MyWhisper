@@ -81,7 +81,7 @@ fn render_cue(notes: &[f32]) -> Vec<f32> {
     let mut out = Vec::with_capacity(notes.len() * note_n + gap_n * notes.len());
     for (i, freq) in notes.iter().enumerate() {
         if i > 0 {
-            out.extend(std::iter::repeat(0.0).take(gap_n));
+            out.extend(std::iter::repeat_n(0.0, gap_n));
         }
         render_note(&mut out, *freq);
     }
