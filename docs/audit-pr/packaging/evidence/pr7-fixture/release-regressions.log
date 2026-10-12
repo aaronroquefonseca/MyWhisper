@@ -1,0 +1,7 @@
+Command: ['python3', 'scripts/disposable.py', 'MYWHISPER_AUDIT_ROOT', 'verification', 'env', '-u', 'DISPLAY', '-u', 'SSH_AUTH_SOCK', 'CARGO_HOME=/home/aaronroque/.cargo', 'RUSTUP_HOME=/home/aaronroque/.rustup', 'python3', 'packaging/test-release.py']
+.........
+----------------------------------------------------------------------
+Ran 9 tests in 0.037s
+
+OK
+Exit: 0

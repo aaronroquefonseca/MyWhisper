@@ -1,0 +1,248 @@
+{
+  "dasp_sample@0.11.0": {
+    "crate_checksum": "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f",
+    "source_commit": "97c3bb9b2363c0b46ac1633858bf1054fd02a980",
+    "files": [
+      {
+        "path": "dasp-MIT.txt",
+        "sha256": "b1d6df41ed3aa96806e74c729444d7c121d90e6660a6aed01d298e03fde475a0",
+        "source_url": "https://api.github.com/repos/rustaudio/sample/git/blobs/b35b54912ac435a64227b09c9347475caefa1cbd",
+        "git_blob": "b35b54912ac435a64227b09c9347475caefa1cbd"
+      },
+      {
+        "path": "dasp-APACHE.txt",
+        "sha256": "756c8d2ab2dc24f256e1455b5f03937f4933d83d7bc9f2d55009fc962377d512",
+        "source_url": "https://api.github.com/repos/rustaudio/sample/git/blobs/74c4f492b303bec6da5ec6af182865f664a4c4c0",
+        "git_blob": "74c4f492b303bec6da5ec6af182865f664a4c4c0"
+      }
+    ]
+  },
+  "gl@0.14.0": {
+    "crate_checksum": "a94edab108827d67608095e269cf862e60d920f144a5026d3dbcfd8b877fb404",
+    "source_commit": "ea503e8d5fb6d73c6030e6191ce738cd3bf3433e",
+    "files": [
+      {
+        "path": "gl-rs-APACHE.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "source_url": "https://api.github.com/repos/brendanzab/gl-rs/git/blobs/d645695673349e3947e8e5ae42332d0ac3164cd7",
+        "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7"
+      }
+    ]
+  },
+  "gl_generator@0.14.0": {
+    "crate_checksum": "1a95dfc23a2b4a9a2f5ab41d194f8bfda3cabec42af4e39f08c339eb2a0c124d",
+    "source_commit": "ea503e8d5fb6d73c6030e6191ce738cd3bf3433e",
+    "files": [
+      {
+        "path": "gl-rs-APACHE.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "source_url": "https://api.github.com/repos/brendanzab/gl-rs/git/blobs/d645695673349e3947e8e5ae42332d0ac3164cd7",
+        "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7"
+      }
+    ]
+  },
+  "khronos_api@3.1.0": {
+    "crate_checksum": "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc",
+    "source_commit": "f150967b1c44ae888e6676f93f639ebc82771bdc",
+    "files": [
+      {
+        "path": "gl-rs-APACHE.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "source_url": "https://api.github.com/repos/brendanzab/gl-rs/git/blobs/d645695673349e3947e8e5ae42332d0ac3164cd7",
+        "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7"
+      }
+    ]
+  },
+  "gtk4-layer-shell@0.8.1": {
+    "crate_checksum": "17c28ea0f4676fdaaae7ff2413a24d0d35c8657424f84856c1103c73454c9da4",
+    "source_commit": "7043a44adc4e31868e6f30a4f8c8279168417a94",
+    "files": [
+      {
+        "path": "gtk4-layer-shell-MIT.txt",
+        "sha256": "4cc6d27d63d65b3bfe5a10c81fa65d58d6a1f36f2523bdb1f11bc1b4fe6931cb",
+        "source_url": "https://api.github.com/repos/pentamassiv/gtk4-layer-shell-gir/git/blobs/65a8f3dbcf850ac490ef4735af924940c2ef7731",
+        "git_blob": "65a8f3dbcf850ac490ef4735af924940c2ef7731"
+      }
+    ]
+  },
+  "gtk4-layer-shell-sys@0.6.1": {
+    "crate_checksum": "bcf19bb884ef0ef55b9e6b2b369c39b4fcc0c41e3a0c1cbc8c267720338b690b",
+    "source_commit": "c52b9b12e6b1afa38dcb496ec821c55bb298da78",
+    "files": [
+      {
+        "path": "gtk4-layer-shell-MIT.txt",
+        "sha256": "4cc6d27d63d65b3bfe5a10c81fa65d58d6a1f36f2523bdb1f11bc1b4fe6931cb",
+        "source_url": "https://api.github.com/repos/pentamassiv/gtk4-layer-shell-gir/git/blobs/65a8f3dbcf850ac490ef4735af924940c2ef7731",
+        "git_blob": "65a8f3dbcf850ac490ef4735af924940c2ef7731"
+      }
+    ]
+  },
+  "libadwaita@0.9.2": {
+    "crate_checksum": "85b9900e67182a4b5b1f157b448d94f0715c8b9770cce21cf000801917f53bfa",
+    "source_commit": "df30231e27a00e3759081243ef0c31e71ddf7760",
+    "files": [
+      {
+        "path": "libadwaita-MIT.txt",
+        "sha256": "8cf56d10131ce201cf69ab74b111d3ebac1acca3833d7efb39ae357224b70edb",
+        "source_url": "https://gitlab.gnome.org/api/v4/projects/World%2FRust%2Flibadwaita-rs/repository/blobs/64a801a7baf36086abdeef709e60b2c062d584d1/raw",
+        "git_blob": "64a801a7baf36086abdeef709e60b2c062d584d1"
+      }
+    ]
+  },
+  "libadwaita-sys@0.9.2": {
+    "crate_checksum": "28d3c27642b389852aa99341bd4a4c19ec6f8a2b63ebdd7f5ba1952198079ccd",
+    "source_commit": "df30231e27a00e3759081243ef0c31e71ddf7760",
+    "files": [
+      {
+        "path": "libadwaita-MIT.txt",
+        "sha256": "8cf56d10131ce201cf69ab74b111d3ebac1acca3833d7efb39ae357224b70edb",
+        "source_url": "https://gitlab.gnome.org/api/v4/projects/World%2FRust%2Flibadwaita-rs/repository/blobs/64a801a7baf36086abdeef709e60b2c062d584d1/raw",
+        "git_blob": "64a801a7baf36086abdeef709e60b2c062d584d1"
+      }
+    ]
+  },
+  "symphonia@0.5.5": {
+    "crate_checksum": "5773a4c030a19d9bfaa090f49746ff35c75dfddfa700df7a5939d5e076a57039",
+    "source_commit": "6d533f26150953a882a6a111ebd13f0abf7129d5",
+    "files": [
+      {
+        "path": "symphonia-MPL.txt",
+        "sha256": "c76f740d1521b9bed9ca7a04ad526c310493c62621b1341d623b431736533b30",
+        "source_url": "https://api.github.com/repos/pdeljanov/Symphonia/git/blobs/f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a",
+        "git_blob": "f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a"
+      }
+    ]
+  },
+  "symphonia-bundle-flac@0.5.5": {
+    "crate_checksum": "c91565e180aea25d9b80a910c546802526ffd0072d0b8974e3ebe59b686c9976",
+    "source_commit": "6d533f26150953a882a6a111ebd13f0abf7129d5",
+    "files": [
+      {
+        "path": "symphonia-MPL.txt",
+        "sha256": "c76f740d1521b9bed9ca7a04ad526c310493c62621b1341d623b431736533b30",
+        "source_url": "https://api.github.com/repos/pdeljanov/Symphonia/git/blobs/f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a",
+        "git_blob": "f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a"
+      }
+    ]
+  },
+  "symphonia-bundle-mp3@0.5.5": {
+    "crate_checksum": "4872dd6bb56bf5eac799e3e957aa1981086c3e613b27e0ac23b176054f7c57ed",
+    "source_commit": "6d533f26150953a882a6a111ebd13f0abf7129d5",
+    "files": [
+      {
+        "path": "symphonia-MPL.txt",
+        "sha256": "c76f740d1521b9bed9ca7a04ad526c310493c62621b1341d623b431736533b30",
+        "source_url": "https://api.github.com/repos/pdeljanov/Symphonia/git/blobs/f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a",
+        "git_blob": "f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a"
+      }
+    ]
+  },
+  "symphonia-codec-aac@0.5.5": {
+    "crate_checksum": "4c263845aa86881416849c1729a54c7f55164f8b96111dba59de46849e73a790",
+    "source_commit": "6d533f26150953a882a6a111ebd13f0abf7129d5",
+    "files": [
+      {
+        "path": "symphonia-MPL.txt",
+        "sha256": "c76f740d1521b9bed9ca7a04ad526c310493c62621b1341d623b431736533b30",
+        "source_url": "https://api.github.com/repos/pdeljanov/Symphonia/git/blobs/f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a",
+        "git_blob": "f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a"
+      }
+    ]
+  },
+  "symphonia-codec-pcm@0.5.5": {
+    "crate_checksum": "4e89d716c01541ad3ebe7c91ce4c8d38a7cf266a3f7b2f090b108fb0cb031d95",
+    "source_commit": "6d533f26150953a882a6a111ebd13f0abf7129d5",
+    "files": [
+      {
+        "path": "symphonia-MPL.txt",
+        "sha256": "c76f740d1521b9bed9ca7a04ad526c310493c62621b1341d623b431736533b30",
+        "source_url": "https://api.github.com/repos/pdeljanov/Symphonia/git/blobs/f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a",
+        "git_blob": "f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a"
+      }
+    ]
+  },
+  "symphonia-codec-vorbis@0.5.5": {
+    "crate_checksum": "f025837c309cd69ffef572750b4a2257b59552c5399a5e49707cc5b1b85d1c73",
+    "source_commit": "6d533f26150953a882a6a111ebd13f0abf7129d5",
+    "files": [
+      {
+        "path": "symphonia-MPL.txt",
+        "sha256": "c76f740d1521b9bed9ca7a04ad526c310493c62621b1341d623b431736533b30",
+        "source_url": "https://api.github.com/repos/pdeljanov/Symphonia/git/blobs/f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a",
+        "git_blob": "f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a"
+      }
+    ]
+  },
+  "symphonia-core@0.5.5": {
+    "crate_checksum": "ea00cc4f79b7f6bb7ff87eddc065a1066f3a43fe1875979056672c9ef948c2af",
+    "source_commit": "6d533f26150953a882a6a111ebd13f0abf7129d5",
+    "files": [
+      {
+        "path": "symphonia-MPL.txt",
+        "sha256": "c76f740d1521b9bed9ca7a04ad526c310493c62621b1341d623b431736533b30",
+        "source_url": "https://api.github.com/repos/pdeljanov/Symphonia/git/blobs/f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a",
+        "git_blob": "f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a"
+      }
+    ]
+  },
+  "symphonia-format-isomp4@0.5.5": {
+    "crate_checksum": "243739585d11f81daf8dac8d9f3d18cc7898f6c09a259675fc364b382c30e0a5",
+    "source_commit": "6d533f26150953a882a6a111ebd13f0abf7129d5",
+    "files": [
+      {
+        "path": "symphonia-MPL.txt",
+        "sha256": "c76f740d1521b9bed9ca7a04ad526c310493c62621b1341d623b431736533b30",
+        "source_url": "https://api.github.com/repos/pdeljanov/Symphonia/git/blobs/f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a",
+        "git_blob": "f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a"
+      }
+    ]
+  },
+  "symphonia-format-ogg@0.5.5": {
+    "crate_checksum": "2b4955c67c1ed3aa8ae8428d04ca8397fbef6a19b2b051e73b5da8b1435639cb",
+    "source_commit": "6d533f26150953a882a6a111ebd13f0abf7129d5",
+    "files": [
+      {
+        "path": "symphonia-MPL.txt",
+        "sha256": "c76f740d1521b9bed9ca7a04ad526c310493c62621b1341d623b431736533b30",
+        "source_url": "https://api.github.com/repos/pdeljanov/Symphonia/git/blobs/f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a",
+        "git_blob": "f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a"
+      }
+    ]
+  },
+  "symphonia-format-riff@0.5.5": {
+    "crate_checksum": "c2d7c3df0e7d94efb68401d81906eae73c02b40d5ec1a141962c592d0f11a96f",
+    "source_commit": "6d533f26150953a882a6a111ebd13f0abf7129d5",
+    "files": [
+      {
+        "path": "symphonia-MPL.txt",
+        "sha256": "c76f740d1521b9bed9ca7a04ad526c310493c62621b1341d623b431736533b30",
+        "source_url": "https://api.github.com/repos/pdeljanov/Symphonia/git/blobs/f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a",
+        "git_blob": "f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a"
+      }
+    ]
+  },
+  "symphonia-metadata@0.5.5": {
+    "crate_checksum": "36306ff42b9ffe6e5afc99d49e121e0bd62fe79b9db7b9681d48e29fa19e6b16",
+    "source_commit": "6d533f26150953a882a6a111ebd13f0abf7129d5",
+    "files": [
+      {
+        "path": "symphonia-MPL.txt",
+        "sha256": "c76f740d1521b9bed9ca7a04ad526c310493c62621b1341d623b431736533b30",
+        "source_url": "https://api.github.com/repos/pdeljanov/Symphonia/git/blobs/f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a",
+        "git_blob": "f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a"
+      }
+    ]
+  },
+  "symphonia-utils-xiph@0.5.5": {
+    "crate_checksum": "ee27c85ab799a338446b68eec77abf42e1a6f1bb490656e121c6e27bfbab9f16",
+    "source_commit": "6d533f26150953a882a6a111ebd13f0abf7129d5",
+    "files": [
+      {
+        "path": "symphonia-MPL.txt",
+        "sha256": "c76f740d1521b9bed9ca7a04ad526c310493c62621b1341d623b431736533b30",
+        "source_url": "https://api.github.com/repos/pdeljanov/Symphonia/git/blobs/f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a",
+        "git_blob": "f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a"
+      }
+    ]
+  }
+}

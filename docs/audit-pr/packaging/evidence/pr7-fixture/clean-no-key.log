@@ -1,0 +1,28 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-82dcefe1c08bbcec)
+
+running 2 tests
+test net::tests::loopback_sync_converges_and_rejects_untrusted ... FAILED
+test net::tests::spoofed_node_id_rejected ... FAILED
+
+failures:
+
+---- net::tests::loopback_sync_converges_and_rejects_untrusted stdout ----
+
+thread 'net::tests::loopback_sync_converges_and_rejects_untrusted' (14) panicked at src/net.rs:883:42:
+called `Result::unwrap()` on an `Err` value: ToSqlConversionFailure("db key: keyring unavailable: No default store has been set, so cannot search or create entries (is a Secret Service running?)")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- net::tests::spoofed_node_id_rejected stdout ----
+
+thread 'net::tests::spoofed_node_id_rejected' (15) panicked at src/net.rs:1008:42:
+called `Result::unwrap()` on an `Err` value: ToSqlConversionFailure("db key: keyring unavailable: No default store has been set, so cannot search or create entries (is a Secret Service running?)")
+
+
+failures:
+    net::tests::loopback_sync_converges_and_rejects_untrusted
+    net::tests::spoofed_node_id_rejected
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 86 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

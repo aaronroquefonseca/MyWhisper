@@ -1,0 +1,9 @@
+.fatal: detected dubious ownership in repository at '/tmp/mywhisper-gitconfig-audit.uzvn9etf/tmp/mywhisper-release-regression-_q5afesh'
+To add an exception for this directory, call:
+
+	git config --global --add safe.directory /tmp/mywhisper-gitconfig-audit.uzvn9etf/tmp/mywhisper-release-regression-_q5afesh
+.........
+----------------------------------------------------------------------
+Ran 10 tests in 0.071s
+
+OK

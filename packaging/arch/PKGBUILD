@@ -6,11 +6,13 @@ pkgdesc="Voice dictation with on-device transcription"
 arch=('x86_64')
 url="https://github.com/aaronroquefonseca/MyWhisper"
 license=('custom')
-depends=('gtk4' 'libadwaita' 'gtk4-layer-shell' 'alsa-lib' 'hicolor-icon-theme')
+depends=('gtk4>=4.22' 'libadwaita>=1.5' 'gtk4-layer-shell' 'alsa-lib' 'hicolor-icon-theme' 'wl-clipboard' 'wtype' 'libpulse' 'ca-certificates')
+optdepends=('gnome-keyring: Secret Service for encrypted settings' 'ydotool: optional paste backend (requires ydotoold)')
 # Private release tarball: fetched by update.sh via `gh` (makepkg
 # cannot send GitHub tokens), then built from this directory.
 source=("mywhisper-v${pkgver}-x86_64-unknown-linux-gnu.tar.gz")
-sha256sums=('SKIP')
+# Published v0.9.3 asset digest, verified through authenticated GitHub metadata.
+sha256sums=('443ce5d00a992bf1cca6c4cbadd5978216b9a7d62a7661cce23c6ada35a11046')
 
 package() {
   local stage="mywhisper-v${pkgver}-x86_64-unknown-linux-gnu"
@@ -19,4 +21,11 @@ package() {
   install -Dm644 "$stage/com.mywhisper.App.desktop" "$pkgdir/usr/share/applications/com.mywhisper.App.desktop"
   install -Dm644 "$stage/com.mywhisper.App.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/com.mywhisper.App.svg"
   install -Dm644 "$stage/com.mywhisper.App-symbolic.svg" "$pkgdir/usr/share/icons/hicolor/symbolic/apps/com.mywhisper.App-symbolic.svg"
+  # Historical v0.9.2 assets predate these notices. New release candidates
+  # include them; the release workflow holds distribution without a license.
+  for notice in LICENSE THIRD_PARTY_NOTICES.txt THIRD_PARTY.json; do
+    if [[ -f "$stage/$notice" ]]; then
+      install -Dm644 "$stage/$notice" "$pkgdir/usr/share/licenses/mywhisper/$notice"
+    fi
+  done
 }

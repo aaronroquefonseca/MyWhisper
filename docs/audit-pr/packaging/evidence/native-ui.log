@@ -1,0 +1,181 @@
+   Compiling mywhisper v0.9.3 (/home/aaronroque/.cache/mywhisper-pr-extract.ie8ambq6/packaging)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.97s
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=25 comm="/home/aaronroque/.cache/mywhisper-pr-extract.ie8am")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=30 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=30 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-nativeui-audit.nm_wfgld/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 16:01:49.770: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 16:01:49.774: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 16:01:49.774: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:25): Gdk-WARNING **: 16:01:49.828: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[ui-smoke] step 0
+[ui-smoke] step 1
+[sync] on-change: open db: unable to open database file: /tmp/mywhisper-nativeui-audit.nm_wfgld/tmp/mywhisper-ui-preview/state.db
+[ui-smoke] step 2
+[ui-smoke] step 3
+[ui-smoke] step 4
+[ui-smoke] step 5
+[ui-smoke] step 6
+[ui-smoke] step 7
+[ui-smoke] step 8
+[ui-smoke] step 9
+[sync] on-change: open db: unable to open database file: /tmp/mywhisper-nativeui-audit.nm_wfgld/tmp/mywhisper-ui-preview/state.db
+[ui-smoke] step 10
+[ui-smoke] step 11
+[sync] on-change: open db: unable to open database file: /tmp/mywhisper-nativeui-audit.nm_wfgld/tmp/mywhisper-ui-preview/state.db
+[sync] on-change: open db: unable to open database file: /tmp/mywhisper-nativeui-audit.nm_wfgld/tmp/mywhisper-ui-preview/state.db
+[ui-smoke] step 12
+[ui-smoke] step 13
+[ui-smoke] step 14
+[ui-smoke] step 15
+[ui-smoke] step 16
+[ui-smoke] step 17
+[ui-smoke] step 18
+[ui-smoke] step 19
+[ui-smoke] step 20
+[ui-smoke] step 21
+[ui-smoke] step 22
+[ui-smoke] step 23
+[ui-smoke] step 24
+[ui-smoke] step 25
+[ui-smoke] step 26
+[ui-smoke] step 27
+[ui-smoke] step 28
+[ui-smoke] step 29
+[ui-smoke] step 30
+[ui-smoke] step 31
+[ui-smoke] step 32
+[ui-smoke] step 33
+[ui-smoke] step 34
+[privacy] cleared 4 transcripts
+[sync] on-change: open db: unable to open database file: /tmp/mywhisper-nativeui-audit.nm_wfgld/tmp/mywhisper-ui-preview/state.db
+[ui-smoke] step 35
+[app] palette -> dark
+[app] theme state: dark=true system-supports-color-schemes=false scheme=ForceDark theme-name=Adwaita-empty
+[app] theme -> Dark
+[app] palette -> light
+[app] theme state: dark=false system-supports-color-schemes=false scheme=ForceLight theme-name=Adwaita-empty
+[app] theme -> Light
+[ui-smoke] step 36
+Native UI smoke passed: validation, draft retention, delete cancel/confirm, multiline snippet creation/editing, alias conflicts, search, deep links, separate model/cleanup settings, cleanup persistence, prompt draft cancel/close, explicit save, summary refresh, default restoration, model add/edit/remove, priority and selection across pages, bulk history clear, theme persistence, language rebuild.
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=25 comm="/home/aaronroque/.cache/mywhisper-pr-extract.ie8am")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=30 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=30 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-desktopui-audit.5dxfh26k/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 16:02:09.107: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 16:02:09.112: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 16:02:09.112: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(desktop_smoke:25): Gdk-WARNING **: 16:02:09.153: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[ui-smoke] embedded logo renders in both symbolic foregrounds
+toast palette probe: original=[255, 255, 255, 255] interior=[255, 255, 255, 255] expected=[255, 255, 255]
+Native toast palette/close-hover/dismiss regression passed; visual evidence: /tmp/mywhisper-desktopui-audit.5dxfh26k/tmp/mywhisper-toast-proof-t8tdoU
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=25 comm="/home/aaronroque/.cache/mywhisper-pr-extract.ie8am")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=30 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=30 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-nativeui-audit.w2pfdcla/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 16:02:13.891: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 16:02:13.896: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 16:02:13.896: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:25): Gdk-WARNING **: 16:02:13.937: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+[ui-smoke] step 0
+[ui-smoke] step 1
+[sync] on-change: open db: unable to open database file: /tmp/mywhisper-nativeui-audit.w2pfdcla/tmp/mywhisper-ui-preview/state.db
+[ui-smoke] step 2
+[ui-smoke] step 3
+[ui-smoke] step 4
+[ui-smoke] step 5
+[ui-smoke] step 6
+[ui-smoke] step 7
+[ui-smoke] step 8
+[ui-smoke] step 9
+[sync] on-change: open db: unable to open database file: /tmp/mywhisper-nativeui-audit.w2pfdcla/tmp/mywhisper-ui-preview/state.db
+[ui-smoke] step 10
+[ui-smoke] step 11
+[sync] on-change: open db: unable to open database file: /tmp/mywhisper-nativeui-audit.w2pfdcla/tmp/mywhisper-ui-preview/state.db
+[sync] on-change: open db: unable to open database file: /tmp/mywhisper-nativeui-audit.w2pfdcla/tmp/mywhisper-ui-preview/state.db
+[ui-smoke] step 12
+[ui-smoke] step 13
+[ui-smoke] step 14
+[ui-smoke] step 15
+[ui-smoke] step 16
+[ui-smoke] step 17
+[ui-smoke] step 18
+[ui-smoke] step 19
+[ui-smoke] step 20
+[ui-smoke] step 21
+[ui-smoke] step 22
+[ui-smoke] step 23
+[ui-smoke] step 24
+[ui-smoke] step 25
+[ui-smoke] step 26
+[ui-smoke] step 27
+[ui-smoke] step 28
+[ui-smoke] step 29
+[ui-smoke] step 30
+[ui-smoke] step 31
+[ui-smoke] step 32
+[ui-smoke] step 33
+[ui-smoke] step 34
+[privacy] cleared 4 transcripts
+[sync] on-change: open db: unable to open database file: /tmp/mywhisper-nativeui-audit.w2pfdcla/tmp/mywhisper-ui-preview/state.db
+[ui-smoke] step 35
+[app] palette -> light
+[app] theme state: dark=false system-supports-color-schemes=false scheme=ForceLight theme-name=Adwaita-empty
+[app] theme -> Light
+[ui-smoke] step 36
+Native UI smoke passed: validation, draft retention, delete cancel/confirm, multiline snippet creation/editing, alias conflicts, search, deep links, separate model/cleanup settings, cleanup persistence, prompt draft cancel/close, explicit save, summary refresh, default restoration, model add/edit/remove, priority and selection across pages, bulk history clear, theme persistence, language rebuild.
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=25 comm="/home/aaronroque/.cache/mywhisper-pr-extract.ie8am")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=30 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=30 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-desktopui-audit.bcdq33rj/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 16:02:33.173: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 16:02:33.177: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:30): xdg-desktop-portal-WARNING **: 16:02:33.177: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(desktop_smoke:25): Gdk-WARNING **: 16:02:33.218: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+[ui-smoke] embedded logo renders in both symbolic foregrounds
+toast palette probe: original=[47, 51, 58, 255] interior=[36, 40, 48, 255] expected=[36, 40, 48]
+Native toast palette/close-hover/dismiss regression passed; visual evidence: /tmp/mywhisper-desktopui-audit.bcdq33rj/tmp/mywhisper-toast-proof-tNjI6F
