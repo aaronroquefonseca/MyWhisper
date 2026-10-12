@@ -3,8 +3,8 @@
 //! Layout (`mywhisper` app dir, `$XDG_*_HOME` honored with `~` fallback):
 //!
 //! * state:    `$XDG_DATA_HOME/mywhisper/state.db` (settings, dictionary,
-//!   history, sync metadata -- the single file external file-sync tools
-//!   and the future P2P sync replicate)
+//!   history and sync metadata; active WAL files cannot be copied as a
+//!   standalone backup and network sync exchanges authorized records)
 //! * identity: `$XDG_CONFIG_HOME/mywhisper/device.key` (ed25519 node key)
 //! * logs:     `$XDG_STATE_HOME/mywhisper/mywhisper.log.YYYY-MM-DD`
 //!
@@ -46,9 +46,9 @@ impl AppPaths {
             data_dir: base_dir("XDG_DATA_HOME", ".local/share").join(APP_DIR),
             state_dir: base_dir("XDG_STATE_HOME", ".local/state").join(APP_DIR),
         };
-        std::fs::create_dir_all(&paths.config_dir)?;
-        std::fs::create_dir_all(&paths.data_dir)?;
-        std::fs::create_dir_all(&paths.state_dir)?;
+        crate::private_fs::directory(&paths.config_dir)?;
+        crate::private_fs::directory(&paths.data_dir)?;
+        crate::private_fs::directory(&paths.state_dir)?;
         Ok(paths)
     }
 
