@@ -577,6 +577,14 @@ mod tests {
         assert!(!duplicate_word(&state, "sí", None));
         state.store.upsert_word("ano", "test").unwrap();
         assert!(!duplicate_word(&state, "año", None));
+        // Canonically equivalent spellings share one word entry no
+        // matter how they were typed or pasted.
+        state.store.upsert_word("cafe\u{301}", "test").unwrap();
+        assert!(duplicate_word(&state, "café", None));
+        assert!(duplicate_word(&state, "CAFÉ", None));
+        state.store.upsert_word("I\u{307}mza", "test").unwrap();
+        assert!(duplicate_word(&state, "imza", None));
+        assert!(duplicate_word(&state, "İMZA", None));
         assert!(!duplicate_snippet(
             &state,
             "SIGNATURE",

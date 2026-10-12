@@ -44,13 +44,17 @@
 //! but `si` ≠ `sí` and `ano` ≠ `año`).
 //!
 //! Deliberate simplifications vs the reference:
-//! - No `unicode-normalization` crate: precomposed Latin accents fold
-//!   via table, decomposed marks via combining-range strip. Rare
-//!   scripts outside the table compare case-insensitively only.
+//! - Snippet fuzzy matching uses no `unicode-normalization` crate:
+//!   precomposed Latin accents fold via table, decomposed marks via
+//!   combining-range strip. Rare scripts outside the table compare
+//!   case-insensitively only. (Spelling-dictionary identity below
+//!   does use the crate for complete NFC.)
 //! - 1:1 char folding: `ß`/`æ`/`œ` stay distinct (no `ss`/`ae`
 //!   expansion) so match spans map back to the original text.
 //! - No echo guards (STT parroting the hint list, LLM duplicating
 //!   output). Follow-up if bias loops ever appear.
+
+use unicode_normalization::UnicodeNormalization;
 
 /// Whisper-family decoder prompt budget (chars). The decoder reads
 /// ~223 tokens and keeps the TAIL: over-budget lists still bias with
@@ -141,124 +145,23 @@ pub fn norm_string(s: &str) -> String {
         .collect()
 }
 
-/// Compose one common decomposed Latin pair (base + combining mark)
-/// back to its precomposed form, so `e` + U+0301 and `é` share one
-/// spelling-dictionary identity. Covers the everyday Latin marks;
-/// anything rarer compares by exact lowercase (still consistent on
-/// both sides of the comparison).
-fn compose_pair(base: char, mark: char) -> Option<char> {
-    let composed = match (base, mark) {
-        ('a', '\u{0300}') => 'à',
-        ('a', '\u{0301}') => 'á',
-        ('a', '\u{0302}') => 'â',
-        ('a', '\u{0303}') => 'ã',
-        ('a', '\u{0308}') => 'ä',
-        ('a', '\u{030A}') => 'å',
-        ('a', '\u{0304}') => 'ā',
-        ('a', '\u{0306}') => 'ă',
-        ('a', '\u{0328}') => 'ą',
-        ('a', '\u{030C}') => 'ǎ',
-        ('c', '\u{0301}') => 'ć',
-        ('c', '\u{0302}') => 'ĉ',
-        ('c', '\u{0307}') => 'ċ',
-        ('c', '\u{030C}') => 'č',
-        ('c', '\u{0327}') => 'ç',
-        ('e', '\u{0300}') => 'è',
-        ('e', '\u{0301}') => 'é',
-        ('e', '\u{0302}') => 'ê',
-        ('e', '\u{0308}') => 'ë',
-        ('e', '\u{0304}') => 'ē',
-        ('e', '\u{0306}') => 'ĕ',
-        ('e', '\u{0307}') => 'ė',
-        ('e', '\u{0328}') => 'ę',
-        ('e', '\u{030C}') => 'ě',
-        ('g', '\u{0302}') => 'ĝ',
-        ('g', '\u{0306}') => 'ğ',
-        ('g', '\u{0307}') => 'ġ',
-        ('i', '\u{0300}') => 'ì',
-        ('i', '\u{0301}') => 'í',
-        ('i', '\u{0302}') => 'î',
-        ('i', '\u{0308}') => 'ï',
-        ('i', '\u{0303}') => 'ĩ',
-        ('i', '\u{0304}') => 'ī',
-        ('i', '\u{0306}') => 'ĭ',
-        ('i', '\u{0328}') => 'į',
-        ('i', '\u{030C}') => 'ǐ',
-        ('n', '\u{0301}') => 'ń',
-        ('n', '\u{0327}') => 'ņ',
-        ('n', '\u{030C}') => 'ň',
-        ('n', '\u{0303}') => 'ñ',
-        ('o', '\u{0300}') => 'ò',
-        ('o', '\u{0301}') => 'ó',
-        ('o', '\u{0302}') => 'ô',
-        ('o', '\u{0303}') => 'õ',
-        ('o', '\u{0308}') => 'ö',
-        ('o', '\u{0304}') => 'ō',
-        ('o', '\u{0306}') => 'ŏ',
-        ('o', '\u{030C}') => 'ǒ',
-        ('r', '\u{0301}') => 'ŕ',
-        ('r', '\u{0327}') => 'ŗ',
-        ('r', '\u{030C}') => 'ř',
-        ('s', '\u{0301}') => 'ś',
-        ('s', '\u{0302}') => 'ŝ',
-        ('s', '\u{0327}') => 'ş',
-        ('s', '\u{030C}') => 'š',
-        ('t', '\u{0327}') => 'ţ',
-        ('t', '\u{030C}') => 'ť',
-        ('u', '\u{0300}') => 'ù',
-        ('u', '\u{0301}') => 'ú',
-        ('u', '\u{0302}') => 'û',
-        ('u', '\u{0308}') => 'ü',
-        ('u', '\u{0303}') => 'ũ',
-        ('u', '\u{0304}') => 'ū',
-        ('u', '\u{0306}') => 'ŭ',
-        ('u', '\u{030A}') => 'ů',
-        ('u', '\u{0328}') => 'ų',
-        ('u', '\u{030C}') => 'ǔ',
-        ('y', '\u{0301}') => 'ý',
-        ('y', '\u{0302}') => 'ŷ',
-        ('y', '\u{0308}') => 'ÿ',
-        ('z', '\u{0301}') => 'ź',
-        ('z', '\u{0307}') => 'ż',
-        ('z', '\u{030C}') => 'ž',
-        _ => return None,
-    };
-    Some(composed)
-}
-
-/// Spelling-dictionary identity: case-insensitive, composed and
-/// decomposed Latin unified, accents otherwise preserved. `si` and
-/// `sí` (likewise `ano`/`año`) are distinct entries; `CAMIÓN`,
-/// `camión` and `camio` + U+0301 + `n` are the same entry.
-/// `İ` folds to `i` (else its lowercase carries a combining dot);
-/// dotless `ı` stays distinct from `i`.
+/// Spelling-dictionary identity: NFC canonical normalization plus
+/// full lowercase, so canonically equivalent spellings share one key
+/// while accents stay meaningful. `si` and `sí` (likewise `ano`/
+/// `año`) are distinct entries; `CAMIÓN`, `camión`, and `camio` +
+/// U+0301 + `n` are the same entry. Vietnamese stacks (`ế` =
+/// `e` + U+0302 + U+0301), dot-below letters (`ạ` = `a` + U+0323),
+/// and equivalent mark orderings all unify through NFC.
+/// Lowercasing keeps its full output (`İ` → `i` + U+0307, not just
+/// `i`); the retained Turkish fold then reads that dotted-`i`
+/// sequence as plain `i`, so composed `İ` and decomposed `I` + U+0307
+/// agree. Dotless `ı` is untouched: `i`/`ı` stay distinct letters.
 pub fn dict_key(s: &str) -> String {
-    let lowered: Vec<char> = s
-        .trim()
-        .chars()
-        .map(|c| {
-            if c == 'İ' {
-                'i'
-            } else {
-                c.to_lowercase().next().unwrap_or(c)
-            }
-        })
-        .collect();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < lowered.len() {
-        if i + 1 < lowered.len()
-            && !is_combining(lowered[i])
-            && let Some(composed) = compose_pair(lowered[i], lowered[i + 1])
-        {
-            out.push(composed);
-            i += 2;
-        } else {
-            out.push(lowered[i]);
-            i += 1;
-        }
-    }
-    out
+    s.trim()
+        .nfc()
+        .collect::<String>()
+        .to_lowercase()
+        .replace("i\u{307}", "i")
 }
 
 fn is_word_char(c: char) -> bool {
@@ -484,9 +387,21 @@ mod tests {
         // Composed and decomposed spellings are one entry.
         assert_eq!(dict_key("café"), dict_key("cafe\u{301}"));
         assert_eq!(dict_key("año"), dict_key("an\u{303}o"));
+        // Stacked marks beyond the Latin-1 range unify too.
+        assert_eq!(dict_key("ế"), dict_key("e\u{302}\u{301}"));
+        assert_eq!(dict_key("ǘ"), dict_key("u\u{308}\u{301}"));
+        // Below-base marks unify, in either input order.
+        assert_eq!(dict_key("ạ"), dict_key("a\u{323}"));
+        assert_eq!(dict_key("ẹ"), dict_key("e\u{323}"));
+        assert_eq!(dict_key("o\u{323}\u{301}"), dict_key("o\u{301}\u{323}"));
         // Turkish İ folds to i; dotless ı stays its own letter.
         assert_eq!(dict_key("İMZA"), dict_key("imza"));
+        assert_eq!(dict_key("İ"), dict_key("I\u{307}"));
         assert_ne!(dict_key("kırmızı"), dict_key("kirmizi"));
+        // Case and decomposition combine: capitals match the
+        // decomposed lowercase spelling.
+        assert_eq!(dict_key("Ế"), dict_key("e\u{302}\u{301}"));
+        assert_eq!(dict_key("CAFÉ"), dict_key("cafe\u{301}"));
     }
 
     #[test]
