@@ -1,6 +1,6 @@
 # Maintainer: you (private package, not for the AUR)
 pkgname=mywhisper
-pkgver=0.9.3
+pkgver=0.9.4
 pkgrel=1
 pkgdesc="Voice dictation with on-device transcription"
 arch=('x86_64')
@@ -12,6 +12,8 @@ optdepends=('gnome-keyring: Secret Service for encrypted settings' 'ydotool: opt
 # cannot send GitHub tokens), then built from this directory.
 source=("mywhisper-v${pkgver}-x86_64-unknown-linux-gnu.tar.gz")
 # Published v0.9.3 asset digest, verified through authenticated GitHub metadata.
+# update.sh replaces this historical digest with the selected release's verified
+# digest in its temporary recipe. Direct makepkg needs that release's digest too.
 sha256sums=('443ce5d00a992bf1cca6c4cbadd5978216b9a7d62a7661cce23c6ada35a11046')
 
 package() {
