@@ -345,7 +345,8 @@ pub enum SherpaBackendSetting {
 
 /// Local vendor tabs, mirroring OpenWhispr: Oruk and Cohere ship
 /// exactly one model each; OpenAI is the whisper.cpp family, NVIDIA
-/// the sherpa parakeet/nemotron family.
+/// the sherpa parakeet/nemotron family, Qwen the Qwen3-ASR family
+/// (LLM-based, Python sidecar server).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalSttProvider {
     #[serde(alias = "Whisper")]
@@ -355,6 +356,17 @@ pub enum LocalSttProvider {
     Oruk,
     Cohere,
     Whistle,
+    Qwen,
+}
+
+/// Qwen runtime backend. Transformers runs on CPU or CUDA (offline
+/// decode only); vLLM needs an NVIDIA GPU but adds live streaming.
+/// Manual choice, never auto-switched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum QwenBackendSetting {
+    #[default]
+    Transformers,
+    Vllm,
 }
 
 /// Pre-chain engine selector. Deprecated: the chain supersedes it,
@@ -395,6 +407,10 @@ pub struct SttChainEntry {
     pub streaming: bool,
 }
 
+fn default_qwen_model() -> String {
+    "qwen3-asr-1.7b".to_string()
+}
+
 impl SttChainEntry {
     pub fn summary(&self) -> String {
         match self.kind {
@@ -415,6 +431,10 @@ pub struct SttSettings {
     pub local_provider: LocalSttProvider,
     pub whisper_model: String,
     pub parakeet_model: String,
+    /// Qwen3-ASR model id (registry id, e.g. "qwen3-asr-1.7b").
+    /// serde-defaulted so pre-Qwen databases keep loading.
+    #[serde(default = "default_qwen_model")]
+    pub qwen_model: String,
     pub cloud_provider: String,
     pub cloud_model: String,
     pub cloud_api_key: String,
@@ -464,6 +484,10 @@ pub struct SttSettings {
     /// Manual sherpa backend choice (never auto-switched).
     #[serde(default)]
     pub sherpa_backend: SherpaBackendSetting,
+    /// Manual Qwen backend choice (never auto-switched):
+    /// transformers (CPU/CUDA, offline) vs vLLM (CUDA, streaming).
+    #[serde(default)]
+    pub qwen_backend: QwenBackendSetting,
 }
 
 impl Default for SttSettings {
@@ -484,6 +508,7 @@ impl Default for SttSettings {
             local_provider: LocalSttProvider::OpenAi,
             whisper_model: "base".to_string(),
             parakeet_model: "parakeet-tdt-0.6b-v3".to_string(),
+            qwen_model: default_qwen_model(),
             cloud_provider: "OpenAI".to_string(),
             cloud_model: "whisper-1".to_string(),
             cloud_api_key: String::new(),
@@ -502,6 +527,7 @@ impl Default for SttSettings {
             live_preview: false,
             gpu_backend: GpuBackendSetting::Cpu,
             sherpa_backend: SherpaBackendSetting::Cpu,
+            qwen_backend: QwenBackendSetting::Transformers,
         }
     }
 }

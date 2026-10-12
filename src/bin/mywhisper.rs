@@ -215,6 +215,7 @@ fn run_headless(
                                 &data_dir,
                                 settings.stt.gpu_backend,
                                 settings.stt.sherpa_backend,
+                                settings.stt.qwen_backend,
                                 &net,
                             ) {
                                 eprintln!("[stt] startup warmup: {e}");

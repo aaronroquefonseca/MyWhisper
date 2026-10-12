@@ -1344,6 +1344,7 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
     let selected = match settings.stt.local_provider {
         LocalSttProvider::Nvidia => settings.stt.parakeet_model.clone(),
         LocalSttProvider::OpenAi => settings.stt.whisper_model.clone(),
+        LocalSttProvider::Qwen => settings.stt.qwen_model.clone(),
         LocalSttProvider::Oruk => "orukeet-v0.1.0".to_string(),
         LocalSttProvider::Cohere => "cohere-transcribe-03-2026".to_string(),
         LocalSttProvider::Whistle => "whistle-v1".to_string(),
@@ -1471,10 +1472,16 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
                             let mut s = state.settings.borrow_mut();
                             // Provider read at click time: the list
                             // may have been rebuilt under us.
-                            if matches!(s.stt.local_provider, LocalSttProvider::Nvidia) {
-                                s.stt.parakeet_model = id.clone();
-                            } else {
-                                s.stt.whisper_model = id.clone();
+                            match s.stt.local_provider {
+                                LocalSttProvider::Nvidia => {
+                                    s.stt.parakeet_model = id.clone();
+                                }
+                                LocalSttProvider::Qwen => {
+                                    s.stt.qwen_model = id.clone();
+                                }
+                                _ => {
+                                    s.stt.whisper_model = id.clone();
+                                }
                             }
                         }
                         persist_prefs(state.clone())();
@@ -1693,6 +1700,185 @@ fn fill_sherpa_packs(container: &GtkBox, state: &Rc<AppState>) {
                         .map(|p| p.to_path_buf())
                         .unwrap_or_default();
                     stt::start_sherpa_download(data_dir, id);
+                });
+            }
+            card.append(&dl_btn);
+        }
+        container.append(&card);
+    }
+}
+
+/// Qwen runtime pack list (self-contained Python 3.12 envs, one per
+/// backend). Same machinery as the other packs: provision progress
+/// in place (Cancel distinct from failure), Retry after cancel or
+/// failure, Delete/Remove when present. Incomplete installs never
+/// show as installed; the vLLM card names the GPU prerequisite.
+fn fill_qwen_packs(container: &GtkBox, state: &Rc<AppState>) {
+    use crate::stt;
+    let Some(data_dir) = state.db_path.parent().map(|p| p.to_path_buf()) else {
+        return;
+    };
+    let mut sig = String::new();
+    for pack in stt::QWEN_PACKS {
+        let phase = match stt::download_state(pack.id) {
+            Some(d) => format!("{:?}", d.phase),
+            None => "-".to_string(),
+        };
+        sig.push_str(&format!(
+            "{}:{}:{};",
+            pack.id,
+            stt::qwen_installed(&data_dir, pack),
+            phase
+        ));
+    }
+    let current_sig = container
+        .first_child()
+        .and_then(|c| c.tooltip_text().map(|t| t.to_string()));
+    if current_sig.as_deref() == Some(sig.as_str()) {
+        update_gpu_progress(container);
+        return;
+    }
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
+    let marker = GtkBox::new(Orientation::Horizontal, 0);
+    marker.set_tooltip_text(Some(&sig));
+    marker.set_visible(false);
+    container.append(&marker);
+
+    for pack in stt::QWEN_PACKS {
+        let card = GtkBox::new(Orientation::Horizontal, 12);
+        card.add_css_class("card");
+        card.set_tooltip_text(Some(pack.id));
+        let info = GtkBox::new(Orientation::Vertical, 2);
+        info.set_hexpand(true);
+        let name = Label::new(Some(crate::i18n::backend_text(pack.name)));
+        name.add_css_class("row-label");
+        name.set_xalign(0.0);
+        info.append(&name);
+        let sub = Label::new(Some(&format!(
+            "{} · {}",
+            crate::i18n::backend_text(pack.description),
+            pack.size_label
+        )));
+        sub.add_css_class("dim");
+        sub.set_xalign(0.0);
+        sub.set_wrap(true);
+        info.append(&sub);
+        // Per-backend capability truth (transformers = offline only).
+        let caps = Label::new(Some(crate::qwen_runtime::capabilities_line(
+            pack.backend == stt::QwenRuntime::Vllm,
+        )));
+        caps.add_css_class("dim");
+        caps.set_xalign(0.0);
+        caps.set_wrap(true);
+        info.append(&caps);
+        card.append(&info);
+
+        if let Some(dl) = stt::download_state(pack.id) {
+            let col = GtkBox::new(Orientation::Vertical, 4);
+            match &dl.phase {
+                stt::DlPhase::Failed(e) if e == "cancelled" => {
+                    let l = Label::new(Some(tr("stt.dl.cancelled")));
+                    l.add_css_class("dim");
+                    l.set_wrap(true);
+                    col.append(&l);
+                    let retry = Button::with_label(tr("action.retry"));
+                    {
+                        let state = state.clone();
+                        let id = pack.id;
+                        retry.connect_clicked(move |_| {
+                            let data_dir = state
+                                .db_path
+                                .parent()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_default();
+                            stt::start_qwen_runtime_download(data_dir, id);
+                        });
+                    }
+                    col.append(&retry);
+                }
+                stt::DlPhase::Failed(e) => {
+                    let l = Label::new(Some(&trf("stt.dl.failed", &[("err", e)])));
+                    l.add_css_class("dim");
+                    l.set_wrap(true);
+                    l.set_max_width_chars(60);
+                    col.append(&l);
+                    let row_btns = GtkBox::new(Orientation::Horizontal, 8);
+                    let retry = Button::with_label(tr("action.retry"));
+                    {
+                        let state = state.clone();
+                        let id = pack.id;
+                        retry.connect_clicked(move |_| {
+                            let data_dir = state
+                                .db_path
+                                .parent()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_default();
+                            stt::start_qwen_runtime_download(data_dir, id);
+                        });
+                    }
+                    row_btns.append(&retry);
+                    let remove = Button::with_label(tr("action.remove"));
+                    {
+                        let state = state.clone();
+                        let id = pack.id;
+                        connect_download_delete(&remove, move || {
+                            if let Some(data_dir) = state.db_path.parent()
+                                && let Some(pack) = stt::QWEN_PACKS.iter().find(|p| p.id == id)
+                            {
+                                return stt::delete_qwen_runtime(data_dir, pack);
+                            }
+                            Ok(())
+                        });
+                    }
+                    row_btns.append(&remove);
+                    col.append(&row_btns);
+                }
+                _ => {
+                    let bar = gtk4::ProgressBar::new();
+                    set_bar_state(&bar, &dl);
+                    col.append(&bar);
+                    let cancel = Button::with_label(tr("action.cancel"));
+                    {
+                        let id = pack.id;
+                        cancel.connect_clicked(move |_| stt::cancel_download(id));
+                    }
+                    col.append(&cancel);
+                }
+            }
+            card.append(&col);
+        } else if stt::qwen_installed(&data_dir, pack) {
+            let installed = Label::new(Some(tr("stt.qwen.installed")));
+            installed.add_css_class("dim");
+            installed.set_valign(gtk4::Align::Center);
+            card.append(&installed);
+            let del = Button::with_label(tr("action.delete"));
+            {
+                let state = state.clone();
+                let id = pack.id;
+                connect_download_delete(&del, move || {
+                    if let Some(data_dir) = state.db_path.parent()
+                        && let Some(pack) = stt::QWEN_PACKS.iter().find(|p| p.id == id)
+                    {
+                        return stt::delete_qwen_runtime(data_dir, pack);
+                    }
+                    Ok(())
+                });
+            }
+            card.append(&del);
+        } else {
+            let dl_btn = Button::with_label(tr("action.download"));
+            {
+                let state = state.clone();
+                let id = pack.id;
+                dl_btn.connect_clicked(move |_| {
+                    let data_dir = state
+                        .db_path
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_default();
+                    stt::start_qwen_runtime_download(data_dir, id);
                 });
             }
             card.append(&dl_btn);
@@ -1974,6 +2160,7 @@ fn stt_lang(state: &Rc<AppState>) -> SttLang {
             };
         }
         LocalSttProvider::Nvidia => &s.stt.parakeet_model,
+        LocalSttProvider::Qwen => &s.stt.qwen_model,
         LocalSttProvider::Oruk => "orukeet-v0.1.0",
         LocalSttProvider::Cohere => "cohere-transcribe-03-2026",
         LocalSttProvider::Whistle => {
@@ -2571,18 +2758,19 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     }
 
     // ---- Registry model list with download/delete/select ----
-    // Vendor pill tabs on top (Oruk / OpenAI / NVIDIA / Cohere),
-    // mirroring OpenWhispr's local provider picker.
+    // Vendor pill tabs on top (Oruk / OpenAI / NVIDIA / Qwen /
+    // Cohere / Whistle): the three strongest local engines sit
+    // together, mirroring OpenWhispr's local provider picker.
     let (card, rows) = group(tr("stt.models.title"));
     {
         let pill_row = gtk4::FlowBox::new();
-        pill_row.set_max_children_per_line(5);
+        pill_row.set_max_children_per_line(6);
         pill_row.set_selection_mode(gtk4::SelectionMode::None);
         pill_row.set_halign(gtk4::Align::Start);
         pill_row.set_column_spacing(8);
         pill_row.set_row_spacing(8);
         rows.append(&pill_row);
-        let vendors = ["Oruk", "OpenAI", "NVIDIA", "Cohere", "Whistle"];
+        let vendors = ["Oruk", "OpenAI", "NVIDIA", "Qwen", "Cohere", "Whistle"];
         {
             use crate::settings::LocalSttProvider;
             let current = state.settings.borrow().stt.local_provider;
@@ -2590,8 +2778,9 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 LocalSttProvider::Oruk => 0,
                 LocalSttProvider::OpenAi => 1,
                 LocalSttProvider::Nvidia => 2,
-                LocalSttProvider::Cohere => 3,
-                LocalSttProvider::Whistle => 4,
+                LocalSttProvider::Qwen => 3,
+                LocalSttProvider::Cohere => 4,
+                LocalSttProvider::Whistle => 5,
             };
             let mut first: Option<gtk4::ToggleButton> = None;
             for (i, name) in vendors.iter().enumerate() {
@@ -2615,8 +2804,9 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                             s.stt.local_provider = match i {
                                 0 => LocalSttProvider::Oruk,
                                 2 => LocalSttProvider::Nvidia,
-                                3 => LocalSttProvider::Cohere,
-                                4 => LocalSttProvider::Whistle,
+                                3 => LocalSttProvider::Qwen,
+                                4 => LocalSttProvider::Cohere,
+                                5 => LocalSttProvider::Whistle,
                                 _ => LocalSttProvider::OpenAi,
                             };
                         }
@@ -2657,8 +2847,9 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     }
 
     // ---- Runtimes: whisper packs (+ backend picker) for the OpenAI
-    // vendor, sherpa packs for Oruk / NVIDIA / Cohere. Toggled per
-    // vendor in the refresh closure below.
+    // vendor, sherpa packs for Oruk / NVIDIA / Cohere, needle engine
+    // for Whistle, managed Python 3.12 envs (+ backend picker) for
+    // Qwen. Toggled per vendor in the refresh closure below.
     let (card, _rows) = group(tr("stt.gpu.title"));
     let whisper_box = GtkBox::new(Orientation::Vertical, 8);
     _rows.append(&whisper_box);
@@ -2769,6 +2960,46 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     }
     let sherpa_list = GtkBox::new(Orientation::Vertical, 8);
     sherpa_box.append(&sherpa_list);
+    // Qwen brings a Python sidecar, not a native server: one managed
+    // Python 3.12 env per backend (transformers / vLLM), provisioned
+    // like a pack.
+    let qwen_box = GtkBox::new(Orientation::Vertical, 8);
+    _rows.append(&qwen_box);
+    {
+        // Qwen runtime backend: transformers decodes offline on CPU
+        // or GPU; vLLM needs an NVIDIA GPU and adds live streaming.
+        // Manual choice, never auto-switched.
+        let (b, _) = row(tr("stt.qwen.backend"));
+        let backend = DropDown::new(
+            Some(StringList::new(&[
+                tr("stt.qwen.transformers"),
+                tr("stt.qwen.vllm"),
+            ])),
+            None::<gtk4::Expression>,
+        );
+        {
+            use crate::settings::QwenBackendSetting;
+            backend.set_selected(match state.settings.borrow().stt.qwen_backend {
+                QwenBackendSetting::Transformers => 0,
+                QwenBackendSetting::Vllm => 1,
+            });
+        }
+        {
+            let state = state.clone();
+            backend.connect_selected_notify(move |d| {
+                use crate::settings::QwenBackendSetting;
+                state.settings.borrow_mut().stt.qwen_backend = match d.selected() {
+                    1 => QwenBackendSetting::Vllm,
+                    _ => QwenBackendSetting::Transformers,
+                };
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&backend);
+        qwen_box.append(&b);
+    }
+    let qwen_list = GtkBox::new(Orientation::Vertical, 8);
+    qwen_box.append(&qwen_list);
     root.append(&card);
     let gpu_card = card.clone();
     fill_gpu_packs(&gpu_list, state);
@@ -2794,6 +3025,19 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 return gtk4::glib::ControlFlow::Break;
             }
             fill_sherpa_packs(&sherpa_list, &state);
+            gtk4::glib::ControlFlow::Continue
+        });
+    }
+    fill_qwen_packs(&qwen_list, state);
+    {
+        let state = state.clone();
+        let qwen_list = qwen_list.clone();
+        let weak_root = root.downgrade();
+        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+            if weak_root.upgrade().is_none() {
+                return gtk4::glib::ControlFlow::Break;
+            }
+            fill_qwen_packs(&qwen_list, &state);
             gtk4::glib::ControlFlow::Continue
         });
     }
@@ -3212,6 +3456,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         let whisper_box = whisper_box.clone();
         let sherpa_box = sherpa_box.clone();
         let needle_box = needle_box.clone();
+        let qwen_box = qwen_box.clone();
         let srv_status = srv_status.clone();
         let srv_stop = srv_stop.clone();
         let srv_cold = srv_cold.clone();
@@ -3225,12 +3470,14 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                     LocalSttProvider::Nvidia | LocalSttProvider::Oruk
                 );
                 let whistle = matches!(s.stt.local_provider, LocalSttProvider::Whistle);
+                let qwen = matches!(s.stt.local_provider, LocalSttProvider::Qwen);
                 whisper_box.set_visible(whisper);
                 sherpa_box.set_visible(sherpa);
                 needle_box.set_visible(whistle);
+                qwen_box.set_visible(qwen);
                 // No empty cards: runtimes show only when one of the
                 // engine boxes applies.
-                gpu_card.set_visible(whisper || sherpa || whistle);
+                gpu_card.set_visible(whisper || sherpa || whistle || qwen);
                 drop(s);
                 // Servers: status + Stop iff one runs, else Cold start
                 // (greyed out without an enabled local option).

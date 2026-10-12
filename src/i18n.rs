@@ -125,6 +125,16 @@ pub(crate) fn backend_text(text: &'static str) -> &'static str {
         "Vulkan server" => "backend.caption.20",
         "Sherpa CUDA server" => "backend.caption.21",
         "Sherpa CPU server" => "backend.caption.22",
+        "LLM-based multilingual ASR, 30 languages + dialects" => "backend.caption.23",
+        "Lightweight LLM-based ASR, 30 languages + dialects" => "backend.caption.24",
+        "Qwen transformers runtime" => "backend.caption.25",
+        "Qwen vLLM runtime" => "backend.caption.26",
+        "CPU or NVIDIA GPU, offline decode (no live streaming); self-contained Python 3.12" => {
+            "backend.caption.27"
+        }
+        "NVIDIA GPU only, offline + live streaming; self-contained Python 3.12" => {
+            "backend.caption.28"
+        }
         _ => return text,
     };
     tr(tag)
@@ -285,6 +295,20 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "stt.sherpa.backend" => ("Sherpa backend", "Motor Sherpa"),
         "stt.sherpa.cpu" => ("CPU", "CPU"),
         "stt.sherpa.cuda" => ("CUDA", "CUDA"),
+        "stt.qwen.backend" => ("Qwen backend", "Motor Qwen"),
+        "stt.qwen.transformers" => (
+            "Transformers (CPU/GPU, offline)",
+            "Transformers (CPU/GPU, sin streaming)",
+        ),
+        "stt.qwen.vllm" => (
+            "vLLM (NVIDIA GPU, streaming)",
+            "vLLM (GPU NVIDIA, streaming)",
+        ),
+        "stt.qwen.installed" => ("Installed", "Instalado"),
+        "stt.dl.cancelled" => (
+            "Cancelled (Retry to resume)",
+            "Cancelado (Reintentar para continuar)",
+        ),
         "group.sttchain" => ("Transcription priority", "Prioridad de transcripción"),
         "stt.local.add" => ("Add on-device engine", "Añadir motor local"),
         "stt.models.compatnote" => (
@@ -1034,6 +1058,24 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "backend.caption.20" => ("Vulkan server", "Servidor Vulkan"),
         "backend.caption.21" => ("Sherpa CUDA server", "Servidor Sherpa CUDA"),
         "backend.caption.22" => ("Sherpa CPU server", "Servidor Sherpa CPU"),
+        "backend.caption.23" => (
+            "LLM-based multilingual ASR, 30 languages + dialects",
+            "ASR multilingüe basado en LLM, 30 idiomas + dialectos",
+        ),
+        "backend.caption.24" => (
+            "Lightweight LLM-based ASR, 30 languages + dialects",
+            "ASR ligero basado en LLM, 30 idiomas + dialectos",
+        ),
+        "backend.caption.25" => ("Qwen transformers runtime", "Runtime Qwen transformers"),
+        "backend.caption.26" => ("Qwen vLLM runtime", "Runtime Qwen vLLM"),
+        "backend.caption.27" => (
+            "CPU or NVIDIA GPU, offline decode (no live streaming); self-contained Python 3.12",
+            "CPU o GPU NVIDIA, decodificación offline (sin streaming); Python 3.12 incluido",
+        ),
+        "backend.caption.28" => (
+            "NVIDIA GPU only, offline + live streaming; self-contained Python 3.12",
+            "Solo GPU NVIDIA, offline + streaming en directo; Python 3.12 incluido",
+        ),
         "lm.residency.default" => ("Ollama default", "Predeterminado de Ollama"),
         "lm.residency.forever" => ("Until server restarts", "Hasta reiniciar el servidor"),
         "lm.residency.unload" => ("Unload immediately", "Descargar de memoria al terminar"),
