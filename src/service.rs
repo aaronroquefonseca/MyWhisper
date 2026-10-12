@@ -400,21 +400,24 @@ pub fn spawn_stt_watcher(db_path: PathBuf) {
                 continue;
             }
             if curr_primary != last_primary {
-                // Configuration moved.
+                // Configuration moved. Transient failures (foreign port,
+                // missing runtime, admission contention) retry on the
+                // next tick; only success advances the fingerprint.
+                // Active captures/inference defer the same way.
                 let applied = if curr_auto {
                     match crate::transcribe::reconcile_servers(&stt, &data_dir) {
                         Ok(deferred) => !deferred,
                         Err(e) => {
-                            eprintln!("[service] STT reconcile: {e}");
-                            true
+                            eprintln!("[service] STT reconcile failed, retrying: {e}");
+                            false
                         }
                     }
                 } else {
                     match crate::transcribe::reconcile_lazy_switch(&data_dir) {
                         Ok(deferred) => !deferred,
                         Err(e) => {
-                            eprintln!("[service] STT lazy stop: {e}");
-                            true
+                            eprintln!("[service] STT lazy stop failed, retrying: {e}");
+                            false
                         }
                     }
                 };
@@ -433,8 +436,7 @@ pub fn spawn_stt_watcher(db_path: PathBuf) {
                             }
                         }
                         Err(e) => {
-                            eprintln!("[service] STT autostart warm: {e}");
-                            last_auto = curr_auto;
+                            eprintln!("[service] STT autostart warm failed, retrying: {e}");
                         }
                     }
                 } else {
