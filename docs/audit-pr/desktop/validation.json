@@ -1,0 +1,29 @@
+{
+  "title": "Desktop symbolic logo and toast feedback",
+  "base": "fix/audit-identity-files",
+  "code_commit": "68c344f7be50abc1d7b932925fc992d1e3da5afe",
+  "passed": [
+    "fmt",
+    "strict Clippy all targets",
+    "83 Rust tests, zero failures, five unchanged ignores",
+    "release binary",
+    "light/English and dark/Spanish existing native UI configurations plus actual logo/toast pixel, hover and dismissal checks"
+  ],
+  "full_release_audit_complete": false,
+  "project_license_deferred": true,
+  "source_sha256": {
+    "src/app.rs": "3d192aed61155c0f9a99b737d32459b6d0cb60b32531e974c9ccb9eb848e4106",
+    "src/app.css": "92c13a4b9acfe814085ef6224eceff04d77a4ef2fbc99e6724325c7db9c14845",
+    "examples/desktop_smoke.rs": "4a7bafcbecaad0407e54b97ddd7d44373459c79c089b0170d9ed11aa9afc2504",
+    "assets/icons/symbolic.svg": "bd8c3241d2b19404a3f07389bbb08539d377d00a98c063faa87227bc3c02ae42"
+  },
+  "evidence_sha256": {
+    "clippy.log": "2d2aaeab557e0bc77c22f8ef4641cd521787efbb3027d4c9c54539234d3e7ba8",
+    "fixture-sampling-before.log": "81e997005396275220c7d1fc671b391e76f28d42859b9ba3467f6a354f7a44d1",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "native-ui.log": "bd8d09e6bb30a9368a8ec8c8a4b4fceb7913d09e4fe5381fb3225fb8a519de19",
+    "release.log": "0f42d22888bef541d476380346e0f4fbd01b6b54ad420eb02a85f20efecc3d1c",
+    "rust-tests.log": "f1866f15a662a2141e8e93425c45f3f9ec9a9f26787c33302d8801fba6d3e560"
+  },
+  "release_binary_sha256": "98e0fdc5ab92774de646a8d6100b4f85cdf33609b5cc57417b7c82b782d69619"
+}
