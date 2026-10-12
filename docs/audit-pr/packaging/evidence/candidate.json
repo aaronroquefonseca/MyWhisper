@@ -1,0 +1,11 @@
+{
+  "tag": "v0.9.3",
+  "version": "0.9.3",
+  "prerelease": false,
+  "source_sha": "8d4f999d01f29ff5ae18ec2a78a06c3f81618f84",
+  "source_dirty": false,
+  "project_license_established": false,
+  "dependency_notices_complete": true,
+  "asset": "mywhisper-v0.9.3-x86_64-unknown-linux-gnu.tar.gz",
+  "sha256": "924ada812560a3d002102ff1916f84a6596d416de826284ce31381cb9db157c5"
+}

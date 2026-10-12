@@ -1,0 +1,32 @@
+Oct 12 13:49:19 desktop systemd[815]: Started MyWhisper background dictation engine.
+Oct 12 13:49:19 desktop mywhisper[1142]: [service] engine lock acquired
+Oct 12 13:49:19 desktop mywhisper[1142]: [hotkey] watching "F13" (Push) for DictationToggle
+Oct 12 13:49:19 desktop mywhisper[1142]: [hotkey] watching 2 keyboard(s): QEMU Virtio Keyboard, AT Translated Set 2 keyboard
+Oct 12 13:49:19 desktop mywhisper[1142]: [hotkey] status: Listening
+Oct 12 13:49:19 desktop mywhisper[1142]: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+Oct 12 13:49:19 desktop mywhisper[1142]: [stt] startup warmup: Local: whisper model base (download it in Settings → Speech to Text / Language Models)
+Oct 12 13:49:19 desktop mywhisper[1142]: [sync] applying engine (port 42973, name "")
+Oct 12 13:49:19 desktop mywhisper[1142]: [sync] listening on port 42973
+Oct 12 13:49:19 desktop mywhisper[1142]: [sync] mdns browsing on :42973 (advertising)
+Oct 12 13:49:19 desktop mywhisper[1142]: [service] activate, headless engine
+Oct 12 13:49:19 desktop mywhisper[1142]: [poc] layer-shell supported: true
+Oct 12 13:49:19 desktop mywhisper[1142]: [poc] layer-shell configured: layer=Overlay bottom-anchored margin=24 keyboard=None exclusive=0 ns=mywhisper-pill
+Oct 12 13:49:19 desktop mywhisper[1142]: [poc] viz mark icon loaded: 18x18
+Oct 12 13:49:20 desktop systemd[815]: Stopping MyWhisper background dictation engine...
+Oct 12 13:49:20 desktop systemd[815]: Stopped MyWhisper background dictation engine.
+Oct 12 13:49:20 desktop systemd[815]: Started MyWhisper background dictation engine.
+Oct 12 13:49:20 desktop mywhisper[1229]: [service] engine lock acquired
+Oct 12 13:49:20 desktop mywhisper[1229]: [hotkey] watching "F13" (Push) for DictationToggle
+Oct 12 13:49:20 desktop mywhisper[1229]: [hotkey] watching 2 keyboard(s): QEMU Virtio Keyboard, AT Translated Set 2 keyboard
+Oct 12 13:49:20 desktop mywhisper[1229]: [hotkey] status: Listening
+Oct 12 13:49:20 desktop mywhisper[1229]: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+Oct 12 13:49:20 desktop mywhisper[1229]: [sync] applying engine (port 42973, name "")
+Oct 12 13:49:20 desktop mywhisper[1229]: [sync] listening on port 42973
+Oct 12 13:49:20 desktop mywhisper[1229]: [sync] mdns browsing on :42973 (advertising)
+Oct 12 13:49:20 desktop mywhisper[1229]: [stt] startup warmup: Local: whisper model base (download it in Settings → Speech to Text / Language Models)
+Oct 12 13:49:20 desktop mywhisper[1229]: [service] activate, headless engine
+Oct 12 13:49:20 desktop mywhisper[1229]: [poc] layer-shell supported: true
+Oct 12 13:49:20 desktop mywhisper[1229]: [poc] layer-shell configured: layer=Overlay bottom-anchored margin=24 keyboard=None exclusive=0 ns=mywhisper-pill
+Oct 12 13:49:20 desktop mywhisper[1229]: [poc] viz mark icon loaded: 18x18
+Oct 12 13:49:21 desktop systemd[815]: Stopping MyWhisper background dictation engine...
+Oct 12 13:49:21 desktop systemd[815]: Stopped MyWhisper background dictation engine.

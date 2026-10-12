@@ -1,0 +1,522 @@
+got build log for '/nix/store/wq4z2945i31hd84wkgkrws0xndgrzd64-mywhisper-0.9.3.drv' from 'local'
+Running phase: unpackPhase
+@nix { "action": "setPhase", "phase": "unpackPhase" }
+unpacking source archive /nix/store/95xqrzc86i8gw5rr1yxbgrvbf75rvjv7-source
+source root is source
+Executing cargoSetupPostUnpackHook
+Finished cargoSetupPostUnpackHook
+Running phase: patchPhase
+@nix { "action": "setPhase", "phase": "patchPhase" }
+Executing cargoSetupPostPatchHook
+Validating consistency between /tmp/nix-2-215933200/source/Cargo.lock and /tmp/nix-2-215933200/cargo-vendor-dir/Cargo.lock
+Finished cargoSetupPostPatchHook
+Running phase: updateAutotoolsGnuConfigScriptsPhase
+@nix { "action": "setPhase", "phase": "updateAutotoolsGnuConfigScriptsPhase" }
+Running phase: configurePhase
+@nix { "action": "setPhase", "phase": "configurePhase" }
+Running phase: buildPhase
+@nix { "action": "setPhase", "phase": "buildPhase" }
+Executing cargoBuildHook
+cargoBuildHook flags: -j 4 --target x86_64-unknown-linux-gnu --offline --profile release --bin mywhisper
+[1m[92m   Compiling[0m quote v1.0.47
+[1m[92m   Compiling[0m proc-macro2 v1.0.107
+[1m[92m   Compiling[0m unicode-ident v1.0.26
+[1m[92m   Compiling[0m pkg-config v0.3.34
+[1m[92m   Compiling[0m libc v0.2.190
+[1m[92m   Compiling[0m winnow v1.0.4
+[1m[92m   Compiling[0m toml_datetime v1.1.1+spec-1.1.0
+[1m[92m   Compiling[0m cfg-if v1.0.5
+[1m[92m   Compiling[0m target-lexicon v0.13.5
+[1m[92m   Compiling[0m syn v3.0.6
+[1m[92m   Compiling[0m toml_parser v1.1.3+spec-1.1.0
+[1m[92m   Compiling[0m smallvec v1.16.2
+[1m[92m   Compiling[0m heck v0.5.0
+[1m[92m   Compiling[0m serde_spanned v1.1.1
+[1m[92m   Compiling[0m toml v1.1.6+spec-1.1.0
+[1m[92m   Compiling[0m cfg-expr v0.20.10
+[1m[92m   Compiling[0m version-compare v0.2.1
+[1m[92m   Compiling[0m system-deps v9.0.0
+[1m[92m   Compiling[0m pin-project-lite v0.2.17
+[1m[92m   Compiling[0m typenum v1.20.1
+[1m[92m   Compiling[0m futures-core v0.3.34
+[1m[92m   Compiling[0m log v0.4.34
+[1m[92m   Compiling[0m zeroize v1.9.0
+[1m[92m   Compiling[0m bitflags v2.13.2
+[1m[92m   Compiling[0m find-msvc-tools v0.1.14
+[1m[92m   Compiling[0m shlex v2.0.1
+[1m[92m   Compiling[0m futures-io v0.3.34
+[1m[92m   Compiling[0m slab v0.4.12
+[1m[92m   Compiling[0m autocfg v1.5.1
+[1m[92m   Compiling[0m futures-sink v0.3.34
+[1m[92m   Compiling[0m rand_core v0.10.1
+[1m[92m   Compiling[0m glib-sys v0.22.9
+[1m[92m   Compiling[0m jobserver v0.1.35
+[1m[92m   Compiling[0m syn v2.0.119
+[1m[92m   Compiling[0m cc v1.6.0
+[1m[92m   Compiling[0m serde_core v1.0.229
+[1m[92m   Compiling[0m memchr v2.8.3
+[1m[92m   Compiling[0m futures-macro v0.3.34
+[1m[92m   Compiling[0m gobject-sys v0.22.9
+[1m[92m   Compiling[0m hybrid-array v0.4.15
+[1m[92m   Compiling[0m futures-task v0.3.34
+[1m[92m   Compiling[0m version_check v0.9.5
+[1m[92m   Compiling[0m futures-util v0.3.34
+[1m[92m   Compiling[0m generic-array v0.14.7
+[1m[92m   Compiling[0m serde v1.0.229
+[1m[92m   Compiling[0m gio-sys v0.22.9
+[1m[92m   Compiling[0m once_cell v1.21.4
+[1m[92m   Compiling[0m subtle v2.6.1
+[1m[92m   Compiling[0m serde_derive v1.0.229
+[1m[92m   Compiling[0m synstructure v0.14.0
+[1m[92m   Compiling[0m crypto-common v0.2.2
+[1m[92m   Compiling[0m equivalent v1.0.2
+[1m[92m   Compiling[0m hashbrown v0.17.1
+[1m[92m   Compiling[0m semver v1.0.28
+[1m[92m   Compiling[0m rustc_version v0.4.1
+[1m[92m   Compiling[0m indexmap v2.14.2
+[1m[92m   Compiling[0m zerofrom-derive v0.1.8
+[1m[92m   Compiling[0m scopeguard v1.2.0
+[1m[92m   Compiling[0m lazy_static v1.5.1
+[1m[92m   Compiling[0m rustversion v1.0.23
+[1m[92m   Compiling[0m yoke-derive v0.8.4
+[1m[92m   Compiling[0m toml_edit v0.25.15+spec-1.1.0
+[1m[92m   Compiling[0m crypto-common v0.1.7
+[1m[92m   Compiling[0m futures-channel v0.3.34
+[1m[92m   Compiling[0m crossbeam-utils v0.8.23
+[1m[92m   Compiling[0m zerofrom v0.1.8
+[1m[92m   Compiling[0m cpufeatures v0.3.1
+[1m[92m   Compiling[0m stable_deref_trait v1.2.1
+[1m[92m   Compiling[0m cmov v0.5.4
+[1m[92m   Compiling[0m parking v2.2.1
+[1m[92m   Compiling[0m proc-macro-crate v3.5.0
+[1m[92m   Compiling[0m yoke v0.8.3
+[1m[92m   Compiling[0m ctutils v0.4.3
+[1m[92m   Compiling[0m block-buffer v0.12.1
+[1m[92m   Compiling[0m bytes v1.12.1
+[1m[92m   Compiling[0m libm v0.2.16
+[1m[92m   Compiling[0m const-oid v0.10.2
+[1m[92m   Compiling[0m encoding_rs v0.8.42
+[1m[92m   Compiling[0m digest v0.11.3
+[1m[92m   Compiling[0m tracing-core v0.1.36
+[1m[92m   Compiling[0m zerovec-derive v0.11.6
+[1m[92m   Compiling[0m cmake v0.1.58
+[1m[92m   Compiling[0m num-traits v0.2.19
+[1m[92m   Compiling[0m pango-sys v0.22.9
+[1m[92m   Compiling[0m gdk-pixbuf-sys v0.22.9
+[1m[92m   Compiling[0m cairo-sys-rs v0.22.9
+[1m[92m   Compiling[0m bitflags v1.3.2
+[1m[92m   Compiling[0m arrayvec v0.7.8
+[1m[92m   Compiling[0m rustix v1.1.5
+[1m[92m   Compiling[0m dunce v1.0.5
+[1m[92m   Compiling[0m bytemuck v1.25.2
+[1m[92m   Compiling[0m fastrand v2.5.0
+[1m[92m   Compiling[0m fs_extra v1.3.0
+[1m[92m   Compiling[0m symphonia-core v0.5.5
+[1m[92m   Compiling[0m zerovec v0.11.8
+[1m[92m   Compiling[0m aws-lc-sys v0.45.0
+[1m[92m   Compiling[0m displaydoc v0.2.7
+[1m[92m   Compiling[0m socket2 v0.6.5
+[1m[92m   Compiling[0m simdutf8 v0.1.5
+[1m[92m   Compiling[0m multiversion_no_op v1.0.0
+[1m[92m   Compiling[0m linux-raw-sys v0.12.1
+[1m[92m   Compiling[0m core_detect v1.0.0
+[1m[92m   Compiling[0m futures-executor v0.3.34
+[1m[92m   Compiling[0m enumflags2_derive v0.7.12
+[1m[92m   Compiling[0m glib-macros v0.22.9
+[1m[92m   Compiling[0m gdk4-sys v0.11.5
+[1m[92m   Compiling[0m graphene-sys v0.22.9
+[1m[92m   Compiling[0m mio v1.2.4
+[1m[92m   Compiling[0m itoa v1.0.18
+[1m[92m   Compiling[0m atomic-waker v1.1.2
+[1m[92m   Compiling[0m getrandom v0.4.3
+[1m[92m   Compiling[0m glib v0.22.10
+[1m[92m   Compiling[0m zvariant_utils v4.2.0
+[1m[92m   Compiling[0m concurrent-queue v2.5.0
+[1m[92m   Compiling[0m event-listener v5.4.2
+[1m[92m   Compiling[0m tracing-attributes v0.1.31
+[1m[92m   Compiling[0m rustls-pki-types v1.15.1
+[1m[92m   Compiling[0m aws-lc-rs v1.18.1
+[1m[92m   Compiling[0m foldhash v0.2.0
+[1m[92m   Compiling[0m cpufeatures v0.2.17
+[1m[92m   Compiling[0m tracing v0.1.44
+[1m[92m   Compiling[0m event-listener-strategy v0.5.4
+[1m[92m   Compiling[0m zvariant_derive v5.15.0
+[1m[92m   Compiling[0m http v1.5.0
+[1m[92m   Compiling[0m tokio v1.53.2
+[1m[92m   Compiling[0m symphonia-metadata v0.5.5
+[1m[92m   Compiling[0m tinystr v0.8.4
+[1m[92m   Compiling[0m futures-lite v2.6.1
+[1m[92m   Compiling[0m gtk4-sys v0.11.5
+[1m[92m   Compiling[0m gsk4-sys v0.11.5
+[1m[92m   Compiling[0m litemap v0.8.3
+[1m[92m   Compiling[0m writeable v0.6.4
+[1m[92m   Compiling[0m untrusted v0.9.0
+[1m[92m   Compiling[0m icu_locale_core v2.3.0
+[1m[92m   Compiling[0m num-integer v0.1.47
+[1m[92m   Compiling[0m zerotrie v0.2.5
+[1m[92m   Compiling[0m potential_utf v0.1.6
+[1m[92m   Compiling[0m block-padding v0.4.2
+[1m[92m   Compiling[0m async-io v2.6.0
+[1m[92m   Compiling[0m utf8_iter v1.0.4
+[1m[92m   Compiling[0m icu_properties_data v2.3.0
+[1m[92m   Compiling[0m icu_normalizer_data v2.3.0
+[1m[92m   Compiling[0m icu_collections v2.3.0
+[1m[92m   Compiling[0m icu_provider v2.3.1
+[1m[92m   Compiling[0m inout v0.2.2
+[1m[92m   Compiling[0m gio v0.22.10
+[1m[92m   Compiling[0m polling v3.11.0
+[1m[92m   Compiling[0m enumflags2 v0.7.12
+[1m[92m   Compiling[0m zcheapstr v1.1.0
+[1m[92m   Compiling[0m inout v0.1.4
+[1m[92m   Compiling[0m errno v0.3.14
+[1m[92m   Compiling[0m rustls v0.23.45
+[1m[92m   Compiling[0m async-task v4.7.1
+[1m[92m   Compiling[0m httparse v1.10.1
+[1m[92m   Compiling[0m endi v1.1.1
+[1m[92m   Compiling[0m zvariant v5.15.0
+[1m[92m   Compiling[0m signal-hook-registry v1.4.8
+[1m[92m   Compiling[0m cipher v0.4.4
+[1m[92m   Compiling[0m cipher v0.5.2
+[1m[92m   Compiling[0m num-bigint v0.4.8
+[1m[92m   Compiling[0m symphonia-utils-xiph v0.5.5
+[1m[92m   Compiling[0m http-body v1.1.0
+[1m[92m   Compiling[0m async-channel v2.5.0
+[1m[92m   Compiling[0m hmac v0.13.0
+[1m[92m   Compiling[0m sha2 v0.11.0
+[1m[92m   Compiling[0m universal-hash v0.5.1
+[1m[92m   Compiling[0m zstd-sys v2.1.0+zstd.1.5.7
+[1m[92m   Compiling[0m memoffset v0.9.1
+[1m[92m   Compiling[0m alsa-sys v0.4.0
+[1m[92m   Compiling[0m percent-encoding v2.3.2
+[1m[92m   Compiling[0m system-deps v8.0.0
+[1m[92m   Compiling[0m opaque-debug v0.3.1
+[1m[92m   Compiling[0m num-rational v0.4.2
+[1m[92m   Compiling[0m icu_normalizer v2.3.0
+[1m[92m   Compiling[0m icu_properties v2.3.0
+[1m[92m   Compiling[0m async-signal v0.2.14
+[1m[92m   Compiling[0m gdk-pixbuf v0.22.0
+[1m[92m   Compiling[0m pango v0.22.9
+[1m[92m   Compiling[0m zbus_names v4.3.4
+[1m[92m   Compiling[0m tokio-util v0.7.19
+[1m[92m   Compiling[0m cairo-rs v0.22.9
+[1m[92m   Compiling[0m async-lock v3.4.2
+[1m[92m   Compiling[0m piper v0.2.5
+[1m[92m   Compiling[0m field-offset v0.3.6
+[1m[92m   Compiling[0m try-lock v0.2.5
+[1m[92m   Compiling[0m cpubits v0.1.1
+[1m[92m   Compiling[0m thiserror v2.0.21
+[1m[92m   Compiling[0m tower-service v0.3.3
+[1m[92m   Compiling[0m fnv v1.0.7
+[1m[92m   Compiling[0m h2 v0.4.20
+[1m[92m   Compiling[0m aes v0.9.3
+[1m[92m   Compiling[0m want v0.3.2
+[1m[92m   Compiling[0m blocking v1.7.0
+[1m[92m   Compiling[0m gdk4 v0.11.5
+[1m[92m   Compiling[0m async-process v2.5.0
+[1m[92m   Compiling[0m zbus_macros v5.19.0
+[1m[92m   Compiling[0m idna_adapter v1.2.2
+[1m[92m   Compiling[0m async-executor v1.14.0
+[1m[92m   Compiling[0m num-iter v0.1.46
+[1m[92m   Compiling[0m graphene-rs v0.22.8
+[1m[92m   Compiling[0m async-broadcast v0.7.2
+[1m[92m   Compiling[0m num-complex v0.4.6
+[1m[92m   Compiling[0m uuid v1.27.0
+[1m[92m   Compiling[0m chacha20 v0.10.2
+[1m[92m   Compiling[0m block-buffer v0.10.4
+[1m[92m   Compiling[0m curve25519-dalek-derive v0.1.1
+[1m[92m   Compiling[0m ring v0.17.14
+[1m[92m   Compiling[0m async-trait v0.1.92
+[1m[92m   Compiling[0m thiserror-impl v2.0.21
+[1m[92m   Compiling[0m async-recursion v1.2.0
+[1m[92m   Compiling[0m serde_repr v0.1.21
+[1m[92m   Compiling[0m ordered-stream v0.2.0
+[1m[92m   Compiling[0m system-deps v7.0.8
+[1m[92m   Compiling[0m vcpkg v0.2.15
+[1m[92m   Compiling[0m hex v0.4.3
+[1m[92m   Compiling[0m cfg_aliases v0.2.2
+[1m[92m   Compiling[0m radium v0.7.0
+[1m[92m   Compiling[0m zstd-safe v7.3.0
+[1m[92m   Compiling[0m crc32fast v1.5.2
+[1m[92m   Compiling[0m zbus v5.19.0
+[1m[92m   Compiling[0m nix v0.29.0
+[1m[92m   Compiling[0m libsqlite3-sys v0.38.2
+[1m[92m   Compiling[0m libadwaita-sys v0.9.2
+[1m[92m   Compiling[0m digest v0.10.7
+[1m[92m   Compiling[0m rand v0.10.3
+[1m[92m   Compiling[0m gsk4 v0.11.5
+[1m[92m   Compiling[0m num v0.4.3
+[1m[92m   Compiling[0m gtk4-layer-shell-sys v0.6.1
+[1m[92m   Compiling[0m alsa v0.11.0
+[1m[92m   Compiling[0m idna v1.1.0
+[1m[92m   Compiling[0m hyper v1.12.0
+[1m[92m   Compiling[0m polyval v0.6.2
+[1m[92m   Compiling[0m form_urlencoded v1.2.2
+[1m[92m   Compiling[0m hkdf v0.13.0
+[1m[92m   Compiling[0m cbc v0.2.1
+[1m[92m   Compiling[0m gtk4-macros v0.11.5
+[1m[92m   Compiling[0m aead v0.5.2
+[1m[92m   Compiling[0m lock_api v0.4.14
+[1m[92m   Compiling[0m curve25519-dalek v5.0.0
+[1m[92m   Compiling[0m curve25519-dalek v4.1.3
+[1m[92m   Compiling[0m sync_wrapper v1.0.2
+[1m[92m   Compiling[0m time-core v0.1.9
+[1m[92m   Compiling[0m dasp_sample v0.11.0
+[1m[92m   Compiling[0m ipnet v2.12.2
+[1m[92m   Compiling[0m tap v1.0.1
+[1m[92m   Compiling[0m tower-layer v0.3.3
+[1m[92m   Compiling[0m extended v0.1.0
+[1m[92m   Compiling[0m cpal v0.17.3
+[1m[92m   Compiling[0m zmij v1.0.23
+[1m[92m   Compiling[0m num-conv v0.2.2
+[1m[92m   Compiling[0m powerfmt v0.2.1
+[1m[92m   Compiling[0m openssl-probe v0.2.1
+[1m[92m   Compiling[0m base64 v0.23.1
+[1m[92m   Compiling[0m getrandom v0.3.4
+[1m[92m   Compiling[0m deranged v0.5.8
+[1m[92m   Compiling[0m hyper-util v0.1.21
+[1m[92m   Compiling[0m time v0.3.55
+[1m[92m   Compiling[0m rustls-native-certs v0.8.4
+[1m[92m   Compiling[0m symphonia-format-riff v0.5.5
+[1m[92m   Compiling[0m tower v0.5.3
+[1m[92m   Compiling[0m wyz v0.5.1
+[1m[92m   Compiling[0m spin v0.9.9
+[1m[92m   Compiling[0m gtk4 v0.11.5
+[1m[92m   Compiling[0m secret-service v5.2.0
+[1m[92m   Compiling[0m rustls-webpki v0.103.15
+[1m[92m   Compiling[0m tokio-rustls v0.26.6
+[1m[92m   Compiling[0m url v2.5.8
+[1m[92m   Compiling[0m ghash v0.5.1
+[1m[92m   Compiling[0m poly1305 v0.8.0
+[1m[92m   Compiling[0m symphonia-format-isomp4 v0.5.5
+[1m[92m   Compiling[0m symphonia-codec-vorbis v0.5.5
+[1m[92m   Compiling[0m symphonia-format-ogg v0.5.5
+[1m[92m   Compiling[0m symphonia-bundle-flac v0.5.5
+[1m[92m   Compiling[0m chacha20 v0.9.1
+[1m[92m   Compiling[0m ctr v0.9.2
+[1m[92m   Compiling[0m aes v0.8.4
+[1m[92m   Compiling[0m symphonia-bundle-mp3 v0.5.5
+[1m[92m   Compiling[0m webpki-roots v1.0.8
+[1m[92m   Compiling[0m symphonia-codec-pcm v0.5.5
+[1m[92m   Compiling[0m symphonia-codec-aac v0.5.5
+[1m[92m   Compiling[0m tracing-log v0.2.0
+[1m[92m   Compiling[0m sha1 v0.11.0
+[1m[92m   Compiling[0m sharded-slab v0.1.7
+[1m[92m   Compiling[0m snow v0.10.0
+[1m[92m   Compiling[0m signature v3.0.0
+[1m[92m   Compiling[0m keyring-core v1.0.0
+[1m[92m   Compiling[0m getrandom v0.2.17
+[1m[92m   Compiling[0m thread_local v1.1.10
+[1m[92m   Compiling[0m nu-ansi-term v0.50.3
+[1m[92m   Compiling[0m zlib-rs v0.6.8
+[1m[92m   Compiling[0m simd-adler32 v0.3.10
+[1m[92m   Compiling[0m bumpalo v3.20.3
+[1m[92m   Compiling[0m serde_json v1.0.151
+[1m[92m   Compiling[0m libbz2-rs-sys v0.2.5
+[1m[92m   Compiling[0m funty v2.0.0
+[1m[92m   Compiling[0m cpal v0.18.2
+[1m[92m   Compiling[0m bitvec v1.1.1
+[1m[92m   Compiling[0m flate2 v1.1.10
+[1m[92m   Compiling[0m bzip2 v0.6.1
+[1m[92m   Compiling[0m zopfli v0.8.3
+[1m[92m   Compiling[0m tracing-subscriber v0.3.23
+[1m[92m   Compiling[0m zbus-secret-service-keyring-store v1.0.1
+[1m[92m   Compiling[0m ed25519 v3.0.0
+[1m[92m   Compiling[0m symphonia v0.5.5
+[1m[92m   Compiling[0m webpki-roots v0.26.11
+[1m[92m   Compiling[0m aes-gcm v0.10.3
+[1m[92m   Compiling[0m chacha20poly1305 v0.10.1
+[1m[92m   Compiling[0m zstd v0.13.3
+[1m[92m   Compiling[0m tower-http v0.6.11
+[1m[92m   Compiling[0m hyper-rustls v0.27.10
+[1m[92m   Compiling[0m rustls-platform-verifier v0.7.1
+[1m[92m   Compiling[0m flume v0.12.0
+[1m[92m   Compiling[0m rand_distr v0.6.0
+[1m[92m   Compiling[0m sha2 v0.10.9
+[1m[92m   Compiling[0m blake2 v0.10.6
+[1m[92m   Compiling[0m lzma-rust2 v0.16.5
+[1m[92m   Compiling[0m pbkdf2 v0.13.0
+[1m[92m   Compiling[0m http-body-util v0.1.5
+[1m[92m   Compiling[0m hashlink v0.12.2
+[1m[92m   Compiling[0m xattr v1.6.1
+[1m[92m   Compiling[0m socket-pktinfo v0.4.1
+[1m[92m   Compiling[0m crossbeam-channel v0.5.17
+[1m[92m   Compiling[0m if-addrs v0.15.0
+[1m[92m   Compiling[0m filetime v0.2.29
+[1m[92m   Compiling[0m data-encoding v2.11.1
+[1m[92m   Compiling[0m mime v0.3.17
+[1m[92m   Compiling[0m ppmd-rust v1.5.0
+[1m[92m   Compiling[0m fallible-iterator v0.3.0
+[1m[92m   Compiling[0m typed-path v0.12.3
+[1m[92m   Compiling[0m constant_time_eq v0.4.2
+[1m[92m   Compiling[0m rtrb v0.3.5
+[1m[92m   Compiling[0m deflate64 v0.1.12
+[1m[92m   Compiling[0m fallible-streaming-iterator v0.1.9
+[1m[92m   Compiling[0m symlink v0.1.0
+[1m[92m   Compiling[0m tracing-appender v0.2.5
+[1m[92m   Compiling[0m zip v8.6.0
+[1m[92m   Compiling[0m rodio v0.22.2
+[1m[92m   Compiling[0m reqwest v0.13.5
+[1m[92m   Compiling[0m tungstenite v0.30.0
+[1m[92m   Compiling[0m tar v0.4.46
+[1m[92m   Compiling[0m mdns-sd v0.21.5
+[1m[92m   Compiling[0m ed25519-dalek v3.0.0
+[1m[92m   Compiling[0m gtk4-layer-shell v0.8.1
+[1m[92m   Compiling[0m evdev v0.13.2
+[1m[92m   Compiling[0m rusqlite v0.40.2
+[1m[92m   Compiling[0m libadwaita v0.9.2
+[1m[92m   Compiling[0m keyring v4.2.0
+[1m[92m   Compiling[0m tempfile v3.27.0
+[1m[92m   Compiling[0m fs2 v0.4.3
+[1m[92m   Compiling[0m mywhisper v0.9.3 (/tmp/nix-2-215933200/source)
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 2m 44s
+Executing cargoInstallPostBuildHook
+Finished cargoInstallPostBuildHook
+Finished cargoBuildHook
+buildPhase completed in 2 minutes 45 seconds
+Running phase: checkPhase
+@nix { "action": "setPhase", "phase": "checkPhase" }
+Executing cargoCheckHook
+cargoCheckHook flags: -j 4 --profile release --target x86_64-unknown-linux-gnu --offline --
+[1m[92m   Compiling[0m mywhisper v0.9.3 (/tmp/nix-2-215933200/source)
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 12.51s
+[1m[92m     Running[0m unittests src/lib.rs (target/x86_64-unknown-linux-gnu/release/deps/mywhisper-48db8cfbd224698b)
+
+running 88 tests
+test app_insights::tests::calendar_cells_fit_wide_cards_and_keep_a_readable_minimum ... [32mok(B[m
+test app_settings::tests::provider_urls_require_a_host_and_supported_transport ... [32mok(B[m
+test app_settings::tests::shortcut_conflicts_use_parsed_keys_instead_of_spelling ... [32mok(B[m
+test app_sync::tests::manual_addresses_require_a_host_and_nonzero_port ... [32mok(B[m
+test app_sync::tests::pairing_requires_a_full_hex_id ... [32mok(B[m
+test audio::tests::recorder_drain_semantics ... [32mok(B[m
+test audio::tests::audio_vault_clear_and_purge ... [32mok(B[m
+test audio::tests::resample_44k_to_16k_ratio ... [32mok(B[m
+test audio::tests::resample_passthrough_16k ... [32mok(B[m
+test audio::tests::resample_chunked_matches_whole ... [32mok(B[m
+test audio::tests::vad_trims_silence_and_detects_none ... [32mok(B[m
+test audio::tests::wav_header_shape ... [32mok(B[m
+test clipboard::tests::backend_dep_strings_present ... [32mok(B[m
+test app_dictionary::tests::duplicate_validation_respects_aliases_case_and_the_edited_record ... [32mok(B[m
+test app_settings::tests::capture_maps_keys_to_combo_tokens ... [32mok(B[m
+test device::provisioning_tests::invalid_identity_is_preserved_and_display_is_unicode_safe ... [32mok(B[m
+test hotkey::tests::evdev_codes_roundtrip_through_parser ... [32mok(B[m
+test hotkey::tests::mods_gate_correctly ... [32mok(B[m
+test hotkey::tests::parses_f13_and_combos ... [32mok(B[m
+test hotkey::tests::rescan_merge_keeps_fds ... [32mok(B[m
+test hotkey::tests::smart_tap_holds_toggle ... [32mok(B[m
+test hotkey::tests::virtual_keyboard_fires_down_up ... [32mok(B[m
+test i18n::tests::desktop_ui_literal_translation_tags_exist ... [32mok(B[m
+test i18n::tests::english_and_spanish_have_matching_placeholders ... [32mok(B[m
+test media::tests::no_players_is_empty_success ... [32mok(B[m
+test mic::tests::builtin_picker_prefers_onboard ... [32mok(B[m
+test mic::tests::mic_gated_on_dictation_active ... [32mok(B[m
+test audio::tests::settle_release_cuts_at_release_plus_straddler ... [32mok(B[m
+test device::provisioning_tests::concurrent_create_and_legacy_migration_share_one_private_identity ... [32mok(B[m
+test private_fs::tests::bounded_read_rejects_oversized_files_and_symlinks_without_modifying_them ... [32mok(B[m
+test private_fs::tests::fifo_reads_and_locks_fail_without_waiting_for_a_writer ... [32mok(B[m
+test private_fs::tests::ordinary_reads_preserve_metadata_and_private_reads_protect_legacy_keys ... [32mok(B[m
+test runtime::tests::panicking_job_does_not_kill_pool ... [32mok(B[m
+test runtime::tests::pool_runs_jobs ... [32mok(B[m
+test settings::snippet_tests::triggers_split_commas ... [32mok(B[m
+test settings::tests::chain_respects_order_and_enabled ... [32mok(B[m
+test settings::tests::cloud_defaults_sane ... [32mok(B[m
+test settings::tests::ensure_seed_migrates_legacy ... [32mok(B[m
+test sound::tests::cues_render_expected_length_and_level ... [32mok(B[m
+test speculative::tests::agreement_confirms_stable_prefix ... [32mok(B[m
+test speculative::tests::merge_overlaps_or_concatenates ... [32mok(B[m
+test speculative::tests::window_keeps_overlap ... [32mok(B[m
+test store::tests::activity_counts_all_history_and_only_measured_speed ... [32mok(B[m
+test store::tests::auto_delete_keeps_tombstones ... [32mok(B[m
+test store::tests::bulk_deletion_survives_sync_with_an_older_peer ... [32mok(B[m
+test store::tests::discarded_rows_filter_and_sync ... [32mok(B[m
+test store::tests::divergent_edits_converge_with_newest_winning ... [32mok(B[m
+test store::tests::older_write_does_not_resurrect ... [32mok(B[m
+test store::tests::retained_history_deletion_survives_sync ... [32mok(B[m
+test store::tests::server_cmd_is_one_shot ... [32mok(B[m
+test store::tests::settings_engine_switch_roundtrip ... [32mok(B[m
+test store::tests::shared_gen_moves_on_write ... [32mok(B[m
+test net::tests::spoofed_node_id_rejected ... [32mok(B[m
+test stt::lang_tests::every_model_has_languages ... [32mok(B[m
+test stt::lang_tests::whisper_list_is_complete ... [32mok(B[m
+test stt::tests::capability_matrix ... [32mok(B[m
+test stt::tests::downloads_cpu_pack ... [33mignored(B[m
+test stt::tests::downloads_tiny_model ... [33mignored(B[m
+test stt::tests::find_model_resolves_all_ids ... [32mok(B[m
+test stt::tests::registry_is_complete_and_consistent ... [32mok(B[m
+test stt::tests::whisper_stems_map_to_filenames ... [32mok(B[m
+test textnorm::tests::prompt_joins_and_trims_at_comma ... [32mok(B[m
+test textnorm::tests::snippets_empty_is_passthrough ... [32mok(B[m
+test textnorm::tests::snippets_longest_first_and_boundaries ... [32mok(B[m
+test textnorm::tests::snippets_turkish_dot ... [32mok(B[m
+test transcribe::tests::chain_falls_back_past_broken_first ... [32mok(B[m
+test transcribe::tests::cloud_url_join ... [32mok(B[m
+test transcribe::tests::deepgram_pointer ... [32mok(B[m
+test transcribe::tests::lang_param_auto_omits ... [32mok(B[m
+test transcribe::tests::live_oruk_offline_roundtrip ... [33mignored(B[m
+test transcribe::tests::multipart_shape ... [32mok(B[m
+test transcribe::tests::online_segments_accumulate ... [32mok(B[m
+test transcribe::tests::plan_cloud_needs_key ... [32mok(B[m
+test transcribe::tests::plan_cohere_unsupported ... [32mok(B[m
+test transcribe::tests::plan_routing_needs_files ... [32mok(B[m
+test transcribe::tests::plans_selfhosted_ws_and_bearer ... [32mok(B[m
+test transcribe::tests::prompt_defaults_and_suffix ... [32mok(B[m
+test transcribe::tests::server_net_defaults_and_overrides ... [32mok(B[m
+test transcribe::tests::sherpa_text_field ... [32mok(B[m
+test transcribe::tests::spec_thread_roundtrip ... [33mignored(B[m
+test transcribe::tests::whisper_text_or_segments ... [32mok(B[m
+test transcribe::tests::whistle_output_text_or_json ... [32mok(B[m
+test transcribe::tests::whistle_plan_needs_files ... [32mok(B[m
+test transcribe::tests::whistle_stdout_shapes ... [32mok(B[m
+test transcribe::tests::whistle_stream_roundtrip ... [33mignored(B[m
+test store::tests::shared_gen_visible_across_connections ... [32mok(B[m
+test net::tests::loopback_sync_converges_and_rejects_untrusted ... [32mok(B[m
+test device::provisioning_tests::interrupted_replacement_and_fresh_processes_preserve_both_keys ... [32mok(B[m
+
+test result: [32mok(B[m. 83 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 1.16s
+
+[1m[92m     Running[0m unittests src/bin/mywhisper.rs (target/x86_64-unknown-linux-gnu/release/deps/mywhisper-4379cea58d056c92)
+
+running 0 tests
+
+test result: [32mok(B[m. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/pill.rs (target/x86_64-unknown-linux-gnu/release/deps/pill-ca5df3b4ce3273e6)
+
+running 0 tests
+
+test result: [32mok(B[m. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m mywhisper
+
+running 0 tests
+
+test result: [32mok(B[m. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+Finished cargoCheckHook
+Running phase: glibPreInstallPhase
+@nix { "action": "setPhase", "phase": "glibPreInstallPhase" }
+Running phase: glibPreInstallPhase
+@nix { "action": "setPhase", "phase": "glibPreInstallPhase" }
+Running phase: glibPreInstallPhase
+@nix { "action": "setPhase", "phase": "glibPreInstallPhase" }
+Running phase: installPhase
+@nix { "action": "setPhase", "phase": "installPhase" }
+Executing cargoInstallHook
+{"dependency_count": 362, "dependency_notices_complete": true}
+Finished cargoInstallHook
+Running phase: gappsWrapperArgsHook
+@nix { "action": "setPhase", "phase": "gappsWrapperArgsHook" }
+Running phase: dropIconThemeCache
+@nix { "action": "setPhase", "phase": "dropIconThemeCache" }
+Running phase: dropIconThemeCache
+@nix { "action": "setPhase", "phase": "dropIconThemeCache" }
+Running phase: dropIconThemeCache
+@nix { "action": "setPhase", "phase": "dropIconThemeCache" }
+Running phase: fixupPhase
+@nix { "action": "setPhase", "phase": "fixupPhase" }
+Wrapping program '/nix/store/3hwrxm4wanssxh79hh3anhmm7abrzrlm-mywhisper-0.9.3/bin/mywhisper'
+shrinking RPATHs of ELF executables and libraries in /nix/store/3hwrxm4wanssxh79hh3anhmm7abrzrlm-mywhisper-0.9.3
+shrinking /nix/store/3hwrxm4wanssxh79hh3anhmm7abrzrlm-mywhisper-0.9.3/bin/.mywhisper-wrapped
+shrinking /nix/store/3hwrxm4wanssxh79hh3anhmm7abrzrlm-mywhisper-0.9.3/bin/mywhisper
+checking for references to /tmp/nix-2-215933200/ in /nix/store/3hwrxm4wanssxh79hh3anhmm7abrzrlm-mywhisper-0.9.3...
+patching script interpreter paths in /nix/store/3hwrxm4wanssxh79hh3anhmm7abrzrlm-mywhisper-0.9.3
+stripping (with command strip and flags -S -p) in /nix/store/3hwrxm4wanssxh79hh3anhmm7abrzrlm-mywhisper-0.9.3/bin

@@ -1,0 +1,120 @@
+   Compiling mywhisper v0.9.3 (/home/aaronroque/.cache/mywhisper-pr-extract.ie8ambq6/packaging)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.03s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-82dcefe1c08bbcec)
+
+running 88 tests
+test app_insights::tests::calendar_cells_fit_wide_cards_and_keep_a_readable_minimum ... ok
+test app_sync::tests::pairing_requires_a_full_hex_id ... ok
+test app_settings::tests::provider_urls_require_a_host_and_supported_transport ... ok
+test app_settings::tests::capture_maps_keys_to_combo_tokens ... ok
+test audio::tests::resample_passthrough_16k ... ok
+test app_sync::tests::manual_addresses_require_a_host_and_nonzero_port ... ok
+test app_settings::tests::shortcut_conflicts_use_parsed_keys_instead_of_spelling ... ok
+test hotkey::tests::evdev_codes_roundtrip_through_parser ... ok
+test clipboard::tests::backend_dep_strings_present ... ok
+test hotkey::tests::smart_tap_holds_toggle ... ok
+test audio::tests::recorder_drain_semantics ... ok
+test hotkey::tests::mods_gate_correctly ... ok
+test mic::tests::builtin_picker_prefers_onboard ... ok
+test audio::tests::vad_trims_silence_and_detects_none ... ok
+test audio::tests::audio_vault_clear_and_purge ... ok
+test audio::tests::wav_header_shape ... ok
+test hotkey::tests::parses_f13_and_combos ... ok
+test hotkey::tests::virtual_keyboard_fires_down_up ... ok
+test hotkey::tests::rescan_merge_keeps_fds ... ok
+test device::provisioning_tests::invalid_identity_is_preserved_and_display_is_unicode_safe ... ok
+test settings::snippet_tests::triggers_split_commas ... ok
+test settings::tests::chain_respects_order_and_enabled ... ok
+test private_fs::tests::bounded_read_rejects_oversized_files_and_symlinks_without_modifying_them ... ok
+test private_fs::tests::ordinary_reads_preserve_metadata_and_private_reads_protect_legacy_keys ... ok
+test settings::tests::ensure_seed_migrates_legacy ... ok
+test media::tests::no_players_is_empty_success ... ok
+test private_fs::tests::fifo_reads_and_locks_fail_without_waiting_for_a_writer ... ok
+test speculative::tests::window_keeps_overlap ... ok
+test speculative::tests::agreement_confirms_stable_prefix ... ok
+test speculative::tests::merge_overlaps_or_concatenates ... ok
+test settings::tests::cloud_defaults_sane ... ok
+test sound::tests::cues_render_expected_length_and_level ... ok
+test i18n::tests::english_and_spanish_have_matching_placeholders ... ok
+test stt::lang_tests::every_model_has_languages ... ok
+test stt::lang_tests::whisper_list_is_complete ... ok
+test stt::tests::capability_matrix ... ok
+test stt::tests::downloads_cpu_pack ... ignored
+test stt::tests::downloads_tiny_model ... ignored
+test stt::tests::find_model_resolves_all_ids ... ok
+test stt::tests::registry_is_complete_and_consistent ... ok
+test audio::tests::resample_44k_to_16k_ratio ... ok
+test stt::tests::whisper_stems_map_to_filenames ... ok
+test textnorm::tests::snippets_empty_is_passthrough ... ok
+test textnorm::tests::prompt_joins_and_trims_at_comma ... ok
+test textnorm::tests::snippets_longest_first_and_boundaries ... ok
+test textnorm::tests::snippets_turkish_dot ... ok
+test transcribe::tests::chain_falls_back_past_broken_first ... ok
+test transcribe::tests::cloud_url_join ... ok
+test audio::tests::resample_chunked_matches_whole ... ok
+test transcribe::tests::live_oruk_offline_roundtrip ... ignored
+test transcribe::tests::lang_param_auto_omits ... ok
+test transcribe::tests::deepgram_pointer ... ok
+test transcribe::tests::multipart_shape ... ok
+test transcribe::tests::plan_cloud_needs_key ... ok
+test transcribe::tests::online_segments_accumulate ... ok
+test transcribe::tests::plan_cohere_unsupported ... ok
+test i18n::tests::desktop_ui_literal_translation_tags_exist ... ok
+test transcribe::tests::plan_routing_needs_files ... ok
+test transcribe::tests::plans_selfhosted_ws_and_bearer ... ok
+test transcribe::tests::prompt_defaults_and_suffix ... ok
+test transcribe::tests::spec_thread_roundtrip ... ignored
+test transcribe::tests::server_net_defaults_and_overrides ... ok
+test transcribe::tests::sherpa_text_field ... ok
+test transcribe::tests::whisper_text_or_segments ... ok
+test transcribe::tests::whistle_stream_roundtrip ... ignored
+test transcribe::tests::whistle_plan_needs_files ... ok
+test transcribe::tests::whistle_stdout_shapes ... ok
+test transcribe::tests::whistle_output_text_or_json ... ok
+test store::tests::older_write_does_not_resurrect ... ok
+test store::tests::shared_gen_moves_on_write ... ok
+test store::tests::server_cmd_is_one_shot ... ok
+test store::tests::settings_engine_switch_roundtrip ... ok
+test store::tests::auto_delete_keeps_tombstones ... ok
+test app_dictionary::tests::duplicate_validation_respects_aliases_case_and_the_edited_record ... ok
+test store::tests::discarded_rows_filter_and_sync ... ok
+test store::tests::retained_history_deletion_survives_sync ... ok
+test store::tests::shared_gen_visible_across_connections ... ok
+test mic::tests::mic_gated_on_dictation_active ... ok
+test store::tests::bulk_deletion_survives_sync_with_an_older_peer ... ok
+test store::tests::divergent_edits_converge_with_newest_winning ... ok
+test runtime::tests::pool_runs_jobs ... ok
+test store::tests::activity_counts_all_history_and_only_measured_speed ... ok
+test audio::tests::settle_release_cuts_at_release_plus_straddler ... ok
+test net::tests::spoofed_node_id_rejected ... ok
+test device::provisioning_tests::concurrent_create_and_legacy_migration_share_one_private_identity ... ok
+test runtime::tests::panicking_job_does_not_kill_pool ... ok
+test net::tests::loopback_sync_converges_and_rejects_untrusted ... ok
+test device::provisioning_tests::interrupted_replacement_and_fresh_processes_preserve_both_keys ... ok
+
+test result: ok. 83 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 1.01s
+
+     Running unittests src/bin/mywhisper.rs (target/debug/deps/mywhisper-2d0e693ed3101047)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/pill.rs (target/debug/deps/pill-9e94da395485d780)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/desktop_smoke.rs (target/debug/examples/desktop_smoke-7b80f38a9e074efe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/ui_preview.rs (target/debug/examples/ui_preview-7f212ffab48bcf33)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
