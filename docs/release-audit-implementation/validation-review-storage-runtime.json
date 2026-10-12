@@ -1,0 +1,91 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "source_commit": "a31e47a9325e1496622603b084cd9b6dde29c354",
+  "findings": [
+    "R07",
+    "R22",
+    "R48",
+    "R50"
+  ],
+  "demonstrated_failures": [
+    "Legacy SQLite writer commits successfully after plaintext export but before replacement; the acknowledged write disappears from the encrypted result.",
+    "Opening a FIFO as the database blocks before SQLite/keyring handling; the fresh-process regression reaches its one-second failure boundary.",
+    "The exact pinned Whisper Vulkan ELF exits 127 on clean NixOS because libvulkan.so.1 is absent from the module runtime libraries."
+  ],
+  "corrections": [
+    "Retain an exclusive SQLite source snapshot and locking-mode owner through encrypted export verification, file fsync, rename and directory fsync. Refuse unsupported future schemas before mutation and refuse active WAL readers safely, preserving their committed data for retry.",
+    "Open read candidates with O_NOFOLLOW and O_NONBLOCK, then require a regular file on the opened descriptor before reading. Reject FIFOs, directories and symlinks without changing their metadata or targets.",
+    "Supply vulkan-loader in the Nix wrapper/module runtime library closure; preserve the downloaded upstream ELF byte-for-byte."
+  ],
+  "regression_coverage": [
+    "Five new groups: lost-write/stale-handle boundary, actual SIGKILL at five migration phases followed by four concurrent fresh-process recoveries, future plaintext schema byte preservation, active legacy WAL reader refusal/retry, and bounded special-file rejection.",
+    "All synthetic Unicode history/raw history/snippets/dictionary, dark settings, disabled sync/input, unknown JSON fields, encryption and 0600 modes survive interrupted recovery.",
+    "Checkpoint fixture retains every child checkpoint assertion: four readers verify concurrently, then each receives permission to checkpoint and exits before the next. This avoids an independently diagnosed SQLite checkpoint race without serializing initialization/reads, ignoring failures or increasing deadlines.",
+    "Native preview keeps its disposable directory alive until actual production-owned cleanup has joined, preventing encrypted-state recreation outside the fixture scope."
+  ],
+  "passed": {
+    "host": "cargo fmt --all -- --check; cargo clippy --locked --all-targets -- -D warnings; cargo test --locked --all-targets: 273 passed, zero failed, five existing opt-in ignores unchanged",
+    "release": "cargo build --release --locked --bin mywhisper: passed after both production storage changes; subsequent Rust edits concern tests/probe ownership only",
+    "nix": "Fresh actual package check: 273 passed, zero failed, five unchanged ignores",
+    "nixos_desktop": "Current package/module on clean booted NixOS/Sway: System dark, visible icons/logo, encrypted store, GUI normal close/checkpoint and two user-service start/stop cycles",
+    "nixos_downloaded_loader": "Exact authenticated OpenWhispr 0.0.10 Vulkan archive and unchanged downloaded ELF start as an ordinary clean-VM user and provide canonical --model/--port help",
+    "native_ui": "Both native configurations: 12 UI/recovery/reset/model-control invocations and two actual pinned-asset verification/dialog invocations pass after the preview TempDir ownership correction"
+  },
+  "artifacts": {
+    "package_drv": "/nix/store/a3ysfld5pz5bdka4w0jbxdd71zv03dr6-mywhisper-0.9.3.drv",
+    "desktop": "/nix/store/f3n7x7dfda17mrkisimvjbhvnc7dvhnj-vm-test-run-mywhisper-desktop",
+    "loader": "/nix/store/g35sqbw4q9picw8ff4fmjd16vz1mww9f-vm-test-run-mywhisper-downloaded-loader"
+  },
+  "download": {
+    "url": "https://github.com/OpenWhispr/whisper.cpp/releases/download/0.0.10/whisper-server-linux-x64-vulkan.zip",
+    "bytes": 24013074,
+    "sha256": "7bcd8b226cae9b0384613ce315fd8afab533fbdc5c3731343a09de8693eca203"
+  },
+  "compatibility": "No schema/key/identity/settings/protocol or artwork changes. Legacy successful data remains preserved; active plaintext WAL readers now receive safe bounded refusal with retry instead of an unsafe replacement. Vulkan loader extends the Nix runtime closure.",
+  "limits": [
+    "Interrupted encrypted/private staging files remain after SIGKILL; automatic ownership-proven orphan retirement remains open. Process kill is not proof of physical power-loss recovery.",
+    "The Vulkan VM check establishes actual loader startup, not GPU inference or every advertised downloaded runtime/backend/language.",
+    "Other Secret Service implementations, interrupted CreateItem, active deletion/backup/audio privacy, remaining real providers/devices/compositors, running Arch upgrades and complete final review remain open.",
+    "Initial Nix recovery fixture checkpoint failures and stderr-capture setup failure are retained separately from passing checks. The isolated Vulkan before/after gate uses the prior packaged binary while the final tracked gate uses the current candidate.",
+    "No project LICENSE, PR, tag or release created; distribution remains held per user decision."
+  ],
+  "source_sha256": {
+    "src/store.rs": "3a3d93281737cdf203daa1da4e1c814cf5c672b7b2b49921f28e070d660b7c1b",
+    "src/store_migration_tests.rs": "8d2a2b1f09b39e46b88fad3855950d62234aed4945ccd9ca314c8cdefe224f14",
+    "src/private_fs.rs": "ce6363d0225dc4ff5dd0f393fd3333f46313d7366e8b84eb4c21645c2ee7b01f",
+    "examples/ui_preview.rs": "b6760444de50e4c4af07533227a33818db09422192110a8c74f7d3e2eb6477e6",
+    "packaging/nixos/flake.nix": "777a6317476a5f906729044217f26b29b82be750f81f267d2a0fd66ce5997c27",
+    "packaging/nixos/flake.lock": "5f213ab5bbf96e6acca0a5b88c4a47c83e21dc176b3cf450e4bcd00c692202db",
+    "packaging/nixos/runtime-loader-test.nix": "2636da2681dc36dce56d8a57cd79dd01a0943ac9e27df7f28b8bd29d30abbe18",
+    "packaging/nixos/desktop-test.nix": "65e767e489091b61d648231664c5b069b049a8eeceae9d95fe7d8340d90649e4"
+  },
+  "evidence_sha256": {
+    "clippy.log": "45080a304100a7763ede9ed814d4f442e0e2964ec33e59c7776935c2c9afcb23",
+    "coordinated-checkpoints.log": "c949ed85bf0e2e97658d52122c056d76422a1bff017321763af338196177e81f",
+    "fifo-after.log": "f3b833e98241bdbf8b6b68b503656a2eae87ed18c7cb49de0e8d8bb7a19d25a4",
+    "fifo-before.log": "75ecd68b4894f0d684b1b5833038433e5a6aa4b155893db9edb68f0414670335",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "host-stress.log": "3b07b9d02d69420eb31049f73d4ef9a010cff1251527fd8f6e6158fd8039784a",
+    "host-tests.log": "a596ea15951822936c36ef49b1000f691dda1cce1fb3677fd66471cafd92466e",
+    "late-write-after.log": "c27cfb59a3bb149a9982eae675d75c4980830118df516ef1a39cc45989c0ff33",
+    "late-write-before.log": "718b83c7d68cc7d3c51604162ef7d81f91678a0785b30db23e6471f2262cb792",
+    "migration-regressions.log": "bd050406509e090f9817f6d1c26a8308e1895f231e6a0a8cbe271edb1bb78ed7",
+    "nix-build.log": "9a4f620f0e31eb8b6cdad216116075896f602e20a4d90fb788ba80b082613435",
+    "nix-checkpoint-race.log": "d44869e8972bfbfc1d8b8aebce1701810ae5bb4af744c3f16e8748f024743c1d",
+    "nix-package.log": "fa8083c5307c9755cd06e8ebfa7732f3f655d52087e6d792997317ac944c7dbb",
+    "nixos-desktop-driver.log": "3fbdcf341a71ee18989396f3542c220de1cf14386d566ca8ab525a26854f2ca5",
+    "nixos-gui.log": "e94a64344858ba062884720d54c6fa88aecd41e1c3d10da6eb792e10ed6fd07a",
+    "nixos-loader-driver.log": "a4ca5a98dc3c9b1924fa24cbca4f6d323777956d323af2c5958737cc52b59de6",
+    "nixos-mywhisper-system-dark.png": "74f5a6d1d9e34e382e96401f4303107dbd19dee772a67359c3f01efa9fec5933",
+    "nixos-service.log": "f506c2b82df5262520882c49d5c1239793a5a92d61fd08ce842f69996f01a217",
+    "private-files.log": "6e3b23ee1a3ea668db5a66d083ddc8b040c90d40b3a65c5613d4af3c8465eb1c",
+    "release.log": "9294605328e993261111f30cda1fbe6851f25e73c3706ca9669c89709fac639d",
+    "vulkan-host-loader.log": "43dabc93a69a58a62aecd692ddafc818fb1aa41a5fc48e1e1c4eb867d38071a2",
+    "vulkan-nixos-before.log": "174cbb1bd11dc68c8102eface74545ff26a4ae2ae57e0d57db520e15d85a46e9",
+    "vulkan-nixos-capture-setup-failure.log": "3e38c973d768e810b7ebb35956b301dbd6856f7aabc4f7fba468b526af6d7a94",
+    "vulkan-nixos-isolated-after.log": "a8b1bc2fc785c08d2ed8d0a7403fd179e3583a3eb77db04edc531067812d1481",
+    "native-ui.log": "d98eded7d84820b94cbc01af745951c3d39e82650a64e488ffebc68656970454",
+    "native-assets.log": "1056ef77e005e4cb599985d975f05c96d76075633c3d9f0aff009b682fe1fce6"
+  }
+}
