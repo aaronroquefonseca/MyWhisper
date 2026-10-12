@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc="Voice dictation with on-device transcription"
 arch=('x86_64')
 url="https://github.com/aaronroquefonseca/MyWhisper"
-license=('custom')
+license=('MIT')
 depends=('gtk4>=4.22' 'libadwaita>=1.5' 'gtk4-layer-shell' 'alsa-lib' 'hicolor-icon-theme' 'wl-clipboard' 'wtype' 'libpulse' 'ca-certificates')
 optdepends=('gnome-keyring: Secret Service for encrypted settings' 'ydotool: optional paste backend (requires ydotoold)')
 # Private release tarball: fetched by update.sh via `gh` (makepkg

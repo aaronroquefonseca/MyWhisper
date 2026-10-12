@@ -125,5 +125,12 @@ checks. The full release-audit shutdown/privacy/provider requirements remain on
 the integration branch.
 
 Candidate archives include authenticated dependency notices and SHA-256 sums.
-The project license is deliberately unset; release publication remains blocked
-until the owner establishes it. No LICENSE is added by these packaging changes.
+
+## License
+
+MyWhisper is licensed under the [MIT License](LICENSE).
+
+Portions adapted from OpenWhispr retain its MIT copyright and license notice in
+[packaging/notices/OpenWhispr.txt](packaging/notices/OpenWhispr.txt).
+Third-party components retain their own licenses. Release archives and installed
+packages include the project license, third-party notices, and their inventory.
