@@ -26,8 +26,8 @@
 //! Supported folding (snippet triggers only):
 //! - Latin accents fold to their bare base: `é`→`e`, `ó`→`o`,
 //!   `ü`→`u`, `ç`→`c`, and so on through the table in `fold_char`.
-//! - `ñ` folds with `n` (likewise `ń`/`ņ`/`ň`): trigger `ano`
-//!   matches text `año` and vice versa. This is a deliberate
+//! - `ñ` folds with `n` (likewise `ń`/`ņ`/`ň`): trigger `cana`
+//!   matches text `caña` and vice versa. This is a deliberate
 //!   fuzzy-match tradeoff, not a linguistic claim: `ñ` is its own
 //!   letter in Spanish, but for short dictated triggers an accent-
 //!   blind match misses fewer invocations. The spelling dictionary
@@ -41,7 +41,7 @@
 //! (`norm_string`: case- and accent-insensitive), while spelling-
 //! dictionary identity is exact on accents (`dict_key`:
 //! case-insensitive, canonical composed/decomposed forms unified,
-//! but `si` ≠ `sí` and `ano` ≠ `año`).
+//! but `si` ≠ `sí` and `papa` ≠ `papá`).
 //!
 //! Deliberate simplifications vs the reference:
 //! - Snippet fuzzy matching uses no `unicode-normalization` crate:
@@ -147,8 +147,8 @@ pub fn norm_string(s: &str) -> String {
 
 /// Spelling-dictionary identity: NFC canonical normalization plus
 /// full lowercase, so canonically equivalent spellings share one key
-/// while accents stay meaningful. `si` and `sí` (likewise `ano`/
-/// `año`) are distinct entries; `CAMIÓN`, `camión`, and `camio` +
+/// while accents stay meaningful. `si` and `sí` (likewise `papa`/
+/// `papá`) are distinct entries; `CAMIÓN`, `camión`, and `camio` +
 /// U+0301 + `n` are the same entry. Vietnamese stacks (`ế` =
 /// `e` + U+0302 + U+0301), dot-below letters (`ạ` = `a` + U+0323),
 /// and equivalent mark orderings all unify through NFC.
@@ -339,8 +339,8 @@ mod tests {
             "la ACTION ahora"
         );
         // ñ folds with n on both sides.
-        let snips = vec![("ano".to_string(), "YEAR".to_string())];
-        assert_eq!(expand_snippets("el año pasado", &snips), "el YEAR pasado");
+        let snips = vec![("cana".to_string(), "REED".to_string())];
+        assert_eq!(expand_snippets("la caña alta", &snips), "la REED alta");
         // Decomposed (o + combining acute) matches precomposed.
         let snips = vec![("café".to_string(), "COFFEE".to_string())];
         assert_eq!(expand_snippets("cafe\u{301} time", &snips), "COFFEE time");
@@ -380,13 +380,13 @@ mod tests {
     fn dict_key_keeps_accents_but_unifies_case_and_canonical_forms() {
         // Meaningful accent distinctions survive.
         assert_ne!(dict_key("si"), dict_key("sí"));
-        assert_ne!(dict_key("ano"), dict_key("año"));
+        assert_ne!(dict_key("papa"), dict_key("papá"));
         // Case does not create a new entry.
         assert_eq!(dict_key("CAMIÓN"), dict_key("camión"));
         assert_eq!(dict_key("  MyWhisper "), dict_key("mywhisper"));
         // Composed and decomposed spellings are one entry.
         assert_eq!(dict_key("café"), dict_key("cafe\u{301}"));
-        assert_eq!(dict_key("año"), dict_key("an\u{303}o"));
+        assert_eq!(dict_key("caña"), dict_key("can\u{303}a"));
         // Stacked marks beyond the Latin-1 range unify too.
         assert_eq!(dict_key("ế"), dict_key("e\u{302}\u{301}"));
         assert_eq!(dict_key("ǘ"), dict_key("u\u{308}\u{301}"));

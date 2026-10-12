@@ -63,7 +63,7 @@ fn labeled_entry(text: &str, label: &str) -> Entry {
 }
 
 fn duplicate_word(state: &AppState, value: &str, original: Option<&str>) -> bool {
-    // Spelling identity is accent-sensitive: "si"/"sí" and "ano"/"año"
+    // Spelling identity is accent-sensitive: "si"/"sí" and "papa"/"papá"
     // are distinct words. dict_key unifies only case and canonical
     // composed/decomposed spellings.
     let norm = crate::textnorm::dict_key(value);
@@ -575,8 +575,8 @@ mod tests {
         assert!(!duplicate_word(&state, "camion", None));
         state.store.upsert_word("si", "test").unwrap();
         assert!(!duplicate_word(&state, "sí", None));
-        state.store.upsert_word("ano", "test").unwrap();
-        assert!(!duplicate_word(&state, "año", None));
+        state.store.upsert_word("papa", "test").unwrap();
+        assert!(!duplicate_word(&state, "papá", None));
         // Canonically equivalent spellings share one word entry no
         // matter how they were typed or pasted.
         state.store.upsert_word("cafe\u{301}", "test").unwrap();
