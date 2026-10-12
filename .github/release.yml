@@ -1,0 +1,16 @@
+# Titles and PR links are the default notes; maintainers may expand them in the
+# release PR. Labels are optional, and unlabelled PRs always appear below.
+changelog:
+  exclude:
+    labels: [release, skip-changelog]
+  categories:
+    - title: Breaking changes
+      labels: [breaking-change]
+    - title: Security
+      labels: [security]
+    - title: New features
+      labels: [enhancement]
+    - title: Fixes
+      labels: [bug]
+    - title: Other improvements
+      labels: ['*']

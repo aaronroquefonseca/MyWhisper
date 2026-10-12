@@ -3,6 +3,9 @@
 Local-first voice dictation: press a key, talk, clean text lands anywhere.
 GTK4 + Rust, Linux/Wayland-first.
 
+For fast local PR testing and PR-based release notes, see
+[the development workflow](docs/DEVELOPMENT.md).
+
 ## Pieces
 
 - **Service** (`mywhisper --service`): headless background engine —

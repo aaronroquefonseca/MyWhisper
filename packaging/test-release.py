@@ -22,7 +22,7 @@ class Release(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.write("Cargo.toml", '[package]\nname="mywhisper"\nversion="1.2.3"\n')
-        self.write("packaging/arch/PKGBUILD", "pkgver=1.2.3\n")
+        self.write("packaging/arch/PKGBUILD", "pkgver=1.2.3\npkgrel=1\nsha256sums=('" + "0" * 64 + "')\n")
         self.write("packaging/nixos/flake.nix", "version = manifest.package.version;\n")
         self.write("CHANGELOG.md", "## 1.2.3\n\n- Synthetic corrected behavior.\n\n## 1.2.2\n- Old.\n")
 
@@ -80,7 +80,13 @@ class Release(unittest.TestCase):
         self.assertFalse(result["project_license_established"])
         digest = hashlib.sha256((output / result["asset"]).read_bytes()).hexdigest()
         self.assertEqual(result["sha256"], digest)
-        self.assertEqual((output / "SHA256SUMS").read_text(), f"{digest}  {result['asset']}\n")
+        recipe = (output / "PKGBUILD").read_text()
+        self.assertIn(f"sha256sums=('{digest}')", recipe)
+        recipe_digest = hashlib.sha256(recipe.encode()).hexdigest()
+        self.assertEqual(result["arch_pkgbuild_sha256"], recipe_digest)
+        self.assertEqual((output / "SHA256SUMS").read_text(),
+                         f"{digest}  {result['asset']}\n{recipe_digest}  PKGBUILD\n")
+        self.assertIn("0" * 64, (self.root / "packaging/arch/PKGBUILD").read_text())
         self.assertEqual(json.loads((output / "release.json").read_text()), result)
         self.assertIn("Synthetic corrected behavior", (output / "notes.md").read_text())
         self.assertTrue((output / result["asset"].removesuffix(".tar.gz") / "THIRD_PARTY_NOTICES.txt").is_file())
@@ -174,6 +180,17 @@ class Release(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "binary version"):
             release.stage(self.root, output, "v1.2.3")
         self.assertFalse(output.exists())
+
+    def test_notes_accept_freeform_markdown_and_linked_dated_headings(self):
+        self.write("CHANGELOG.md", "## [1.2.3](https://example.invalid/tag) - 2026-10-12\n\n"
+                   "A reviewed release summary.\n\n## What's Changed\n"
+                   "* Multiple related improvements ([#5](https://example.invalid/pull/5)).\n\n"
+                   "## 1.2.2\n- Old release.\n")
+        notes = release.preflight(self.root, "v1.2.3")["notes"]
+        self.assertIn("A reviewed release summary", notes)
+        self.assertIn("## What's Changed", notes)
+        self.assertIn("[#5]", notes)
+        self.assertNotIn("Old release", notes)
 
     def test_local_patch_inventory_preserves_notices_and_rejects_unreviewed_source(self):
         from types import SimpleNamespace
