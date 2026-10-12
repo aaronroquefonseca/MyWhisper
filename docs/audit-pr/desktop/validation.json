@@ -1,7 +1,7 @@
 {
   "title": "Desktop symbolic logo and toast feedback",
   "base": "fix/audit-identity-files",
-  "code_commit": "68c344f7be50abc1d7b932925fc992d1e3da5afe",
+  "code_commit": "1b2d4c5d386e989674bcb003c448ea2d22d11d07",
   "passed": [
     "fmt",
     "strict Clippy all targets",
@@ -25,5 +25,7 @@
     "release.log": "0f42d22888bef541d476380346e0f4fbd01b6b54ad420eb02a85f20efecc3d1c",
     "rust-tests.log": "f1866f15a662a2141e8e93425c45f3f9ec9a9f26787c33302d8801fba6d3e560"
   },
-  "release_binary_sha256": "98e0fdc5ab92774de646a8d6100b4f85cdf33609b5cc57417b7c82b782d69619"
+  "release_binary_sha256": "98e0fdc5ab92774de646a8d6100b4f85cdf33609b5cc57417b7c82b782d69619",
+  "tested_source_commit_before_stack_documentation": "68c344f7be50abc1d7b932925fc992d1e3da5afe",
+  "stack_rebase": "Only ancestry/documentation changed; every tested source hash is unchanged and the reachable code checkpoint is recorded."
 }
