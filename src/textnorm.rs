@@ -3,18 +3,20 @@
 //! budgets and `snippets.ts` matcher (regex-free: equivalent
 //! longest-first scan with the same boundary rules).
 //!
-//! Pipeline position: snippet expansion runs ONCE, AFTER the LLM
-//! cleanup (`post_process` in [`crate::transcribe`]). The cleanup
-//! normalizes the raw STT text (accents, casing, spacing), then this
-//! single pass rewrites triggers literally. Consequences:
-//! - Replacements bypass the LLM: the model can neither mangle an
-//!   inserted expansion nor resurrect a trigger inside one.
-//! - Triggers the cleanup normalizes into existence (e.g. spaced
-//!   letters the model joins) still expand, because matching sees
-//!   the cleaned text.
-//! - No recursive substitution by construction: one pass never
-//!   rescans its own insertions, and there is no second pass to
-//!   rescan the first one's replacements.
+//! Pipeline position: triggers are recognized on the ORIGINAL
+//! transcription, BEFORE the LLM cleanup (`finalize_transcript` in
+//! [`crate::transcribe`]). Each matched span is swapped for a
+//! per-utterance placeholder whose saved replacement is kept outside
+//! the LLM request; after cleanup the placeholders are validated and
+//! restored verbatim, never re-matched. Consequences:
+//! - The LLM can neither rewrite a valid trigger (matching already
+//!   ran) nor modify a saved replacement (it never sees one).
+//! - No recursive substitution by construction: restored
+//!   replacements are spliced literally, and the deterministic
+//!   fallback path expands the original text exactly once.
+//! - A failed contract (missing, altered, duplicated, reordered, or
+//!   unexpected placeholders) discards the cleanup response and
+//!   falls back to the once-expanded original transcription.
 //!
 //! Matching is case- AND accent-insensitive on both sides, with one
 //! shared fold (`fold_char`/`norm_string`): `Ó`/`ó`/`O`/`o` all match,
@@ -186,20 +188,29 @@ fn compile_trigger(trigger: &str, replacement: &str) -> Option<Trigger> {
     })
 }
 
-/// Longest-first single pass. Matching runs in normalized space
-/// (case/accent-insensitive); replacements splice the ORIGINAL text
-/// spans so output keeps its own casing. Inserted replacements are
-/// never rescanned, within or across calls: run this once per
-/// transcript (after cleanup) and self-containing replacements
-/// (`go` → `go now`) or replacements naming other triggers expand
-/// exactly once. Returns the expanded text.
-pub fn expand_snippets(text: &str, snippets: &[(String, String)]) -> String {
+/// One recognized trigger occurrence: byte span in the original
+/// text plus the saved replacement for that span.
+pub struct SnippetMatch {
+    /// Byte offset where the matched span starts.
+    pub start: usize,
+    /// Byte offset where it ends (exclusive), trailing combining
+    /// marks attached to its last base char included.
+    pub end: usize,
+    /// Literal replacement text for the span.
+    pub replacement: String,
+}
+
+/// Longest-first scan over the normalized view. Matching runs in
+/// normalized space (case/accent-insensitive); each hit records the
+/// ORIGINAL byte span so output keeps its own casing. Returns
+/// non-overlapping matches left to right.
+pub fn find_snippet_matches(text: &str, snippets: &[(String, String)]) -> Vec<SnippetMatch> {
     let mut triggers: Vec<Trigger> = snippets
         .iter()
         .filter_map(|(t, r)| compile_trigger(t, r))
         .collect();
     if triggers.is_empty() {
-        return text.to_string();
+        return Vec::new();
     }
     // Longest-first so "investor ask" wins over "ask".
     triggers.sort_by_key(|trigger| std::cmp::Reverse(trigger.pattern.len()));
@@ -216,27 +227,19 @@ pub fn expand_snippets(text: &str, snippets: &[(String, String)]) -> String {
         back.push(i);
     }
     if norm.is_empty() {
-        return text.to_string();
+        return Vec::new();
     }
-    let mut out = String::with_capacity(text.len());
+    let byte_of: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
+    let mut out = Vec::new();
     let mut ni = 0;
-    // Original-char cursor: everything before it is emitted.
-    let mut oc = if back[0] > 0 {
-        for c in chars.iter().take(back[0]) {
-            out.push(*c);
-        }
-        back[0]
-    } else {
-        0
-    };
     while ni < norm.len() {
         // Boundary before: start or non-word char (normalized side,
         // so decomposed accents don't split words).
         let at_boundary = ni == 0 || !is_word_char(norm[ni - 1]);
-        let mut hit: Option<&Trigger> = None;
+        let mut hit: Option<usize> = None;
         let mut hit_len = 0;
         if at_boundary {
-            for tr in &triggers {
+            for (idx, tr) in triggers.iter().enumerate() {
                 let n = tr.pattern.len();
                 if ni + n > norm.len() {
                     continue;
@@ -246,35 +249,51 @@ pub fn expand_snippets(text: &str, snippets: &[(String, String)]) -> String {
                 }
                 // Boundary after: end or non-word char.
                 if ni + n == norm.len() || !is_word_char(norm[ni + n]) {
-                    hit = Some(tr);
+                    hit = Some(idx);
                     hit_len = n;
                     break; // longest-first: first hit wins
                 }
             }
         }
-        if let Some(tr) = hit {
-            out.push_str(&tr.replacement);
-            // Skip the original span, swallowing trailing combining
-            // marks attached to its last base char.
-            let mut end = back[ni + hit_len - 1] + 1;
-            while end < chars.len() && is_combining(chars[end]) {
-                end += 1;
+        if let Some(idx) = hit {
+            // Byte span of the original text, swallowing trailing
+            // combining marks attached to its last base char.
+            let mut end_char = back[ni + hit_len - 1] + 1;
+            while end_char < chars.len() && is_combining(chars[end_char]) {
+                end_char += 1;
             }
-            oc = end;
+            out.push(SnippetMatch {
+                start: byte_of[back[ni]],
+                end: byte_of.get(end_char).copied().unwrap_or(text.len()),
+                replacement: triggers[idx].replacement.clone(),
+            });
             ni += hit_len;
         } else {
-            let next_oc = if ni + 1 < back.len() {
-                back[ni + 1]
-            } else {
-                chars.len()
-            };
-            for c in chars.iter().take(next_oc).skip(oc) {
-                out.push(*c);
-            }
-            oc = next_oc;
             ni += 1;
         }
     }
+    out
+}
+
+/// Longest-first single pass. Matching runs in normalized space
+/// (case/accent-insensitive); replacements splice the ORIGINAL text
+/// spans so output keeps its own casing. Inserted replacements are
+/// never rescanned: self-containing replacements (`go` → `go now`)
+/// or replacements naming other triggers expand exactly once.
+/// Returns the expanded text.
+pub fn expand_snippets(text: &str, snippets: &[(String, String)]) -> String {
+    let matches = find_snippet_matches(text, snippets);
+    if matches.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for m in &matches {
+        out.push_str(&text[cursor..m.start]);
+        out.push_str(&m.replacement);
+        cursor = m.end;
+    }
+    out.push_str(&text[cursor..]);
     out
 }
 

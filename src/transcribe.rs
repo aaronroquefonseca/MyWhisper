@@ -3150,30 +3150,47 @@ fn post_process(
     lm: &crate::settings::LanguageModelSettings,
     words: &[String],
 ) -> String {
+    cleanup_once(raw, lm, words, None).unwrap_or_else(|| raw.to_string())
+}
+
+/// One successful cleanup run, or `None` when cleanup is disabled,
+/// has no enabled options, or the whole chain fails. `extra_system`
+/// appends a section to the system prompt (used for the snippet
+/// placeholder contract); `None` sends the plain cleanup prompt.
+fn cleanup_once(
+    text: &str,
+    lm: &crate::settings::LanguageModelSettings,
+    words: &[String],
+    extra_system: Option<&str>,
+) -> Option<String> {
     if !lm.cleanup_enabled {
-        return raw.to_string();
+        return None;
     }
     let chain = lm.chain();
     if chain.is_empty() {
         eprintln!("[llm] cleanup on but no enabled options; passthrough");
-        return raw.to_string();
+        return None;
     }
-    let system = match dictionary_suffix(words) {
+    let mut system = match dictionary_suffix(words) {
         Some(suffix) => format!("{}\n\n{suffix}", effective_prompt(&lm.cleanup_prompt)),
         None => effective_prompt(&lm.cleanup_prompt).to_string(),
     };
+    if let Some(extra) = extra_system {
+        system.push_str("\n\n");
+        system.push_str(extra);
+    }
     for entry in chain {
-        match llm_cleanup(entry, &system, raw) {
-            Ok(text) if !text.trim().is_empty() => {
+        match llm_cleanup(entry, &system, text) {
+            Ok(cleaned) if !cleaned.trim().is_empty() => {
                 eprintln!("[llm] cleaned via {}", entry.name);
-                return text.trim().to_string();
+                return Some(cleaned.trim().to_string());
             }
             Ok(_) => eprintln!("[llm] {} returned empty; trying next", entry.name),
             Err(e) => eprintln!("[llm] {} failed ({e}); trying next", entry.name),
         }
     }
     eprintln!("[llm] chain exhausted; keeping raw");
-    raw.to_string()
+    None
 }
 
 /// One cleanup call against a configured entry. Local kind has no
@@ -3359,30 +3376,157 @@ fn http_post_json(
     res.text().map_err(|e| format!("llm body: {e}"))
 }
 
-/// Final transcript for one utterance: LLM cleanup first, snippet
-/// expansion last, in a single pass. Ordering matters:
-/// - The cleanup normalizes the raw STT text (accents, casing,
-///   spacing), so triggers match the cleaned wording — including
-///   triggers the cleanup itself normalizes into existence.
-/// - Replacements bypass the LLM entirely: the model can neither
-///   mangle an inserted expansion nor plant a new trigger inside one.
-/// - One pass never rescans its insertions, so self-containing
-///   replacements (`go` → `go now`) and replacements naming other
-///   triggers expand exactly once. A pre-cleanup pass plus a
-///   post-cleanup pass would rescan the first pass's replacements
-///   (`go` → `go now now`) and is deliberately not used.
+/// Final transcript for one utterance: recognize snippet triggers
+/// on the ORIGINAL transcription, protect them through cleanup,
+/// restore them literally. The contract, enforced in code (not just
+/// prompt text):
+/// - Matching runs before cleanup, so the LLM can never rewrite a
+///   valid trigger into something unrecognizable.
+/// - Matched spans travel through cleanup as per-utterance
+///   placeholders; the saved replacements never enter the LLM
+///   request, so the model cannot modify them.
+/// - The cleanup response must contain every placeholder exactly
+///   once, in order: missing, altered, duplicated, reordered, or
+///   unexpected placeholders reject the response.
+/// - Restoration splices replacements verbatim without re-matching,
+///   so self-containing (`go` → `go now`) and cross-snippet
+///   replacements stay non-recursive.
+/// - Any validation failure (or disabled/failed/unavailable
+///   cleanup) falls back to the deterministic once-expansion of the
+///   original transcription.
 fn finalize_transcript(
     raw: &str,
     lm: &crate::settings::LanguageModelSettings,
     words: &[String],
     snips: &[(String, String)],
 ) -> String {
-    let cleaned = post_process(raw, lm, words);
-    let text = crate::textnorm::expand_snippets(&cleaned, snips);
-    if text != cleaned {
-        eprintln!("[stt] snippets expanded");
+    let matches = crate::textnorm::find_snippet_matches(raw, snips);
+    if matches.is_empty() {
+        return post_process(raw, lm, words);
     }
-    text
+    eprintln!("[stt] snippets recognized: {}", matches.len());
+    let token = snippet_token();
+    let mut protected = String::with_capacity(raw.len());
+    let mut replacements = Vec::with_capacity(matches.len());
+    let mut cursor = 0;
+    for (idx, m) in matches.iter().enumerate() {
+        protected.push_str(&raw[cursor..m.start]);
+        protected.push_str(&snippet_placeholder(&token, idx));
+        cursor = m.end;
+        replacements.push(m.replacement.clone());
+    }
+    protected.push_str(&raw[cursor..]);
+    match cleanup_once(&protected, lm, words, Some(&placeholder_instruction())) {
+        Some(cleaned) => match restore_protected(&cleaned, &token, &replacements) {
+            Some(final_) => {
+                eprintln!("[stt] snippets restored literally");
+                final_
+            }
+            None => {
+                eprintln!("[stt] placeholder contract broken; deterministic fallback");
+                crate::textnorm::expand_snippets(raw, snips)
+            }
+        },
+        // Disabled, failed, or unavailable cleanup: same fallback.
+        None => crate::textnorm::expand_snippets(raw, snips),
+    }
+}
+
+/// Placeholder vocabulary: ASCII word characters only, so cleanup
+/// models have no reason to reformat them, and shaped so user text
+/// cannot collide: a 64-bit random token per utterance plus a
+/// fixed marker. `scan_placeholders` still treats any well-formed
+/// lookalike as a placeholder (and therefore unexpected), so even a
+/// deliberately typed imitation fails validation safely.
+const SNIPPET_TAG_PREFIX: &str = "__MSG_SNIPPET_";
+const SNIPPET_TAG_SUFFIX: &str = "__";
+
+fn snippet_placeholder(token: &str, index: usize) -> String {
+    format!("{SNIPPET_TAG_PREFIX}{token}_{index}{SNIPPET_TAG_SUFFIX}")
+}
+
+/// Per-utterance random token (hex). An RNG failure falls back to a
+/// process-scoped counter: still unique within the run.
+fn snippet_token() -> String {
+    let mut bytes = [0u8; 8];
+    if getrandom::fill(&mut bytes).is_ok() {
+        return bytes.iter().map(|b| format!("{b:02x}")).collect();
+    }
+    static FALLBACK: AtomicU64 = AtomicU64::new(1);
+    let n = FALLBACK.fetch_add(1, Ordering::Relaxed);
+    format!("{:016x}", n.wrapping_add(std::process::id() as u64))
+}
+
+/// Extra system-prompt section while placeholders are active.
+/// Instructions alone are not trusted: `restore_protected` enforces
+/// the contract on the response.
+fn placeholder_instruction() -> String {
+    format!(
+        "Protected snippet tokens look like {SNIPPET_TAG_PREFIX}<hex>_<n>{SNIPPET_TAG_SUFFIX} \
+         (letters, digits and underscores only). Copy each one into the cleaned transcript \
+         verbatim, exactly once, in its original position and order. Never translate, reformat, \
+         split, merge, remove, or duplicate them, and never invent new ones."
+    )
+}
+
+/// Every well-formed placeholder occurrence: (byte start, byte end,
+/// full token text). Malformed lookalikes are plain text (which then
+/// fails validation as a missing placeholder); well-formed but
+/// foreign tokens are returned and rejected as unexpected.
+fn scan_placeholders(text: &str) -> Vec<(usize, usize, String)> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if text[i..].starts_with(SNIPPET_TAG_PREFIX) {
+            let mut j = i + SNIPPET_TAG_PREFIX.len();
+            while j < bytes.len() && bytes[j].is_ascii_hexdigit() {
+                j += 1;
+            }
+            if j > i + SNIPPET_TAG_PREFIX.len() && j < bytes.len() && bytes[j] == b'_' {
+                let mut k = j + 1;
+                let digits = k;
+                while k < bytes.len() && bytes[k].is_ascii_digit() {
+                    k += 1;
+                }
+                if k > digits && text[k..].starts_with(SNIPPET_TAG_SUFFIX) {
+                    let end = k + SNIPPET_TAG_SUFFIX.len();
+                    out.push((i, end, text[i..end].to_string()));
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        // Advance one char to stay on a byte boundary.
+        i += text[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+    }
+    out
+}
+
+/// Validate the cleanup response against the expected placeholders
+/// and splice the saved replacements verbatim. `None` on any
+/// contract breach: wrong count, wrong token, wrong order (covers
+/// missing, altered, duplicated, reordered, and unexpected
+/// placeholders). Never runs snippet matching on the result.
+fn restore_protected(cleaned: &str, token: &str, replacements: &[String]) -> Option<String> {
+    let found = scan_placeholders(cleaned);
+    if found.len() != replacements.len() {
+        return None;
+    }
+    for (index, (_, _, text)) in found.iter().enumerate() {
+        if *text != snippet_placeholder(token, index) {
+            return None;
+        }
+    }
+    let mut out = String::with_capacity(cleaned.len());
+    let mut cursor = 0;
+    for ((start, end, _), rep) in found.iter().zip(replacements.iter()) {
+        out.push_str(&cleaned[cursor..*start]);
+        out.push_str(rep);
+        cursor = *end;
+    }
+    out.push_str(&cleaned[cursor..]);
+    Some(out)
 }
 
 /// Store in history (raw + final text, never audio) and paste the
@@ -3407,9 +3551,10 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
     };
     let settings = store.load_settings();
     // Snippets keyed per trigger (comma-separated aliases flatten to
-    // one entry each). Expansion happens once inside
-    // finalize_transcript, AFTER cleanup. Raw stays pure for the raw
-    // view; final carries literal replacements past the LLM stage.
+    // one entry each). Recognition runs inside finalize_transcript
+    // BEFORE cleanup, with placeholders guarding the matched spans.
+    // Raw stays pure for the raw view and history; final carries
+    // literal replacements.
     let snips: Vec<(String, String)> = settings
         .dictionary
         .snippets
@@ -3899,9 +4044,9 @@ mod tests {
                 "Regards, Oscar"
             );
         }
-        // Cleanup-normalized trigger: the cleanup repairs the raw
-        // wording into a trigger ("O M W" -> "OMW"), and expansion
-        // sees that cleaned text. The cleaned form expands literally.
+        // Normalized trigger forms still match when the
+        // transcription itself holds them (matching runs on the raw
+        // text before cleanup).
         let snips = vec![("omw".to_string(), "On my way!".to_string())];
         assert_eq!(
             crate::textnorm::expand_snippets("OMW", &snips),
@@ -3911,6 +4056,400 @@ mod tests {
         assert_eq!(
             finalize_transcript("plain talk", &off, &words, &[]),
             "plain talk"
+        );
+    }
+
+    /// Synthetic loopback cleanup provider: a minimal HTTP server
+    /// speaking just enough of Ollama's `/api/chat` for `llm_cleanup`
+    /// (one POST per connection, one canned JSON reply). Disposable:
+    /// loopback only, ephemeral port, bounded connections and time,
+    /// no credentials, no user data.
+    struct FakeCleanup {
+        base_url: String,
+        bodies: Arc<Mutex<Vec<String>>>,
+        transcripts: Arc<Mutex<Vec<String>>>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl FakeCleanup {
+        fn serve<F>(conns: usize, respond: F) -> Self
+        where
+            F: Fn(&str) -> String + Send + Sync + 'static,
+        {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback bind");
+            let port = listener.local_addr().expect("port").port();
+            listener.set_nonblocking(true).expect("nonblocking");
+            let respond = Arc::new(respond);
+            let respond: Arc<dyn Fn(&str) -> String + Send + Sync> = respond;
+            let bodies = Arc::new(Mutex::new(Vec::new()));
+            let transcripts = Arc::new(Mutex::new(Vec::new()));
+            let worker_bodies = bodies.clone();
+            let worker_transcripts = transcripts.clone();
+            let handle = std::thread::spawn(move || {
+                let start = Instant::now();
+                let mut served = 0;
+                while served < conns && start.elapsed() < Duration::from_secs(30) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            Self::answer(stream, &worker_bodies, &worker_transcripts, &respond);
+                            served += 1;
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(5))
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                base_url: format!("http://127.0.0.1:{port}"),
+                bodies,
+                transcripts,
+                handle: Some(handle),
+            }
+        }
+
+        fn answer(
+            mut stream: std::net::TcpStream,
+            bodies: &Arc<Mutex<Vec<String>>>,
+            transcripts: &Arc<Mutex<Vec<String>>>,
+            respond: &Arc<dyn Fn(&str) -> String + Send + Sync>,
+        ) {
+            use std::io::{Read, Write};
+            stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+            while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut tmp) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                }
+            }
+            let head = String::from_utf8_lossy(&buf).into_owned();
+            let head_end = head.find("\r\n\r\n").map(|i| i + 4).unwrap_or(head.len());
+            let len = head[..head_end]
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.trim()
+                        .eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or(0);
+            buf.drain(..head_end.min(buf.len()));
+            while buf.len() < len {
+                match stream.read(&mut tmp) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                }
+            }
+            let body = String::from_utf8_lossy(&buf).into_owned();
+            bodies.lock().map(|mut b| b.push(body.clone())).ok();
+            let mut transcript = String::new();
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body)
+                && let Some(messages) = parsed.get("messages").and_then(|m| m.as_array())
+            {
+                for message in messages {
+                    let is_user = message.get("role").and_then(|r| r.as_str()) == Some("user");
+                    if !is_user {
+                        continue;
+                    }
+                    if let Some(content) = message.get("content").and_then(|c| c.as_str())
+                        && let Some(inner) = content
+                            .strip_prefix("<transcript>")
+                            .and_then(|t| t.strip_suffix("</transcript>"))
+                    {
+                        transcript = inner.to_string();
+                    }
+                    break;
+                }
+            }
+            transcripts
+                .lock()
+                .map(|mut t| t.push(transcript.clone()))
+                .ok();
+            let reply =
+                serde_json::json!({"message": {"content": respond(&transcript)}}).to_string();
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .as_bytes(),
+            );
+        }
+
+        fn settings(&self) -> crate::settings::LanguageModelSettings {
+            use crate::settings::{CloudLlm, LanguageModelSettings, LlmEntry, LlmKind};
+            LanguageModelSettings {
+                cleanup_enabled: true,
+                entries: vec![LlmEntry {
+                    id: "fake".to_string(),
+                    name: "fake".to_string(),
+                    kind: LlmKind::Ollama,
+                    enabled: true,
+                    url: self.base_url.clone(),
+                    model: "fake".to_string(),
+                    provider: CloudLlm::OpenAI,
+                    api_key: String::new(),
+                    keep_alive: String::new(),
+                    num_ctx: None,
+                    thinking: None,
+                }],
+                ..Default::default()
+            }
+        }
+
+        fn bodies(&self) -> Vec<String> {
+            self.bodies.lock().map(|b| b.clone()).unwrap_or_default()
+        }
+
+        fn transcripts(&self) -> Vec<String> {
+            self.transcripts
+                .lock()
+                .map(|t| t.clone())
+                .unwrap_or_default()
+        }
+    }
+
+    impl Drop for FakeCleanup {
+        fn drop(&mut self) {
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    #[test]
+    fn pipeline_cleanup_never_sees_triggers_or_replacements() {
+        // The model rewrites surrounding text; placeholders ride
+        // through untouched and restore literally.
+        let server = FakeCleanup::serve(1, |t| t.replace("call me", "ring me"));
+        let lm = server.settings();
+        let snips = vec![("brb".to_string(), "be right back".to_string())];
+        let words: Vec<String> = Vec::new();
+        assert_eq!(
+            finalize_transcript("brb, call me", &lm, &words, &snips),
+            "be right back, ring me"
+        );
+        let bodies = server.bodies();
+        let transcripts = server.transcripts();
+        assert_eq!(transcripts.len(), 1);
+        assert!(transcripts[0].contains("__MSG_SNIPPET_"));
+        assert!(!transcripts[0].contains("be right back"));
+        assert!(!transcripts[0].contains("brb"));
+        // The request also instructs the model to preserve tokens.
+        assert!(bodies[0].contains("verbatim"));
+    }
+
+    #[test]
+    fn pipeline_success_path_restores_verbatim_without_rescanning() {
+        // Echo cleanup: replacements restore literally, never
+        // re-matched, so self-containing and cross-snippet pairs
+        // cannot recurse even with a live cleanup.
+        let server = FakeCleanup::serve(2, |t| t.to_string());
+        let lm = server.settings();
+        let words: Vec<String> = Vec::new();
+        let snips = vec![("go".to_string(), "go now".to_string())];
+        assert_eq!(finalize_transcript("go", &lm, &words, &snips), "go now");
+        let snips = vec![
+            ("signature".to_string(), "Regards, Oscar".to_string()),
+            ("Oscar".to_string(), "ANOTHER SNIPPET".to_string()),
+        ];
+        assert_eq!(
+            finalize_transcript("signature", &lm, &words, &snips),
+            "Regards, Oscar"
+        );
+    }
+
+    #[test]
+    fn pipeline_unavailable_cleanup_falls_back_deterministically() {
+        // Nothing listens on port 1: the chain fails without touching
+        // any real service, and the raw text expands once.
+        use crate::settings::{CloudLlm, LanguageModelSettings, LlmEntry, LlmKind};
+        let down = LanguageModelSettings {
+            cleanup_enabled: true,
+            entries: vec![LlmEntry {
+                id: "down".to_string(),
+                name: "down".to_string(),
+                kind: LlmKind::Ollama,
+                enabled: true,
+                url: "http://127.0.0.1:1".to_string(),
+                model: "m".to_string(),
+                provider: CloudLlm::OpenAI,
+                api_key: String::new(),
+                keep_alive: String::new(),
+                num_ctx: None,
+                thinking: None,
+            }],
+            ..Default::default()
+        };
+        let words: Vec<String> = Vec::new();
+        let snips = vec![("go".to_string(), "go now".to_string())];
+        assert_eq!(finalize_transcript("go", &down, &words, &snips), "go now");
+    }
+
+    #[test]
+    fn pipeline_rejects_missing_placeholder() {
+        let server = FakeCleanup::serve(1, |t| {
+            let mut s = t.to_string();
+            if let Some((start, end, _)) = scan_placeholders(&s).first() {
+                let (start, end) = (*start, *end);
+                s.replace_range(start..end, "");
+            }
+            s
+        });
+        let lm = server.settings();
+        let words: Vec<String> = Vec::new();
+        let snips = vec![("brb".to_string(), "be right back".to_string())];
+        assert_eq!(
+            finalize_transcript("brb, call me", &lm, &words, &snips),
+            "be right back, call me"
+        );
+    }
+
+    #[test]
+    fn pipeline_rejects_altered_placeholder() {
+        // Same shape, different token: the response is discarded.
+        let server = FakeCleanup::serve(1, |t| {
+            let mut s = t.to_string();
+            if let Some((_, _, text)) = scan_placeholders(&s).first() {
+                let mut bad = text.clone();
+                let hex_at = bad.find("__MSG_SNIPPET_").unwrap() + "__MSG_SNIPPET_".len();
+                let flip = if bad.as_bytes()[hex_at] == b'f' {
+                    "e"
+                } else {
+                    "f"
+                };
+                bad.replace_range(hex_at..hex_at + 1, flip);
+                s = s.replacen(text, &bad, 1);
+            }
+            s
+        });
+        let lm = server.settings();
+        let words: Vec<String> = Vec::new();
+        let snips = vec![("brb".to_string(), "be right back".to_string())];
+        assert_eq!(
+            finalize_transcript("brb, call me", &lm, &words, &snips),
+            "be right back, call me"
+        );
+    }
+
+    #[test]
+    fn pipeline_rejects_duplicated_placeholder() {
+        let server = FakeCleanup::serve(1, |t| {
+            if let Some((_, _, text)) = scan_placeholders(t).first() {
+                format!("{t} {text}")
+            } else {
+                t.to_string()
+            }
+        });
+        let lm = server.settings();
+        let words: Vec<String> = Vec::new();
+        let snips = vec![("brb".to_string(), "be right back".to_string())];
+        assert_eq!(
+            finalize_transcript("brb, call me", &lm, &words, &snips),
+            "be right back, call me"
+        );
+    }
+
+    #[test]
+    fn pipeline_rejects_reordered_placeholders() {
+        let server = FakeCleanup::serve(1, |t| {
+            let found = scan_placeholders(t);
+            if found.len() == 2 {
+                let s = t.replacen(&found[0].2, "__TMP_SWAP__", 1);
+                let s = s.replacen(&found[1].2, &found[0].2, 1);
+                s.replacen("__TMP_SWAP__", &found[1].2, 1)
+            } else {
+                t.to_string()
+            }
+        });
+        let lm = server.settings();
+        let words: Vec<String> = Vec::new();
+        let snips = vec![
+            ("brb".to_string(), "be right back".to_string()),
+            ("omw".to_string(), "on my way".to_string()),
+        ];
+        assert_eq!(
+            finalize_transcript("brb omw", &lm, &words, &snips),
+            "be right back on my way"
+        );
+    }
+
+    #[test]
+    fn pipeline_rejects_unexpected_placeholder() {
+        let server = FakeCleanup::serve(1, |t| format!("{t} __MSG_SNIPPET_deadbeef_99__"));
+        let lm = server.settings();
+        let words: Vec<String> = Vec::new();
+        let snips = vec![("brb".to_string(), "be right back".to_string())];
+        assert_eq!(
+            finalize_transcript("brb, call me", &lm, &words, &snips),
+            "be right back, call me"
+        );
+    }
+
+    #[test]
+    fn pipeline_user_text_resembling_placeholders_falls_back_safely() {
+        // The lookalike is not ours: validation fails, the fallback
+        // expands the trigger once and keeps the lookalike literal.
+        let server = FakeCleanup::serve(1, |t| t.to_string());
+        let lm = server.settings();
+        let words: Vec<String> = Vec::new();
+        let snips = vec![("brb".to_string(), "be right back".to_string())];
+        assert_eq!(
+            finalize_transcript(
+                "brb notes __MSG_SNIPPET_deadbeef_0__ end",
+                &lm,
+                &words,
+                &snips
+            ),
+            "be right back notes __MSG_SNIPPET_deadbeef_0__ end"
+        );
+    }
+
+    #[test]
+    fn pipeline_tokens_are_scoped_per_utterance() {
+        let server = FakeCleanup::serve(2, |t| t.to_string());
+        let lm = server.settings();
+        let words: Vec<String> = Vec::new();
+        let snips = vec![("go".to_string(), "go now".to_string())];
+        assert_eq!(finalize_transcript("go", &lm, &words, &snips), "go now");
+        assert_eq!(
+            finalize_transcript("go again", &lm, &words, &snips),
+            "go now again"
+        );
+        let transcripts = server.transcripts();
+        assert_eq!(transcripts.len(), 2);
+        let first = scan_placeholders(&transcripts[0]);
+        let second = scan_placeholders(&transcripts[1]);
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_ne!(first[0].2, second[0].2);
+    }
+
+    #[test]
+    fn pipeline_multiple_overlapping_longest_first() {
+        use crate::settings::LanguageModelSettings;
+        let off = LanguageModelSettings {
+            cleanup_enabled: false,
+            ..Default::default()
+        };
+        let words: Vec<String> = Vec::new();
+        let snips = vec![
+            ("ask".to_string(), "ASKED".to_string()),
+            ("investor ask".to_string(), "INVESTOR ASKED".to_string()),
+            ("york".to_string(), "Y".to_string()),
+            ("new york".to_string(), "NY".to_string()),
+        ];
+        assert_eq!(
+            finalize_transcript("ask the investor ask now", &off, &words, &snips),
+            "ASKED the INVESTOR ASKED now"
+        );
+        assert_eq!(finalize_transcript("new york", &off, &words, &snips), "NY");
+        assert_eq!(
+            finalize_transcript("ask ask", &off, &words, &snips),
+            "ASKED ASKED"
         );
     }
 
