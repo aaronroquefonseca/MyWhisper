@@ -1,14 +1,14 @@
 {
   "title": "Packaging, installation and Nix prerequisites",
   "base": "fix/audit-desktop-ui",
-  "code_commit": "09af73966ddf549b836fba0080df00eee3f89ccb",
+  "code_commit": "3cc92d950476a611a29182a908ba28e9fc08027e",
   "passed": [
     "fmt",
     "strict Clippy all targets",
     "83 Rust tests, zero failures, five unchanged ignores",
     "release binary",
     "both native UI configurations plus both focused logo/toast configurations",
-    "nine release and five upgrade regressions",
+    "ten release and five upgrade regressions",
     "two real CLI regression groups covering four informational aliases",
     "authenticated candidate archive/notice inventory and artifact validation",
     "clean Arch userspace package install, pkgrel upgrade, ELF/desktop/service definitions and package integrity",
@@ -32,7 +32,8 @@
     "packaging/nixos/package-smoke.nix": "497b401b8e6df30e0272f91b9adee34e789743685c162dfd5f5839784d7a689c",
     "packaging/nixos/runtime-loader-test.nix": "2636da2681dc36dce56d8a57cd79dd01a0943ac9e27df7f28b8bd29d30abbe18",
     "packaging/release.py": "6d754567b4d458d57443ae900fc4ec2928a7f1266533a735e83a8c8bc0409206",
-    ".github/workflows/release.yml": "f6da854e940002eb16ee3ca415e26e653bf7a6385ac90144f5cb6d907f3fb7a5"
+    ".github/workflows/release.yml": "11635548d350e88999d0b16e36fff3b6d13bf05c43c7a1e57a3bec055b29cce9",
+    "packaging/test-release.py": "b13c6f5c9d085c53b046fc4d9638bf6b6fe2b1d6dbece67c5aff48de098f6c8d"
   },
   "evidence_sha256": {
     "arch.log": "65e56079044334817f87a2e8de5397a5cd108208c4226617e798979b7c67b40a",
@@ -85,7 +86,21 @@
     "pr7-fixture/desktop-gui.log": "fa27f2ef7cd9d2ea63e54c97fa62d6199d86fdede26e1d0798cd9e07b051b248",
     "pr7-fixture/desktop-service.log": "72fbe5766943ae38fef44a66130d5e9ecb9dac8306267cde55a6f3c1c0cd83d2",
     "pr7-fixture/nix-desktop.log": "635e961f19713a9831519e5b8a478f2af8dcfd0836a8350f906e817481741170",
-    "pr7-fixture/nix-loader.log": "f2dc5cf735965668e64d5835b3537827e7b45b0c38459f682e2b49d13701dbf7"
+    "pr7-fixture/nix-loader.log": "f2dc5cf735965668e64d5835b3537827e7b45b0c38459f682e2b49d13701dbf7",
+    "pr7-git-trust/hosted-before.log": "3ee51aa204cd82ee63a78783d6232a88305d54c6192f04b6c7d181ae8f7c6bc2",
+    "pr7-git-trust/hosted-before.json": "24d3815cc1b308fdc8e0aab046acecb767422d77217d147e3d0fcee48b56407e",
+    "pr7-git-trust/candidate-before.log": "d62864512f0010f2e720fa1106580d536eb9cf59d1bb4d9e3eecc31deca07702",
+    "pr7-git-trust/fmt.log": "c9c87d4946320e68b85a9c1bdb22b6944d73b219a4e24202346e4cedc900704c",
+    "pr7-git-trust/clippy.log": "30260491106cff28a5313def30c28f4f9757c3e97ee1dd92fcbfd7dc7143ebed",
+    "pr7-git-trust/rust-compile.log": "2e1fb4916947fd7fca28a39b6e1747db1c8bc66cea08e2244b5d84290886ef5b",
+    "pr7-git-trust/rust-tests.log": "692b2942627717031dde9460b91505c69c02cbc85ea66fa61f0ff14da2558e55",
+    "pr7-git-trust/release.log": "b9201648b980327b57065c95dfb5f7f00d6be6e68ed7f636fdd90ca3ec50fb7d",
+    "pr7-git-trust/upgrade-regressions.log": "621b019646f6b51795d48920db8a4ea1de6e818b663bc06ee56bbb2f3d52073d",
+    "pr7-git-trust/release-regressions.log": "ceed78f30b83c487c6b86f3f6e60ab91dcebf0625995df082368e7cb75bfbdb3",
+    "pr7-git-trust/runner-lifecycle.log": "2461ce93f9738113ae42adb68ab44bf8b753d2c8fd4977355d89e2b4dd8cc9a2",
+    "pr7-git-trust/cli.log": "54e54cadfb7d24030c9537799d3fe77bf1795214a224c35c71da244f306e4cae",
+    "pr7-git-trust/native-ui.log": "e568c8af04673b81478b4fa1e186476e0663e626c23e363a4b8e4d54d690d11d",
+    "pr7-git-trust/COMMANDS.md": "5d61bb66b5e633f4818c881bae18b4ead773a6272368f8433ecbf4b4a003d071"
   },
   "release_binary_sha256": "b8eb1972474b2186d4032670b0125642261a8de0f3fa21bec0102af56f3034b3",
   "tested_source_commit_before_stack_documentation": "b7d4b4a171054831bcfd9ffa0be21e51a1208c4c",
@@ -123,7 +138,19 @@
     "installed_wrapper_has_no_synthetic_key": true,
     "rust_source_unchanged_from_reviewed_head_and_matches_nix_source": true,
     "commands": "evidence/pr7-fixture/COMMANDS.md",
-    "hosted_ci": "pending push after all local checks passed",
+    "hosted_ci": {
+      "first_rerun": "https://github.com/aaronroquefonseca/MyWhisper/actions/runs/38272434319",
+      "first_rerun_result": "Encrypted-store fixture, regression/security/release/CLI/native UI stages pass; later candidate provenance fails on container checkout ownership. Full evidence under pr7-git-trust.",
+      "final_head_results": "See PR #7 description/checks for final tested SHA, immutable passing workflow URL and candidate evidence."
+    },
     "prior_artifact_provenance": "Existing Arch/artifact records above remain historical. This correction changes only check configuration and evidence; all Rust, package install and runtime sources are byte-identical to the reviewed head."
+  },
+  "container_git_provenance": {
+    "fixed_source": "3cc92d950476a611a29182a908ba28e9fc08027e",
+    "commands": "evidence/pr7-git-trust/COMMANDS.md",
+    "trust_scope": "Actual GITHUB_WORKSPACE in ephemeral container HOME; never wildcard safe.directory",
+    "regression": "Actual Git ownership failure, candidate creation blocked; explicit fixture workspace trust preserves exact source SHA/clean state; second repository remains untrusted; license hold unchanged",
+    "local_validation": "83 Rust tests, zero failures, five unchanged ignores; formatting, strict all-target Clippy, release build, ten release/five upgrade/five lifecycle regressions, keyring-free CLI, both broad/focused UI configurations all pass",
+    "nix_provenance": "Fresh fixture-tested package/check source unchanged from 09af73966ddf549b836fba0080df00eee3f89ccb; no Nix product/check source changed in this follow-up."
   }
 }

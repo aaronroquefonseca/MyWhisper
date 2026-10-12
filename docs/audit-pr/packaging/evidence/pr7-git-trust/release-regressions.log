@@ -1,0 +1,11 @@
+Command: ['python3', 'scripts/disposable.py', 'MYWHISPER_AUDIT_ROOT', 'verification', 'env', '-u', 'DISPLAY', '-u', 'SSH_AUTH_SOCK', 'CARGO_HOME=/home/aaronroque/.cargo', 'RUSTUP_HOME=/home/aaronroque/.rustup', 'python3', 'packaging/test-release.py']
+.fatal: detected dubious ownership in repository at '/tmp/mywhisper-verification-audit.4zfrp6u8/tmp/mywhisper-release-regression-754kxc6y'
+To add an exception for this directory, call:
+
+	git config --global --add safe.directory /tmp/mywhisper-verification-audit.4zfrp6u8/tmp/mywhisper-release-regression-754kxc6y
+.........
+----------------------------------------------------------------------
+Ran 10 tests in 0.071s
+
+OK
+Exit: 0

@@ -1,0 +1,30 @@
+checks	Candidate artifact, notices and integrity	﻿2026-10-12T16:05:59.6468035Z ##[group]Run if [[ "$PUBLISH_REQUESTED" == true ]]; then
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6468522Z ^[[36;1mif [[ "$PUBLISH_REQUESTED" == true ]]; then^[[0m
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6468969Z ^[[36;1m  python3 packaging/release.py "$RELEASE_TAG" --require-license^[[0m
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6469385Z ^[[36;1mfi^[[0m
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6469744Z ^[[36;1mpython3 packaging/release.py "$RELEASE_TAG" --output .release-candidate^[[0m
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6470577Z ^[[36;1mpython3 packaging/validate-artifact.py ".release-candidate/mywhisper-${RELEASE_TAG}-x86_64-unknown-linux-gnu.tar.gz" "${RELEASE_TAG#v}"^[[0m
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6471776Z ^[[36;1m(cd .release-candidate && sha256sum --check SHA256SUMS)^[[0m
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6472158Z ^[[36;1mpython3 - <<'PY'^[[0m
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6472409Z ^[[36;1mimport json, os^[[0m
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6472659Z ^[[36;1mfrom pathlib import Path^[[0m
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6473088Z ^[[36;1mmetadata = json.loads(Path('.release-candidate/release.json').read_text())^[[0m
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6473604Z ^[[36;1mwith open(os.environ['GITHUB_OUTPUT'], 'a') as output:^[[0m
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6474156Z ^[[36;1m    output.write(f"tag={metadata['tag']}\nsource-sha={metadata['source_sha']}\n")^[[0m
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6489321Z ^[[36;1mPY^[[0m
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6490158Z ^[[36;1mcp security-audit.json .release-candidate/security-audit.json^[[0m
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6490975Z shell: bash --noprofile --norc -e -o pipefail {0}
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6491871Z env:
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6492242Z   CARGO_HOME: /github/home/.cargo
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6492680Z   CARGO_INCREMENTAL: 0
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6493031Z   CARGO_TERM_COLOR: always
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6493504Z   CACHE_ON_FAILURE: false
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6493850Z   RELEASE_TAG: v0.9.3
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6494198Z   PUBLISH_REQUESTED: false
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.6494593Z ##[endgroup]
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.8305091Z fatal: detected dubious ownership in repository at '/__w/MyWhisper/MyWhisper'
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.8306592Z To add an exception for this directory, call:
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.8307755Z 
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.8308680Z 	git config --global --add safe.directory /__w/MyWhisper/MyWhisper
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.8310209Z Release gate failed: Command '['git', 'rev-parse', 'HEAD']' returned non-zero exit status 128.
+checks	Candidate artifact, notices and integrity	2026-10-12T16:05:59.8524817Z ##[error]Process completed with exit code 1.
