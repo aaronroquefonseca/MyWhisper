@@ -1,0 +1,63 @@
+name: prepare release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: New semantic version without v (for example 0.9.5)
+        type: string
+        required: true
+      previous_tag:
+        description: Previous release tag; empty selects the latest published stable release
+        type: string
+        required: false
+      preview_only:
+        description: Upload a reviewable patch and notes without creating a PR
+        type: boolean
+        default: false
+      refresh_notes:
+        description: Refresh the current unpublished version after more changes merged
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PR_TOKEN || github.token }}
+      - name: Commit identity in the disposable runner
+        run: |
+          git config --local user.name 'github-actions[bot]'
+          git config --local user.email '41898282+github-actions[bot]@users.noreply.github.com'
+      - name: Prepare the version and PR-linked changelog
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PR_TOKEN || github.token }}
+          RELEASE_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          PREVIOUS_TAG: ${{ inputs.previous_tag }}
+          PREVIEW_ONLY: ${{ inputs.preview_only }}
+          REFRESH_NOTES: ${{ inputs.refresh_notes }}
+        run: |
+          arguments=(--create-pr)
+          if [[ "$PREVIEW_ONLY" == true ]]; then arguments=(--output .release-preview); fi
+          if [[ "$REFRESH_NOTES" == true ]]; then arguments+=(--refresh); fi
+          python3 scripts/prepare-release.py "$RELEASE_VERSION" \
+            --repo "$RELEASE_REPO" --previous-tag "$PREVIOUS_TAG" "${arguments[@]}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: inputs.preview_only
+        with:
+          name: release-preview
+          path: .release-preview
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7

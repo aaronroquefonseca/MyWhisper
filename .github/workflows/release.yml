@@ -35,7 +35,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm
           pacman -S --noconfirm gtk4 libadwaita gtk4-layer-shell alsa-lib \
-            pkgconf openssl curl ca-certificates github-cli git python \
+            pkgconf openssl curl ca-certificates github-cli git python util-linux shellcheck systemd \
             xorg-server-xvfb xorg-xauth dbus gnome-keyring mesa bubblewrap
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -54,13 +54,18 @@ jobs:
       - name: Version, tag and notes policy
         env:
           REQUESTED_TAG: ${{ inputs.tag || github.ref_name }}
+          BASE_SOURCE: ${{ github.event.pull_request.base.sha || github.event.before }}
         shell: bash
         run: |
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch || "$GITHUB_REF" == refs/tags/* ]]; then
             python3 packaging/release.py "$REQUESTED_TAG" --verify-tag
           else
             REQUESTED_TAG=$(python3 -c 'import tomllib; print("v"+tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')
-            python3 packaging/release.py "$REQUESTED_TAG"
+            if [[ -n "$BASE_SOURCE" && "$BASE_SOURCE" != 0000000000000000000000000000000000000000 ]]; then
+              python3 packaging/release.py "$REQUESTED_TAG" --compare-version-to "$BASE_SOURCE"
+            else
+              python3 packaging/release.py "$REQUESTED_TAG"
+            fi
           fi
           printf 'RELEASE_TAG=%s\n' "$REQUESTED_TAG" >> "$GITHUB_ENV"
       - name: Formatting, strict lint and regression coverage
@@ -78,6 +83,9 @@ jobs:
           python3 packaging/test-upgrade.py
           python3 packaging/test-release.py
           python3 scripts/test-disposable.py
+          python3 scripts/test-iteration.py
+          shellcheck scripts/pr-test.sh
+          python3 scripts/test-pr-test.py
       - name: Current dependency security audit
         run: |
           cargo install --locked cargo-audit --version 0.22.2
@@ -151,4 +159,4 @@ jobs:
           PY
           arguments=(--verify-tag --title "$RELEASE_TAG" --notes-file notes.md)
           if [[ "$RELEASE_TAG" == *-* ]]; then arguments+=(--prerelease); fi
-          gh release create "$RELEASE_TAG" "mywhisper-${RELEASE_TAG}-x86_64-unknown-linux-gnu.tar.gz" SHA256SUMS security-audit.json release.json "${arguments[@]}"
+          gh release create "$RELEASE_TAG" "mywhisper-${RELEASE_TAG}-x86_64-unknown-linux-gnu.tar.gz" PKGBUILD SHA256SUMS security-audit.json release.json "${arguments[@]}"

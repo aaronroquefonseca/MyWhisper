@@ -41,12 +41,79 @@ def preflight(root, tag):
     if "version = manifest.package.version;" not in flake:
         raise ValueError("Nix package must derive its version from Cargo.toml")
     changelog = (root / "CHANGELOG.md").read_text()
-    sections = re.findall(r"^## ([^\n]+)\n(.*?)(?=^## |\Z)", changelog, re.MULTILINE | re.DOTALL)
+    sections = changelog_sections(changelog)
     notes = [body.strip() for heading, body in sections if heading == candidate]
-    if len(notes) != 1 or not notes[0] or not any(line.startswith("- ") for line in notes[0].splitlines()):
+    if len(notes) != 1 or not notes[0]:
         raise ValueError("release needs one nonempty matching changelog section")
     return {"tag": tag, "version": candidate, "prerelease": prerelease,
             "notes": notes[0] + "\n"}
+
+
+def changelog_headings(text):
+    """Recognize version headings; prose, lists and nested notes stay free-form."""
+    headings = []
+    for match in re.finditer(r"^##[ \t]+([^\n]+)\n?", text, re.MULTILINE):
+        heading = re.fullmatch(
+            r"(?:\[([^]]+)\](?:\([^\n]*\))?|([^ \t]+))(?:[ \t]+-[ \t]+\d{4}-\d{2}-\d{2})?[ \t]*",
+            match[1])
+        if heading:
+            candidate = heading[1] or heading[2]
+            if VERSION.fullmatch(candidate):
+                headings.append((candidate, match.start(), match.end()))
+    return headings
+
+
+def changelog_sections(text):
+    headings = changelog_headings(text)
+    return [(candidate, text[end:headings[index + 1][1] if index + 1 < len(headings) else len(text)])
+            for index, (candidate, _, end) in enumerate(headings)]
+
+
+def verify_notes_source(root, candidate):
+    """Reject product changes added after the reviewed release-note snapshot."""
+    path = root / ".github/release-source.json"
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 16 * 1024:
+        raise ValueError("prepare a release PR with source-tracked notes before tagging")
+    record = json.loads(path.read_text())
+    if not isinstance(record, dict) or record.get("schema") != 1 or record.get("version") != candidate:
+        raise ValueError("release-note source does not match the package version")
+    for key in ("source_sha", "previous_sha"):
+        if not isinstance(record.get(key), str) or not re.fullmatch(r"[0-9a-f]{40}", record[key]):
+            raise ValueError("invalid release-note source commit")
+    previous = record.get("previous_tag", "")
+    if not isinstance(previous, str) or not previous.startswith("v"):
+        raise ValueError("invalid release-note baseline tag")
+    version(previous[1:])
+
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=root, text=True, timeout=30).strip()
+
+    source = record["source_sha"]
+    if git("rev-parse", "refs/tags/" + previous + "^{commit}") != record["previous_sha"]:
+        raise ValueError("previous release tag moved after notes were prepared")
+    git("merge-base", "--is-ancestor", record["previous_sha"], source)
+    git("merge-base", "--is-ancestor", source, "HEAD")
+    allowed = {"Cargo.toml", "Cargo.lock", "packaging/arch/PKGBUILD", "CHANGELOG.md", ".github/release-source.json"}
+    changed = set(git("diff", "--name-only", source, "HEAD").splitlines())
+    if changed - allowed:
+        raise ValueError("product changes landed after release notes were prepared; refresh notes and their source snapshot")
+    base_manifest = tomllib.loads(git("show", source + ":Cargo.toml"))
+    current_manifest = tomllib.loads((root / "Cargo.toml").read_text())
+    base_version = base_manifest["package"].pop("version")
+    current_version = current_manifest["package"].pop("version")
+    base_lock = tomllib.loads(git("show", source + ":Cargo.lock"))
+    current_lock = tomllib.loads((root / "Cargo.lock").read_text())
+    for lock, root_version in ((base_lock, base_version), (current_lock, current_version)):
+        roots = [package for package in lock["package"] if package["name"] == "mywhisper"
+                 and not package.get("source") and package["version"] == root_version]
+        if len(roots) != 1:
+            raise ValueError("expected one locked root package in release source")
+        roots[0].pop("version")
+    base_arch = git("show", source + ":packaging/arch/PKGBUILD")
+    current_arch = (root / "packaging/arch/PKGBUILD").read_text().strip()
+    normalize = lambda text: re.sub(r"^(pkgver|pkgrel)=.*$", r"\1=<release>", text, flags=re.MULTILINE)
+    if base_manifest != current_manifest or base_lock != current_lock or normalize(base_arch) != normalize(current_arch):
+        raise ValueError("package/dependency changes landed after release notes were prepared; refresh the source snapshot")
 
 
 def local_patch_provenance(package, directory):
@@ -225,7 +292,22 @@ def stage(root, output, tag):
         digest = hashlib.file_digest(file, "sha256").hexdigest()
     metadata["asset"] = archive.name
     metadata["sha256"] = digest
-    (output / "SHA256SUMS").write_text(f"{digest}  {archive.name}\n")
+    # The archive digest is known only after building. Generate the final Arch
+    # recipe alongside it, without editing the immutable checked source tree.
+    recipe = (root / "packaging/arch/PKGBUILD").read_text()
+    recipe, count = re.subn(r"^sha256sums=.*$", f"sha256sums=('{digest}')", recipe, flags=re.MULTILINE)
+    if count != 1:
+        raise ValueError("Arch recipe needs exactly one checksum field")
+    recipe = re.sub(r"^# Published .* asset digest, verified through authenticated GitHub metadata\.$",
+                    "# Checked release artifact digest; generated with this release.", recipe, flags=re.MULTILINE)
+    recipe = recipe.replace(
+        "# update.sh replaces this historical digest with the selected release's verified\n"
+        "# digest in its temporary recipe. Direct makepkg needs that release's digest too.\n",
+        "# Use with the archive attached to this release; its checksum is verified below.\n")
+    (output / "PKGBUILD").write_text(recipe)
+    recipe_digest = hashlib.sha256(recipe.encode()).hexdigest()
+    metadata["arch_pkgbuild_sha256"] = recipe_digest
+    (output / "SHA256SUMS").write_text(f"{digest}  {archive.name}\n{recipe_digest}  PKGBUILD\n")
     (output / "notes.md").write_text(metadata.pop("notes"))
     (output / "release.json").write_text(json.dumps(metadata, indent=2) + "\n")
     return metadata
@@ -238,10 +320,12 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--require-license", action="store_true")
     parser.add_argument("--verify-tag", action="store_true")
+    parser.add_argument("--verify-notes-source", action="store_true")
+    parser.add_argument("--compare-version-to", help="CI base commit; new package versions require current source-tracked notes")
     parser.add_argument("--notices-output", type=Path)
     args = parser.parse_args()
     if args.notices_output:
-        if args.tag or args.output or args.verify_tag or args.require_license:
+        if args.tag or args.output or args.verify_tag or args.require_license or args.verify_notes_source or args.compare_version_to:
             parser.error("--notices-output is separate from release preparation")
         inventory = write_notices(args.root, args.notices_output)
         print(json.dumps({"dependency_count": len(inventory), "dependency_notices_complete": True}))
@@ -249,6 +333,19 @@ def main():
     if not args.tag:
         parser.error("a release tag is required")
     metadata = preflight(args.root, args.tag)
+    changed_version = False
+    changed_notes_source = False
+    if args.compare_version_to:
+        if not re.fullmatch(r"[0-9a-f]{40}", args.compare_version_to):
+            raise ValueError("invalid CI base commit")
+        prior = subprocess.check_output(["git", "show", args.compare_version_to + ":Cargo.toml"],
+                                        cwd=args.root, text=True, timeout=5)
+        changed_version = tomllib.loads(prior)["package"]["version"] != metadata["version"]
+        changed_notes_source = bool(subprocess.check_output(
+            ["git", "diff", "--name-only", args.compare_version_to, "--", ".github/release-source.json"],
+            cwd=args.root, timeout=5))
+    if args.verify_tag or args.verify_notes_source or changed_version or changed_notes_source:
+        verify_notes_source(args.root, metadata["version"])
     if args.verify_tag:
         target = subprocess.check_output(["git", "rev-parse", f"refs/tags/{args.tag}^{{commit}}"],
                                          cwd=args.root, text=True, timeout=5).strip()
@@ -256,6 +353,8 @@ def main():
                                        text=True, timeout=5).strip()
         if target != head:
             raise ValueError("checked-out source does not match the release tag")
+        subprocess.run(["git", "merge-base", "--is-ancestor", head, "refs/remotes/origin/main"],
+                       cwd=args.root, check=True, timeout=5)
     if args.require_license:
         require_distribution_license(args.root, [])
         _, inventory = dependency_notices(args.root)
