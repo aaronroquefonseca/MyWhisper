@@ -16,6 +16,18 @@ const SERVICE_APP_ID: &str = "com.mywhisper.Service";
 /// GUI is always a pure frontend reading the shared database. If the
 /// service isn't running, the GUI says so and offers to start it.
 fn main() -> gtk4::glib::ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("mywhisper {}", mywhisper::APP_VERSION);
+        return gtk4::glib::ExitCode::SUCCESS;
+    }
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "MyWhisper {}\nUsage: mywhisper [--service] [--page PAGE] [--section SECTION] [--theme system|light|dark]\n       mywhisper --version | --help",
+            mywhisper::APP_VERSION
+        );
+        return gtk4::glib::ExitCode::SUCCESS;
+    }
     let paths = mywhisper::paths::AppPaths::create().expect("create app dirs");
     let _log_guard = mywhisper::paths::init_file_logging(&paths.state_dir);
     let store =
@@ -28,11 +40,6 @@ fn main() -> gtk4::glib::ExitCode {
         "mywhisper starting"
     );
 
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("mywhisper {}", mywhisper::APP_VERSION);
-        return gtk4::glib::ExitCode::SUCCESS;
-    }
     let service_mode = args.iter().any(|a| a == "--service");
 
     if service_mode {

@@ -106,3 +106,24 @@ change system graphics settings or the background service.
 ## System deps (Arch)
 
 gtk4, gtk4-layer-shell, libadwaita, alsa-lib, pkgconf.
+
+### Packaging audit checks
+
+The Nix flake builds the source against its locked Nixpkgs instead of fetching
+an unverified private binary. Its wrapper supplies Adwaita/hicolor fallback
+icons, the default paste/capture tools, certificates and the resolver executable.
+The NixOS module enables nix-ld and CPU/Vulkan loader libraries for downloaded
+upstream engines. Remote-only setups can disable `enableDownloadedRuntimes`.
+CUDA inference additionally requires a compatible NVIDIA driver and CUDA/cuDNN
+libraries; supplying the Vulkan loader establishes startup, not GPU inference.
+
+Run `nix build ./packaging/nixos#checks.x86_64-linux.desktop`,
+`nix build ./packaging/nixos#checks.x86_64-linux.symbolic-logo` and
+`nix build ./packaging/nixos#checks.x86_64-linux.whisper-vulkan-loader` for the
+scoped clean NixOS package/service, GTK 4.22 SVG and exact downloaded loader
+checks. The full release-audit shutdown/privacy/provider requirements remain on
+the integration branch.
+
+Candidate archives include authenticated dependency notices and SHA-256 sums.
+The project license is deliberately unset; release publication remains blocked
+until the owner establishes it. No LICENSE is added by these packaging changes.
