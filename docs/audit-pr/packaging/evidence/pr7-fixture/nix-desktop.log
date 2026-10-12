@@ -1,0 +1,1308 @@
+got build log for '/nix/store/dsbwg5dw9jnzqkpx8114jjk8c2apcw75-vm-test-run-mywhisper-scoped-package.drv' from 'local'
+Machine state will be reset. To keep it, pass --keep-machine-state
+[1m[32mstart all VLans[0m
+(finished: start all VLans, in 0.00 seconds)
+Test will time out and terminate in 3600.0 seconds
+[1m[32mrun the VM test script[0m
+additionally exposed symbols:
+    desktop,
+    vlan1,
+    start_all, test_script, machines, machines_qemu, machines_nspawn, vlans, driver, log, os, create_machine, subtest, run_tests, join_all, retry, serial_stdout_off, serial_stdout_on, polling_condition, BaseMachine, QemuMachine, NspawnMachine, t, debug, dump_machine_ssh
+[1m[32mstart all VMs[0m
+desktop: starting vm
+[2mdesktop # Disk image does not exist, creating the virtualisation disk image...[0m
+[2mdesktop # Formatting '/tmp/nix-2-2346302762/vm-state-desktop/tmp.zv98s7bP9B', fmt=raw size=1073741824[0m
+[2mdesktop # mke2fs 1.47.4 (6-Mar-2025)[0m
+desktop: QEMU running (pid 18527)
+[2mdesktop # Discarding device blocks:      0/262144             done[0m
+[2mdesktop # Creating filesystem with 262144 4k blocks and 65536 inodes[0m
+[2mdesktop # Filesystem UUID: aff575ec-b3c0-47ba-ac4f-19cfec601c71[0m
+[2mdesktop # Superblock backups stored on blocks:[0m
+(finished: start all VMs, in 0.12 seconds)
+[2mdesktop # 	32768, 98304, 163840, 229376[0m
+desktop: [1m[32mwaiting for unit multi-user.target[0m
+[2mdesktop # [0m
+desktop: [1m[32mwaiting for the VM to finish booting[0m
+[2mdesktop # Allocating group tables: 0/8   done[0m
+[2mdesktop # Writing inode tables: 0/8   done[0m
+[2mdesktop # Creating journal (8192 blocks): done[0m
+[2mdesktop # Writing superblocks and filesystem accounting information: 0/8   done[0m
+[2mdesktop # [0m
+[2mdesktop # Virtualisation disk image created.[0m
+[2mdesktop # Starting virtiofs daemons...[0m
+[2mdesktop # [2026-10-12T15:31:45Z WARN  virtiofsd::limits] Failure when trying to set the limit to 1000000, the hard limit (524288) of open file descriptors is used instead.[0m
+[2mdesktop # [2026-10-12T15:31:45Z WARN  virtiofsd::limits] Failure when trying to set the limit to 1000000, the hard limit (524288) of open file descriptors is used instead.[0m
+[2mdesktop # [2026-10-12T15:31:45Z WARN  virtiofsd::limits] Failure when trying to set the limit to 1000000, the hard limit (524288) of open file descriptors is used instead.[0m
+[2mdesktop # [2026-10-12T15:31:45Z WARN  virtiofsd::passthrough] Failed to open file handle for the root node: Operation not permitted (os error 1)[0m
+[2mdesktop # [2026-10-12T15:31:45Z WARN  virtiofsd::passthrough] Failed to open file handle for the root node: Operation not permitted (os error 1)[0m
+[2mdesktop # [2026-10-12T15:31:45Z WARN  virtiofsd::passthrough] Failed to open file handle for the root node: Operation not permitted (os error 1)[0m
+[2mdesktop # [2026-10-12T15:31:45Z WARN  virtiofsd::passthrough] File handles do not appear safe to use, disabling file handles altogether[0m
+[2mdesktop # [2026-10-12T15:31:45Z WARN  virtiofsd::passthrough] File handles do not appear safe to use, disabling file handles altogether[0m
+[2mdesktop # [2026-10-12T15:31:45Z WARN  virtiofsd::passthrough] File handles do not appear safe to use, disabling file handles altogether[0m
+[2mdesktop # [2026-10-12T15:31:45Z INFO  virtiofsd] Waiting for vhost-user socket connection...[0m
+[2mdesktop # [2026-10-12T15:31:45Z INFO  virtiofsd] Waiting for vhost-user socket connection...[0m
+[2mdesktop # [2026-10-12T15:31:45Z INFO  virtiofsd] Waiting for vhost-user socket connection...[0m
+[2mdesktop # [2026-10-12T15:31:45Z INFO  virtiofsd] Client connected, servicing requests[0m
+[2mdesktop # [2026-10-12T15:31:45Z INFO  virtiofsd] Client connected, servicing requests[0m
+[2mdesktop # [2026-10-12T15:31:45Z INFO  virtiofsd] Client connected, servicing requests[0m
+[2mdesktop # c[?7l[2J[0mSeaBIOS (version rel-1.17.0-0-gb52ca86e094d-prebuilt.qemu.org)[0m
+[2mdesktop # [0m
+[2mdesktop # [0m
+[2mdesktop # iPXE (http://ipxe.org) 00:01.0 C000 PCI2.10 PnP PMM+7EFCC7A0+7EF2C7A0 C000[0m
+[2mdesktop # Press Ctrl-B to configure iPXE (PCI 00:01.0)...[0m
+[2mdesktop # [0m
+[2mdesktop # [0m
+[2mdesktop # [0m
+[2mdesktop # [0m
+[2mdesktop # iPXE (http://ipxe.org) 00:04.0 C100 PCI2.10 PnP PMM 7EFCC7A0 7EF2C7A0 C100[0m
+[2mdesktop # Press Ctrl-B to configure iPXE (PCI 00:04.0)...[0m
+[2mdesktop # [0m
+[2mdesktop # [0m
+[2mdesktop # Booting from ROM...[0m
+[2mdesktop # Probing EDD (edd=off to disable)... oc[?7l[2J[    0.000000] Linux version 6.18.55 (nixbld@localhost) (gcc (GCC) 16.2.0, GNU ld (GNU Binutils) 2.46) #1-NixOS SMP PREEMPT_DYNAMIC Sat Oct  3 10:39:03 UTC 2026[0m
+[2mdesktop # [    0.000000] Command line: console=ttyS0 console=tty0 panic=1 boot.panic_on_fail clocksource=acpi_pm root=fstab loglevel=7 net.ifnames=0 lsm=landlock,yama,bpf init=/nix/store/8s35mga6jq34d4pmhgfi1flmx8wak5l3-nixos-system-desktop-test/init regInfo=/nix/.ro-store/4rbwyy2yhmxd9x7q79f3h8qx6vdsjhm9-closure-info/registration console=ttyS0,115200n8 console=tty0[0m
+[2mdesktop # [    0.000000] BIOS-provided physical RAM map:[0m
+[2mdesktop # [    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable[0m
+[2mdesktop # [    0.000000] BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved[0m
+[2mdesktop # [    0.000000] BIOS-e820: [mem 0x00000000000f0000-0x00000000000fffff] reserved[0m
+[2mdesktop # [    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000007ffd7fff] usable[0m
+[2mdesktop # [    0.000000] BIOS-e820: [mem 0x000000007ffd8000-0x000000007fffffff] reserved[0m
+[2mdesktop # [    0.000000] BIOS-e820: [mem 0x00000000b0000000-0x00000000bfffffff] reserved[0m
+[2mdesktop # [    0.000000] BIOS-e820: [mem 0x00000000fed1c000-0x00000000fed1ffff] reserved[0m
+[2mdesktop # [    0.000000] BIOS-e820: [mem 0x00000000feffc000-0x00000000feffffff] reserved[0m
+[2mdesktop # [    0.000000] BIOS-e820: [mem 0x00000000fffc0000-0x00000000ffffffff] reserved[0m
+[2mdesktop # [    0.000000] BIOS-e820: [mem 0x0000000100000000-0x000000017fffffff] usable[0m
+[2mdesktop # [    0.000000] NX (Execute Disable) protection: active[0m
+[2mdesktop # [    0.000000] APIC: Static calls initialized[0m
+[2mdesktop # [    0.000000] SMBIOS 2.8 present.[0m
+[2mdesktop # [    0.000000] DMI: QEMU Standard PC (Q35 + ICH9, 2009), BIOS rel-1.17.0-0-gb52ca86e094d-prebuilt.qemu.org 04/01/2014[0m
+[2mdesktop # [    0.000000] DMI: Memory slots populated: 1/1[0m
+[2mdesktop # [    0.000000] Hypervisor detected: KVM[0m
+[2mdesktop # [    0.000000] last_pfn = 0x7ffd8 max_arch_pfn = 0x400000000[0m
+[2mdesktop # [    0.000000] kvm-clock: Using msrs 4b564d01 and 4b564d00[0m
+[2mdesktop # [    0.000000] kvm-clock: using sched offset of 256719777 cycles[0m
+[2mdesktop # [    0.000001] clocksource: kvm-clock: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns[0m
+[2mdesktop # [    0.000003] tsc: Detected 3417.600 MHz processor[0m
+[2mdesktop # [    0.000103] last_pfn = 0x180000 max_arch_pfn = 0x400000000[0m
+[2mdesktop # [    0.000121] MTRR map: 4 entries (3 fixed + 1 variable; max 19), built from 8 variable MTRRs[0m
+[2mdesktop # [    0.000122] x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT[0m
+[2mdesktop # [    0.000146] last_pfn = 0x7ffd8 max_arch_pfn = 0x400000000[0m
+[2mdesktop # [    0.004614] found SMP MP-table at [mem 0x000f5450-0x000f545f][0m
+[2mdesktop # [    0.004627] Using GB pages for direct mapping[0m
+[2mdesktop # [    0.004692] RAMDISK: [mem 0x7e2e6000-0x7ffcffff][0m
+[2mdesktop # [    0.004696] ACPI: Early table checksum verification disabled[0m
+[2mdesktop # [    0.004699] ACPI: RSDP 0x00000000000F5250 000014 (v00 BOCHS )[0m
+[2mdesktop # [    0.004702] ACPI: RSDT 0x000000007FFE2462 000038 (v01 BOCHS  BXPC     00000001 BXPC 00000001)[0m
+[2mdesktop # [    0.004706] ACPI: FACP 0x000000007FFE2252 0000F4 (v03 BOCHS  BXPC     00000001 BXPC 00000001)[0m
+[2mdesktop # [    0.004712] ACPI: DSDT 0x000000007FFE0040 002212 (v01 BOCHS  BXPC     00000001 BXPC 00000001)[0m
+[2mdesktop # [    0.004714] ACPI: FACS 0x000000007FFE0000 000040[0m
+[2mdesktop # [    0.004716] ACPI: APIC 0x000000007FFE2346 000080 (v03 BOCHS  BXPC     00000001 BXPC 00000001)[0m
+[2mdesktop # [    0.004719] ACPI: HPET 0x000000007FFE23C6 000038 (v01 BOCHS  BXPC     00000001 BXPC 00000001)[0m
+[2mdesktop # [    0.004721] ACPI: MCFG 0x000000007FFE23FE 00003C (v01 BOCHS  BXPC     00000001 BXPC 00000001)[0m
+[2mdesktop # [    0.004723] ACPI: WAET 0x000000007FFE243A 000028 (v01 BOCHS  BXPC     00000001 BXPC 00000001)[0m
+[2mdesktop # [    0.004725] ACPI: Reserving FACP table memory at [mem 0x7ffe2252-0x7ffe2345][0m
+[2mdesktop # [    0.004726] ACPI: Reserving DSDT table memory at [mem 0x7ffe0040-0x7ffe2251][0m
+[2mdesktop # [    0.004726] ACPI: Reserving FACS table memory at [mem 0x7ffe0000-0x7ffe003f][0m
+[2mdesktop # [    0.004727] ACPI: Reserving APIC table memory at [mem 0x7ffe2346-0x7ffe23c5][0m
+[2mdesktop # [    0.004727] ACPI: Reserving HPET table memory at [mem 0x7ffe23c6-0x7ffe23fd][0m
+[2mdesktop # [    0.004728] ACPI: Reserving MCFG table memory at [mem 0x7ffe23fe-0x7ffe2439][0m
+[2mdesktop # [    0.004728] ACPI: Reserving WAET table memory at [mem 0x7ffe243a-0x7ffe2461][0m
+[2mdesktop # [    0.004892] No NUMA configuration found[0m
+[2mdesktop # [    0.004893] Faking a node at [mem 0x0000000000000000-0x000000017fffffff][0m
+[2mdesktop # [    0.004894] NODE_DATA(0) allocated [mem 0x17fffa780-0x17ffffcff][0m
+[2mdesktop # [    0.004935] Zone ranges:[0m
+[2mdesktop # [    0.004936]   DMA      [mem 0x0000000000001000-0x0000000000ffffff][0m
+[2mdesktop # [    0.004937]   DMA32    [mem 0x0000000001000000-0x00000000ffffffff][0m
+[2mdesktop # [    0.004937]   Normal   [mem 0x0000000100000000-0x000000017fffffff][0m
+[2mdesktop # [    0.004938]   Device   empty[0m
+[2mdesktop # [    0.004938] Movable zone start for each node[0m
+[2mdesktop # [    0.004939] Early memory node ranges[0m
+[2mdesktop # [    0.004939]   node   0: [mem 0x0000000000001000-0x000000000009efff][0m
+[2mdesktop # [    0.004940]   node   0: [mem 0x0000000000100000-0x000000007ffd7fff][0m
+[2mdesktop # [    0.004940]   node   0: [mem 0x0000000100000000-0x000000017fffffff][0m
+[2mdesktop # [    0.004941] Initmem setup node 0 [mem 0x0000000000001000-0x000000017fffffff][0m
+[2mdesktop # [    0.004952] On node 0, zone DMA: 1 pages in unavailable ranges[0m
+[2mdesktop # [    0.005058] On node 0, zone DMA: 97 pages in unavailable ranges[0m
+[2mdesktop # [    0.032832] On node 0, zone Normal: 40 pages in unavailable ranges[0m
+[2mdesktop # [    0.033136] ACPI: PM-Timer IO Port: 0x608[0m
+[2mdesktop # [    0.033147] ACPI: LAPIC_NMI (acpi_id[0xff] dfl dfl lint[0x1])[0m
+[2mdesktop # [    0.033171] IOAPIC[0]: apic_id 0, version 17, address 0xfec00000, GSI 0-23[0m
+[2mdesktop # [    0.033173] ACPI: INT_SRC_OVR (bus 0 bus_irq 0 global_irq 2 dfl dfl)[0m
+[2mdesktop # [    0.033174] ACPI: INT_SRC_OVR (bus 0 bus_irq 5 global_irq 5 high level)[0m
+[2mdesktop # [    0.033175] ACPI: INT_SRC_OVR (bus 0 bus_irq 9 global_irq 9 high level)[0m
+[2mdesktop # [    0.033175] ACPI: INT_SRC_OVR (bus 0 bus_irq 10 global_irq 10 high level)[0m
+[2mdesktop # [    0.033176] ACPI: INT_SRC_OVR (bus 0 bus_irq 11 global_irq 11 high level)[0m
+[2mdesktop # [    0.033178] ACPI: Using ACPI (MADT) for SMP configuration information[0m
+[2mdesktop # [    0.033179] ACPI: HPET id: 0x8086a201 base: 0xfed00000[0m
+[2mdesktop # [    0.033181] TSC deadline timer available[0m
+[2mdesktop # [    0.033184] CPU topo: Max. logical packages:   1[0m
+[2mdesktop # [    0.033184] CPU topo: Max. logical dies:       1[0m
+[2mdesktop # [    0.033185] CPU topo: Max. dies per package:   1[0m
+[2mdesktop # [    0.033186] CPU topo: Max. threads per core:   1[0m
+[2mdesktop # [    0.033187] CPU topo: Num. cores per package:     2[0m
+[2mdesktop # [    0.033187] CPU topo: Num. threads per package:   2[0m
+[2mdesktop # [    0.033187] CPU topo: Allowing 2 present CPUs plus 0 hotplug CPUs[0m
+[2mdesktop # [    0.033198] kvm-guest: APIC: eoi() replaced with kvm_guest_apic_eoi_write()[0m
+[2mdesktop # [    0.033207] kvm-guest: KVM setup pv remote TLB flush[0m
+[2mdesktop # [    0.033209] kvm-guest: setup PV sched yield[0m
+[2mdesktop # [    0.033213] PM: hibernation: Registered nosave memory: [mem 0x00000000-0x00000fff][0m
+[2mdesktop # [    0.033214] PM: hibernation: Registered nosave memory: [mem 0x0009f000-0x000fffff][0m
+[2mdesktop # [    0.033215] PM: hibernation: Registered nosave memory: [mem 0x7ffd8000-0xffffffff][0m
+[2mdesktop # [    0.033216] [mem 0xc0000000-0xfed1bfff] available for PCI devices[0m
+[2mdesktop # [    0.033217] Booting paravirtualized kernel on KVM[0m
+[2mdesktop # [    0.033219] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1910969940391419 ns[0m
+[2mdesktop # [    0.036701] setup_percpu: NR_CPUS:384 nr_cpumask_bits:2 nr_cpu_ids:2 nr_node_ids:1[0m
+[2mdesktop # [    0.037526] percpu: Embedded 98 pages/cpu s278528 r8192 d114688 u1048576[0m
+[2mdesktop # [    0.037553] kvm-guest: PV spinlocks enabled[0m
+[2mdesktop # [    0.037554] PV qspinlock hash table entries: 256 (order: 0, 4096 bytes, linear)[0m
+[2mdesktop # [    0.037556] Kernel command line: console=ttyS0 console=tty0 panic=1 boot.panic_on_fail clocksource=acpi_pm root=fstab loglevel=7 net.ifnames=0 lsm=landlock,yama,bpf init=/nix/store/8s35mga6jq34d4pmhgfi1flmx8wak5l3-nixos-system-desktop-test/init regInfo=/nix/.ro-store/4rbwyy2yhmxd9x7q79f3h8qx6vdsjhm9-closure-info/registration console=ttyS0,115200n8 console=tty0[0m
+[2mdesktop # [    0.037618] Unknown kernel command line parameters "regInfo=/nix/.ro-store/4rbwyy2yhmxd9x7q79f3h8qx6vdsjhm9-closure-info/registration", will be passed to user space.[0m
+[2mdesktop # [    0.037626] random: crng init done[0m
+[2mdesktop # [    0.037627] printk: log buffer data + meta data: 262144 + 917504 = 1179648 bytes[0m
+[2mdesktop # [    0.039257] Dentry cache hash table entries: 524288 (order: 10, 4194304 bytes, linear)[0m
+[2mdesktop # [    0.040247] Inode-cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)[0m
+[2mdesktop # [    0.040294] software IO TLB: area num 2.[0m
+[2mdesktop # [    0.071951] Fallback order for Node 0: 0[0m
+[2mdesktop # [    0.071954] Built 1 zonelists, mobility grouping on.  Total pages: 1048438[0m
+[2mdesktop # [    0.071955] Policy zone: Normal[0m
+[2mdesktop # [    0.072938] mem auto-init: stack:all(zero), heap alloc:on, heap free:off[0m
+[2mdesktop # [    0.078835] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=2, Nodes=1[0m
+[2mdesktop # [    0.082427] allocated 8388608 bytes of page_ext[0m
+[2mdesktop # [    0.087507] ftrace: allocating 48837 entries in 192 pages[0m
+[2mdesktop # [    0.087508] ftrace: allocated 192 pages with 2 groups[0m
+[2mdesktop # [    0.087940] Dynamic Preempt: lazy[0m
+[2mdesktop # [    0.088005] rcu: Preemptible hierarchical RCU implementation.[0m
+[2mdesktop # [    0.088005] rcu: 	RCU event tracing is enabled.[0m
+[2mdesktop # [    0.088005] rcu: 	RCU restricting CPUs from NR_CPUS=384 to nr_cpu_ids=2.[0m
+[2mdesktop # [    0.088006] 	Trampoline variant of Tasks RCU enabled.[0m
+[2mdesktop # [    0.088006] 	Rude variant of Tasks RCU enabled.[0m
+[2mdesktop # [    0.088007] 	Tracing variant of Tasks RCU enabled.[0m
+[2mdesktop # [    0.088007] rcu: RCU calculated value of scheduler-enlistment delay is 100 jiffies.[0m
+[2mdesktop # [    0.088008] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=2[0m
+[2mdesktop # [    0.088014] RCU Tasks: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.[0m
+[2mdesktop # [    0.088016] RCU Tasks Rude: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.[0m
+[2mdesktop # [    0.088016] RCU Tasks Trace: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.[0m
+[2mdesktop # [    0.090879] NR_IRQS: 24832, nr_irqs: 440, preallocated irqs: 16[0m
+[2mdesktop # [    0.091083] rcu: srcu_init: Setting srcu_struct sizes based on contention.[0m
+[2mdesktop # [    0.091088] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1911260446275000 ns[0m
+[2mdesktop # [    0.091178] kfence: initialized - using 2097152 bytes for 255 objects at 0x(____ptrval____)-0x(____ptrval____)[0m
+[2mdesktop # [    0.091288] Console: colour *CGA 80x25[0m
+[2mdesktop # [    0.091289] printk: legacy console [tty0] enabled[0m
+[2mdesktop # [    0.093886] printk: legacy console [ttyS0] enabled[0m
+[2mdesktop # [    0.140340] ACPI: Core revision 20250807[0m
+[2mdesktop # [    0.140674] clocksource: hpet: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604467 ns[0m
+[2mdesktop # [    0.141357] APIC: Switch to symmetric I/O mode setup[0m
+[2mdesktop # [    0.141756] x2apic enabled[0m
+[2mdesktop # [    0.142058] APIC: Switched APIC routing to: physical x2apic[0m
+[2mdesktop # [    0.142399] kvm-guest: APIC: send_IPI_mask() replaced with kvm_send_ipi_mask()[0m
+[2mdesktop # [    0.142810] kvm-guest: APIC: send_IPI_mask_allbutself() replaced with kvm_send_ipi_mask_allbutself()[0m
+[2mdesktop # [    0.143316] kvm-guest: setup PV IPIs[0m
+[2mdesktop # [    0.144141] ..TIMER: vector=0x30 apic1=0 pin1=2 apic2=-1 pin2=-1[0m
+[2mdesktop # [    0.144506] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x3143404a908, max_idle_ns: 440795209397 ns[0m
+[2mdesktop # [    0.145088] Calibrating delay loop (skipped) preset value.. 6835.20 BogoMIPS (lpj=3417600)[0m
+[2mdesktop # [    0.146159] x86/cpu: User Mode Instruction Prevention (UMIP) activated[0m
+[2mdesktop # [    0.146609] CET detected: Indirect Branch Tracking enabled[0m
+[2mdesktop # [    0.147087] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0[0m
+[2mdesktop # [    0.147391] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0[0m
+[2mdesktop # [    0.147732] mitigations: Enabled attack vectors: user_kernel, user_user, guest_host, guest_guest, SMT mitigations: auto[0m
+[2mdesktop # [    0.148086] Speculative Store Bypass: Mitigation: Speculative Store Bypass disabled via prctl[0m
+[2mdesktop # [    0.148559] Spectre V2 : Mitigation: Enhanced / Automatic IBRS[0m
+[2mdesktop # [    0.149086] Register File Data Sampling: Mitigation: Clear Register File[0m
+[2mdesktop # [    0.149463] Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization[0m
+[2mdesktop # [    0.150087] Spectre V2 : Spectre v2 / PBRSB-eIBRS: Retire a single CALL on VMEXIT[0m
+[2mdesktop # [    0.150515] Spectre V2 : Enabling IBPB for BPF[0m
+[2mdesktop # [    0.150776] Spectre V2 : mitigation: Enabling conditional Indirect Branch Prediction Barrier[0m
+[2mdesktop # [    0.151097] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'[0m
+[2mdesktop # [    0.151513] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'[0m
+[2mdesktop # [    0.152086] x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'[0m
+[2mdesktop # [    0.152436] x86/fpu: Supporting XSAVE feature 0x200: 'Protection Keys User registers'[0m
+[2mdesktop # [    0.152859] x86/fpu: Supporting XSAVE feature 0x800: 'Control-flow User registers'[0m
+[2mdesktop # [    0.153086] x86/fpu: Supporting XSAVE feature 0x1000: 'Control-flow Kernel registers (KVM only)'[0m
+[2mdesktop # [    0.153559] x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256[0m
+[2mdesktop # [    0.154086] x86/fpu: xstate_offset[9]:  832, xstate_sizes[9]:    8[0m
+[2mdesktop # [    0.154419] x86/fpu: xstate_offset[11]:  840, xstate_sizes[11]:   16[0m
+[2mdesktop # [    0.154760] x86/fpu: xstate_offset[12]:  856, xstate_sizes[12]:   24[0m
+[2mdesktop # [    0.155086] x86/fpu: Enabled xstate features 0x1a07, context size is 880 bytes, using 'compacted' format.[0m
+[2mdesktop # [    0.165506] Freeing SMP alternatives memory: 48K[0m
+[2mdesktop # [    0.165793] pid_max: default: 32768 minimum: 301[0m
+[2mdesktop # [    0.166095] LSM: initializing lsm=capability,landlock,yama,bpf,ima[0m
+[2mdesktop # [    0.166486] landlock: Up and running.[0m
+[2mdesktop # [    0.166693] Yama: becoming mindful.[0m
+[2mdesktop # [    0.166977] LSM support for eBPF active[0m
+[2mdesktop # [    0.167144] Mount-cache hash table entries: 8192 (order: 4, 65536 bytes, linear)[0m
+[2mdesktop # [    0.167563] Mountpoint-cache hash table entries: 8192 (order: 4, 65536 bytes, linear)[0m
+[2mdesktop # [    0.168696] smpboot: CPU0: 13th Gen Intel(R) Core(TM) i7-13700K (family: 0x6, model: 0xb7, stepping: 0x1)[0m
+[2mdesktop # [    0.169085] Performance Events: unsupported CPU family 6 model 183 no PMU driver, software events only.[0m
+[2mdesktop # [    0.169097] signal: max sigframe size: 3632[0m
+[2mdesktop # [    0.169388] rcu: Hierarchical SRCU implementation.[0m
+[2mdesktop # [    0.169652] rcu: 	Max phase no-delay instances is 400.[0m
+[2mdesktop # [    0.169995] Timer migration: 1 hierarchy levels; 8 children per group; 1 crossnode level[0m
+[2mdesktop # [    0.170277] NMI watchdog: Perf NMI watchdog permanently disabled[0m
+[2mdesktop # [    0.170631] smp: Bringing up secondary CPUs ...[0m
+[2mdesktop # [    0.170999] smpboot: x86: Booting SMP configuration:[0m
+[2mdesktop # [    0.171089] .... node  #0, CPUs:      #1[0m
+[2mdesktop # [    0.171195] smp: Brought up 1 node, 2 CPUs[0m
+[2mdesktop # [    0.171562] smpboot: Total of 2 processors activated (13670.40 BogoMIPS)[0m
+[2mdesktop # [    0.172235] Memory: 3960260K/4193752K available (18124K kernel code, 2728K rwdata, 13644K rodata, 3656K init, 3632K bss, 218580K reserved, 0K cma-reserved)[0m
+[2mdesktop # [    0.173183] devtmpfs: initialized[0m
+[2mdesktop # [    0.173361] x86/mm: Memory block size: 128MB[0m
+[2mdesktop # [    0.174204] posixtimers hash table entries: 1024 (order: 2, 16384 bytes, linear)[0m
+[2mdesktop # [    0.174540] futex hash table entries: 512 (32768 bytes on 1 NUMA nodes, total 32 KiB, linear).[0m
+[2mdesktop # [    0.175125] pinctrl core: initialized pinctrl subsystem[0m
+[2mdesktop # [    0.175536] PM: RTC time: 15:31:45, date: 2026-10-12[0m
+[2mdesktop # [    0.176819] NET: Registered PF_NETLINK/PF_ROUTE protocol family[0m
+[2mdesktop # [    0.177361] DMA: preallocated 512 KiB GFP_KERNEL pool for atomic allocations[0m
+[2mdesktop # [    0.177782] DMA: preallocated 512 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations[0m
+[2mdesktop # [    0.178289] DMA: preallocated 512 KiB GFP_KERNEL|GFP_DMA32 pool for atomic allocations[0m
+[2mdesktop # [    0.178721] audit: initializing netlink subsys (disabled)[0m
+[2mdesktop # [    0.179038] audit: type=2000 audit(1791819105.751:1): state=initialized audit_enabled=0 res=1[0m
+[2mdesktop # [    0.179141] thermal_sys: Registered thermal governor 'fair_share'[0m
+[2mdesktop # [    0.179565] thermal_sys: Registered thermal governor 'bang_bang'[0m
+[2mdesktop # [    0.179895] thermal_sys: Registered thermal governor 'step_wise'[0m
+[2mdesktop # [    0.180088] thermal_sys: Registered thermal governor 'user_space'[0m
+[2mdesktop # [    0.180424] thermal_sys: Registered thermal governor 'power_allocator'[0m
+[2mdesktop # [    0.180757] cpuidle: using governor menu[0m
+[2mdesktop # [    0.181369] acpiphp: ACPI Hot Plug PCI Controller Driver version: 0.5[0m
+[2mdesktop # [    0.181809] PCI: ECAM [mem 0xb0000000-0xbfffffff] (base 0xb0000000) for domain 0000 [bus 00-ff][0m
+[2mdesktop # [    0.182088] PCI: ECAM [mem 0xb0000000-0xbfffffff] reserved as E820 entry[0m
+[2mdesktop # [    0.182451] PCI: Using configuration type 1 for base access[0m
+[2mdesktop # [    0.182826] kprobes: kprobe jump-optimization is enabled. All kprobes are optimized if possible.[0m
+[2mdesktop # [    0.187104] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages[0m
+[2mdesktop # [    0.187520] HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page[0m
+[2mdesktop # [    0.187893] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages[0m
+[2mdesktop # [    0.188088] HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page[0m
+[2mdesktop # [    0.196393] ACPI: Added _OSI(Module Device)[0m
+[2mdesktop # [    0.196702] ACPI: Added _OSI(Processor Device)[0m
+[2mdesktop # [    0.196702] ACPI: Added _OSI(Processor Aggregator Device)[0m
+[2mdesktop # [    0.197874] ACPI: 1 ACPI AML tables successfully acquired and loaded[0m
+[2mdesktop # [    0.199196] ACPI: Interpreter enabled[0m
+[2mdesktop # [    0.199461] ACPI: PM: (supports S0 S3 S4 S5)[0m
+[2mdesktop # [    0.199705] ACPI: Using IOAPIC for interrupt routing[0m
+[2mdesktop # [    0.199705] PCI: Using host bridge windows from ACPI; if necessary, use "pci=nocrs" and report a bug[0m
+[2mdesktop # [    0.199907] PCI: Using E820 reservations for host bridge windows[0m
+[2mdesktop # [    0.201135] ACPI: Enabled 2 GPEs in block 00 to 3F[0m
+[2mdesktop # [    0.202558] ACPI: PCI Root Bridge [PCI0] (domain 0000 [bus 00-ff])[0m
+[2mdesktop # [    0.202907] acpi PNP0A08:00: _OSC: OS supports [ExtendedConfig ASPM ClockPM Segments MSI HPX-Type3][0m
+[2mdesktop # [    0.203110] acpi PNP0A08:00: _OSC: platform does not support [PCIeHotplug LTR][0m
+[2mdesktop # [    0.203541] acpi PNP0A08:00: _OSC: OS now controls [PME AER PCIeCapability][0m
+[2mdesktop # [    0.204056] PCI host bridge to bus 0000:00[0m
+[2mdesktop # [    0.204088] pci_bus 0000:00: root bus resource [io  0x0000-0x0cf7 window][0m
+[2mdesktop # [    0.204460] pci_bus 0000:00: root bus resource [io  0x0d00-0xffff window][0m
+[2mdesktop # [    0.204830] pci_bus 0000:00: root bus resource [mem 0x000a0000-0x000bffff window][0m
+[2mdesktop # [    0.205086] pci_bus 0000:00: root bus resource [mem 0x80000000-0xafffffff window][0m
+[2mdesktop # [    0.205492] pci_bus 0000:00: root bus resource [mem 0xc0000000-0xfebfffff window][0m
+[2mdesktop # [    0.205906] pci_bus 0000:00: root bus resource [mem 0xe0000000000-0xe07ffffffff window][0m
+[2mdesktop # [    0.207086] pci_bus 0000:00: root bus resource [bus 00-ff][0m
+[2mdesktop # [    0.207489] pci 0000:00:00.0: [8086:29c0] type 00 class 0x060000 conventional PCI endpoint[0m
+[2mdesktop # [    0.208226] pci 0000:00:01.0: [1af4:1000] type 00 class 0x020000 conventional PCI endpoint[0m
+[2mdesktop # [    0.209883] pci 0000:00:01.0: BAR 0 [io  0xc100-0xc11f][0m
+[2mdesktop # [    0.210091] pci 0000:00:01.0: BAR 1 [mem 0xfebc0000-0xfebc0fff][0m
+[2mdesktop # [    0.210436] pci 0000:00:01.0: BAR 4 [mem 0xe0000000000-0xe0000003fff 64bit pref][0m
+[2mdesktop # [    0.210842] pci 0000:00:01.0: ROM [mem 0xfeb40000-0xfeb7ffff pref][0m
+[2mdesktop # [    0.211407] pci 0000:00:02.0: [1af4:1005] type 00 class 0x00ff00 conventional PCI endpoint[0m
+[2mdesktop # [    0.213908] pci 0000:00:02.0: BAR 0 [io  0xc120-0xc13f][0m
+[2mdesktop # [    0.214090] pci 0000:00:02.0: BAR 1 [mem 0xfebc1000-0xfebc1fff][0m
+[2mdesktop # [    0.214440] pci 0000:00:02.0: BAR 4 [mem 0xe0000004000-0xe0000007fff 64bit pref][0m
+[2mdesktop # [    0.215148] pci 0000:00:03.0: [1af4:1001] type 00 class 0x010000 conventional PCI endpoint[0m
+[2mdesktop # [    0.216831] pci 0000:00:03.0: BAR 0 [io  0xc000-0xc07f][0m
+[2mdesktop # [    0.217090] pci 0000:00:03.0: BAR 1 [mem 0xfebc2000-0xfebc2fff][0m
+[2mdesktop # [    0.217430] pci 0000:00:03.0: BAR 4 [mem 0xe0000008000-0xe000000bfff 64bit pref][0m
+[2mdesktop # [    0.218143] pci 0000:00:04.0: [1af4:1000] type 00 class 0x020000 conventional PCI endpoint[0m
+[2mdesktop # [    0.219738] pci 0000:00:04.0: BAR 0 [io  0xc140-0xc15f][0m
+[2mdesktop # [    0.220047] pci 0000:00:04.0: BAR 1 [mem 0xfebc3000-0xfebc3fff][0m
+[2mdesktop # [    0.221101] pci 0000:00:04.0: BAR 4 [mem 0xe000000c000-0xe000000ffff 64bit pref][0m
+[2mdesktop # [    0.221520] pci 0000:00:04.0: ROM [mem 0xfeb80000-0xfebbffff pref][0m
+[2mdesktop # [    0.222180] pci 0000:00:05.0: [1af4:1050] type 00 class 0x038000 conventional PCI endpoint[0m
+[2mdesktop # [    0.223396] pci 0000:00:05.0: BAR 1 [mem 0xfebc4000-0xfebc4fff][0m
+[2mdesktop # [    0.223798] pci 0000:00:05.0: BAR 4 [mem 0xe0000010000-0xe0000013fff 64bit pref][0m
+[2mdesktop # [    0.224393] pci 0000:00:06.0: [1af4:1052] type 00 class 0x090000 conventional PCI endpoint[0m
+[2mdesktop # [    0.225486] pci 0000:00:06.0: BAR 1 [mem 0xfebc5000-0xfebc5fff][0m
+[2mdesktop # [    0.225829] pci 0000:00:06.0: BAR 4 [mem 0xe0000014000-0xe0000017fff 64bit pref][0m
+[2mdesktop # [    0.226402] pci 0000:00:07.0: [1af4:105a] type 00 class 0x018000 conventional PCI endpoint[0m
+[2mdesktop # [    0.227696] pci 0000:00:07.0: BAR 1 [mem 0xfebc6000-0xfebc6fff][0m
+[2mdesktop # [    0.228053] pci 0000:00:07.0: BAR 4 [mem 0xe0000018000-0xe000001bfff 64bit pref][0m
+[2mdesktop # [    0.228823] pci 0000:00:08.0: [1af4:105a] type 00 class 0x018000 conventional PCI endpoint[0m
+[2mdesktop # [    0.230667] pci 0000:00:08.0: BAR 1 [mem 0xfebc7000-0xfebc7fff][0m
+[2mdesktop # [    0.231008] pci 0000:00:08.0: BAR 4 [mem 0xe000001c000-0xe000001ffff 64bit pref][0m
+[2mdesktop # [    0.231387] pci 0000:00:09.0: [1af4:105a] type 00 class 0x018000 conventional PCI endpoint[0m
+[2mdesktop # [    0.232427] pci 0000:00:09.0: BAR 1 [mem 0xfebc8000-0xfebc8fff][0m
+[2mdesktop # [    0.232770] pci 0000:00:09.0: BAR 4 [mem 0xe0000020000-0xe0000023fff 64bit pref][0m
+[2mdesktop # [    0.233380] pci 0000:00:0a.0: [1af4:1003] type 00 class 0x078000 conventional PCI endpoint[0m
+[2mdesktop # [    0.234585] pci 0000:00:0a.0: BAR 0 [io  0xc080-0xc0bf][0m
+[2mdesktop # [    0.234895] pci 0000:00:0a.0: BAR 1 [mem 0xfebc9000-0xfebc9fff][0m
+[2mdesktop # [    0.235099] pci 0000:00:0a.0: BAR 4 [mem 0xe0000024000-0xe0000027fff 64bit pref][0m
+[2mdesktop # [    0.235832] pci 0000:00:0b.0: [1af4:1005] type 00 class 0x00ff00 conventional PCI endpoint[0m
+[2mdesktop # [    0.238091] pci 0000:00:0b.0: BAR 0 [io  0xc160-0xc17f][0m
+[2mdesktop # [    0.238408] pci 0000:00:0b.0: BAR 1 [mem 0xfebca000-0xfebcafff][0m
+[2mdesktop # [    0.238747] pci 0000:00:0b.0: BAR 4 [mem 0xe0000028000-0xe000002bfff 64bit pref][0m
+[2mdesktop # [    0.239409] pci 0000:00:1d.0: [8086:2934] type 00 class 0x0c0300 conventional PCI endpoint[0m
+[2mdesktop # [    0.240432] pci 0000:00:1d.0: BAR 4 [io  0xc180-0xc19f][0m
+[2mdesktop # [    0.240813] pci 0000:00:1d.1: [8086:2935] type 00 class 0x0c0300 conventional PCI endpoint[0m
+[2mdesktop # [    0.241432] pci 0000:00:1d.1: BAR 4 [io  0xc1a0-0xc1bf][0m
+[2mdesktop # [    0.241823] pci 0000:00:1d.2: [8086:2936] type 00 class 0x0c0300 conventional PCI endpoint[0m
+[2mdesktop # [    0.242438] pci 0000:00:1d.2: BAR 4 [io  0xc1c0-0xc1df][0m
+[2mdesktop # [    0.242840] pci 0000:00:1d.7: [8086:293a] type 00 class 0x0c0320 conventional PCI endpoint[0m
+[2mdesktop # [    0.244422] pci 0000:00:1d.7: BAR 0 [mem 0xfebcb000-0xfebcbfff][0m
+[2mdesktop # [    0.244870] pci 0000:00:1f.0: [8086:2918] type 00 class 0x060100 conventional PCI endpoint[0m
+[2mdesktop # [    0.245266] pci 0000:00:1f.0: quirk: [io  0x0600-0x067f] claimed by ICH6 ACPI/GPIO/TCO[0m
+[2mdesktop # [    0.245815] pci 0000:00:1f.2: [8086:2922] type 00 class 0x010601 conventional PCI endpoint[0m
+[2mdesktop # [    0.246649] pci 0000:00:1f.2: BAR 4 [io  0xc1e0-0xc1ff][0m
+[2mdesktop # [    0.246981] pci 0000:00:1f.2: BAR 5 [mem 0xfebcc000-0xfebccfff][0m
+[2mdesktop # [    0.247247] pci 0000:00:1f.3: [8086:2930] type 00 class 0x0c0500 conventional PCI endpoint[0m
+[2mdesktop # [    0.248103] pci 0000:00:1f.3: BAR 4 [io  0x0700-0x073f][0m
+[2mdesktop # [    0.250334] ACPI: PCI: Interrupt link LNKA configured for IRQ 10[0m
+[2mdesktop # [    0.250815] ACPI: PCI: Interrupt link LNKB configured for IRQ 10[0m
+[2mdesktop # [    0.251120] ACPI: PCI: Interrupt link LNKC configured for IRQ 11[0m
+[2mdesktop # [    0.251573] ACPI: PCI: Interrupt link LNKD configured for IRQ 11[0m
+[2mdesktop # [    0.252020] ACPI: PCI: Interrupt link LNKE configured for IRQ 10[0m
+[2mdesktop # [    0.253119] ACPI: PCI: Interrupt link LNKF configured for IRQ 10[0m
+[2mdesktop # [    0.253580] ACPI: PCI: Interrupt link LNKG configured for IRQ 11[0m
+[2mdesktop # [    0.254008] ACPI: PCI: Interrupt link LNKH configured for IRQ 11[0m
+[2mdesktop # [    0.254101] ACPI: PCI: Interrupt link GSIA configured for IRQ 16[0m
+[2mdesktop # [    0.254507] ACPI: PCI: Interrupt link GSIB configured for IRQ 17[0m
+[2mdesktop # [    0.254852] ACPI: PCI: Interrupt link GSIC configured for IRQ 18[0m
+[2mdesktop # [    0.255089] ACPI: PCI: Interrupt link GSID configured for IRQ 19[0m
+[2mdesktop # [    0.255423] ACPI: PCI: Interrupt link GSIE configured for IRQ 20[0m
+[2mdesktop # [    0.255794] ACPI: PCI: Interrupt link GSIF configured for IRQ 21[0m
+[2mdesktop # [    0.256089] ACPI: PCI: Interrupt link GSIG configured for IRQ 22[0m
+[2mdesktop # [    0.256423] ACPI: PCI: Interrupt link GSIH configured for IRQ 23[0m
+[2mdesktop # [    0.257169] iommu: Default domain type: Translated[0m
+[2mdesktop # [    0.257337] iommu: DMA domain TLB invalidation policy: lazy mode[0m
+[2mdesktop # [    0.258127] ACPI: bus type USB registered[0m
+[2mdesktop # [    0.258379] usbcore: registered new interface driver usbfs[0m
+[2mdesktop # [    0.258741] usbcore: registered new interface driver hub[0m
+[2mdesktop # [    0.258741] usbcore: registered new device driver usb[0m
+[2mdesktop # [    0.259290] NetLabel: Initializing[0m
+[2mdesktop # [    0.259390] NetLabel:  domain hash size = 128[0m
+[2mdesktop # [    0.259946] NetLabel:  protocols = UNLABELED CIPSOv4 CALIPSO[0m
+[2mdesktop # [    0.261107] NetLabel:  unlabeled traffic allowed by default[0m
+[2mdesktop # [    0.261502] PCI: Using ACPI for IRQ routing[0m
+[2mdesktop # [    0.287138] vgaarb: loaded[0m
+[2mdesktop # [    0.287380] hpet0: at MMIO 0xfed00000, IRQs 2, 8, 0[0m
+[2mdesktop # [    0.287708] hpet0: 3 comparators, 64-bit 100.000000 MHz counter[0m
+[2mdesktop # [    0.293113] clocksource: Switched to clocksource kvm-clock[0m
+[2mdesktop # [    0.294157] VFS: Disk quotas dquot_6.6.0[0m
+[2mdesktop # [    0.294436] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)[0m
+[2mdesktop # [    0.294980] pnp: PnP ACPI init[0m
+[2mdesktop # [    0.295287] ACPI: IRQ 4 override to edge(!), high(!)[0m
+[2mdesktop # [    0.295593] system 00:04: [mem 0xb0000000-0xbfffffff window] has been reserved[0m
+[2mdesktop # [    0.296126] pnp: PnP ACPI: found 5 devices[0m
+[2mdesktop # [    0.301641] clocksource: acpi_pm: mask: 0xffffff max_cycles: 0xffffff, max_idle_ns: 2085701024 ns[0m
+[2mdesktop # [    0.302274] clocksource: Switched to clocksource acpi_pm[0m
+[2mdesktop # [    0.302675] NET: Registered PF_INET protocol family[0m
+[2mdesktop # [    0.303227] IP idents hash table entries: 65536 (order: 7, 524288 bytes, linear)[0m
+[2mdesktop # [    0.310444] tcp_listen_portaddr_hash hash table entries: 2048 (order: 3, 32768 bytes, linear)[0m
+[2mdesktop # [    0.311039] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)[0m
+[2mdesktop # [    0.311580] TCP established hash table entries: 32768 (order: 6, 262144 bytes, linear)[0m
+[2mdesktop # [    0.312204] TCP bind hash table entries: 32768 (order: 8, 1048576 bytes, linear)[0m
+[2mdesktop # [    0.312717] TCP: Hash tables configured (established 32768 bind 32768)[0m
+[2mdesktop # [    0.313214] MPTCP token hash table entries: 4096 (order: 5, 98304 bytes, linear)[0m
+[2mdesktop # [    0.313677] UDP hash table entries: 2048 (order: 5, 131072 bytes, linear)[0m
+[2mdesktop # [    0.314256] UDP-Lite hash table entries: 2048 (order: 5, 131072 bytes, linear)[0m
+[2mdesktop # [    0.314757] NET: Registered PF_UNIX/PF_LOCAL protocol family[0m
+[2mdesktop # [    0.315189] NET: Registered PF_XDP protocol family[0m
+[2mdesktop # [    0.315518] pci_bus 0000:00: resource 4 [io  0x0000-0x0cf7 window][0m
+[2mdesktop # [    0.315925] pci_bus 0000:00: resource 5 [io  0x0d00-0xffff window][0m
+[2mdesktop # [    0.316378] pci_bus 0000:00: resource 6 [mem 0x000a0000-0x000bffff window][0m
+[2mdesktop # [    0.316809] pci_bus 0000:00: resource 7 [mem 0x80000000-0xafffffff window][0m
+[2mdesktop # [    0.317209] pci_bus 0000:00: resource 8 [mem 0xc0000000-0xfebfffff window][0m
+[2mdesktop # [    0.317584] pci_bus 0000:00: resource 9 [mem 0xe0000000000-0xe07ffffffff window][0m
+[2mdesktop # [    0.318199] ACPI: \_SB_.GSIA: Enabled at IRQ 16[0m
+[2mdesktop # [    0.318921] ACPI: \_SB_.GSIB: Enabled at IRQ 17[0m
+[2mdesktop # [    0.319659] ACPI: \_SB_.GSIC: Enabled at IRQ 18[0m
+[2mdesktop # [    0.320332] ACPI: \_SB_.GSID: Enabled at IRQ 19[0m
+[2mdesktop # [    0.320927] PCI: CLS 0 bytes, default 64[0m
+[2mdesktop # [    0.321200] PCI-DMA: Using software bounce buffering for IO (SWIOTLB)[0m
+[2mdesktop # [    0.321280] Trying to unpack rootfs image as initramfs...[0m
+[2mdesktop # [    0.321554] software IO TLB: mapped [mem 0x000000007a2e6000-0x000000007e2e6000] (64MB)[0m
+[2mdesktop # [    0.322353] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x3143404a908, max_idle_ns: 440795209397 ns[0m
+[2mdesktop # [    0.331734] Initialise system trusted keyrings[0m
+[2mdesktop # [    0.332156] workingset: timestamp_bits=40 max_order=20 bucket_order=0[0m
+[2mdesktop # [    0.336793] Key type asymmetric registered[0m
+[2mdesktop # [    0.337120] Asymmetric key parser 'x509' registered[0m
+[2mdesktop # [    0.337463] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 248)[0m
+[2mdesktop # [    0.337985] io scheduler mq-deadline registered[0m
+[2mdesktop # [    0.338339] io scheduler kyber registered[0m
+[2mdesktop # [    0.340140] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled[0m
+[2mdesktop # [    0.340667] 00:03: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16550A[0m
+[2mdesktop # [    0.341503] Linux agpgart interface v0.103[0m
+[2mdesktop # [    0.341805] ACPI: bus type drm_connector registered[0m
+[2mdesktop # [    0.346245] usbcore: registered new interface driver usbserial_generic[0m
+[2mdesktop # [    0.346652] usbserial: USB Serial support registered for generic[0m
+[2mdesktop # [    0.346992] intel_pstate: CPU model not supported[0m
+[2mdesktop # [    0.347438] drop_monitor: Initializing network drop monitor service[0m
+[2mdesktop # [    0.347858] NET: Registered PF_INET6 protocol family[0m
+[2mdesktop # [    0.349087] Segment Routing with IPv6[0m
+[2mdesktop # [    0.349310] In-situ OAM (IOAM) with IPv6[0m
+[2mdesktop # [    0.352138] IPI shorthand broadcast: enabled[0m
+[2mdesktop # [    0.353457] sched_clock: Marking stable (302006974, 50997300)->(356320942, -3316668)[0m
+[2mdesktop # [    0.353953] registered taskstats version 1[0m
+[2mdesktop # [    0.354368] Loading compiled-in X.509 certificates[0m
+[2mdesktop # [    0.357189] Demotion targets for Node 0: null[0m
+[2mdesktop # [    0.357473] Key type .fscrypt registered[0m
+[2mdesktop # [    0.357699] Key type fscrypt-provisioning registered[0m
+[2mdesktop # [    0.358018] ima: No TPM chip found, activating TPM-bypass![0m
+[2mdesktop # [    0.358339] ima: Allocated hash algorithm: sha1[0m
+[2mdesktop # [    0.358606] ima: No architecture policies found[0m
+[2mdesktop # [    0.358953] PM:   Magic number: 14:993:537[0m
+[2mdesktop # [    0.359754] RAS: Correctable Errors collector initialized.[0m
+[2mdesktop # [    0.362274] clk: Disabling unused clocks[0m
+[2mdesktop # [    0.362504] PM: genpd: Disabling unused power domains[0m
+[2mdesktop # [    0.441994] Freeing initrd memory: 29608K[0m
+[2mdesktop # [    0.450375] Freeing unused decrypted memory: 2028K[0m
+[2mdesktop # [    0.451044] Freeing unused kernel image (initmem) memory: 3656K[0m
+[2mdesktop # [    0.451406] Write protecting the kernel read-only data: 32768k[0m
+[2mdesktop # [    0.451856] Freeing unused kernel image (text/rodata gap) memory: 304K[0m
+[2mdesktop # [    0.452379] Freeing unused kernel image (rodata/data gap) memory: 692K[0m
+[2mdesktop # [    0.457296] x86/mm: Checked W+X mappings: passed, no W+X pages found.[0m
+[2mdesktop # [    0.457659] Run /init as init process[0m
+[2mdesktop # [    0.462953] systemd[1]: Inserted module 'autofs4'[0m
+[2mdesktop # [    0.476083] fuse: init (API version 7.45)[0m
+[2mdesktop # [    0.480549] ACPI: \_SB_.GSIF: Enabled at IRQ 21[0m
+[2mdesktop # [    0.481584] ACPI: \_SB_.GSIG: Enabled at IRQ 22[0m
+[2mdesktop # [    0.482891] ACPI: \_SB_.GSIH: Enabled at IRQ 23[0m
+[2mdesktop # [    0.487380] ACPI: \_SB_.GSIE: Enabled at IRQ 20[0m
+[2mdesktop # [    0.490327] virtiofs virtio6: discovered new tag: nix-store[0m
+[2mdesktop # [    0.490991] virtiofs virtio6: virtio_fs_setup_dax: No cache capability[0m
+[2mdesktop # [    0.496155] virtiofs virtio7: discovered new tag: shared[0m
+[2mdesktop # [    0.496773] virtiofs virtio7: virtio_fs_setup_dax: No cache capability[0m
+[2mdesktop # [    0.498150] virtiofs virtio8: discovered new tag: xchg[0m
+[2mdesktop # [    0.498757] virtiofs virtio8: virtio_fs_setup_dax: No cache capability[0m
+[2mdesktop # [    0.515893] systemd[1]: Successfully made /usr/ read-only.[0m
+[2mdesktop # [    0.850111] systemd[1]: systemd 261.3 running in system mode (+PAM +AUDIT -SELINUX +APPARMOR +IMA +IPE +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK -BTF -XKBCOMMON +UTMP +LIBARCHIVE)[0m
+[2mdesktop # [    0.851770] systemd[1]: Detected virtualization kvm.[0m
+[2mdesktop # [    0.852070] systemd[1]: Detected architecture x86-64.[0m
+[2mdesktop # [    0.852448] systemd[1]: Running in initrd.[0m
+[2mdesktop # [    0.852870] systemd[1]: Initializing machine ID from random generator.[0m
+[2mdesktop # [    0.853366] systemd[1]: Hostname set to <desktop>.[0m
+[2mdesktop # [    0.880905] systemd[1]: bpf-restrict-fs: LSM BPF program attached[0m
+[2mdesktop # [    0.895244] systemd[1]: Queued start job for default target Initrd Default Target.[0m
+[2mdesktop # [    0.900597] systemd[1]: Created slice Slice /system/modprobe.[0m
+[2mdesktop # [    0.901063] systemd[1]: Started Dispatch Password Requests to Console Directory Watch.[0m
+[2mdesktop # [    0.901635] systemd[1]: Expecting device /dev/disk/by-label/nixos...[0m
+[2mdesktop # [    0.902125] systemd[1]: Reached target Path Units.[0m
+[2mdesktop # [    0.902462] systemd[1]: Reached target Slice Units.[0m
+[2mdesktop # [    0.902804] systemd[1]: Reached target Swaps.[0m
+[2mdesktop # [    0.903167] systemd[1]: Reached target Timer Units.[0m
+[2mdesktop # [    0.903546] systemd[1]: Listening on D-Bus System Message Bus Socket.[0m
+[2mdesktop # [    0.904026] systemd[1]: Listening on Journal Socket (/dev/log).[0m
+[2mdesktop # [    0.904466] systemd[1]: Listening on Journal Sockets.[0m
+[2mdesktop # [    0.904846] systemd[1]: Listening on udev Control Socket.[0m
+[2mdesktop # [    0.905259] systemd[1]: Listening on udev Kernel Socket.[0m
+[2mdesktop # [    0.905630] systemd[1]: Reached target Socket Units.[0m
+[2mdesktop # [    0.906333] systemd[1]: Starting Create List of Static Device Nodes...[0m
+[2mdesktop # [    0.907124] systemd[1]: Starting Load Kernel Module configfs...[0m
+[2mdesktop # [    0.909138] systemd[1]: Starting Journal Service...[0m
+[2mdesktop # [    0.911044] systemd[1]: Starting Load Kernel Modules...[0m
+[2mdesktop # [    0.911460] systemd[1]: Early TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-os[0m
+[2mdesktop # [    0.914849] systemd[1]: Starting Coldplug All udev Devices...[0m
+[2mdesktop # [    0.918499] systemd[1]: Finished Create List of Static Device Nodes.[0m
+[2mdesktop # [    0.921328] systemd[1]: modprobe@configfs.service: Deactivated successfully.[0m
+[2mdesktop # [    0.921966] systemd[1]: Finished Load Kernel Module configfs.[0m
+[2mdesktop # [    0.923941] [drm] pci: virtio-gpu-pci detected at 0000:00:05.0[0m
+[2mdesktop # [    0.924448] [drm] features: -virgl +edid -resource_blob -host_visible[0m
+[2mdesktop # [    0.924448] [drm] features: -context_init[0m
+[2mdesktop # [    0.926354] device-mapper: core: CONFIG_IMA_DISABLE_HTABLE is disabled. Duplicate IMA measurements will not be recorded in the IMA log.[0m
+[2mdesktop # [    0.927346] [drm] number of scanouts: 1[0m
+[2mdesktop # [    0.927567] [drm] number of cap sets: 0[0m
+[2mdesktop # [    0.927813] device-mapper: ioctl: 4.50.0-ioctl (2025-04-28) initialised: dm-devel@lists.linux.dev[0m
+[2mdesktop # [    0.928699] systemd[1]: Kernel Configuration File System skipped, unmet condition check ConditionPathExists=/sys/kernel/config[0m
+[2mdesktop # [    0.930203] systemd-journald[75]: Collecting audit messages is disabled.[0m
+[2mdesktop # [    0.932124] virtio-pci 0000:00:05.0: [drm] Registered 1 planes with drm panic[0m
+[2mdesktop # [    0.932522] [drm] Initialized virtio_gpu 0.1.0 for 0000:00:05.0 on minor 0[0m
+[2mdesktop # [    0.934081] systemd[1]: Starting Create Static Device Nodes in /dev gracefully...[0m
+[2mdesktop # [    0.939402] Console: switching to colour frame buffer device 160x50[0m
+[2mdesktop # [    0.940461] systemd[1]: Finished Create Static Device Nodes in /dev gracefully.[0m
+[2mdesktop # [    0.940903] systemd[1]: Starting Create Static Device Nodes in /dev...[0m
+[2mdesktop # [    0.942781] virtio-pci 0000:00:05.0: [drm] fb0: virtio_gpudrmfb frame buffer device[0m
+[2mdesktop # [    0.949294] systemd[1]: Finished Load Kernel Modules.[0m
+[2mdesktop # [    0.951223] systemd[1]: Starting Apply Kernel Variables...[0m
+[2mdesktop # [    0.953038] systemd[1]: Finished Create Static Device Nodes in /dev.[0m
+[2mdesktop # [    0.954136] systemd[1]: Reached target Preparation for Local File Systems.[0m
+[2mdesktop # [    0.956057] systemd[1]: Reached target Local File Systems.[0m
+[2mdesktop # [    0.912191] systemd-modules-load[76]: Using 2 probe threads[0m
+[2mdesktop # [    0.912723] systemd-modules-load[76]: Inserted module 'virtio_balloon'[0m
+[2mdesktop # [    0.914185] systemd-modules-load[76]: Inserted module 'dm_mod'[0m
+[2mdesktop # [    0.914561] systemd-modules-load[76]: Inserted module 'virtio_gpu'[0m
+[2mdesktop # [    0.966105] systemd[1]: Starting Rule-based Manager for Device Events and Files...[0m
+[2mdesktop # [    0.966521] systemd[1]: Started Journal Service.[0m
+[2mdesktop # [    0.916668] systemd[1]: Finished Coldplug All udev Devices.[0m
+[2mdesktop # [    0.917315] systemd[1]: Finished Apply Kernel Variables.[0m
+[2mdesktop # [    0.919234] systemd[1]: Starting Create System Files and Directories...[0m
+[2mdesktop # [    0.925133] systemd-udevd[85]: Using default interface naming scheme 'v261'.[0m
+[2mdesktop # [    0.926350] systemd[1]: Finished Create System Files and Directories.[0m
+[2mdesktop # [    0.930737] systemd[1]: Started Rule-based Manager for Device Events and Files.[0m
+[2mdesktop # [    0.932110] systemd[1]: Reached target System Initialization.[0m
+[2mdesktop # [    0.932444] systemd[1]: Reached target Basic System.[0m
+[2mdesktop # [    0.950529] systemd[1]: Starting Virtual Console Setup...[0m
+[2mdesktop # [    0.962072] systemd-vconsole-setup[116]: [0;1;39mConfiguration of first virtual console was skipped, ignoring remaining ones.[0m[0m
+[2mdesktop # [    0.963123] systemd[1]: Finished Virtual Console Setup.[0m
+[2mdesktop # [    1.043595] i8042: PNP: PS/2 Controller [PNP0303:KBD,PNP0f13:MOU] at 0x60,0x64 irq 1,12[0m
+[2mdesktop # [    1.044751] virtio_blk virtio2: 2/0/0 default/read/poll queues[0m
+[2mdesktop # [    1.045852] virtio_blk virtio2: [vda] 2097152 512-byte logical blocks (1.07 GB/1.00 GiB)[0m
+[2mdesktop # [    1.049137] serio: i8042 KBD port at 0x60,0x64 irq 1[0m
+[2mdesktop # [    1.049326] serio: i8042 AUX port at 0x60,0x64 irq 12[0m
+[2mdesktop # [    1.056858] ehci-pci 0000:00:1d.7: EHCI Host Controller[0m
+[2mdesktop # [    1.057146] ehci-pci 0000:00:1d.7: new USB bus registered, assigned bus number 1[0m
+[2mdesktop # [    1.057663] ehci-pci 0000:00:1d.7: irq 19, io mem 0xfebcb000[0m
+[2mdesktop # [    1.064072] ehci-pci 0000:00:1d.7: USB 2.0 started, EHCI 1.00[0m
+[2mdesktop # [    1.064399] usb usb1: New USB device found, idVendor=1d6b, idProduct=0002, bcdDevice= 6.18[0m
+[2mdesktop # [    1.064760] usb usb1: New USB device strings: Mfr=3, Product=2, SerialNumber=1[0m
+[2mdesktop # [    1.065254] usb usb1: Product: EHCI Host Controller[0m
+[2mdesktop # [    1.065432] usb usb1: Manufacturer: Linux 6.18.55 ehci_hcd[0m
+[2mdesktop # [    1.065627] usb usb1: SerialNumber: 0000:00:1d.7[0m
+[2mdesktop # [    1.065869] hub 1-0:1.0: USB hub found[0m
+[2mdesktop # [    1.066486] hub 1-0:1.0: 6 ports detected[0m
+[2mdesktop # [    1.072008] uhci_hcd 0000:00:1d.0: UHCI Host Controller[0m
+[2mdesktop # [    1.072313] uhci_hcd 0000:00:1d.0: new USB bus registered, assigned bus number 2[0m
+[2mdesktop # [    1.072667] uhci_hcd 0000:00:1d.0: detected 2 ports[0m
+[2mdesktop # [    1.072989] uhci_hcd 0000:00:1d.0: irq 16, io port 0x0000c180[0m
+[2mdesktop # [    1.074179] usb usb2: New USB device found, idVendor=1d6b, idProduct=0001, bcdDevice= 6.18[0m
+[2mdesktop # [    1.023487] systemd[1]: systemd-vconsole-setup.service: Deactivated successfully.[0m
+[2mdesktop # [    1.074563] usb usb2: New USB device strings: Mfr=3, Product=2, SerialNumber=1[0m
+[2mdesktop # [    1.023993] systemd[1]: Stopped Virtual Console Setup.[0m
+[2mdesktop # [    1.024602] systemd[1]: Stopping Virtual Console Setup...[0m
+[2mdesktop # [    1.025548] systemd[1]: Starting Virtual Console Setup...[0m
+[2mdesktop # [    1.081925] usb usb2: Product: UHCI Host Controller[0m
+[2mdesktop # [    1.084036] usb usb2: Manufacturer: Linux 6.18.55 uhci_hcd[0m
+[2mdesktop # [    1.084430] usb usb2: SerialNumber: 0000:00:1d.0[0m
+[2mdesktop # [    1.033814] systemd[1]: systemd-vconsole-setup.service: Deactivated successfully.[0m
+[2mdesktop # [    1.034365] systemd[1]: Stopped Virtual Console Setup.[0m
+[2mdesktop # [    1.035120] systemd[1]: Starting Virtual Console Setup...[0m
+[2mdesktop # [    1.087506] SCSI subsystem initialized[0m
+[2mdesktop # [    1.098635] hub 2-0:1.0: USB hub found[0m
+[2mdesktop # [    1.048279] systemd-vconsole-setup[124]: [0;1;39mConfiguration of first virtual console was skipped, ignoring remaining ones.[0m[    1.100689] hub 2-0:1.0: 2 ports detected[0m
+[2mdesktop # [0m
+[2mdesktop # [    1.102750] input: AT Translated Set 2 keyboard as /devices/platform/i8042/serio0/input/input0[0m
+[2mdesktop # [    1.103904] uhci_hcd 0000:00:1d.1: UHCI Host Controller[0m
+[2mdesktop # [    1.104234] uhci_hcd 0000:00:1d.1: new USB bus registered, assigned bus number 3[0m
+[2mdesktop # [    1.104648] uhci_hcd 0000:00:1d.1: detected 2 ports[0m
+[2mdesktop # [    1.104959] uhci_hcd 0000:00:1d.1: irq 17, io port 0x0000c1a0[0m
+[2mdesktop # [    1.105722] usb usb3: New USB device found, idVendor=1d6b, idProduct=0001, bcdDevice= 6.18[0m
+[2mdesktop # [    1.106166] usb usb3: New USB device strings: Mfr=3, Product=2, SerialNumber=1[0m
+[2mdesktop # [    1.106581] usb usb3: Product: UHCI Host Controller[0m
+[2mdesktop # [    1.106842] usb usb3: Manufacturer: Linux 6.18.55 uhci_hcd[0m
+[2mdesktop # [    1.107153] usb usb3: SerialNumber: 0000:00:1d.1[0m
+[2mdesktop # [    1.107543] hub 3-0:1.0: USB hub found[0m
+[2mdesktop # [    1.107808] hub 3-0:1.0: 2 ports detected[0m
+[2mdesktop # [    1.108753] uhci_hcd 0000:00:1d.2: UHCI Host Controller[0m
+[2mdesktop # [    1.058228] systemd[1]: Finished Virtual Console Setup.[0m
+[2mdesktop # [    1.058627] (udev-worker)[98]: [0;1;33m[0;1;38:5:185meth1: Config file /etc/systemd/network/40-eth1.link is applied to device based on pote[    1.110036] uhci_hcd 0000:00:1d.2: new USB bus registered, assigned bus number 4[0m
+[2mdesktop # ntially unpredictable interface [    1.110409] uhci_hcd 0000:00:1d.2: detected 2 ports[0m
+[2mdesktop # name.[0m[0m
+[2mdesktop # [    1.110745] uhci_hcd 0000:00:1d.2: irq 18, io port 0x0000c1c0[0m
+[2mdesktop # [    1.060471] (udev-worker)[98]: Network interface NamePolicy= disabled on kernel command line.[0m
+[2mdesktop # [    1.061204] systemd[1]: Found device /dev/disk/by-label/nixos.[0m
+[2mdesktop # [    1.061771] systemd[1]: Reached target Initrd Root Device.[0m
+[2mdesktop # [    1.064201] s[    1.115153] usb usb4: New USB device found, idVendor=1d6b, idProduct=0001, bcdDevice= 6.18[0m
+[2mdesktop # ystemd[1]: Starting File System [    1.115568] usb usb4: New USB device strings: Mfr=3, Product=2, SerialNumber=1[0m
+[2mdesktop # Check on /dev/disk/by-label/nixo[    1.115935] usb usb4: Product: UHCI Host Controller[0m
+[2mdesktop # s...[0m
+[2mdesktop # [    1.116417] usb usb4: Manufacturer: Linux 6.18.55 uhci_hcd[0m
+[2mdesktop # [    1.116705] usb usb4: SerialNumber: 0000:00:1d.2[0m
+[2mdesktop # [    1.066358] (udev-worker)[104]: Network interface NamePolicy= disabled on kernel command line.[0m
+[2mdesktop # [    1.120014] hub 4-0:1.0: USB hub found[0m
+[2mdesktop # [    1.120333] hub 4-0:1.0: 2 ports detected[0m
+[2mdesktop # [    1.120982] ahci 0000:00:1f.2: AHCI vers 0001.0000, 32 command slots, 1.5 Gbps, SATA mode[0m
+[2mdesktop # [    1.121447] ahci 0000:00:1f.2: 6/6 ports implemented (port mask 0x3f)[0m
+[2mdesktop # [    1.121805] ahci 0000:00:1f.2: flags: 64bit ncq only[0m
+[2mdesktop # [    1.072141] systemd-fsck[132]: nixos: clean, 12/65536 files, 13019/262144 blocks[0m
+[2mdesktop # [    1.123739] scsi host0: ahci[0m
+[2mdesktop # [    1.124944] scsi host1: ahci[0m
+[2mdesktop # [    1.125550] scsi host2: ahci[0m
+[2mdesktop # [    1.125817] scsi host3: ahci[0m
+[2mdesktop # [    1.127753] scsi host4: ahci[0m
+[2mdesktop # [    1.128448] scsi host5: ahci[0m
+[2mdesktop # [    1.128679] ata1: SATA max UDMA/133 abar m4096@0xfebcc000 port 0xfebcc100 irq 51 lpm-pol 1[0m
+[2mdesktop # [    1.129674] ata2: SATA max UDMA/133 abar m4096@0xfebcc000 port 0xfebcc180 irq 51 lpm-pol 1[0m
+[2mdesktop # [    1.130270] ata3: SATA max UDMA/133 abar m4096@0xfebcc000 port 0xfebcc200 irq 51 lpm-pol 1[0m
+[2mdesktop # [    1.130631] ata4: SATA max UDMA/133 abar m4096@0xfebcc000 port 0xfebcc280 irq 51 lpm-pol 1[0m
+[2mdesktop # [    1.130985] ata5: SATA max UDMA/133 abar m4096@0xfebcc000 port 0xfebcc300 irq 51 lpm-pol 1[0m
+[2mdesktop # [    1.131659] ata6: SATA max UDMA/133 abar m4096@0xfebcc000 port 0xfebcc380 irq 51 lpm-pol 1[0m
+[2mdesktop # [    1.094352] systemd[1]: Finished File System Check on /dev/disk/by-label/nixos.[0m
+[2mdesktop # [    1.303073] usb 1-1: new high-speed USB device number 2 using ehci-pci[0m
+[2mdesktop # [    1.432794] usb 1-1: New USB device found, idVendor=0627, idProduct=0001, bcdDevice= 0.00[0m
+[2mdesktop # [    1.433224] usb 1-1: New USB device strings: Mfr=1, Product=3, SerialNumber=10[0m
+[2mdesktop # [    1.433557] usb 1-1: Product: QEMU USB Tablet[0m
+[2mdesktop # [    1.433785] usb 1-1: Manufacturer: QEMU[0m
+[2mdesktop # [    1.433988] usb 1-1: SerialNumber: 28754-0000:00:1d.7-1[0m
+[2mdesktop # [    1.436530] ata1: SATA link down (SStatus 0 SControl 300)[0m
+[2mdesktop # [    1.437198] ata2: SATA link down (SStatus 0 SControl 300)[0m
+[2mdesktop # [    1.442240] hid: raw HID events driver (C) Jiri Kosina[0m
+[2mdesktop # [    1.444852] ata3: SATA link up 1.5 Gbps (SStatus 113 SControl 300)[0m
+[2mdesktop # [    1.445630] ata4: SATA link down (SStatus 0 SControl 300)[0m
+[2mdesktop # [    1.445935] ata3.00: ATAPI: QEMU DVD-ROM, 2.5+, max UDMA/100[0m
+[2mdesktop # [    1.446989] ata3.00: applying bridge limits[0m
+[2mdesktop # [    1.447618] ata5: SATA link down (SStatus 0 SControl 300)[0m
+[2mdesktop # [    1.448233] ata6: SATA link down (SStatus 0 SControl 300)[0m
+[2mdesktop # [    1.448537] ata3.00: configured for UDMA/100[0m
+[2mdesktop # [    1.449383] scsi 2:0:0:0: CD-ROM            QEMU     QEMU DVD-ROM     2.5+ PQ: 0 ANSI: 5[0m
+[2mdesktop # [    1.466604] usbcore: registered new interface driver usbhid[0m
+[2mdesktop # [    1.466906] usbhid: USB HID core driver[0m
+[2mdesktop # [    1.469762] input: QEMU QEMU USB Tablet as /devices/pci0000:00/0000:00:1d.7/usb1/1-1/1-1:1.0/0003:0627:0001.0001/input/input2[0m
+[2mdesktop # [    1.470329] hid-generic 0003:0627:0001.0001: input,hidraw0: USB HID v0.01 Mouse [QEMU QEMU USB Tablet] on usb-0000:00:1d.7-1/input0[0m
+[2mdesktop # [    1.481204] sr 2:0:0:0: [sr0] scsi3-mmc drive: 4x/4x cd/rw xa/form2 tray[0m
+[2mdesktop # [    1.505117] cdrom: Uniform CD-ROM driver Revision: 3.20[0m
+[2mdesktop # [    1.866110] systemd[1]: Mounting /sysroot...[0m
+[2mdesktop # [    1.975695] EXT4-fs (vda): mounted filesystem aff575ec-b3c0-47ba-ac4f-19cfec601c71 r/w with ordered data mode. Quota mode: none.[0m
+[2mdesktop # [    1.925949] systemd[1]: Mounted /sysroot.[0m
+[2mdesktop # [    1.926307] systemd[1]: Reached target Initrd Root File System.[0m
+[2mdesktop # [    1.927233] systemd[1]: Mounting /sysroot/nix/.ro-store...[0m
+[2mdesktop # [    1.927906] systemd[1]: Mounting /sysroot/nix/.rw-store...[0m
+[2mdesktop # [    1.929743] systemd[1]: Mounting /sysroot/run...[0m
+[2mdesktop # [    1.937560] systemd[1]: Mounting /sysroot/tmp/shared...[0m
+[2mdesktop # [    1.938315] systemd[1]: Mounting /sysroot/tmp/xchg...[0m
+[2mdesktop # [    1.940137] systemd[1]: Starting Mountpoints Configured in the Real Root...[0m
+[2mdesktop # [    1.941651] systemd[1]: Mounted /sysroot/nix/.ro-store.[0m
+[2mdesktop # [    1.944157] systemd[1]: Mounted /sysroot/nix/.rw-store.[0m
+[2mdesktop # [    1.944547] systemd[1]: Mounted /sysroot/run.[0m
+[2mdesktop # [    1.945465] systemd[1]: Mounted /sysroot/tmp/shared.[0m
+[2mdesktop # [    1.945879] systemd[1]: Mounted /sysroot/tmp/xchg.[0m
+[2mdesktop # [    1.946948] systemd-sysroot-fstab-check[172]: /sysroot should be mounted in the initrd, will request daemon-reload.[0m
+[2mdesktop # [    1.947618] systemd[1]: Starting rw-sysroot-nix-store.service...[0m
+[2mdesktop # [    1.948300] systemd[1]: [0;1;39mReload requested from client PID 172 ('systemd-sysroot') (unit initrd-parse-etc.service)...[0m[0m
+[2mdesktop # [    1.948974] systemd[1]: Reloading...[0m
+[2mdesktop # [    1.976410] systemd[1]: Reloading finished in 28 ms.[0m
+[2mdesktop # [    1.994302] systemd-sysroot-fstab-check[172]: Requesting initrd-fs.target/start/replace...[0m
+[2mdesktop # [    1.995263] systemd[1]: rw-sysroot-nix-store.service: Deactivated successfully.[0m
+[2mdesktop # [    1.995798] systemd[1]: Finished rw-sysroot-nix-store.service.[0m
+[2mdesktop # [    1.996638] systemd-sysroot-fstab-check[172]: Requesting swap.target/start/replace...[0m
+[2mdesktop # [    1.997690] systemd[1]: initrd-parse-etc.service: Deactivated successfully.[0m
+[2mdesktop # [    1.998217] systemd[1]: Finished Mountpoints Configured in the Real Root.[0m
+[2mdesktop # [    1.998596] systemd[1]: initrd-parse-etc.service: Triggering OnSuccess= dependencies.[0m
+[2mdesktop # [    1.999514] systemd[1]: Starting rw-sysroot-nix-store.service...[0m
+[2mdesktop # [    2.005968] systemd[1]: rw-sysroot-nix-store.service: Deactivated successfully.[0m
+[2mdesktop # [    2.006423] systemd[1]: Finished rw-sysroot-nix-store.service.[0m
+[2mdesktop # [    2.866135] systemd[1]: Mounting /sysroot/nix/store...[0m
+[2mdesktop # [    2.881106] systemd[1]: Mounted /sysroot/nix/store.[0m
+[2mdesktop # [    2.881584] systemd[1]: Reached target Initrd File Systems.[0m
+[2mdesktop # [    2.882214] systemd[1]: Starting Find NixOS closure...[0m
+[2mdesktop # [    2.882886] systemd[1]: Starting Create Volatile Files and Directories in the Real Root...[0m
+[2mdesktop # [    2.890520] systemd[1]: Finished Create Volatile Files and Directories in the Real Root.[0m
+[2mdesktop # [    2.891313] systemd[1]: sysroot-run-credentials-systemd\x2dtmpfiles\x2dsetup\x2dsysroot.service.mount: Deactivated successfully.[0m
+[2mdesktop # [    2.894653] systemd[1]: Finished Find NixOS closure.[0m
+[2mdesktop # [    2.895166] systemd[1]: Reached target Initrd Default Target.[0m
+[2mdesktop # [    2.895785] systemd[1]: Starting Cleaning Up and Shutting Down Daemons...[0m
+[2mdesktop # [    2.901494] systemd[1]: Stopped target Initrd Default Target.[0m
+[2mdesktop # [    2.901915] systemd[1]: Stopped target Basic System.[0m
+[2mdesktop # [    2.902236] systemd[1]: Stopped target Initrd Root Device.[0m
+[2mdesktop # [    2.902549] systemd[1]: Stopped target Path Units.[0m
+[2mdesktop # [    2.902831] systemd[1]: systemd-ask-password-console.path: Deactivated successfully.[0m
+[2mdesktop # [    2.903339] systemd[1]: Stopped Dispatch Password Requests to Console Directory Watch.[0m
+[2mdesktop # [    2.903806] systemd[1]: Stopped target Slice Units.[0m
+[2mdesktop # [    2.904155] systemd[1]: Stopped target Socket Units.[0m
+[2mdesktop # [    2.904453] systemd[1]: Stopped target System Initialization.[0m
+[2mdesktop # [    2.904798] systemd[1]: Stopped target Swaps.[0m
+[2mdesktop # [    2.905231] systemd[1]: Stopped target Timer Units.[0m
+[2mdesktop # [    2.905613] systemd[1]: dbus.socket: Deactivated successfully.[0m
+[2mdesktop # [    2.905997] systemd[1]: Closed D-Bus System Message Bus Socket.[0m
+[2mdesktop # [    2.906402] systemd[1]: initrd-find-nixos-closure.service: Deactivated successfully.[0m
+[2mdesktop # [    2.906870] systemd[1]: Stopped Find NixOS closure.[0m
+[2mdesktop # [    2.908034] systemd[1]: Starting rw-sysroot-nix-store.service...[0m
+[2mdesktop # [    2.908415] systemd[1]: systemd-sysctl.service: Deactivated successfully.[0m
+[2mdesktop # [    2.909336] systemd[1]: Stopped Apply Kernel Variables.[0m
+[2mdesktop # [    2.909656] systemd[1]: systemd-modules-load.service: Deactivated successfully.[0m
+[2mdesktop # [    2.910122] systemd[1]: Stopped Load Kernel Modules.[0m
+[2mdesktop # [    2.910417] systemd[1]: systemd-tmpfiles-setup-sysroot.service: Deactivated successfully.[0m
+[2mdesktop # [    2.910858] systemd[1]: Stopped Create Volatile Files and Directories in the Real Root.[0m
+[2mdesktop # [    2.913259] systemd[1]: systemd-tmpfiles-setup.service: Deactivated successfully.[0m
+[2mdesktop # [    2.913969] systemd[1]: Stopped Create System Files and Directories.[0m
+[2mdesktop # [    2.914493] systemd[1]: Stopped target Local File Systems.[0m
+[2mdesktop # [    2.915297] systemd[1]: Stopped target Preparation for Local File Systems.[0m
+[2mdesktop # [    2.916021] systemd[1]: systemd-udev-trigger.service: Deactivated successfully.[0m
+[2mdesktop # [    2.916948] systemd[1]: Stopped Coldplug All udev Devices.[0m
+[2mdesktop # [    2.917270] systemd[1]: Stopping Rule-based Manager for Device Events and Files...[0m
+[2mdesktop # [    2.917635] systemd[1]: systemd-vconsole-setup.service: Deactivated successfully.[0m
+[2mdesktop # [    2.917981] systemd[1]: Stopped Virtual Console Setup.[0m
+[2mdesktop # [    2.918274] systemd[1]: initrd-cleanup.service: Deactivated successfully.[0m
+[2mdesktop # [    2.918804] systemd[1]: Finished Cleaning Up and Shutting Down Daemons.[0m
+[2mdesktop # [    2.919223] systemd[1]: rw-sysroot-nix-store.service: Deactivated successfully.[0m
+[2mdesktop # [    2.919570] systemd[1]: Finished rw-sysroot-nix-store.service.[0m
+[2mdesktop # [    2.919857] systemd[1]: systemd-udevd.service: Deactivated successfully.[0m
+[2mdesktop # [    2.920344] systemd[1]: Stopped Rule-based Manager for Device Events and Files.[0m
+[2mdesktop # [    2.920837] systemd[1]: systemd-udevd-control.socket: Deactivated successfully.[0m
+[2mdesktop # [    2.921493] systemd[1]: Closed udev Control Socket.[0m
+[2mdesktop # [    2.921984] systemd[1]: Starting Cleanup udev Database...[0m
+[2mdesktop # [    2.922311] systemd[1]: systemd-tmpfiles-setup-dev.service: Deactivated successfully.[0m
+[2mdesktop # [    2.922677] systemd[1]: Stopped Create Static Device Nodes in /dev.[0m
+[2mdesktop # [    2.923022] systemd[1]: systemd-tmpfiles-setup-dev-early.service: Deactivated successfully.[0m
+[2mdesktop # [    2.923433] systemd[1]: Stopped Create Static Device Nodes in /dev gracefully.[0m
+[2mdesktop # [    2.923797] systemd[1]: kmod-static-nodes.service: Deactivated successfully.[0m
+[2mdesktop # [    2.924220] systemd[1]: Stopped Create List of Static Device Nodes.[0m
+[2mdesktop # [    2.929114] systemd[1]: initrd-udevadm-cleanup-db.service: Deactivated successfully.[0m
+[2mdesktop # [    2.929508] systemd[1]: Finished Cleanup udev Database.[0m
+[2mdesktop # [    2.929784] systemd[1]: Reached target Switch Root.[0m
+[2mdesktop # [    2.930169] systemd[1]: Starting NixOS Activation...[0m
+[2mdesktop # [    2.962217] initrd-nixos-activation-start[217]: booting system configuration /nix/store/8s35mga6jq34d4pmhgfi1flmx8wak5l3-nixos-system-desktop-test[0m
+[2mdesktop # [    2.971653] initrd-nixos-activation-start[217]: running activation script...[0m
+[2mdesktop # [    3.067984] initrd-nixos-activation-start[241]: setting up /etc...[0m
+[2mdesktop # [    3.115340] systemd[1]: initrd-nixos-activation.service: Deactivated successfully.[0m
+[2mdesktop # [    3.115912] systemd[1]: Finished NixOS Activation.[0m
+[2mdesktop # [    3.117906] systemd[1]: Starting Switch Root...[0m
+[2mdesktop # [    3.123496] systemd[1]: [0;1;39mSwitching root.[0m[0m
+[2mdesktop # [    3.209910] systemd-journald[75]: Received SIGTERM from PID 1 (systemd).[0m
+[2mdesktop # [    3.294021] NET: Registered PF_VSOCK protocol family[0m
+[2mdesktop # [    3.645573] systemd[1]: systemd 261.3 running in system mode (+PAM +AUDIT -SELINUX +APPARMOR +IMA +IPE +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK -BTF -XKBCOMMON +UTMP +LIBARCHIVE)[0m
+[2mdesktop # [    3.646970] systemd[1]: Detected virtualization kvm.[0m
+[2mdesktop # [    3.647427] systemd[1]: Detected architecture x86-64.[0m
+[2mdesktop # [    3.647862] systemd[1]: Detected first boot.[0m
+[2mdesktop # [    3.649182] systemd[1]: Initializing machine ID from random generator.[0m
+[2mdesktop # [    3.712827] systemd[1]: bpf-restrict-fs: LSM BPF program attached[0m
+[2mdesktop # [    3.732868] systemd[1]: Applying preset policy.[0m
+[2mdesktop # [    3.782137] systemd[1]: Populated /etc with preset unit settings.[0m
+[2mdesktop # [    3.862901] systemd[1]: initrd-switch-root.service: Deactivated successfully.[0m
+[2mdesktop # [    3.863523] systemd[1]: Stopped initrd-switch-root.service.[0m
+[2mdesktop # [    3.864434] systemd[1]: systemd-journald.service: Scheduled restart job, restart counter is at 1.[0m
+[2mdesktop # [    3.865384] systemd[1]: Created slice Slice /system/getty.[0m
+[2mdesktop # [    3.865936] systemd[1]: Created slice User and Session Slice.[0m
+[2mdesktop # [    3.866402] systemd[1]: Started Dispatch Password Requests to Console Directory Watch.[0m
+[2mdesktop # [    3.866852] systemd[1]: Started Forward Password Requests to Wall Directory Watch.[0m
+[2mdesktop # [    3.867308] systemd[1]: Expecting device /dev/hvc0...[0m
+[2mdesktop # [    3.867632] systemd[1]: Expecting device /dev/ttyS0...[0m
+[2mdesktop # [    3.868001] systemd[1]: Reached target Local Encrypted Volumes.[0m
+[2mdesktop # [    3.868418] systemd[1]: Stopped target initrd-fs.target.[0m
+[2mdesktop # [    3.868763] systemd[1]: Stopped target initrd-root-fs.target.[0m
+[2mdesktop # [    3.869161] systemd[1]: Stopped target initrd-switch-root.target.[0m
+[2mdesktop # [    3.869554] systemd[1]: Reached target Virtual Machines and Containers.[0m
+[2mdesktop # [    3.869953] systemd[1]: Reached target Path Units.[0m
+[2mdesktop # [    3.870329] systemd[1]: Reached target Remote File Systems.[0m
+[2mdesktop # [    3.870684] systemd[1]: Reached target Slice Units.[0m
+[2mdesktop # [    3.871044] systemd[1]: Reached target Swaps.[0m
+[2mdesktop # [    3.871977] systemd[1]: Listening on Query the User Interactively for a Password.[0m
+[2mdesktop # [    3.873019] systemd[1]: Listening on Process Core Dump Socket.[0m
+[2mdesktop # [    3.873761] systemd[1]: Listening on Credential Encryption/Decryption.[0m
+[2mdesktop # [    3.874698] systemd[1]: Listening on Factory Reset Management.[0m
+[2mdesktop # [    3.875098] systemd[1]: Listening on Hostname Service Socket.[0m
+[2mdesktop # [    3.876257] systemd[1]: Starting Journal Log Access Socket...[0m
+[2mdesktop # [    3.876780] systemd[1]: Listening on Journal Audit Socket.[0m
+[2mdesktop # [    3.877696] systemd[1]: Listening on Console Output Muting Service Socket.[0m
+[2mdesktop # [    3.878178] systemd[1]: Listening on Userspace Out-Of-Memory (OOM) Killer Socket.[0m
+[2mdesktop # [    3.878614] systemd[1]: TPM PCR Measurements skipped, unmet condition check ConditionSecurity=measured-os[0m
+[2mdesktop # [    3.879130] systemd[1]: Make TPM PCR Policy skipped, unmet condition check ConditionSecurity=measured-uki[0m
+[2mdesktop # [    3.880666] systemd[1]: Listening on Disk Repartitioning Service Socket.[0m
+[2mdesktop # [    3.881133] systemd[1]: Listening on udev Control Socket.[0m
+[2mdesktop # [    3.881532] systemd[1]: Listening on udev Varlink Socket.[0m
+[2mdesktop # [    3.883553] systemd[1]: Mounting Huge Pages File System...[0m
+[2mdesktop # [    3.884498] systemd[1]: Mounting POSIX Message Queue File System...[0m
+[2mdesktop # [    3.886751] systemd[1]: Mounting Kernel Debug File System...[0m
+[2mdesktop # [    3.888487] systemd[1]: Mounting Kernel Trace File System...[0m
+[2mdesktop # [    3.889789] systemd[1]: Starting Create List of Static Device Nodes...[0m
+[2mdesktop # [    3.892715] systemd[1]: Starting Load Kernel Module configfs...[0m
+[2mdesktop # [    3.893553] systemd[1]: Load Kernel Module drm skipped, unmet condition check ConditionKernelModuleLoaded=!drm[0m
+[2mdesktop # [    3.894113] systemd[1]: Load Kernel Module efi_pstore skipped, unmet condition check ConditionKernelModuleLoaded=!efi_pstore[0m
+[2mdesktop # [    3.894758] systemd[1]: Load Kernel Module fuse skipped, unmet condition check ConditionKernelModuleLoaded=!fuse[0m
+[2mdesktop # [    3.898945] systemd[1]: Mounting FUSE Control File System...[0m
+[2mdesktop # [    3.899344] systemd[1]: Clear Stale Hibernate Storage Info skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67[0m
+[2mdesktop # [    3.900975] systemd[1]: Starting Journal Service...[0m
+[2mdesktop # [    3.901983] systemd[1]: Starting Load Kernel Modules...[0m
+[2mdesktop # [    3.903067] systemd[1]: Starting Userspace Out-Of-Memory (OOM) Killer...[0m
+[2mdesktop # [    3.905314] systemd[1]: Starting Remount Root and Kernel File Systems...[0m
+[2mdesktop # [    3.905669] systemd[1]: Early TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-os[0m
+[2mdesktop # [    3.907308] systemd[1]: Starting Coldplug All udev Devices...[0m
+[2mdesktop # [    3.908653] systemd[1]: Listening on Journal Log Access Socket.[0m
+[2mdesktop # [    3.909039] systemd[1]: Mounted Huge Pages File System.[0m
+[2mdesktop # [    3.909382] systemd[1]: Mounted POSIX Message Queue File System.[0m
+[2mdesktop # [    3.909736] systemd[1]: Mounted Kernel Debug File System.[0m
+[2mdesktop # [    3.914476] systemd[1]: Finished Create List of Static Device Nodes.[0m
+[2mdesktop # [    3.916780] systemd[1]: Starting Create Static Device Nodes in /dev gracefully...[0m
+[2mdesktop # [    3.921054] systemd[1]: modprobe@configfs.service: Deactivated successfully.[0m
+[2mdesktop # [    3.921583] systemd[1]: Finished Load Kernel Module configfs.[0m
+[2mdesktop # [    3.923511] EXT4-fs (vda): re-mounted aff575ec-b3c0-47ba-ac4f-19cfec601c71.[0m
+[2mdesktop # [    3.924440] systemd[1]: Mounting Kernel Configuration File System...[0m
+[2mdesktop # [    3.925092] systemd[1]: Mounted Kernel Trace File System.[0m
+[2mdesktop # [    3.926608] systemd[1]: Finished Remount Root and Kernel File Systems.[0m
+[2mdesktop # [    3.931273] systemd[1]: Listening on Disk Image Download Service Socket.[0m
+[2mdesktop # [    3.931757] systemd[1]: Platform Persistent Storage Archival skipped, unmet condition check ConditionDirectoryNotEmpty=/sys/fs/pstore[0m
+[2mdesktop # [    3.935603] systemd[1]: Starting Load/Save OS Random Seed...[0m
+[2mdesktop # [    3.935999] systemd[1]: TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-os[0m
+[2mdesktop # [    3.940797] systemd[1]: Mounted FUSE Control File System.[0m
+[2mdesktop # [    3.942199] systemd-journald[311]: Collecting audit messages is enabled.[0m
+[2mdesktop # [    3.944064] systemd[1]: Started Userspace Out-Of-Memory (OOM) Killer.[0m
+[2mdesktop # [    3.946481] loop: module loaded[0m
+[2mdesktop # [    3.947156] systemd[1]: Mounted Kernel Configuration File System.[0m
+[2mdesktop # [    3.950868] systemd[1]: Finished Load Kernel Modules.[0m
+[2mdesktop # [    3.900400] systemd[1]: Queued start job for default target Graphical Interface.[0m
+[2mdesktop # [    3.900900] systemd[1]: systemd-journald.service: Deactivated successfully.[0m
+[2mdesktop # [    3.952372] systemd[1]: Started Journal Service.[0m
+[2mdesktop # [    3.902276] systemd-modules-load[312]: Using 2 probe threads[0m
+[2mdesktop # [    3.902949] systemd-oomd[313]: [0;1;33m[0;1;38:5:185mNo swap; memory pressure usage will be degraded[0m[0m
+[2mdesktop # [    3.903942] systemd-modules-load[312]: Inserted module 'loop'[0m
+[2mdesktop # [    3.907684] systemd[1]: Starting Firewall...[0m
+[2mdesktop # [    3.908619] systemd[1]: Starting Flush Journal to Persistent Storage...[0m
+[2mdesktop # [    3.911139] systemd[1]: Starting Apply Kernel Variables...[0m
+[2mdesktop # [    3.917066] systemd[1]: Finished Create Static Device Nodes in /dev gracefully.[0m
+[2mdesktop # [    3.920953] systemd[1]: Starting Create Static Device Nodes in /dev...[0m
+[2mdesktop # [    3.976068] systemd-journald[311]: Received client request to flush runtime journal.[0m
+[2mdesktop # [    3.982197] systemd[1]: Finished Coldplug All udev Devices.[0m
+[2mdesktop # [    3.982847] systemd[1]: Finished Apply Kernel Variables.[0m
+[2mdesktop # [    3.983282] systemd[1]: Finished Load/Save OS Random Seed.[0m
+[2mdesktop # [    3.983565] systemd[1]: Reached target First Boot Complete.[0m
+[2mdesktop # [    3.983841] systemd[1]: Finished Create Static Device Nodes in /dev.[0m
+[2mdesktop # [    3.984193] systemd[1]: Reached target Preparation for Local File Systems.[0m
+[2mdesktop # [    3.984521] systemd[1]: Starting Rule-based Manager for Device Events and Files...[0m
+[2mdesktop # [    3.985507] systemd[1]: Finished Flush Journal to Persistent Storage.[0m
+[2mdesktop # [    3.990211] systemd-udevd[346]: Using default interface naming scheme 'v261'.[0m
+[2mdesktop # [    4.005420] systemd[1]: Started Rule-based Manager for Device Events and Files.[0m
+[2mdesktop # [    4.041069] systemd[1]: Load Kernel Module fuse skipped, unmet condition check ConditionKernelModuleLoaded=!fuse[0m
+[2mdesktop # [    4.075047] systemd[1]: Condition check resulted in /dev/hvc0 being skipped.[0m
+[2mdesktop # [    4.077924] (udev-worker)[398]: Network interface NamePolicy= disabled on kernel command line.[0m
+[2mdesktop # [    4.078471] systemd[1]: Condition check resulted in /dev/ttyS0 being skipped.[0m
+[2mdesktop # [    4.085583] (udev-worker)[381]: [0;1;33m[0;1;38:5:185meth1: Config file /etc/systemd/network/40-eth1.link is applied to device based on potentially unpredictable interface name.[0m[0m
+[2mdesktop # [    4.086393] (udev-worker)[381]: Network interface NamePolicy= disabled on kernel command line.[0m
+[2mdesktop # [    4.096897] systemd[1]: Condition check resulted in Virtio network device being skipped.[0m
+[2mdesktop # [    4.097399] systemd[1]: Load Kernel Module efi_pstore skipped, unmet condition check ConditionKernelModuleLoaded=!efi_pstore[0m
+[2mdesktop # [    4.097909] systemd[1]: Clear Stale Hibernate Storage Info skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67[0m
+[2mdesktop # [    4.098700] systemd[1]: Platform Persistent Storage Archival skipped, unmet condition check ConditionDirectoryNotEmpty=/sys/fs/pstore[0m
+[2mdesktop # [    4.099256] systemd[1]: Early TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-os[0m
+[2mdesktop # [    4.099697] systemd[1]: TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-os[0m
+[2mdesktop # [    4.175172] lpc_ich 0000:00:1f.0: I/O space for GPIO uninitialized[0m
+[2mdesktop # [    4.176513] input: QEMU Virtio Keyboard as /devices/pci0000:00/0000:00:06.0/virtio5/input/input3[0m
+[2mdesktop # [    4.178476] input: Power Button as /devices/LNXSYSTM:00/LNXPWRBN:00/input/input4[0m
+[2mdesktop # [    4.183184] i801_smbus 0000:00:1f.3: SMBus using PCI interrupt[0m
+[2mdesktop # [    4.183827] i2c i2c-0: Memory type 0x07 not supported yet, not instantiating SPD[0m
+[2mdesktop # [    4.212453] rtc_cmos PNP0B00:00: RTC can wake from S4[0m
+[2mdesktop # [    4.213906] rtc_cmos PNP0B00:00: registered as rtc0[0m
+[2mdesktop # [    4.214975] rtc_cmos PNP0B00:00: setting system clock to 2026-10-12T15:31:49 UTC (1791819109)[0m
+[2mdesktop # [    4.217039] rtc_cmos PNP0B00:00: alarms up to one day, y3k, 242 bytes nvram, hpet irqs[0m
+[2mdesktop # [    4.218023] input: VirtualPS/2 VMware VMMouse as /devices/platform/i8042/serio1/input/input6[0m
+[2mdesktop # [    4.220305] ACPI: button: Power Button [PWRF][0m
+[2mdesktop # [    4.221975] mousedev: PS/2 mouse device common for all mice[0m
+[2mdesktop # [    4.222653] systemd-journald[311]: Time jumped backwards, rotating.[0m
+[2mdesktop # [    4.224040] input: VirtualPS/2 VMware VMMouse as /devices/platform/i8042/serio1/input/input5[0m
+[2mdesktop # [    4.248167] parport_pc 00:02: reported by Plug and Play ACPI[0m
+[2mdesktop # [    4.248552] parport0: PC-style at 0x378, irq 7 [PCSPP(,...)][0m
+[2mdesktop # [    4.271870] iTCO_wdt iTCO_wdt.0.auto: Found a ICH9 TCO device (Version=2, TCOBASE=0x0660)[0m
+[2mdesktop # [    4.226346] systemd[1]: Starting Virtual Console Setup...[0m
+[2mdesktop # [    4.228624] systemd[1]: systemd-vconsole-setup.service: Deactivated successfully.[0m
+[2mdesktop # [    4.229342] systemd[1]: Stopped Virtual Console Setup.[0m
+[2mdesktop # [    4.281629] iTCO_wdt iTCO_wdt.0.auto: initialized. heartbeat=30 sec (nowayout=0)[0m
+[2mdesktop # [    4.231359] systemd[1]: Starting Virtual Console Setup...[0m
+[2mdesktop # [    4.288751] ppdev: user-space parallel port driver[0m
+[2mdesktop # [    4.292525] RAPL PMU: API unit is 2^-32 Joules, 0 fixed counters, 10737418240 ms ovfl timer[0m
+[2mdesktop # [    4.251078] systemd[1]: Finished Firewall.[0m
+[2mdesktop # [    4.283261] systemd-vconsole-setup[470]: [0;1;39mConfiguration of first virtual console was skipped, ignoring remaining ones.[0m[0m
+[2mdesktop # [    4.288331] systemd[1]: Finished Virtual Console Setup.[0m
+[2mdesktop # [    4.437819] intel_rapl_msr: PL4 support detected.[0m
+[2mdesktop # [    4.812996] systemd[1]: Mounting /run/wrappers...[0m
+[2mdesktop # [    4.824691] systemd[1]: Mounted /run/wrappers.[0m
+[2mdesktop # [    4.824986] systemd[1]: Reached target Local File Systems.[0m
+[2mdesktop # [    4.825670] systemd[1]: Listening on Boot Loader Control Service Socket.[0m
+[2mdesktop # [    4.826500] systemd[1]: Starting register-nix-paths.service...[0m
+[2mdesktop # [    4.827202] systemd[1]: Starting Create SUID/SGID Wrappers...[0m
+[2mdesktop # [    4.827579] systemd[1]: Update Boot Loader Random Seed skipped, no trigger condition checks were met.[0m
+[2mdesktop # [    4.828566] systemd[1]: Starting Save Transient machine-id to Disk...[0m
+[2mdesktop # [    4.831607] systemd[1]: Starting Create System Files and Directories...[0m
+[2mdesktop # [    4.857609] systemd[1]: Finished Create System Files and Directories.[0m
+[2mdesktop # [    4.859314] systemd[1]: Starting Rebuild Journal Catalog...[0m
+[2mdesktop # [    4.861285] systemd[1]: Starting Record System Boot/Shutdown in UTMP...[0m
+[2mdesktop # [    4.876458] systemd[1]: Finished Rebuild Journal Catalog.[0m
+[2mdesktop # [    4.877584] systemd[1]: Starting Update is Completed...[0m
+[2mdesktop # [    4.881593] systemd[1]: Finished Record System Boot/Shutdown in UTMP.[0m
+[2mdesktop # [    4.887359] systemd[1]: Finished Update is Completed.[0m
+[2mdesktop # [    4.935910] systemd[1]: suid-sgid-wrappers.service: Deactivated successfully.[0m
+[2mdesktop # [    4.936475] systemd[1]: Finished Create SUID/SGID Wrappers.[0m
+[2mdesktop # [    5.020228] systemd[1]: etc-machine\x2did.mount: Deactivated successfully.[0m
+[2mdesktop # [    5.021278] systemd[1]: Finished Save Transient machine-id to Disk.[0m
+[2mdesktop # [    5.129845] systemd[1]: Finished register-nix-paths.service.[0m
+[2mdesktop # [    5.130280] systemd[1]: Reached target System Initialization.[0m
+[2mdesktop # [    5.130656] systemd[1]: Started Discard unused filesystem blocks once a week.[0m
+[2mdesktop # [    5.131028] systemd[1]: Started Daily Cleanup of Temporary Directories.[0m
+[2mdesktop # [    5.131391] systemd[1]: Reached target Timer Units.[0m
+[2mdesktop # [    5.131663] systemd[1]: Listening on D-Bus System Message Bus Socket.[0m
+[2mdesktop # [    5.131994] systemd[1]: Listening on Nix Daemon Socket.[0m
+[2mdesktop # [    5.133307] systemd[1]: Listening on Authorization Manager Agent Helper.[0m
+[2mdesktop # [    5.133653] systemd[1]: Listening on Virtual Machine and Container Registration Service Socket.[0m
+[2mdesktop # [    5.134143] systemd[1]: Reached target Socket Units.[0m
+[2mdesktop # [    5.134420] systemd[1]: Reached target Basic System.[0m
+[2mdesktop # [    5.135245] systemd[1]: Started backdoor.service.[0m
+[2mdesktop # [    5.135654] systemd[1]: Starting Import lastlog data into lastlog2 database...[0m
+[2mdesktop # [    5.136709] systemd[1]: Starting Name Service Cache Daemon (nsncd)...[0m
+[2mdesktop # [    5.139350] systemd[1]: Starting Post-Boot Actions...[0m
+[2mdesktop # [    5.141728] systemd[1]: Started Reset console on configuration changes.[0m
+[2mdesktop # [    5.142953] systemd[1]: Starting resolvconf update...[0m
+[2mdesktop # [    5.147596] systemd[1]: Starting D-Bus System Message Bus...[0m
+[2mdesktop # [    5.163922] systemd[1]: Finished Post-Boot Actions.[0m
+[2mdesktop # [    5.165315] systemd[1]: Started Name Service Cache Daemon (nsncd).[0m
+[2mdesktop # connecting to host...[0m
+[2mdesktop # [    5.166818] nsncd[564]: Oct 12 15:31:50.501 INFO started, config: Config { ignored_request_types: {}, worker_count: 8, handoff_timeout: 10s }, path: "/var/run/nscd/socket"[0m
+desktop: Guest shell says: b'Spawning backdoor root shell...\n'
+desktop: connected to guest root shell
+[2mdesktop # [    5.171085] systemd[1]: Reached target Host and Network Name Lookups.[0m
+desktop: (connecting took 5.48 seconds)
+[2mdesktop # [    5.171338] systemd[1]: Reached target User and Group Name Lookups.[0m
+desktop: (finished: waiting for the VM to finish booting, in 5.49 seconds)
+[2mdesktop # [    5.172518] systemd[1]: Starting User Login Management...[0m
+[2mdesktop # [    5.173982] dbus-broker-launch[569]: Looking up NSS user entry for 'systemd-timesync'...[0m
+[2mdesktop # [    5.175850] dbus-broker-launch[569]: NSS returned no entry for 'systemd-timesync'[0m
+[2mdesktop # [    5.176476] dbus-broker-launch[569]: Invalid user-name in /nix/store/vihm9gws85rhg7p9wk6zjjrihlkdr5if-system-path/share/dbus-1/system.d/org.freedesktop.timesync1.conf +16: user="systemd-timesync"[0m
+[2mdesktop # [    5.177303] dbus-broker-launch[569]: Looking up NSS user entry for 'pulse'...[0m
+[2mdesktop # [    5.178182] dbus-broker-launch[569]: NSS returned no entry for 'pulse'[0m
+[2mdesktop # [    5.178404] dbus-broker-launch[569]: Invalid user-name in /nix/store/vihm9gws85rhg7p9wk6zjjrihlkdr5if-system-path/share/dbus-1/system.d/pulseaudio-system.conf +27: user="pulse"[0m
+[2mdesktop # [    5.182928] dbus-broker-launch[569]: [0;1;31mIgnoring duplicate name 'org.freedesktop.PolicyKit1' in service file '/nix/store/d527hwwggm2wz18p4v8cr39amcpx3g4c-polkit-127/share/dbus-1/system-services/org.freedesktop.PolicyKit1.service'[0m[0m
+[2mdesktop # [    5.184300] systemd[1]: Started D-Bus System Message Bus.[0m
+[2mdesktop # [    5.185729] systemd[1]: Finished Import lastlog data into lastlog2 database.[0m
+[2mdesktop # [    5.191504] dbus-broker-launch[569]: Ready[0m
+[2mdesktop # [    5.206109] systemd-logind[590]: New seat seat0.[0m
+[2mdesktop # [    5.207402] systemd-logind[590]: Watching system buttons on /dev/input/event3 (Power Button)[0m
+[2mdesktop # [    5.207681] systemd-logind[590]: Watching system buttons on /dev/input/event2 (QEMU Virtio Keyboard)[0m
+[2mdesktop # [    5.207867] systemd-logind[590]: Watching system buttons on /dev/input/event0 (AT Translated Set 2 keyboard)[0m
+[2mdesktop # [    5.212264] systemd[1]: Started User Login Management.[0m
+[2mdesktop # [    5.215960] systemd[1]: Stopped target Host and Network Name Lookups.[0m
+[2mdesktop # [    5.216282] systemd[1]: Stopping Host and Network Name Lookups...[0m
+[2mdesktop # [    5.216560] systemd[1]: Stopped target User and Group Name Lookups.[0m
+[2mdesktop # [    5.216826] systemd[1]: Stopping User and Group Name Lookups...[0m
+[2mdesktop # [    5.218363] systemd[1]: Starting linger-users.service...[0m
+[2mdesktop # [    5.218660] systemd[1]: Stopping Name Service Cache Daemon (nsncd)...[0m
+[2mdesktop # [    5.219782] systemd[1]: nscd.service: Deactivated successfully.[0m
+[2mdesktop # [    5.223616] systemd[1]: Stopped Name Service Cache Daemon (nsncd).[0m
+[2mdesktop # [    5.226144] systemd[1]: Starting Name Service Cache Daemon (nsncd)...[0m
+[2mdesktop # [    5.234498] systemd[1]: Finished resolvconf update.[0m
+[2mdesktop # [    5.234866] systemd[1]: linger-users.service: Deactivated successfully.[0m
+[2mdesktop # [    5.235336] systemd[1]: Finished linger-users.service.[0m
+[2mdesktop # [    5.235645] systemd[1]: Reached target Preparation for Network.[0m
+[2mdesktop # [    5.236981] systemd[1]: Starting DHCP Client...[0m
+[2mdesktop # [    5.239594] systemd[1]: Starting Address configuration of eth1...[0m
+[2mdesktop # [    5.243615] systemd[1]: Starting Extra networking commands....[0m
+[2mdesktop # [    5.247995] nsncd[655]: Oct 12 15:31:50.583 INFO started, config: Config { ignored_request_types: {}, worker_count: 8, handoff_timeout: 10s }, path: "/var/run/nscd/socket"[0m
+[2mdesktop # [    5.248745] systemd[1]: Started Name Service Cache Daemon (nsncd).[0m
+[2mdesktop # [    5.249078] systemd[1]: Reached target Host and Network Name Lookups.[0m
+[2mdesktop # [    5.249416] systemd[1]: Reached target User and Group Name Lookups.[0m
+[2mdesktop # [    5.264346] network-addresses-eth1-start[664]: adding address 192.168.1.1/24... done[0m
+[2mdesktop # [    5.266520] network-addresses-eth1-start[664]: adding address 2001:db8:1::1/64... done[0m
+[2mdesktop # [    5.275817] systemd[1]: Finished Address configuration of eth1.[0m
+[2mdesktop # [    5.283401] dhcpcd[682]: dhcpcd-10.3.2 starting[0m
+[2mdesktop # [    5.284746] dhcpcd[730]: dev: loaded udev[0m
+[2mdesktop # [    5.339506] 8021q: 802.1Q VLAN Support v1.8[0m
+[2mdesktop # [    5.339816] 8021q: adding VLAN 0 to HW filter on device eth1[0m
+[2mdesktop # [    5.314034] systemd[1]: Finished Extra networking commands..[0m
+[2mdesktop # [    5.315034] systemd[1]: Reached target Network.[0m
+[2mdesktop # [    5.315318] systemd[1]: Listening on Load/Save RF Kill Switch Status /dev/rfkill Watch.[0m
+[2mdesktop # [    5.317031] systemd[1]: Starting Permit User Sessions...[0m
+[2mdesktop # [    5.392982] cfg80211: Loading compiled-in X.509 certificates for regulatory database[0m
+[2mdesktop # [    5.399166] Loaded X.509 cert 'sforshee: 00b28ddf47aef9cea7'[0m
+[2mdesktop # [    5.399557] Loaded X.509 cert 'wens: 61c038651aabdcf94bd0ac7ff06c7248db18c600'[0m
+[2mdesktop # [    5.400169] faux_driver regulatory: Direct firmware load for regulatory.db failed with error -2[0m
+[2mdesktop # [    5.400575] cfg80211: failed to load regulatory.db[0m
+[2mdesktop # [    5.352142] systemd[1]: Finished Permit User Sessions.[0m
+[2mdesktop # [    5.353458] systemd[1]: Started Getty on tty1.[0m
+[2mdesktop # [    5.353725] systemd[1]: Reached target Login Prompts.[0m
+[2mdesktop # [    5.412866] 8021q: adding VLAN 0 to HW filter on device eth0[0m
+[2mdesktop # [    5.362377] dhcpcd[730]: eth0: waiting for carrier[0m
+[2mdesktop # [    5.362855] dhcpcd[730]: eth0: carrier acquired[0m
+[2mdesktop # [    5.364876] dhcpcd[730]: DUID 00:01:00:01:32:5f:b9:e6:52:54:00:12:34:56[0m
+[2mdesktop # [    5.365328] dhcpcd[730]: eth0: IAID 00:12:34:56[0m
+[2mdesktop # [    5.365594] dhcpcd[730]: eth0: adding address fe80::5054:ff:fe12:3456[0m
+[2mdesktop # [    6.245264] dhcpcd[730]: eth0: soliciting a DHCP lease[0m
+[2mdesktop # [    6.300201] NET: Registered PF_PACKET protocol family[0m
+[2mdesktop # [    6.268309] dhcpcd[730]: eth0: offered 10.0.2.15 from 10.0.2.2[0m
+[2mdesktop # [    6.278125] dhcpcd[730]: eth0: probing address 10.0.2.15/24[0m
+[2mdesktop # [    7.622962] dhcpcd[730]: eth0: soliciting an IPv6 router[0m
+[2mdesktop # [    7.623348] dhcpcd[730]: eth0: Router Advertisement from fe80::2[0m
+[2mdesktop # [    7.623648] dhcpcd[730]: eth0: adding address fec0::5054:ff:fe12:3456/64[0m
+[2mdesktop # [    7.623999] dhcpcd[730]: eth0: adding route to fec0::/64[0m
+[2mdesktop # [    7.624464] dhcpcd[730]: eth0: adding default route via fe80::2[0m
+[2mdesktop # [   10.395542] login[749]: pam_unix(login:session): session opened for user audit(uid=1000) by LOGIN(uid=0)[0m
+[2mdesktop # [   10.492553] systemd-logind[590]: New session '1' of user 'audit' with class 'user' and type 'tty'.[0m
+[2mdesktop # [   10.495757] systemd[1]: Created slice Slice /user/1000.[0m
+[2mdesktop # [   10.496570] systemd[1]: Starting User Runtime Directory /run/user/1000...[0m
+[2mdesktop # [   10.514271] systemd[1]: Finished User Runtime Directory /run/user/1000.[0m
+[2mdesktop # [   10.515596] systemd[1]: Starting User Manager for UID 1000...[0m
+[2mdesktop # [   10.531983] (systemd)[816]: pam_unix(systemd-user:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   10.533688] systemd-logind[590]: New session '2' of user 'audit' with class 'manager' and type 'unspecified'.[0m
+[2mdesktop # [   10.555089] systemd[816]: [0;1;33m[0;1;38:5:185mFailed to adjust io pressure threshold, ignoring: Device or resource busy[0m[0m
+[2mdesktop # [   10.610703] systemd[816]: Queued start job for default target Main User Target.[0m
+[2mdesktop # [   10.619558] systemd[816]: [0;1;33m[0;1;38:5:185mFailed to adjust io pressure threshold, ignoring: Device or resource busy[0m[0m
+[2mdesktop # [   10.620591] systemd[816]: Created slice User Application Slice.[0m
+[2mdesktop # [   10.620884] systemd[816]: Started Daily Cleanup of User's Temporary Directories.[0m
+[2mdesktop # [   10.621240] systemd[816]: Reached target Paths.[0m
+[2mdesktop # [   10.621511] systemd[816]: Reached target Timers.[0m
+[2mdesktop # [   10.622471] systemd[816]: Starting D-Bus User Message Bus Socket...[0m
+[2mdesktop # [   10.622794] systemd[816]: Listening on PipeWire PulseAudio.[0m
+[2mdesktop # [   10.623090] systemd[816]: Listening on PipeWire Multimedia System Sockets.[0m
+[2mdesktop # [   10.623381] systemd[816]: Listening on Speech Dispatcher Socket.[0m
+[2mdesktop # [   10.624376] systemd[816]: Starting Create User Files and Directories...[0m
+[2mdesktop # [   10.636422] systemd[816]: Finished Create User Files and Directories.[0m
+[2mdesktop # [   10.639694] systemd[816]: Listening on D-Bus User Message Bus Socket.[0m
+[2mdesktop # [   10.640988] systemd[816]: Reached target Sockets.[0m
+[2mdesktop # [   10.641285] systemd[816]: Reached target Basic System.[0m
+[2mdesktop # [   10.642236] systemd[1]: Started User Manager for UID 1000.[0m
+[2mdesktop # [   10.642794] systemd[816]: Starting Run user-specific NixOS activation...[0m
+[2mdesktop # [   10.645727] systemd[1]: Started Session 1 of User audit.[0m
+[2mdesktop # [   10.653589] systemd[816]: Finished Run user-specific NixOS activation.[0m
+[2mdesktop # [   10.653967] systemd[816]: Reached target Main User Target.[0m
+[2mdesktop # [   10.654345] systemd[816]: Startup finished in 113ms.[0m
+[2mdesktop # [   10.885507] systemd[816]: Created slice User Core Session Slice.[0m
+[2mdesktop # [   10.886729] systemd[816]: Starting D-Bus User Message Bus...[0m
+[2mdesktop # [   10.894593] systemd[816]: Reached target Session services which should run early before the graphical session is brought up.[0m
+[2mdesktop # [   10.895686] systemd[816]: Reached target Current graphical user session.[0m
+[2mdesktop # [   10.896302] systemd[816]: Reached target sway compositor session.[0m
+[2mdesktop # [   10.908733] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'ca.desrt.dconf' in service file '/nix/store/vihm9gws85rhg7p9wk6zjjrihlkdr5if-system-path/share/dbus-1/services/ca.desrt.dconf.service'[0m[0m
+[2mdesktop # [   10.909855] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'org.freedesktop.impl.portal.PermissionStore' in service file '/nix/store/vihm9gws85rhg7p9wk6zjjrihlkdr5if-system-path/share/dbus-1/services/org.freedesktop.impl.portal.PermissionStore.service'[0m[0m
+[2mdesktop # [   10.911373] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'org.freedesktop.impl.portal.desktop.gtk' in service file '/nix/store/vihm9gws85rhg7p9wk6zjjrihlkdr5if-system-path/share/dbus-1/services/org.freedesktop.impl.portal.desktop.gtk.service'[0m[0m
+[2mdesktop # [   10.916060] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'org.freedesktop.impl.portal.desktop.wlr' in service file '/nix/store/vihm9gws85rhg7p9wk6zjjrihlkdr5if-system-path/share/dbus-1/services/org.freedesktop.impl.portal.desktop.wlr.service'[0m[0m
+[2mdesktop # [   10.920147] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'org.freedesktop.import1' in service file '/nix/store/vihm9gws85rhg7p9wk6zjjrihlkdr5if-system-path/share/dbus-1/services/org.freedesktop.import1.service'[0m[0m
+[2mdesktop # [   10.924168] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'org.freedesktop.machine1' in service file '/nix/store/vihm9gws85rhg7p9wk6zjjrihlkdr5if-system-path/share/dbus-1/services/org.freedesktop.machine1.service'[0m[0m
+[2mdesktop # [   10.925773] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'org.freedesktop.portable1' in service file '/nix/store/vihm9gws85rhg7p9wk6zjjrihlkdr5if-system-path/share/dbus-1/services/org.freedesktop.portable1.service'[0m[0m
+[2mdesktop # [   10.927338] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'org.freedesktop.portal.Desktop' in service file '/nix/store/vihm9gws85rhg7p9wk6zjjrihlkdr5if-system-path/share/dbus-1/services/org.freedesktop.portal.Desktop.service'[0m[0m
+[2mdesktop # [   10.928413] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'org.freedesktop.portal.Documents' in service file '/nix/store/vihm9gws85rhg7p9wk6zjjrihlkdr5if-system-path/share/dbus-1/services/org.freedesktop.portal.Documents.service'[0m[0m
+[2mdesktop # [   10.929367] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'org.freedesktop.systemd1' in service file '/nix/store/vihm9gws85rhg7p9wk6zjjrihlkdr5if-system-path/share/dbus-1/services/org.freedesktop.systemd1.service'[0m[0m
+[2mdesktop # [   10.930385] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'ca.desrt.dconf' in service file '/nix/store/hdz80xmqjk9m6ylwmb97lsm9kdhvmh1b-dconf-0.49.0/share/dbus-1/services/ca.desrt.dconf.service'[0m[0m
+[2mdesktop # [   10.931316] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'org.freedesktop.impl.portal.PermissionStore' in service file '/nix/store/q8dr0mbn9r3kfqi41a4zfmii0cwl8ivw-xdg-desktop-portal-1.22.1/share/dbus-1/services/org.freedesktop.impl.portal.PermissionStore.service'[0m[0m
+[2mdesktop # [   10.932404] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'org.freedesktop.portal.Desktop' in service file '/nix/store/q8dr0mbn9r3kfqi41a4zfmii0cwl8ivw-xdg-desktop-portal-1.22.1/share/dbus-1/services/org.freedesktop.portal.Desktop.service'[0m[0m
+[2mdesktop # [   10.933401] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'org.freedesktop.portal.Documents' in service file '/nix/store/q8dr0mbn9r3kfqi41a4zfmii0cwl8ivw-xdg-desktop-portal-1.22.1/share/dbus-1/services/org.freedesktop.portal.Documents.service'[0m[0m
+[2mdesktop # [   10.934464] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'org.freedesktop.impl.portal.desktop.gtk' in service file '/nix/store/137nydmzzxfk2gdwa8h3rxkfrv82g7y6-xdg-desktop-portal-gtk-1.15.3/share/dbus-1/services/org.freedesktop.impl.portal.desktop.gtk.service'[0m[0m
+[2mdesktop # [   10.935643] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'org.freedesktop.impl.portal.desktop.gtk' in service file '/nix/store/137nydmzzxfk2gdwa8h3rxkfrv82g7y6-xdg-desktop-portal-gtk-1.15.3/share/dbus-1/services/org.freedesktop.impl.portal.desktop.gtk.service'[0m[0m
+[2mdesktop # [   10.936826] dbus-broker-launch[842]: [0;1;31mIgnoring duplicate name 'org.freedesktop.impl.portal.desktop.wlr' in service file '/nix/store/q7g300fs2zfj5gjjf2dfvf281gq410r8-xdg-desktop-portal-wlr-0.8.4/share/dbus-1/services/org.freedesktop.impl.portal.desktop.wlr.service'[0m[0m
+[2mdesktop # [   10.938091] dbus-broker-launch[842]: Policy to allow eavesdropping in /etc/dbus-1/session.conf +27: Eavesdropping is deprecated and ignored[0m
+[2mdesktop # [   10.938645] dbus-broker-launch[842]: Policy to allow eavesdropping in /etc/dbus-1/session.conf +29: Eavesdropping is deprecated and ignored[0m
+[2mdesktop # [   10.939257] systemd[816]: Started D-Bus User Message Bus.[0m
+[2mdesktop # [   10.940391] dbus-broker-launch[842]: Ready[0m
+[2mdesktop # [   11.868062] dhcpcd[730]: eth0: leased 10.0.2.15 for 86400 seconds[0m
+[2mdesktop # [   11.868444] dhcpcd[730]: eth0: adding route to 10.0.2.0/24[0m
+[2mdesktop # [   11.868724] dhcpcd[730]: eth0: adding default route via 10.0.2.2[0m
+[2mdesktop # [   11.889773] systemd[1]: Starting Authorization Manager...[0m
+[2mdesktop # [   11.923041] polkitd[901]: Started polkitd version 127[0m
+[2mdesktop # [   11.927026] systemd[1]: Started Authorization Manager.[0m
+[2mdesktop # [   11.945967] systemd[1]: Started DHCP Client.[0m
+[2mdesktop # [   11.946411] systemd[1]: Reached target Multi-User System.[0m
+[2mdesktop # [   11.946694] systemd[1]: Reached target Graphical Interface.[0m
+[2mdesktop # [   11.947052] systemd[1]: Startup finished in 408ms (kernel) + 2.820s (initrd) + 8.718s (userspace) = 11.947s.[0m
+desktop: (finished: waiting for unit multi-user.target, in 12.63 seconds)
+desktop: [1m[32mwaiting for file '/tmp/sway-ipc.sock'[0m
+desktop: (finished: waiting for file '/tmp/sway-ipc.sock', in 0.00 seconds)
+desktop: [1m[32mwaiting for file '/run/user/1000/wayland-1'[0m
+desktop: (finished: waiting for file '/run/user/1000/wayland-1', in 0.00 seconds)
+desktop: [1m[32mmust succeed: cat /etc/os-release[0m
+desktop: (finished: must succeed: cat /etc/os-release, in 0.00 seconds)
+desktop: [1m[32mmust succeed: test -e /lib64/ld-linux-x86-64.so.2[0m
+desktop: (finished: must succeed: test -e /lib64/ld-linux-x86-64.so.2, in 0.00 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /nix/store/xl04j6nxwywhj1488n5gzsb1a84gysdf-mywhisper-0.9.3/bin/mywhisper --version'[0m
+[2mdesktop # [   12.345076] su[945]: Successful su for audit by root[0m
+[2mdesktop # [   12.347147] su[945]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   12.434275] su[945]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /nix/store/xl04j6nxwywhj1488n5gzsb1a84gysdf-mywhisper-0.9.3/bin/mywhisper --version', in 0.10 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /nix/store/xl04j6nxwywhj1488n5gzsb1a84gysdf-mywhisper-0.9.3/bin/mywhisper --help'[0m
+[2mdesktop # [   12.441563] su[951]: Successful su for audit by root[0m
+[2mdesktop # [   12.443622] su[951]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   12.475317] su[951]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /nix/store/xl04j6nxwywhj1488n5gzsb1a84gysdf-mywhisper-0.9.3/bin/mywhisper --help', in 0.04 seconds)
+desktop: [1m[32mmust succeed: test ! -e /home/audit/.local/share/mywhisper; test ! -e /home/audit/.config/mywhisper[0m
+desktop: (finished: must succeed: test ! -e /home/audit/.local/share/mywhisper; test ! -e /home/audit/.config/mywhisper, in 0.00 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus GSETTINGS_SCHEMA_DIR=/nix/store/r0qrx78hday3gr8dznxnniaf98c8lzjl-gsettings-desktop-schemas-50.1/share/gsettings-schemas/gsettings-desktop-schemas-50.1/glib-2.0/schemas gsettings set org.gnome.desktop.interface color-scheme prefer-dark'[0m
+[2mdesktop # [   12.485821] su[960]: Successful su for audit by root[0m
+[2mdesktop # [   12.488037] su[960]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   12.502153] systemd[816]: Starting User preferences database...[0m
+[2mdesktop # [   12.519843] systemd[816]: Started User preferences database.[0m
+[2mdesktop # [   12.520907] su[960]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus GSETTINGS_SCHEMA_DIR=/nix/store/r0qrx78hday3gr8dznxnniaf98c8lzjl-gsettings-desktop-schemas-50.1/share/gsettings-schemas/gsettings-desktop-schemas-50.1/glib-2.0/schemas gsettings set org.gnome.desktop.interface color-scheme prefer-dark', in 0.04 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus swaymsg exec /nix/store/2yspwdypj7yl703278irw7fhz09ihqhf-mywhisper-desktop-launch'[0m
+[2mdesktop # [   12.528154] su[974]: Successful su for audit by root[0m
+[2mdesktop # [   12.530182] su[974]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   12.538730] su[974]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus swaymsg exec /nix/store/2yspwdypj7yl703278irw7fhz09ihqhf-mywhisper-desktop-launch', in 0.02 seconds)
+desktop: [1m[32mwaiting for success: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 swaymsg -t get_tree | jq -e '"'"'.. | objects | select(.app_id? == "com.mywhisper.App") | .id'"'"''[0m
+[2mdesktop # [   12.548244] su[984]: Successful su for audit by root[0m
+[2mdesktop # [   12.550908] su[984]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   12.573795] su[984]: pam_unix(su:session): session closed for user audit[0m
+[2mdesktop # [   12.832514] systemd[816]: Starting Portal service...[0m
+[2mdesktop # [   12.859263] systemd[816]: Starting sandboxed app permission store...[0m
+[2mdesktop # [   12.874751] systemd[816]: Started sandboxed app permission store.[0m
+[2mdesktop # [   12.878492] systemd[816]: Starting flatpak document portal service...[0m
+[2mdesktop # [   12.893461] systemd[816]: Started flatpak document portal service.[0m
+[2mdesktop # [   12.900518] systemd[816]: Starting Portal service (GTK/GNOME implementation)...[0m
+[2mdesktop # [   12.983906] systemd[816]: Started Portal service (GTK/GNOME implementation).[0m
+[2mdesktop # [   12.996723] /nix/store/q8dr0mbn9r3kfqi41a4zfmii0cwl8ivw-xdg-desktop-portal-1.22.1/libexec/xdg-desktop-portal[999]: [0;1;33m[0;1;38:5:185mFailed to load RealtimeKit property: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable[0m[0m
+[2mdesktop # [   12.997940] /nix/store/q8dr0mbn9r3kfqi41a4zfmii0cwl8ivw-xdg-desktop-portal-1.22.1/libexec/xdg-desktop-portal[999]: [0;1;33m[0;1;38:5:185mFailed to load RealtimeKit property: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable[0m[0m
+[2mdesktop # [   12.999133] /nix/store/q8dr0mbn9r3kfqi41a4zfmii0cwl8ivw-xdg-desktop-portal-1.22.1/libexec/xdg-desktop-portal[999]: [0;1;33m[0;1;38:5:185mFailed to load RealtimeKit property: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable[0m[0m
+[2mdesktop # [   13.011903] systemd[816]: Started PipeWire Multimedia Service.[0m
+[2mdesktop # [   13.012629] systemd[816]: Started Multimedia Service Session Manager.[0m
+[2mdesktop # [   13.038983] pipewire[1030]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit error: org.freedesktop.DBus.Error.ServiceUnknown[0m[0m
+[2mdesktop # [   13.039622] pipewire[1030]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit does not give us MaxRealtimePriority, using 1[0m[0m
+[2mdesktop # [   13.040156] pipewire[1030]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit error: org.freedesktop.DBus.Error.ServiceUnknown[0m[0m
+[2mdesktop # [   13.040631] pipewire[1030]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit does not give us MinNiceLevel, using 0[0m[0m
+[2mdesktop # [   13.041099] pipewire[1030]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit error: org.freedesktop.DBus.Error.ServiceUnknown[0m[0m
+[2mdesktop # [   13.041568] pipewire[1030]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit does not give us RTTimeUSecMax, using -1[0m[0m
+[2mdesktop # [   13.045451] wireplumber[1031]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit error: org.freedesktop.DBus.Error.ServiceUnknown[0m[0m
+[2mdesktop # [   13.045992] wireplumber[1031]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit does not give us MaxRealtimePriority, using 1[0m[0m
+[2mdesktop # [   13.046934] wireplumber[1031]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit error: org.freedesktop.DBus.Error.ServiceUnknown[0m[0m
+[2mdesktop # [   13.047476] wireplumber[1031]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit does not give us MinNiceLevel, using 0[0m[0m
+[2mdesktop # [   13.047973] wireplumber[1031]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit error: org.freedesktop.DBus.Error.ServiceUnknown[0m[0m
+[2mdesktop # [   13.048539] wireplumber[1031]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit does not give us RTTimeUSecMax, using -1[0m[0m
+[2mdesktop # [   13.188827] systemd[816]: Starting Portal service (wlroots implementation)...[0m
+[2mdesktop # [   13.207295] systemd[816]: Started Portal service (wlroots implementation).[0m
+[2mdesktop # [   13.214852] systemd[816]: Started Portal service.[0m
+[2mdesktop # [   13.297886] wireplumber[1031]: [0;1;33m[0;1;38:5:185mdefault: Failed to get percentage from UPower: org.freedesktop.DBus.Error.NameHasNoOwner[0m[0m
+[2mdesktop # [   13.298702] wireplumber[1031]: [0;1;33m[0;1;38:5:185mspa.bluez5: BlueZ system service is not available[0m[0m
+[2mdesktop # [   13.337532] wireplumber[1031]: [0:00:13.337481313] [1031]  INFO Camera camera_manager.cpp:340 libcamera v0.7.2[0m
+[2mdesktop # [   13.338048] wireplumber[1031]: [0:00:13.337571827] [1064]  INFO IPAManager ipa_manager.cpp:148 libcamera is not installed. Adding '/nix/store/src/ipa' to the IPA search path[0m
+[2mdesktop # [   13.473286] systemd[816]: Started PipeWire PulseAudio.[0m
+[2mdesktop # [   13.491973] pipewire-pulse[1070]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit error: org.freedesktop.DBus.Error.ServiceUnknown[0m[0m
+[2mdesktop # [   13.492288] pipewire-pulse[1070]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit does not give us MaxRealtimePriority, using 1[0m[0m
+[2mdesktop # [   13.492494] pipewire-pulse[1070]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit error: org.freedesktop.DBus.Error.ServiceUnknown[0m[0m
+[2mdesktop # [   13.492684] pipewire-pulse[1070]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit does not give us MinNiceLevel, using 0[0m[0m
+[2mdesktop # [   13.492854] pipewire-pulse[1070]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit error: org.freedesktop.DBus.Error.ServiceUnknown[0m[0m
+[2mdesktop # [   13.493034] pipewire-pulse[1070]: [0;1;33m[0;1;38:5:185mmod.rt: RTKit does not give us RTTimeUSecMax, using -1[0m[0m
+[2mdesktop # [   13.585870] su[1087]: Successful su for audit by root[0m
+[2mdesktop # [   13.587862] su[1087]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   13.597773] su[1087]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: waiting for success: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 swaymsg -t get_tree | jq -e '"'"'.. | objects | select(.app_id? == "com.mywhisper.App") | .id'"'"'', in 1.06 seconds)
+desktop: [1m[32mwaiting for success: grep -q 'palette -> dark' /home/audit/gui.log[0m
+desktop: (finished: waiting for success: grep -q 'palette -> dark' /home/audit/gui.log, in 0.01 seconds)
+desktop: [1m[32mmaking screenshot /nix/store/s9lnfx0jjnx0vf1wxnn3vidz7dx7fghl-vm-test-run-mywhisper-scoped-package/mywhisper-system-dark.png[0m
+desktop: (finished: making screenshot /nix/store/s9lnfx0jjnx0vf1wxnn3vidz7dx7fghl-vm-test-run-mywhisper-scoped-package/mywhisper-system-dark.png, in 0.03 seconds)
+desktop: [1m[32mmust succeed: test $(stat -c %a /home/audit/.config/mywhisper/device.key) = 600[0m
+desktop: (finished: must succeed: test $(stat -c %a /home/audit/.config/mywhisper/device.key) = 600, in 0.00 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus swaymsg '"'"'[app_id="com.mywhisper.App"] kill'"'"''[0m
+[2mdesktop # [   13.643933] su[1101]: Successful su for audit by root[0m
+[2mdesktop # [   13.645902] su[1101]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   13.654481] su[1101]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus swaymsg '"'"'[app_id="com.mywhisper.App"] kill'"'"'', in 0.02 seconds)
+desktop: [1m[32mwaiting for file '/home/audit/gui.exit'[0m
+desktop: (finished: waiting for file '/home/audit/gui.exit', in 0.01 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus cat /home/audit/gui.exit'[0m
+[2mdesktop # [   13.668910] su[1111]: Successful su for audit by root[0m
+[2mdesktop # [   13.670855] su[1111]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   13.678881] su[1111]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus cat /home/audit/gui.exit', in 0.02 seconds)
+desktop: [1m[32mmust succeed: test -s /home/audit/.local/share/mywhisper/state.db[0m
+desktop: (finished: must succeed: test -s /home/audit/.local/share/mywhisper/state.db, in 0.00 seconds)
+desktop: [1m[32mmust succeed: head -c 16 /home/audit/.local/share/mywhisper/state.db | base64[0m
+desktop: (finished: must succeed: head -c 16 /home/audit/.local/share/mywhisper/state.db | base64, in 0.00 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user import-environment WAYLAND_DISPLAY SWAYSOCK'[0m
+[2mdesktop # [   13.692879] su[1125]: Successful su for audit by root[0m
+[2mdesktop # [   13.694842] su[1125]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # Environment variable $WAYLAND_DISPLAY not set, ignoring.[0m
+[2mdesktop # [   13.703675] su[1125]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user import-environment WAYLAND_DISPLAY SWAYSOCK', in 0.02 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user set-environment WAYLAND_DISPLAY=wayland-1'[0m
+[2mdesktop # [   13.710038] su[1131]: Successful su for audit by root[0m
+[2mdesktop # [   13.711919] su[1131]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   13.720382] su[1131]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user set-environment WAYLAND_DISPLAY=wayland-1', in 0.02 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user start mywhisper.service'[0m
+[2mdesktop # [   13.726620] su[1137]: Successful su for audit by root[0m
+[2mdesktop # [   13.728528] su[1137]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   13.738084] systemd[816]: Started MyWhisper background dictation engine.[0m
+[2mdesktop # [   13.740416] su[1137]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user start mywhisper.service', in 0.02 seconds)
+desktop: [1m[32mwaiting for success: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active mywhisper.service'[0m
+[2mdesktop # [   13.750515] su[1147]: Successful su for audit by root[0m
+[2mdesktop # [   13.753330] su[1147]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   13.768175] su[1147]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: waiting for success: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active mywhisper.service', in 0.03 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user show mywhisper.service -p MainPID --value'[0m
+[2mdesktop # [   13.775669] su[1151]: Successful su for audit by root[0m
+[2mdesktop # [   13.778384] su[1151]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   13.792461] su[1151]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user show mywhisper.service -p MainPID --value', in 0.02 seconds)
+desktop: [1m[32mwaiting for success: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user _PID=1143 --no-pager | grep -q '"'"'activate, headless engine'"'"''[0m
+[2mdesktop # [   13.800489] su[1161]: Successful su for audit by root[0m
+[2mdesktop # [   13.802535] su[1161]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   13.811437] su[1161]: pam_unix(su:session): session closed for user audit[0m
+[2mdesktop # [   13.833921] mywhisper[1143]: [service] engine lock acquired[0m
+[2mdesktop # [   13.853639] mywhisper[1143]: [hotkey] watching "F13" (Push) for DictationToggle[0m
+[2mdesktop # [   13.864115] mywhisper[1143]: [hotkey] watching 2 keyboard(s): QEMU Virtio Keyboard, AT Translated Set 2 keyboard[0m
+[2mdesktop # [   13.864614] mywhisper[1143]: [hotkey] status: Listening[0m
+[2mdesktop # [   13.866569] mywhisper[1143]: [0;1;33m[0;1;38:5:185mCannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”[0m[0m
+[2mdesktop # [   13.867826] mywhisper[1143]: [stt] startup warmup: Local: whisper model base (download it in Settings → Speech to Text / Language Models)[0m
+[2mdesktop # [   13.912089] mywhisper[1143]: [sync] applying engine (port 42973, name "")[0m
+[2mdesktop # [   13.925498] mywhisper[1143]: [sync] listening on port 42973[0m
+[2mdesktop # [   13.926609] mywhisper[1143]: [sync] mdns browsing on :42973 (advertising)[0m
+[2mdesktop # [   14.025746] mywhisper[1143]: [service] activate, headless engine[0m
+[2mdesktop # [   14.026384] mywhisper[1143]: [poc] layer-shell supported: true[0m
+[2mdesktop # [   14.026676] mywhisper[1143]: [poc] layer-shell configured: layer=Overlay bottom-anchored margin=24 keyboard=None exclusive=0 ns=mywhisper-pill[0m
+[2mdesktop # [   14.037206] mywhisper[1143]: [poc] viz mark icon loaded: 18x18[0m
+[2mdesktop # [   14.821489] su[1193]: Successful su for audit by root[0m
+[2mdesktop # [   14.824528] su[1193]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   14.834196] su[1193]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: waiting for success: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user _PID=1143 --no-pager | grep -q '"'"'activate, headless engine'"'"'', in 1.04 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user stop mywhisper.service'[0m
+[2mdesktop # [   14.841373] su[1199]: Successful su for audit by root[0m
+[2mdesktop # [   14.843420] su[1199]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   14.852262] systemd[816]: Stopping MyWhisper background dictation engine...[0m
+[2mdesktop # [   14.865543] systemd[816]: Stopped MyWhisper background dictation engine.[0m
+[2mdesktop # [   14.867655] su[1199]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user stop mywhisper.service', in 0.03 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user show mywhisper.service -p Result --value'[0m
+[2mdesktop # [   14.874829] su[1206]: Successful su for audit by root[0m
+[2mdesktop # [   14.876789] su[1206]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   14.890442] su[1206]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user show mywhisper.service -p Result --value', in 0.02 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus journalctl --user -u mywhisper.service --no-pager'[0m
+[2mdesktop # [   14.897235] su[1212]: Successful su for audit by root[0m
+[2mdesktop # [   14.899189] su[1212]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   14.907880] su[1212]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus journalctl --user -u mywhisper.service --no-pager', in 0.02 seconds)
+desktop: [1m[32mmust succeed: test ! -e /proc/1143[0m
+desktop: (finished: must succeed: test ! -e /proc/1143, in 0.01 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user start mywhisper.service'[0m
+[2mdesktop # [   14.921414] su[1221]: Successful su for audit by root[0m
+[2mdesktop # [   14.924683] su[1221]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   14.935232] systemd[816]: Started MyWhisper background dictation engine.[0m
+[2mdesktop # [   14.937146] su[1221]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user start mywhisper.service', in 0.02 seconds)
+desktop: [1m[32mwaiting for success: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active mywhisper.service'[0m
+[2mdesktop # [   14.947949] su[1234]: Successful su for audit by root[0m
+[2mdesktop # [   14.950725] su[1234]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   14.963764] su[1234]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: waiting for success: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active mywhisper.service', in 0.03 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user show mywhisper.service -p MainPID --value'[0m
+[2mdesktop # [   14.970664] su[1238]: Successful su for audit by root[0m
+[2mdesktop # [   14.972941] su[1238]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   14.987155] su[1238]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user show mywhisper.service -p MainPID --value', in 0.02 seconds)
+desktop: [1m[32mwaiting for success: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user _PID=1228 --no-pager | grep -q '"'"'activate, headless engine'"'"''[0m
+[2mdesktop # [   14.994590] su[1248]: Successful su for audit by root[0m
+[2mdesktop # [   14.996552] su[1248]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   15.005413] su[1248]: pam_unix(su:session): session closed for user audit[0m
+[2mdesktop # [   15.017585] mywhisper[1228]: [service] engine lock acquired[0m
+[2mdesktop # [   15.037443] mywhisper[1228]: [hotkey] watching "F13" (Push) for DictationToggle[0m
+[2mdesktop # [   15.047059] mywhisper[1228]: [hotkey] watching 2 keyboard(s): QEMU Virtio Keyboard, AT Translated Set 2 keyboard[0m
+[2mdesktop # [   15.047535] mywhisper[1228]: [hotkey] status: Listening[0m
+[2mdesktop # [   15.049844] mywhisper[1228]: [0;1;33m[0;1;38:5:185mCannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”[0m[0m
+[2mdesktop # [   15.103807] mywhisper[1228]: [stt] startup warmup: Local: whisper model base (download it in Settings → Speech to Text / Language Models)[0m
+[2mdesktop # [   15.136922] mywhisper[1228]: [sync] applying engine (port 42973, name "")[0m
+[2mdesktop # [   15.150638] mywhisper[1228]: [sync] listening on port 42973[0m
+[2mdesktop # [   15.151152] mywhisper[1228]: [sync] mdns browsing on :42973 (advertising)[0m
+[2mdesktop # [   15.207077] mywhisper[1228]: [service] activate, headless engine[0m
+[2mdesktop # [   15.207711] mywhisper[1228]: [poc] layer-shell supported: true[0m
+[2mdesktop # [   15.208008] mywhisper[1228]: [poc] layer-shell configured: layer=Overlay bottom-anchored margin=24 keyboard=None exclusive=0 ns=mywhisper-pill[0m
+[2mdesktop # [   15.209833] mywhisper[1228]: [poc] viz mark icon loaded: 18x18[0m
+[2mdesktop # [   16.014350] su[1280]: Successful su for audit by root[0m
+[2mdesktop # [   16.016339] su[1280]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   16.024949] su[1280]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: waiting for success: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 journalctl --user _PID=1228 --no-pager | grep -q '"'"'activate, headless engine'"'"'', in 1.04 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user stop mywhisper.service'[0m
+[2mdesktop # [   16.032376] su[1286]: Successful su for audit by root[0m
+[2mdesktop # [   16.034339] su[1286]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   16.045169] systemd[816]: Stopping MyWhisper background dictation engine...[0m
+[2mdesktop # [   16.059640] systemd[816]: Stopped MyWhisper background dictation engine.[0m
+[2mdesktop # [   16.061762] su[1286]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user stop mywhisper.service', in 0.04 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user show mywhisper.service -p Result --value'[0m
+[2mdesktop # [   16.069546] su[1293]: Successful su for audit by root[0m
+[2mdesktop # [   16.071673] su[1293]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   16.084601] su[1293]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user show mywhisper.service -p Result --value', in 0.02 seconds)
+desktop: [1m[32mmust succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus journalctl --user -u mywhisper.service --no-pager > /home/audit/service.log'[0m
+[2mdesktop # [   16.091835] su[1299]: Successful su for audit by root[0m
+[2mdesktop # [   16.093924] su[1299]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)[0m
+[2mdesktop # [   16.102377] su[1299]: pam_unix(su:session): session closed for user audit[0m
+desktop: (finished: must succeed: su - audit -c 'XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus journalctl --user -u mywhisper.service --no-pager > /home/audit/service.log', in 0.02 seconds)
+desktop: [1m[32mmust succeed: mkdir -p /tmp/shared[0m
+desktop: (finished: must succeed: mkdir -p /tmp/shared, in 0.00 seconds)
+desktop: [1m[32mmust succeed: cp -r /home/audit/gui.log /tmp/shared/gui.log[0m
+desktop: (finished: must succeed: cp -r /home/audit/gui.log /tmp/shared/gui.log, in 0.00 seconds)
+desktop: [1m[32mmust succeed: mkdir -p /tmp/shared[0m
+desktop: (finished: must succeed: mkdir -p /tmp/shared, in 0.00 seconds)
+desktop: [1m[32mmust succeed: cp -r /home/audit/service.log /tmp/shared/service.log[0m
+desktop: (finished: must succeed: cp -r /home/audit/service.log /tmp/shared/service.log, in 0.00 seconds)
+(finished: run the VM test script, in 16.55 seconds)
+test script finished in 16.62s
+[1m[32mcleanup[0m
+kill QemuMachine (pid 18527)
+[2mdesktop # qemu-system-x86_64: terminating on signal 15 from pid 18520 (/nix/store/lb41b0anx1f98y9y5s9mdv97gjgsq740-python3-3.14.7/bin/python3.14)[0m
+[2mdesktop # [2026-10-12T15:32:01Z INFO  virtiofsd] Client disconnected, shutting down[0m
+[2mdesktop # [2026-10-12T15:32:01Z INFO  virtiofsd] Client disconnected, shutting down[0m
+[2mdesktop # [2026-10-12T15:32:01Z INFO  virtiofsd] Client disconnected, shutting down[0m
+(finished: cleanup, in 0.07 seconds)

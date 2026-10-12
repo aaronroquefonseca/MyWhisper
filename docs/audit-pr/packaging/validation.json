@@ -1,7 +1,7 @@
 {
   "title": "Packaging, installation and Nix prerequisites",
   "base": "fix/audit-desktop-ui",
-  "code_commit": "712cd89f62d36b1cd43af07aba716a190a1f277f",
+  "code_commit": "09af73966ddf549b836fba0080df00eee3f89ccb",
   "passed": [
     "fmt",
     "strict Clippy all targets",
@@ -26,13 +26,13 @@
     "src/bin/mywhisper.rs": "a90154e6eacf235df7ddaff5c8a833551f914f09c5df83884ba9080c9cb25587",
     "packaging/arch/PKGBUILD": "2b95d275cc57d8e0b2ca1e88c405d8fdc72625c0d6696cbe392164b2444caa44",
     "packaging/arch/update.sh": "60bf18830f46752dfc44815e786e9afb88bed296a5996ff65647e1991427786c",
-    "packaging/nixos/flake.nix": "fca9c7afa211a05b0cc955718c2731dc7699b072b7c45a17a19007cb94b3121b",
+    "packaging/nixos/flake.nix": "b66e9d38405afd7568cbadfd1bd255946c752be181cb9caa6a5e5251a48c957e",
     "packaging/nixos/flake.lock": "5f213ab5bbf96e6acca0a5b88c4a47c83e21dc176b3cf450e4bcd00c692202db",
     "packaging/nixos/module.nix": "28aca62563c95b1abd81a5aec4f9a6b27dcbd7194fd2e238247bbdfe2ea404b5",
     "packaging/nixos/package-smoke.nix": "497b401b8e6df30e0272f91b9adee34e789743685c162dfd5f5839784d7a689c",
     "packaging/nixos/runtime-loader-test.nix": "2636da2681dc36dce56d8a57cd79dd01a0943ac9e27df7f28b8bd29d30abbe18",
     "packaging/release.py": "6d754567b4d458d57443ae900fc4ec2928a7f1266533a735e83a8c8bc0409206",
-    ".github/workflows/release.yml": "b8a5b0b2ba67591efa96264c083bdbd8e00e81961a38f794ce3bbdc910f6b38e"
+    ".github/workflows/release.yml": "f6da854e940002eb16ee3ca415e26e653bf7a6385ac90144f5cb6d907f3fb7a5"
   },
   "evidence_sha256": {
     "arch.log": "65e56079044334817f87a2e8de5397a5cd108208c4226617e798979b7c67b40a",
@@ -60,7 +60,32 @@
     "final-candidate.log": "9971d98887b87ced4213a83c121e06b6ce17a1165e8565830c32e763c1847e02",
     "final-artifact.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "final-candidate.json": "90cdfa23541964fbc1d9cfe81c83d59d87e1eb8f5a46bbd88ab1bddffd142fb1",
-    "published-compatibility.log": "d085fc1eba37ced4fd5c1d934036c0604114bf77bcf90f4b29f8aceef2897556"
+    "published-compatibility.log": "d085fc1eba37ced4fd5c1d934036c0604114bf77bcf90f4b29f8aceef2897556",
+    "pr7-fixture/hosted-before.log": "431d6ea182427160acbd2ee5726125ff4eff3ca7197b14b92b2bc1cd801c4d08",
+    "pr7-fixture/fmt.log": "c9c87d4946320e68b85a9c1bdb22b6944d73b219a4e24202346e4cedc900704c",
+    "pr7-fixture/clippy.log": "b1d6147654f8d30e5f7cf703bcc88a2633012967452d4b131a70d1aeed12b547",
+    "pr7-fixture/rust-compile.log": "582bb1a1df515a1eed7c4c99e1fbcf4e15b6839fe2c6465b160ef78844a7d6df",
+    "pr7-fixture/rust-tests.log": "32c3e626c6c4fad3420bd7ef1e679806839e3df6d4903e2e234406c879fe44da",
+    "pr7-fixture/release.log": "6ad0f7680626627ed5248cc4d77e88be7876302960fa5f1ec62be5ccf8b0f69c",
+    "pr7-fixture/upgrade-regressions.log": "5c25115030cb74644d88aaf03608f3bfbfaa960b264d88c67555c68691431f30",
+    "pr7-fixture/release-regressions.log": "9731972c0f7973c1e20e10e566e8044fa1f923635b80421c53505268e6622904",
+    "pr7-fixture/runner-lifecycle.log": "be954177887f30d7d6f939f4cb07401881fb28de3a525bf655740d89d69b87aa",
+    "pr7-fixture/cli.log": "408187476709d3693fd080a72fcddd850c4e99965ce6d42fc9bf336fd9d9ce51",
+    "pr7-fixture/native-ui.log": "033efb789f288742379634236c4a4137c3fec0cdc83c03b180754341333bbb22",
+    "pr7-fixture/clean-no-key.log": "80450ce354af76a6f1af002200a34b83dab8dc3eb98fd07afb43a5bbed4d62cb",
+    "pr7-fixture/security-audit.json": "b6e3648d1abbe8a1d60fff5d4e1aef41c8b553595d427eaee02280a01ca610b5",
+    "pr7-fixture/security-audit.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "pr7-fixture/COMMANDS.md": "5b696169b75c21a1e36020b0690b6aea73004a71a28e08595d71d49a3ed9f8bb",
+    "pr7-fixture/nix-runner.py": "f4c9b128ccb733650dd3ae6c679dbbd260596b18f8cf207f401627c7189b9e56",
+    "pr7-fixture/tested-source.json": "a4c8ac4958f55d500163f75a8c2170408b7f6925d98523868385505fd7991aba",
+    "pr7-fixture/nix-build.log": "df63211b31c84bd1364c87fdb560c85f5d58ab894ba872e67e400d0c76d62b53",
+    "pr7-fixture/nix-package.log": "0b0e5b4ea6b5591d4b2a830928b3253dbc1431e4278a7b9d4d7b4962e3004b57",
+    "pr7-fixture/nix-derivation.json": "6e10e006a310c968bf79961597e991bc16bb715b23064205e770265e9394e1d4",
+    "pr7-fixture/desktop-mywhisper-system-dark.png": "500a1991010b2d178297af36c4dfedb0676414ba12df1f2372727b00cddbe779",
+    "pr7-fixture/desktop-gui.log": "fa27f2ef7cd9d2ea63e54c97fa62d6199d86fdede26e1d0798cd9e07b051b248",
+    "pr7-fixture/desktop-service.log": "72fbe5766943ae38fef44a66130d5e9ecb9dac8306267cde55a6f3c1c0cd83d2",
+    "pr7-fixture/nix-desktop.log": "635e961f19713a9831519e5b8a478f2af8dcfd0836a8350f906e817481741170",
+    "pr7-fixture/nix-loader.log": "f2dc5cf735965668e64d5835b3537827e7b45b0c38459f682e2b49d13701dbf7"
   },
   "release_binary_sha256": "b8eb1972474b2186d4032670b0125642261a8de0f3fa21bec0102af56f3034b3",
   "tested_source_commit_before_stack_documentation": "b7d4b4a171054831bcfd9ffa0be21e51a1208c4c",
@@ -78,5 +103,27 @@
     "sha256": "6c630a38f1c973ddac3218475b6aa51b263f02c33867bba39c0408c8a9582c31",
     "arch_verified_contents_match": true
   },
-  "arch_provenance": "The Arch install/upgrade used the earlier candidate; every final archive member is byte-identical to that verified archive. Final metadata records the later reachable documentation checkpoint."
+  "arch_provenance": "The Arch install/upgrade used the earlier candidate; every final archive member is byte-identical to that verified archive. Final metadata records the later reachable documentation checkpoint.",
+  "review_blocker": {
+    "reviewed_head": "94b013938e35dbbbb5883f09cc583b03dcc3d3c1",
+    "fixed_source": "09af73966ddf549b836fba0080df00eee3f89ccb",
+    "failed_ci": "https://github.com/aaronroquefonseca/MyWhisper/actions/runs/38265648866/job/114867012153",
+    "reproduced_without_key": [
+      "net::tests::loopback_sync_converges_and_rejects_untrusted",
+      "net::tests::spoofed_node_id_rejected"
+    ],
+    "fixture": "Private mode-0700 HOME/XDG, no desktop session/keyring; explicit 32-byte zero test key only in child/test-phase subshell. No production source changes.",
+    "local_result": "83 passed, zero failures, five unchanged ignores; all-target harnesses pass",
+    "fresh_nix_package_derivation": "/nix/store/9shfmn6cxlgwicmx1a2plyj8y72ag2j9-mywhisper-0.9.3.drv",
+    "fresh_nix_package_result": "Explicit fixture marker, 83 passed, zero failures, five unchanged ignores",
+    "fresh_nix_outputs": [
+      "/nix/store/s9lnfx0jjnx0vf1wxnn3vidz7dx7fghl-vm-test-run-mywhisper-scoped-package",
+      "/nix/store/rkdpgb6jdizcrvmfdr62ld970vx6mxsw-vm-test-run-mywhisper-downloaded-loader"
+    ],
+    "installed_wrapper_has_no_synthetic_key": true,
+    "rust_source_unchanged_from_reviewed_head_and_matches_nix_source": true,
+    "commands": "evidence/pr7-fixture/COMMANDS.md",
+    "hosted_ci": "pending push after all local checks passed",
+    "prior_artifact_provenance": "Existing Arch/artifact records above remain historical. This correction changes only check configuration and evidence; all Rust, package install and runtime sources are byte-identical to the reviewed head."
+  }
 }

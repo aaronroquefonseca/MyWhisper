@@ -1,0 +1,8 @@
+Command: ['python3', 'scripts/disposable.py', 'MYWHISPER_AUDIT_ROOT', 'verification', 'env', '-u', 'DISPLAY', '-u', 'SSH_AUTH_SOCK', 'CARGO_HOME=/home/aaronroque/.cargo', 'RUSTUP_HOME=/home/aaronroque/.rustup', 'cargo', 'test', '--locked', '--all-targets', '--no-run']
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+  Executable unittests src/lib.rs (target/debug/deps/mywhisper-82dcefe1c08bbcec)
+  Executable unittests src/bin/mywhisper.rs (target/debug/deps/mywhisper-2d0e693ed3101047)
+  Executable unittests src/bin/pill.rs (target/debug/deps/pill-9e94da395485d780)
+  Executable unittests examples/desktop_smoke.rs (target/debug/examples/desktop_smoke-7b80f38a9e074efe)
+  Executable unittests examples/ui_preview.rs (target/debug/examples/ui_preview-7f212ffab48bcf33)
+Exit: 0
