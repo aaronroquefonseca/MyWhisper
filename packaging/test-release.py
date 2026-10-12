@@ -3,7 +3,9 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -84,6 +86,46 @@ class Release(unittest.TestCase):
         self.assertTrue((output / result["asset"].removesuffix(".tar.gz") / "THIRD_PARTY_NOTICES.txt").is_file())
         with self.assertRaises(FileExistsError):
             release.stage(self.root, output, "v1.2.3")
+
+    def test_container_git_trust_preserves_provenance_and_is_workspace_scoped(self):
+        self.write("target/release/mywhisper", "#!/usr/bin/env python3\nprint('mywhisper 1.2.3')\n")
+        (self.root / "target/release/mywhisper").chmod(0o700)
+        for source in ["packaging/systemd/mywhisper.service",
+                       "assets/applications/com.mywhisper.App.desktop", "assets/icons/app-icon.svg",
+                       "assets/icons/symbolic.svg"]:
+            self.write(source, "Synthetic artifact fixture.\n")
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True, timeout=5)
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True, timeout=5)
+        subprocess.run(["git", "-c", "user.name=Disposable", "-c", "user.email=fixture@example.invalid",
+                        "commit", "-qm", "Disposable source"], cwd=self.root, check=True, timeout=5)
+        expected = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True, timeout=5).strip()
+        home = tempfile.TemporaryDirectory(prefix="mywhisper-git-home-")
+        other = tempfile.TemporaryDirectory(prefix="mywhisper-untrusted-repo-")
+        self.addCleanup(home.cleanup)
+        self.addCleanup(other.cleanup)
+        subprocess.run(["git", "init", "-q", other.name], check=True, timeout=5)
+        # Git's own ownership test switch reproduces the container failure
+        # without chown, elevated privileges or any real user's repository.
+        env = {"HOME": home.name, "GIT_CONFIG_GLOBAL": str(Path(home.name) / ".gitconfig"),
+               "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_COUNT": "0",
+               "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"}
+        output = self.root / "candidate"
+        with patch.dict(os.environ, env), patch.object(
+                release, "dependency_notices", return_value=("Third party fixture notice.\n", [])):
+            with self.assertRaises(subprocess.CalledProcessError) as failure:
+                release.stage(self.root, output, "v1.2.3")
+            self.assertEqual(failure.exception.returncode, 128)
+            self.assertFalse(output.exists())
+            subprocess.run(["git", "config", "--global", "--add", "safe.directory", str(self.root)],
+                           check=True, timeout=5)
+            result = release.stage(self.root, output, "v1.2.3")
+            self.assertEqual(result["source_sha"], expected)
+            self.assertFalse(result["source_dirty"])
+            self.assertFalse(result["project_license_established"])
+            rejected = subprocess.run(["git", "-C", other.name, "rev-parse", "--git-dir"],
+                                      capture_output=True, text=True, timeout=5)
+            self.assertEqual(rejected.returncode, 128)
+            self.assertIn("dubious ownership", rejected.stderr)
 
     def test_upstream_notice_matches_locked_crate_commit_and_content(self):
         from types import SimpleNamespace
