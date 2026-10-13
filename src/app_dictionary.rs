@@ -63,20 +63,26 @@ fn labeled_entry(text: &str, label: &str) -> Entry {
 }
 
 fn duplicate_word(state: &AppState, value: &str, original: Option<&str>) -> bool {
+    // Spelling identity is accent-sensitive: "si"/"sí" and "papa"/"papá"
+    // are distinct words. dict_key unifies only case and canonical
+    // composed/decomposed spellings.
+    let norm = crate::textnorm::dict_key(value);
     state
         .store
         .load_words()
         .unwrap_or_default()
         .iter()
-        .any(|word| Some(word.as_str()) != original && word.to_lowercase() == value.to_lowercase())
+        .any(|word| Some(word.as_str()) != original && crate::textnorm::dict_key(word) == norm)
 }
 
 fn duplicate_snippet(state: &AppState, value: &str, original: Option<&str>) -> bool {
+    // Same fold as expansion matching: case- and accent-insensitive,
+    // so "Óscar" and "oscar" count as the same trigger.
     let triggers: HashSet<_> = value
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(str::to_lowercase)
+        .map(crate::textnorm::norm_string)
         .collect();
     state
         .store
@@ -88,7 +94,8 @@ fn duplicate_snippet(state: &AppState, value: &str, original: Option<&str>) -> b
                 && snippet
                     .triggers()
                     .iter()
-                    .any(|trigger| triggers.contains(&trigger.to_lowercase()))
+                    .map(|trigger| crate::textnorm::norm_string(trigger))
+                    .any(|trigger| triggers.contains(&trigger))
         })
 }
 
@@ -555,6 +562,29 @@ mod tests {
             .unwrap();
         assert!(duplicate_snippet(&state, "other phrase, MY SIGN OFF", None));
         assert!(!duplicate_snippet(&state, "new phrase", None));
+        // Accent-folded triggers count as the same snippet.
+        state
+            .store
+            .upsert_snippet("acción", "ACTION", "test")
+            .unwrap();
+        assert!(duplicate_snippet(&state, "ACCION", None));
+        assert!(duplicate_snippet(&state, "Acción", None));
+        // ...but spelling words keep accent distinctions.
+        state.store.upsert_word("camión", "test").unwrap();
+        assert!(duplicate_word(&state, "CAMIÓN", None));
+        assert!(!duplicate_word(&state, "camion", None));
+        state.store.upsert_word("si", "test").unwrap();
+        assert!(!duplicate_word(&state, "sí", None));
+        state.store.upsert_word("papa", "test").unwrap();
+        assert!(!duplicate_word(&state, "papá", None));
+        // Canonically equivalent spellings share one word entry no
+        // matter how they were typed or pasted.
+        state.store.upsert_word("cafe\u{301}", "test").unwrap();
+        assert!(duplicate_word(&state, "café", None));
+        assert!(duplicate_word(&state, "CAFÉ", None));
+        state.store.upsert_word("I\u{307}mza", "test").unwrap();
+        assert!(duplicate_word(&state, "imza", None));
+        assert!(duplicate_word(&state, "İMZA", None));
         assert!(!duplicate_snippet(
             &state,
             "SIGNATURE",
