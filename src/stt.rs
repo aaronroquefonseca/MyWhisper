@@ -537,6 +537,28 @@ pub enum DownloadEvent {
 
 pub type DownloadCallback = Arc<dyn Fn(DownloadEvent) + Send + Sync + 'static>;
 
+/// Recursive byte size of owned staging/runtime trees (symlinks not
+/// followed, errors ignored). Feeds the install progress meter.
+pub fn dir_bytes(path: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        let Ok(md) = std::fs::symlink_metadata(&p) else {
+            continue;
+        };
+        if md.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&p) {
+                for e in entries.flatten() {
+                    stack.push(e.path());
+                }
+            }
+        } else if md.is_file() {
+            total = total.saturating_add(md.len());
+        }
+    }
+    total
+}
+
 /// Download + install one registry model. Blocking; run on a worker
 /// thread. `cancel` is polled between chunks. Partial files are
 /// removed on cancel/failure so the next attempt starts clean.
@@ -1826,6 +1848,127 @@ pub fn qwen_installed(data_dir: &Path, pack: &QwenPack) -> bool {
     }
 }
 
+/// Approximate unpack meter scoped to exactly the dirs being
+/// written. Returns the stop flag + join handle; the caller must set
+/// the flag and join (stopping the thread) once the child exits.
+fn spawn_meter(
+    dirs: Vec<PathBuf>,
+    total: u64,
+    on_event: &DownloadCallback,
+) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+    let done = Arc::new(AtomicBool::new(false));
+    let flag = done.clone();
+    let cb = on_event.clone();
+    let handle = std::thread::spawn(move || {
+        while !flag.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let mut sum = 0u64;
+            for dir in &dirs {
+                sum = sum.saturating_add(dir_bytes(dir));
+            }
+            cb(DownloadEvent::Progress {
+                received: sum.min(total),
+                total: Some(total),
+            });
+            if flag.load(Ordering::SeqCst) {
+                break;
+            }
+        }
+    });
+    (done, handle)
+}
+
+/// Download resolved wheels with exact byte progress (sizes via
+/// HEAD; unknown sizes still download, the bar clamps at 100%),
+/// then install offline from the local wheel dir. Unpack progress
+/// rides a meter scoped to the venv tree against the pack estimate.
+#[allow(clippy::too_many_arguments)]
+fn install_wheels_offline(
+    pip: &Path,
+    refs: &[crate::qwen_runtime::WheelRef],
+    wheels: &Path,
+    runtime: &Path,
+    pack: &QwenPack,
+    cancel: &AtomicBool,
+    on_event: &DownloadCallback,
+    log_path: &Path,
+) -> Result<(), String> {
+    use crate::qwen_runtime as qr;
+    let sizes = qr::wheel_sizes(refs, cancel)?;
+    let total: u64 = sizes.iter().flatten().sum::<u64>().max(1);
+    let mut base = 0u64;
+    for (w, _size) in refs.iter().zip(sizes.iter()) {
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".to_string());
+        }
+        eprintln!("[qwen] {}: fetching {}=={}", pack.id, w.name, w.version);
+        let dest = wheels.join(qr::filename_of_url(&w.url));
+        let cb = |rec: u64, _tot: Option<u64>| {
+            on_event(DownloadEvent::Progress {
+                received: base.saturating_add(rec),
+                total: Some(total),
+            });
+        };
+        qr::download_verified(&w.url, &dest, &w.sha256, cancel, &cb)?;
+        base = base.saturating_add(std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0));
+    }
+    if cancel.load(Ordering::SeqCst) {
+        return Err("cancelled".to_string());
+    }
+    let wheels_s = wheels.to_string_lossy().to_string();
+    let (done, meter) = spawn_meter(vec![runtime.join("venv")], pack.size_bytes, on_event);
+    let mut cmd = std::process::Command::new(pip);
+    cmd.args([
+        "install",
+        "--no-index",
+        "--find-links",
+        &wheels_s,
+        "--prefer-binary",
+        "--disable-pip-version-check",
+    ])
+    .args(pack.pip_specs())
+    .env("PIP_NO_CACHE_DIR", "1")
+    .env_remove("PYTHONHOME")
+    .env_remove("PYTHONPATH")
+    .env_remove("VIRTUAL_ENV");
+    let r = qr::run_cancellable(&mut cmd, cancel, log_path, "pip install (offline)");
+    done.store(true, Ordering::SeqCst);
+    let _ = meter.join();
+    r
+}
+
+/// Fallback when wheels cannot be prefetched: direct install with a
+/// meter scoped to exactly the dirs pip writes (its cache + the venv
+/// tree) against the pack estimate.
+fn install_direct_with_meter(
+    pip: &Path,
+    pack: &QwenPack,
+    staging: &Path,
+    runtime: &Path,
+    cancel: &AtomicBool,
+    on_event: &DownloadCallback,
+    log_path: &Path,
+) -> Result<(), String> {
+    use crate::qwen_runtime as qr;
+    let cache = staging.join("pip-cache");
+    let (done, meter) = spawn_meter(
+        vec![cache.clone(), runtime.join("venv")],
+        pack.size_bytes,
+        on_event,
+    );
+    let mut cmd = std::process::Command::new(pip);
+    cmd.args(["install", "--prefer-binary", "--disable-pip-version-check"])
+        .args(pack.pip_specs())
+        .env("PIP_CACHE_DIR", &cache)
+        .env_remove("PYTHONHOME")
+        .env_remove("PYTHONPATH")
+        .env_remove("VIRTUAL_ENV");
+    let r = qr::run_cancellable(&mut cmd, cancel, log_path, "pip install");
+    done.store(true, Ordering::SeqCst);
+    let _ = meter.join();
+    r
+}
+
 /// Provision the managed runtime: private Python 3.12 + venv at the
 /// final path + locked deps + verification, transactionally.
 /// Blocking; run on a worker thread. Reuses the download
@@ -1907,18 +2050,65 @@ pub fn download_qwen_runtime(
         if !venv_python.exists() {
             return Err("venv python missing after create (see install.log)".to_string());
         }
-        // Locked deps into the venv pip (private, prefer wheels).
+        // Locked deps via the venv pip (private, prefer wheels).
+        // Two phases so the multi-GB fetch has exact byte progress:
+        // pip only draws % on a TTY (a log file is not one), so we
+        // first resolve to pinned wheel URLs (`--dry-run --report`),
+        // download each wheel ourselves with per-byte events, then
+        // install offline from the local wheel dir. Anything the
+        // resolver cannot pin to sha-verified wheels (sdists, report
+        // failures) falls back to a direct install whose meter is
+        // scoped to exactly the dirs pip writes (cache + venv).
         stage(qr::Stage::InstallDeps);
         let pip = runtime.join("venv").join("bin").join("pip");
-        let mut pip_cmd = std::process::Command::new(&pip);
-        pip_cmd
-            .args(["install", "--prefer-binary", "--disable-pip-version-check"])
+        let wheels = staging.join("wheels");
+        std::fs::create_dir_all(&wheels).map_err(|e| format!("mkdir wheels: {e}"))?;
+        let report = staging.join("pip-report.json");
+        let mut resolve_cmd = std::process::Command::new(&pip);
+        resolve_cmd
+            .args([
+                "install",
+                "--dry-run",
+                "--report",
+                &report.to_string_lossy(),
+                "--prefer-binary",
+                "--disable-pip-version-check",
+            ])
             .args(pack.pip_specs())
-            .env("PIP_CACHE_DIR", staging.join("pip-cache"))
+            .env("PIP_NO_CACHE_DIR", "1")
             .env_remove("PYTHONHOME")
             .env_remove("PYTHONPATH")
             .env_remove("VIRTUAL_ENV");
-        qr::run_cancellable(&mut pip_cmd, cancel, &log_path, "pip install")?;
+        let resolved = qr::run_cancellable(&mut resolve_cmd, cancel, &log_path, "pip resolve")
+            .and_then(|()| {
+                if cancel.load(Ordering::SeqCst) {
+                    return Err("cancelled".to_string());
+                }
+                qr::parse_pip_report(&report)
+            });
+        match resolved {
+            Ok(refs) if refs.iter().all(|w| w.is_wheel) => install_wheels_offline(
+                &pip, &refs, &wheels, &runtime, pack, cancel, on_event, &log_path,
+            )?,
+            Ok(_) => {
+                eprintln!(
+                    "[qwen] {}: sdist in resolution set; direct install (see install.log)",
+                    pack.id
+                );
+                install_direct_with_meter(
+                    &pip, pack, &staging, &runtime, cancel, on_event, &log_path,
+                )?;
+            }
+            Err(e) => {
+                eprintln!(
+                    "[qwen] {}: wheel prefetch unavailable ({e}); direct install",
+                    pack.id
+                );
+                install_direct_with_meter(
+                    &pip, pack, &staging, &runtime, cancel, on_event, &log_path,
+                )?;
+            }
+        }
         if cancel.load(Ordering::SeqCst) {
             return Err("cancelled".to_string());
         }

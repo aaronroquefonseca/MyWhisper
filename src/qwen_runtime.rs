@@ -472,6 +472,105 @@ impl Write for HashWriter<'_> {
     }
 }
 
+// ---------------------------------------------------------------- wheel prefetch
+
+/// One pinned file from `pip install --dry-run --report`.
+#[derive(Debug, Clone)]
+pub struct WheelRef {
+    pub name: String,
+    pub version: String,
+    pub url: String,
+    pub sha256: String,
+    pub is_wheel: bool,
+}
+
+/// Final URL path segment (query/fragment stripped).
+pub fn filename_of_url(url: &str) -> String {
+    url.split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .rsplit('/')
+        .next()
+        .unwrap_or("wheel.bin")
+        .to_string()
+}
+
+/// Parse the `--report` JSON into pinned (url, sha256) refs. Any
+/// entry without a URL or sha256 is an `Err`: the caller falls back
+/// to a direct install rather than fetching unverified bytes.
+pub fn parse_pip_report(path: &Path) -> Result<Vec<WheelRef>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("read pip report: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("parse pip report: {e}"))?;
+    let items = v
+        .get("install")
+        .and_then(|i| i.as_array())
+        .ok_or_else(|| "pip report has no install list".to_string())?;
+    let mut out = Vec::new();
+    for it in items {
+        let url = it
+            .pointer("/download_info/url")
+            .and_then(|u| u.as_str())
+            .ok_or_else(|| "pip report entry has no url".to_string())?;
+        let sha = it
+            .pointer("/download_info/archive_info/hashes/sha256")
+            .and_then(|h| h.as_array())
+            .and_then(|a| a.first())
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| format!("pip report entry has no sha256 ({url})"))?;
+        let name = it
+            .pointer("/metadata/name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("?")
+            .to_string();
+        let version = it
+            .pointer("/metadata/version")
+            .and_then(|n| n.as_str())
+            .unwrap_or("?")
+            .to_string();
+        let file = filename_of_url(url);
+        out.push(WheelRef {
+            name,
+            version,
+            url: url.to_string(),
+            sha256: sha.to_string(),
+            is_wheel: file.ends_with(".whl"),
+        });
+    }
+    if out.is_empty() {
+        return Err("pip report resolved nothing".to_string());
+    }
+    Ok(out)
+}
+
+/// HEAD each URL for exact byte sizes (`None` when the server won't
+/// say). Cancel-polled between requests.
+pub fn wheel_sizes(refs: &[WheelRef], cancel: &AtomicBool) -> Result<Vec<Option<u64>>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Some(std::time::Duration::from_secs(30)))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    let mut out = Vec::with_capacity(refs.len());
+    for w in refs {
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".to_string());
+        }
+        let size = client
+            .head(&w.url)
+            .send()
+            .ok()
+            .filter(|r| r.status().is_success())
+            .and_then(|r| {
+                r.headers()
+                    .get(reqwest::header::CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+            });
+        out.push(size);
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------- provision
 
 /// Ensure the private uv binary exists under staging (downloaded +
@@ -748,6 +847,43 @@ mod tests {
         .unwrap_err();
         assert!(is_cancel_error(&err));
         assert!(!dest.with_extension("part").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pip_report_parsing_pins_urls_and_flags_sdists() {
+        let dir = std::env::temp_dir().join(format!("qwen-report-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("report.json");
+        std::fs::write(
+            &path,
+            r#"{"version":"1","install":[
+            {"download_info":{"url":"https://files.pythonhosted.org/x/torch-2.9.1-cp312-cp312-manylinux_2_28_x86_64.whl","archive_info":{"hashes":{"sha256":["aaa"]}}},"metadata":{"name":"torch","version":"2.9.1"}},
+            {"download_info":{"url":"https://files.pythonhosted.org/x/odd-1.0.tar.gz","archive_info":{"hashes":{"sha256":["bbb"]}}},"metadata":{"name":"odd","version":"1.0"}}
+            ]}"#,
+        )
+        .unwrap();
+        let refs = parse_pip_report(&path).unwrap();
+        assert_eq!(refs.len(), 2);
+        assert!(refs[0].is_wheel);
+        assert_eq!(refs[0].sha256, "aaa");
+        assert_eq!(
+            filename_of_url(&refs[0].url),
+            "torch-2.9.1-cp312-cp312-manylinux_2_28_x86_64.whl"
+        );
+        assert!(!refs[1].is_wheel);
+        assert_eq!(filename_of_url("https://h/x.whl?token=1#frag"), "x.whl");
+        // Missing sha → Err (never fetch unverified).
+        std::fs::write(
+            &path,
+            r#"{"version":"1","install":[{"download_info":{"url":"https://h/x.whl","archive_info":{"hashes":{}}},"metadata":{"name":"x","version":"1"}}]}"#,
+        )
+        .unwrap();
+        assert!(parse_pip_report(&path).is_err());
+        // Empty resolution → Err.
+        std::fs::write(&path, r#"{"version":"1","install":[]}"#).unwrap();
+        assert!(parse_pip_report(&path).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
