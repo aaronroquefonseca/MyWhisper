@@ -543,9 +543,15 @@ pub fn parse_pip_report(path: &Path) -> Result<Vec<WheelRef>, String> {
             .ok_or_else(|| "pip report entry has no url".to_string())?;
         let sha = it
             .pointer("/download_info/archive_info/hashes/sha256")
-            .and_then(|h| h.as_array())
-            .and_then(|a| a.first())
-            .and_then(|s| s.as_str())
+            // Schema varies by index: string or single-element array.
+            .and_then(|h| {
+                h.as_str().map(|s| s.to_string()).or_else(|| {
+                    h.as_array()
+                        .and_then(|a| a.first())
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string())
+                })
+            })
             .ok_or_else(|| format!("pip report entry has no sha256 ({url})"))?;
         let name = it
             .pointer("/metadata/name")
@@ -912,6 +918,16 @@ mod tests {
         )
         .unwrap();
         assert!(parse_pip_report(&path).is_err());
+        // String-form sha256 (as pip emits for some indexes) parses too.
+        std::fs::write(
+            &path,
+            r#"{"version":"1","install":[{"download_info":{"url":"https://h/y.whl","archive_info":{"hash":"sha256=abc","hashes":{"sha256":"abc"}}},"metadata":{"name":"y","version":"1"}}]}"#,
+        )
+        .unwrap();
+        let refs = parse_pip_report(&path).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].sha256, "abc");
+        assert!(refs[0].is_wheel);
         // Empty resolution → Err.
         std::fs::write(&path, r#"{"version":"1","install":[]}"#).unwrap();
         assert!(parse_pip_report(&path).is_err());
