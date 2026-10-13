@@ -3386,11 +3386,17 @@ fn http_post_json(
 ///   placeholders; the saved replacements never enter the LLM
 ///   request, so the model cannot modify them.
 /// - The cleanup response must contain every placeholder exactly
-///   once, in order: missing, altered, duplicated, reordered, or
-///   unexpected placeholders reject the response.
+///   once, in order, with no other reserved-marker occurrences:
+///   missing, altered, duplicated, reordered, or unexpected
+///   well-formed placeholders all reject the response, as does any
+///   malformed fragment (truncated, whitespace-altered, rewrapped,
+///   or recased copies).
 /// - Restoration splices replacements verbatim without re-matching,
 ///   so self-containing (`go` → `go now`) and cross-snippet
 ///   replacements stay non-recursive.
+/// - Input already resembling markers skips cleanup entirely and
+///   takes the deterministic fallback up front, so user text can
+///   never tangle with real placeholders.
 /// - Any validation failure (or disabled/failed/unavailable
 ///   cleanup) falls back to the deterministic once-expansion of the
 ///   original transcription.
@@ -3404,8 +3410,15 @@ fn finalize_transcript(
     if matches.is_empty() {
         return post_process(raw, lm, words);
     }
+    // Safe fallback before cleanup: user text already resembling
+    // markers never enters the protected request, so it survives
+    // verbatim and can never tangle with real placeholders.
+    if contains_marker_like(raw) {
+        eprintln!("[stt] marker-like user text; deterministic fallback");
+        return crate::textnorm::expand_snippets(raw, snips);
+    }
     eprintln!("[stt] snippets recognized: {}", matches.len());
-    let token = snippet_token();
+    let token = snippet_token(raw);
     let mut protected = String::with_capacity(raw.len());
     let mut replacements = Vec::with_capacity(matches.len());
     let mut cursor = 0;
@@ -3433,11 +3446,12 @@ fn finalize_transcript(
 }
 
 /// Placeholder vocabulary: ASCII word characters only, so cleanup
-/// models have no reason to reformat them, and shaped so user text
-/// cannot collide: a 64-bit random token per utterance plus a
-/// fixed marker. `scan_placeholders` still treats any well-formed
-/// lookalike as a placeholder (and therefore unexpected), so even a
-/// deliberately typed imitation fails validation safely.
+/// models have no reason to reformat them. Unpredictability comes
+/// from a 64-bit random token per utterance, but randomness alone is
+/// not the collision defense: `snippet_token` verifies the namespace
+/// is absent from the input, `finalize_transcript` refuses to protect
+/// input that already resembles markers, and `restore_protected`
+/// rejects any imitator — well-formed or malformed — in the response.
 const SNIPPET_TAG_PREFIX: &str = "__MSG_SNIPPET_";
 const SNIPPET_TAG_SUFFIX: &str = "__";
 
@@ -3445,16 +3459,34 @@ fn snippet_placeholder(token: &str, index: usize) -> String {
     format!("{SNIPPET_TAG_PREFIX}{token}_{index}{SNIPPET_TAG_SUFFIX}")
 }
 
-/// Per-utterance random token (hex). An RNG failure falls back to a
-/// process-scoped counter: still unique within the run.
-fn snippet_token() -> String {
-    let mut bytes = [0u8; 8];
-    if getrandom::fill(&mut bytes).is_ok() {
-        return bytes.iter().map(|b| format!("{b:02x}")).collect();
+/// Per-utterance token from a namespace verified absent from the
+/// input: up to 32 RNG draws, each rejected if its hex already
+/// occurs in the raw text, so even the RNG-failure counter path is
+/// checked. (The raw text is already known marker-free here, so this
+/// is defense in depth; the check is cheap.)
+fn snippet_token(raw: &str) -> String {
+    for _ in 0..32 {
+        let mut bytes = [0u8; 8];
+        let candidate = if getrandom::fill(&mut bytes).is_ok() {
+            bytes.iter().map(|b| format!("{b:02x}")).collect()
+        } else {
+            static FALLBACK: AtomicU64 = AtomicU64::new(1);
+            let n = FALLBACK.fetch_add(1, Ordering::Relaxed);
+            format!("{:016x}", n.wrapping_add(std::process::id() as u64))
+        };
+        if !raw.contains(&candidate) {
+            return candidate;
+        }
     }
-    static FALLBACK: AtomicU64 = AtomicU64::new(1);
-    let n = FALLBACK.fetch_add(1, Ordering::Relaxed);
-    format!("{:016x}", n.wrapping_add(std::process::id() as u64))
+    // Practically unreachable: widen until the namespace is fresh.
+    format!(
+        "{:016x}{:016x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64)
+            .unwrap_or(0),
+        std::process::id() as u64
+    )
 }
 
 /// Extra system-prompt section while placeholders are active.
@@ -3469,10 +3501,48 @@ fn placeholder_instruction() -> String {
     )
 }
 
+/// Every reserved-stem occurrence (byte start, byte end): `MSG`,
+/// an optional whitespace run, an optional underscore, then
+/// `SNIPPET`, all ASCII case-insensitive. This catches contiguous
+/// markers as well as rewrapped (`**MSG_SNIPPET_..**`), truncated,
+/// and whitespace-altered copies (`__MSG SNIPPET_..__`). Pure ASCII
+/// matching keeps all indices on char boundaries.
+fn reserved_stem_spans(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 3 <= bytes.len() {
+        if bytes[i..i + 3].eq_ignore_ascii_case(b"MSG") {
+            let mut j = i + 3;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            let mut k = j;
+            if k < bytes.len() && bytes[k] == b'_' {
+                k += 1;
+            }
+            if k + 7 <= bytes.len() && bytes[k..k + 7].eq_ignore_ascii_case(b"SNIPPET") {
+                out.push((i, k + 7));
+                i = k + 7;
+                continue;
+            }
+        }
+        // Advance one char to stay on a byte boundary.
+        i += text[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+    }
+    out
+}
+
+/// True when the text holds anything placeholder-shaped: a
+/// well-formed marker or any reserved-stem fragment (truncated,
+/// whitespace-altered, rewrapped, any case).
+fn contains_marker_like(text: &str) -> bool {
+    !reserved_stem_spans(text).is_empty()
+}
 /// Every well-formed placeholder occurrence: (byte start, byte end,
-/// full token text). Malformed lookalikes are plain text (which then
-/// fails validation as a missing placeholder); well-formed but
-/// foreign tokens are returned and rejected as unexpected.
+/// full token text). Well-formed but foreign tokens are returned and
+/// rejected as unexpected; malformed fragments are caught separately
+/// by `reserved_stem_spans`.
 fn scan_placeholders(text: &str) -> Vec<(usize, usize, String)> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
@@ -3507,7 +3577,12 @@ fn scan_placeholders(text: &str) -> Vec<(usize, usize, String)> {
 /// and splice the saved replacements verbatim. `None` on any
 /// contract breach: wrong count, wrong token, wrong order (covers
 /// missing, altered, duplicated, reordered, and unexpected
-/// placeholders). Never runs snippet matching on the result.
+/// well-formed placeholders), or any reserved-stem occurrence outside
+/// a validated placeholder span (covers malformed fragments:
+/// truncated, whitespace-altered, rewrapped, or recased copies).
+/// Only the cleanup response is scanned — restored replacement text
+/// is never inspected, so replacements stay literal even when they
+/// hold marker-like text. Never runs snippet matching on the result.
 fn restore_protected(cleaned: &str, token: &str, replacements: &[String]) -> Option<String> {
     let found = scan_placeholders(cleaned);
     if found.len() != replacements.len() {
@@ -3515,6 +3590,17 @@ fn restore_protected(cleaned: &str, token: &str, replacements: &[String]) -> Opt
     }
     for (index, (_, _, text)) in found.iter().enumerate() {
         if *text != snippet_placeholder(token, index) {
+            return None;
+        }
+    }
+    // Every reserved-stem occurrence must sit inside a validated
+    // placeholder span; anything else is a malformed fragment.
+    let spans: Vec<(usize, usize)> = found.iter().map(|(start, end, _)| (*start, *end)).collect();
+    for (stem_start, stem_end) in reserved_stem_spans(cleaned) {
+        if !spans
+            .iter()
+            .any(|(start, end)| *start <= stem_start && stem_end <= *end)
+        {
             return None;
         }
     }
@@ -4391,9 +4477,10 @@ mod tests {
 
     #[test]
     fn pipeline_user_text_resembling_placeholders_falls_back_safely() {
-        // The lookalike is not ours: validation fails, the fallback
-        // expands the trigger once and keeps the lookalike literal.
-        let server = FakeCleanup::serve(1, |t| t.to_string());
+        // The lookalike is not ours: cleanup is skipped up front (the
+        // server sees zero requests), the trigger expands once, and
+        // the lookalike survives literally.
+        let server = FakeCleanup::serve(0, |t| t.to_string());
         let lm = server.settings();
         let words: Vec<String> = Vec::new();
         let snips = vec![("brb".to_string(), "be right back".to_string())];
@@ -4406,6 +4493,190 @@ mod tests {
             ),
             "be right back notes __MSG_SNIPPET_deadbeef_0__ end"
         );
+        assert!(server.transcripts().is_empty());
+    }
+
+    #[test]
+    fn pipeline_malformed_lookalike_in_raw_skips_cleanup() {
+        // Malformed user text never reaches the model either.
+        let server = FakeCleanup::serve(0, |t| t.to_string());
+        let lm = server.settings();
+        let words: Vec<String> = Vec::new();
+        let snips = vec![("brb".to_string(), "be right back".to_string())];
+        assert_eq!(
+            finalize_transcript("brb says __MSG_SNIPPET_zz_0__ hi", &lm, &words, &snips),
+            "be right back says __MSG_SNIPPET_zz_0__ hi"
+        );
+        assert!(server.transcripts().is_empty());
+    }
+
+    /// Malformed-fragment matrix: cleanup preserves the real marker,
+    /// rewrites surrounding text, and appends one debris copy. Every
+    /// response must fall back to the once-expanded original.
+    #[test]
+    fn pipeline_rejects_truncated_marker_copy() {
+        let server = FakeCleanup::serve(1, |t| {
+            let cleaned = t.replace("call me", "ring me");
+            if let Some((_, _, text)) = scan_placeholders(t).first() {
+                format!("{} {}", cleaned, &text[..text.len() - 5])
+            } else {
+                cleaned
+            }
+        });
+        let lm = server.settings();
+        let words: Vec<String> = Vec::new();
+        let snips = vec![("brb".to_string(), "be right back".to_string())];
+        assert_eq!(
+            finalize_transcript("brb, call me", &lm, &words, &snips),
+            "be right back, call me"
+        );
+    }
+
+    #[test]
+    fn pipeline_rejects_marker_missing_closing_underscore() {
+        let server = FakeCleanup::serve(1, |t| {
+            let cleaned = t.replace("call me", "ring me");
+            if let Some((_, _, text)) = scan_placeholders(t).first() {
+                format!("{} {}", cleaned, &text[..text.len() - 1])
+            } else {
+                cleaned
+            }
+        });
+        let lm = server.settings();
+        let words: Vec<String> = Vec::new();
+        let snips = vec![("brb".to_string(), "be right back".to_string())];
+        assert_eq!(
+            finalize_transcript("brb, call me", &lm, &words, &snips),
+            "be right back, call me"
+        );
+    }
+
+    #[test]
+    fn pipeline_rejects_marker_with_star_index() {
+        let server = FakeCleanup::serve(1, |t| {
+            let cleaned = t.replace("call me", "ring me");
+            if let Some((_, _, text)) = scan_placeholders(t).first() {
+                let core = text.strip_suffix("__").unwrap_or(text);
+                let cut = core.rfind('_').unwrap_or(core.len());
+                format!("{} {}_*x*_", cleaned, &core[..cut])
+            } else {
+                cleaned
+            }
+        });
+        let lm = server.settings();
+        let words: Vec<String> = Vec::new();
+        let snips = vec![("brb".to_string(), "be right back".to_string())];
+        assert_eq!(
+            finalize_transcript("brb, call me", &lm, &words, &snips),
+            "be right back, call me"
+        );
+    }
+
+    #[test]
+    fn pipeline_rejects_marker_with_spaced_index() {
+        let server = FakeCleanup::serve(1, |t| {
+            let cleaned = t.replace("call me", "ring me");
+            if let Some((_, _, text)) = scan_placeholders(t).first() {
+                let core = text.strip_suffix("__").unwrap_or(text);
+                let cut = core.rfind('_').unwrap_or(core.len());
+                format!("{} {}__ 0__", cleaned, &core[..cut])
+            } else {
+                cleaned
+            }
+        });
+        let lm = server.settings();
+        let words: Vec<String> = Vec::new();
+        let snips = vec![("brb".to_string(), "be right back".to_string())];
+        assert_eq!(
+            finalize_transcript("brb, call me", &lm, &words, &snips),
+            "be right back, call me"
+        );
+    }
+
+    #[test]
+    fn pipeline_rejects_star_wrapped_marker() {
+        let server = FakeCleanup::serve(1, |t| {
+            format!(
+                "{} **MSG_SNIPPET_nothex_0**",
+                t.replace("call me", "ring me")
+            )
+        });
+        let lm = server.settings();
+        let words: Vec<String> = Vec::new();
+        let snips = vec![("brb".to_string(), "be right back".to_string())];
+        assert_eq!(
+            finalize_transcript("brb, call me", &lm, &words, &snips),
+            "be right back, call me"
+        );
+    }
+
+    #[test]
+    fn pipeline_rejects_whitespace_altered_marker_copies() {
+        // Space after the prefix and before the suffix: the stem is
+        // intact but the shape is broken, so both must fall back.
+        let alters: [fn(&str) -> String; 2] = [
+            |text| text.replacen("__MSG_SNIPPET_", "__MSG_SNIPPET_ ", 1),
+            |text| format!("{} __", &text[..text.len() - 2]),
+        ];
+        for alter in alters {
+            let server = FakeCleanup::serve(1, move |t| {
+                let cleaned = t.replace("call me", "ring me");
+                if let Some((_, _, text)) = scan_placeholders(t).first() {
+                    format!("{} {}", cleaned, alter(text))
+                } else {
+                    cleaned
+                }
+            });
+            let lm = server.settings();
+            let words: Vec<String> = Vec::new();
+            let snips = vec![("brb".to_string(), "be right back".to_string())];
+            assert_eq!(
+                finalize_transcript("brb, call me", &lm, &words, &snips),
+                "be right back, call me"
+            );
+        }
+    }
+
+    #[test]
+    fn pipeline_replacements_with_marker_like_text_stay_verbatim() {
+        // Restoration never scans what it inserts: marker-like
+        // replacement content lands literally in the final text.
+        let server = FakeCleanup::serve(2, |t| t.replace("call me", "ring me"));
+        let lm = server.settings();
+        let words: Vec<String> = Vec::new();
+        let snips = vec![(
+            "brb".to_string(),
+            "be right back __MSG_SNIPPET_deadbeef_0__ ok".to_string(),
+        )];
+        assert_eq!(
+            finalize_transcript("brb, call me", &lm, &words, &snips),
+            "be right back __MSG_SNIPPET_deadbeef_0__ ok, ring me"
+        );
+        let snips = vec![(
+            "brb".to_string(),
+            "see __MSG_SNIPPET_oops__ now".to_string(),
+        )];
+        assert_eq!(
+            finalize_transcript("brb, call me", &lm, &words, &snips),
+            "see __MSG_SNIPPET_oops__ now, ring me"
+        );
+    }
+
+    #[test]
+    fn marker_like_detection_and_token_namespaces() {
+        assert!(!contains_marker_like("plain talk, call me"));
+        assert!(!contains_marker_like("a code snippet here"));
+        assert!(contains_marker_like("__MSG_SNIPPET_ab12_0__"));
+        assert!(contains_marker_like("**MSG_SNIPPET_nothex_0**"));
+        assert!(contains_marker_like("__MSG_SNIPPET_ab12_0_"));
+        assert!(contains_marker_like("__msg_snippet_ab12_0__"));
+        assert!(contains_marker_like("say __MSG SNIPPET_ab12_0__ now"));
+        // Fresh namespaces avoid the input hex on every path.
+        let raw = "brb here";
+        let token = snippet_token(raw);
+        assert_eq!(token.len(), 16);
+        assert!(token.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert!(!raw.contains(&token));
     }
 
     #[test]

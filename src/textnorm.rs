@@ -15,8 +15,10 @@
 //!   replacements are spliced literally, and the deterministic
 //!   fallback path expands the original text exactly once.
 //! - A failed contract (missing, altered, duplicated, reordered, or
-//!   unexpected placeholders) discards the cleanup response and
-//!   falls back to the once-expanded original transcription.
+//!   unexpected placeholders — including malformed reserved-marker
+//!   fragments) discards the cleanup response and falls back to the
+//!   once-expanded original transcription. Input already resembling
+//!   markers skips cleanup up front, so user text survives verbatim.
 //!
 //! Matching is case- AND accent-insensitive on both sides, with one
 //! shared fold (`fold_char`/`norm_string`): `Ó`/`ó`/`O`/`o` all match,
