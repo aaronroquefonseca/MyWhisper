@@ -237,6 +237,34 @@ pub fn install_log(runtime: &Path) -> PathBuf {
     runtime.join("install.log")
 }
 
+/// Persistent failure diagnostics: staging (with install.log) is
+/// removed on failure, so the tail is copied here (bounded) before
+/// cleanup. Survives restarts, unlike the in-memory Failed state —
+/// otherwise a failure under review leaves "see install.log"
+/// pointing at nothing.
+pub fn failed_log(data_dir: &Path, subdir: &str) -> PathBuf {
+    data_dir
+        .join("bin")
+        .join(format!(".qwen-{subdir}.failed.log"))
+}
+
+/// Copy at most the last `max_bytes` of `src` to `dest`.
+pub fn copy_log_tail(src: &Path, dest: &Path, max_bytes: u64) -> Result<(), String> {
+    use std::io::Seek;
+    let mut file = std::fs::File::open(src).map_err(|e| format!("open log: {e}"))?;
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if len > max_bytes {
+        file.seek(std::io::SeekFrom::Start(len - max_bytes))
+            .map_err(|e| format!("seek log: {e}"))?;
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
+    }
+    let mut out = std::fs::File::create(dest).map_err(|e| format!("write log: {e}"))?;
+    std::io::copy(&mut file, &mut out).map_err(|e| format!("copy log: {e}"))?;
+    Ok(())
+}
+
 /// Marker v2 (only written after post-activation verification at the
 /// final path). The v1 marker (`"<id>|<specs>\n"`) from the old
 /// system-python installer is deliberately rejected: that venv may
@@ -968,6 +996,24 @@ mod tests {
         // Plain copied binary → true.
         std::fs::write(&python, b"x").unwrap();
         assert!(venv_python_self_contained(&runtime));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_log_tail_is_bounded() {
+        let dir = std::env::temp_dir().join(format!("qwen-tail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("install.log");
+        std::fs::write(&src, vec![b'x'; 100]).unwrap();
+        let dest = dir.join("failed.log");
+        copy_log_tail(&src, &dest, 10).unwrap();
+        assert_eq!(std::fs::metadata(&dest).unwrap().len(), 10);
+        copy_log_tail(&src, &dest, 10_000).unwrap();
+        assert_eq!(std::fs::metadata(&dest).unwrap().len(), 100);
+        assert!(
+            failed_log(Path::new("/data"), "qwen-vllm").ends_with(".qwen-qwen-vllm.failed.log")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1908,13 +1908,38 @@ fn install_wheels_offline(
         }
         eprintln!("[qwen] {}: fetching {}=={}", pack.id, w.name, w.version);
         let dest = wheels.join(qr::filename_of_url(&w.url));
-        let cb = |rec: u64, _tot: Option<u64>| {
-            on_event(DownloadEvent::Progress {
-                received: base.saturating_add(rec),
-                total: Some(total),
-            });
-        };
-        qr::download_verified(&w.url, &dest, &w.sha256, cancel, &cb)?;
+        // Transient network blips must not fail a multi-GB fetch:
+        // retry the single GET (pip itself retries 5x). Cancel still
+        // aborts between attempts; the last error surfaces.
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let cb = |rec: u64, _tot: Option<u64>| {
+                on_event(DownloadEvent::Progress {
+                    received: base.saturating_add(rec),
+                    total: Some(total),
+                });
+            };
+            match qr::download_verified(&w.url, &dest, &w.sha256, cancel, &cb) {
+                Ok(()) => break,
+                Err(e) if qr::is_cancel_error(&e) || attempt >= 3 => {
+                    if attempt >= 3 && !qr::is_cancel_error(&e) {
+                        eprintln!(
+                            "[qwen] {}: {}=={} failed after 3 attempts",
+                            pack.id, w.name, w.version
+                        );
+                    }
+                    return Err(e);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[qwen] {}: {}=={} attempt {attempt}/3 failed ({e}); retrying",
+                        pack.id, w.name, w.version
+                    );
+                    std::thread::sleep(std::time::Duration::from_secs(2 * attempt as u64));
+                }
+            }
+        }
         base = base.saturating_add(std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0));
     }
     if cancel.load(Ordering::SeqCst) {
@@ -2192,7 +2217,10 @@ pub fn download_qwen_runtime(
         Ok(())
     })();
     match result {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            let _ = std::fs::remove_file(qr::failed_log(data_dir, pack.subdir));
+            Ok(())
+        }
         Err(e) => {
             // Restore the previous working runtime; never leave a
             // half-installed tree marked installed (marker is only
@@ -2202,11 +2230,18 @@ pub fn download_qwen_runtime(
             if had_backup {
                 let _ = std::fs::rename(&backup, &runtime);
             }
+            // Persist diagnostics BEFORE staging is cleaned: the
+            // concise error references this file, which survives
+            // restarts (the in-memory Failed state does not).
+            let failed = qr::failed_log(data_dir, pack.subdir);
+            if !qr::is_cancel_error(&e) {
+                let _ = qr::copy_log_tail(&log_path, &failed, 262_144);
+            }
             let _ = std::fs::remove_dir_all(&staging);
-            // Keep the log tail for Remove/Retry diagnostics? The
-            // concise error goes to the download state; detail stays
-            // in the log above when it survives. Surface distinctly.
-            Err(e)
+            if qr::is_cancel_error(&e) {
+                return Err(e);
+            }
+            Err(format!("{e} (details: {})", failed.display()))
         }
     }
 }
@@ -2233,6 +2268,7 @@ pub fn delete_qwen_runtime(data_dir: &Path, pack: &QwenPack) -> std::io::Result<
             std::fs::remove_dir_all(&dir)?;
         }
     }
+    let _ = std::fs::remove_file(crate::qwen_runtime::failed_log(data_dir, pack.subdir));
     Ok(())
 }
 
@@ -2251,6 +2287,8 @@ pub fn start_qwen_runtime_download(data_dir: PathBuf, id: &'static str) {
     let Some(pack) = QWEN_PACKS.iter().find(|p| p.id == id) else {
         return;
     };
+    // Fresh attempt supersedes any persisted failure diagnostics.
+    let _ = std::fs::remove_file(crate::qwen_runtime::failed_log(&data_dir, pack.subdir));
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_worker = cancel.clone();
     downloads().lock().unwrap().insert(
