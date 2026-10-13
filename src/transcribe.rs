@@ -3418,7 +3418,12 @@ fn finalize_transcript(
         return crate::textnorm::expand_snippets(raw, snips);
     }
     eprintln!("[stt] snippets recognized: {}", matches.len());
-    let token = snippet_token(raw);
+    // No verifiable namespace means no protected request: expand
+    // deterministically instead of risking a collision.
+    let Some(token) = snippet_token(raw) else {
+        eprintln!("[stt] no fresh placeholder namespace; deterministic fallback");
+        return crate::textnorm::expand_snippets(raw, snips);
+    };
     let mut protected = String::with_capacity(raw.len());
     let mut replacements = Vec::with_capacity(matches.len());
     let mut cursor = 0;
@@ -3459,34 +3464,43 @@ fn snippet_placeholder(token: &str, index: usize) -> String {
     format!("{SNIPPET_TAG_PREFIX}{token}_{index}{SNIPPET_TAG_SUFFIX}")
 }
 
+/// Attempts before giving up on a fresh namespace. Exhaustion is
+/// practically unreachable (it needs dozens of colliding candidates),
+/// and the caller falls back deterministically on `None`.
+const TOKEN_ATTEMPTS: usize = 64;
+
 /// Per-utterance token from a namespace verified absent from the
-/// input: up to 32 RNG draws, each rejected if its hex already
-/// occurs in the raw text, so even the RNG-failure counter path is
-/// checked. (The raw text is already known marker-free here, so this
-/// is defense in depth; the check is cheap.)
-fn snippet_token(raw: &str) -> String {
-    for _ in 0..32 {
+/// input, or `None` when no fresh candidate appears. Every candidate
+/// is checked against the raw text — including RNG-failure counter
+/// values — so no path returns an unverified namespace. (The raw text
+/// is already known marker-free here, so this is defense in depth;
+/// the check is cheap.)
+fn snippet_token(raw: &str) -> Option<String> {
+    static FALLBACK: AtomicU64 = AtomicU64::new(1);
+    let mut next = || {
         let mut bytes = [0u8; 8];
-        let candidate = if getrandom::fill(&mut bytes).is_ok() {
+        if getrandom::fill(&mut bytes).is_ok() {
             bytes.iter().map(|b| format!("{b:02x}")).collect()
         } else {
-            static FALLBACK: AtomicU64 = AtomicU64::new(1);
             let n = FALLBACK.fetch_add(1, Ordering::Relaxed);
             format!("{:016x}", n.wrapping_add(std::process::id() as u64))
-        };
-        if !raw.contains(&candidate) {
-            return candidate;
+        }
+    };
+    snippet_token_with(raw, &mut next)
+}
+
+/// Controlled candidate generation behind `snippet_token`: first
+/// candidate absent from `raw` wins, `None` after `TOKEN_ATTEMPTS`
+/// rejections. Tests inject colliding sequences deterministically
+/// instead of waiting on random collisions.
+fn snippet_token_with(raw: &str, next: &mut impl FnMut() -> String) -> Option<String> {
+    for _ in 0..TOKEN_ATTEMPTS {
+        let candidate = next();
+        if !candidate.is_empty() && !raw.contains(&candidate) {
+            return Some(candidate);
         }
     }
-    // Practically unreachable: widen until the namespace is fresh.
-    format!(
-        "{:016x}{:016x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos() as u64)
-            .unwrap_or(0),
-        std::process::id() as u64
-    )
+    None
 }
 
 /// Extra system-prompt section while placeholders are active.
@@ -3501,11 +3515,14 @@ fn placeholder_instruction() -> String {
     )
 }
 
-/// Every reserved-stem occurrence (byte start, byte end): `MSG`,
-/// an optional whitespace run, an optional underscore, then
-/// `SNIPPET`, all ASCII case-insensitive. This catches contiguous
-/// markers as well as rewrapped (`**MSG_SNIPPET_..**`), truncated,
-/// and whitespace-altered copies (`__MSG SNIPPET_..__`). Pure ASCII
+/// Every reserved-stem occurrence (byte start, byte end). Validation
+/// rule: `MSG`, then a separator run of underscores and ASCII
+/// whitespace in any order and any length (including none), then
+/// `SNIPPET`, all ASCII case-insensitive. One rule covers contiguous
+/// markers, glued copies, and every damaged variant: truncated,
+/// rewrapped (`**MSG_SNIPPET_..**`), recased, and whitespace on
+/// either side of (or inside) the separator (`__MSG_ SNIPPET_..__`,
+/// `__MSG_\nSNIPPET_..__`, `__MSG\t_\tSNIPPET_..__`). Pure ASCII
 /// matching keeps all indices on char boundaries.
 fn reserved_stem_spans(text: &str) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();
@@ -3514,16 +3531,12 @@ fn reserved_stem_spans(text: &str) -> Vec<(usize, usize)> {
     while i + 3 <= bytes.len() {
         if bytes[i..i + 3].eq_ignore_ascii_case(b"MSG") {
             let mut j = i + 3;
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            while j < bytes.len() && (bytes[j] == b'_' || bytes[j].is_ascii_whitespace()) {
                 j += 1;
             }
-            let mut k = j;
-            if k < bytes.len() && bytes[k] == b'_' {
-                k += 1;
-            }
-            if k + 7 <= bytes.len() && bytes[k..k + 7].eq_ignore_ascii_case(b"SNIPPET") {
-                out.push((i, k + 7));
-                i = k + 7;
+            if j + 7 <= bytes.len() && bytes[j..j + 7].eq_ignore_ascii_case(b"SNIPPET") {
+                out.push((i, j + 7));
+                i = j + 7;
                 continue;
             }
         }
@@ -4671,12 +4684,58 @@ mod tests {
         assert!(contains_marker_like("__MSG_SNIPPET_ab12_0_"));
         assert!(contains_marker_like("__msg_snippet_ab12_0__"));
         assert!(contains_marker_like("say __MSG SNIPPET_ab12_0__ now"));
+        assert!(contains_marker_like("__MSG_ SNIPPET_ab12_0__"));
+        assert!(contains_marker_like("__MSG\t_\tSNIPPET_ab12_0__"));
         // Fresh namespaces avoid the input hex on every path.
         let raw = "brb here";
-        let token = snippet_token(raw);
+        let token = snippet_token(raw).expect("fresh namespace");
         assert_eq!(token.len(), 16);
         assert!(token.bytes().all(|b| b.is_ascii_hexdigit()));
         assert!(!raw.contains(&token));
+    }
+
+    #[test]
+    fn snippet_token_with_uses_controlled_candidates() {
+        // First candidate collides with the input, second is fresh:
+        // the fresh one wins without touching the RNG.
+        let raw = "brb says cafe1234 loudly";
+        let mut pool = vec!["cafe1234".to_string(), "zz".to_string()].into_iter();
+        let token = snippet_token_with(raw, &mut || pool.next().unwrap_or_default());
+        assert_eq!(token.as_deref(), Some("zz"));
+        // An endlessly colliding generator exhausts the attempts and
+        // reports None instead of returning an unverified namespace.
+        let token = snippet_token_with("brb here", &mut || "brb".to_string());
+        assert_eq!(token, None);
+    }
+
+    /// Separator-whitespace matrix: the response keeps the intact
+    /// expected placeholder, rewrites surrounding text, and appends a
+    /// damaged duplicate with whitespace around the separator. Each
+    /// must fall back to the once-expanded original.
+    #[test]
+    fn pipeline_rejects_separator_whitespace_duplicates() {
+        let damaged: [fn(&str) -> String; 3] = [
+            |text| text.replacen("__MSG_SNIPPET_", "__MSG_ SNIPPET_", 1),
+            |text| text.replacen("__MSG_SNIPPET_", "__MSG_\nSNIPPET_", 1),
+            |text| text.replacen("__MSG_SNIPPET_", "__MSG\t_\tSNIPPET_", 1),
+        ];
+        for make_damaged in damaged {
+            let server = FakeCleanup::serve(1, move |t| {
+                let cleaned = t.replace("call me", "ring me");
+                if let Some((_, _, text)) = scan_placeholders(t).first() {
+                    format!("{} {}", cleaned, make_damaged(text))
+                } else {
+                    cleaned
+                }
+            });
+            let lm = server.settings();
+            let words: Vec<String> = Vec::new();
+            let snips = vec![("brb".to_string(), "be right back".to_string())];
+            assert_eq!(
+                finalize_transcript("brb, call me", &lm, &words, &snips),
+                "be right back, call me"
+            );
+        }
     }
 
     #[test]
