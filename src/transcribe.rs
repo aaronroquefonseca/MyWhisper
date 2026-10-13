@@ -558,8 +558,42 @@ pub(crate) fn active_count() -> usize {
 /// Startup admission: serializes the quick check/spawn/insert section
 /// so generation validation cannot race a concurrent Stop bump. The
 /// long listen/probe wait runs without it (revoked via instance).
+///
+/// Ownership contract (global lock order: `SERVER_START_LOCK` →
+/// `LIVE` → `servers()`; never held across long waits, DB reads for
+/// hints aside, or transcription):
+/// - Capture admission (`begin_utterance`) holds `SERVER_START_LOCK` →
+///   `LIVE` while handling stale takeovers, re-reading current Store
+///   settings, incrementing `ACTIVE_UTTERANCES` and capturing the
+///   generation, so every admitted capture pairs current settings with
+///   a current generation.
+/// - Destructive control (reconciliation drop paths, keep-warm reaper)
+///   holds the inference lease + `SERVER_START_LOCK` → `LIVE` across
+///   the idle revalidation AND the kill/clear, so a capture admitted
+///   in between either wins (control defers) or loses (it re-read the
+///   already-new settings and warms the new config). Check and destroy
+///   are never split across lock releasings.
+/// - `ensure_server` revalidates staleness (`expected_gen`) and idleness
+///   (`defer`) inside its own admission; long waits revoke via the
+///   per-startup `baseline` (own bumps included) plus instance/map.
+/// - Explicit Stop (`drop_servers`) is immediate (no idle check) but
+///   still serialized via `SERVER_START_LOCK` for bump ordering.
 static SERVER_START_LOCK: Mutex<()> = Mutex::new(());
 static SERVER_INSTANCE: AtomicU64 = AtomicU64::new(0);
+
+/// Idle policy rechecked inside startup admission (under
+/// `SERVER_START_LOCK`, so no capture can slip between the check and
+/// the destructive quick section).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActiveDefer {
+    /// Authority paths: active inference (holds the blocking lease),
+    /// release-worker fallback ensures, explicit cold start.
+    Never,
+    /// Reconciliation-driven starts: no own utterance exists.
+    IfAnyActive,
+    /// Background warmups: the pressing utterance itself counts as one.
+    IfOthersActive,
+}
 
 struct StartupGuard {
     data_dir: PathBuf,
@@ -899,74 +933,89 @@ pub(crate) fn test_set_busy(active: bool) {
 }
 
 /// Background reaper: every 30 s, stop servers idle past keep-warm.
-/// No-op when unset (forever) or while recording/inference is
-/// active (lease + LIVE coordinated, so a capture beginning during
-/// cleanup survives). Started once at service boot. Owned children
-/// only.
+/// No-op when unset (forever) or while recording/inference is active.
+/// The keep-warm hint is read before taking locks (stale-by-ms is
+/// harmless; the next tick corrects). The idle revalidation and the
+/// kill/clear then run under one admission holding (lease retained
+/// across both, order `START_LOCK` → `LIVE` → `servers()`), so a
+/// capture admitted between checking and shutting down is impossible.
+/// Generation advances iff this tick actually removed something; idle
+/// no-op ticks leave it unchanged. Started once at service boot.
+/// Owned children only.
 pub fn spawn_server_reaper(data_dir: PathBuf) {
     let _ = crate::runtime::spawn_dedicated("server-reaper", move || {
         loop {
             std::thread::sleep(Duration::from_secs(30));
-            // Non-blocking lease: defer while inference holds it.
-            let _lease = match EngineLease::acquire(false) {
-                Ok(l) => l,
-                Err(_) => continue,
-            };
-            // Order: START_LOCK -> LIVE -> servers(). Quick section
-            // only; a new capture blocks for ms, then survives (we
-            // defer when it wins the race).
-            let _admission = match SERVER_START_LOCK.lock() {
-                Ok(g) => g,
-                Err(_) => continue,
-            };
-            let live_guard = match live().lock() {
-                Ok(g) => g,
-                Err(_) => continue,
-            };
-            if live_guard.is_some() || BUSY.load(Ordering::SeqCst) {
-                continue;
-            }
-            drop(live_guard);
-            let keep = crate::store::Store::open(&data_dir.join("state.db"))
-                .map(|store| store.load_settings().stt.keep_warm.clone())
-                .unwrap_or_default();
-            let Some(timeout) = keep_warm_timeout(&keep) else {
-                continue;
-            };
-            let mut map = match servers().lock() {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            // Re-check liveness under all locks (capture could have
-            // begun between lease acquire and lock acquisition).
-            if live().lock().map(|g| g.is_some()).unwrap_or(true) || BUSY.load(Ordering::SeqCst) {
-                continue;
-            }
-            let mut dead = Vec::new();
-            for (name, s) in map.iter_mut() {
-                if !s.ready || s.last_used.elapsed() < timeout {
-                    continue;
-                }
-                let alive = s.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
-                if !alive {
-                    dead.push(name.clone());
-                    continue;
-                }
-                eprintln!("[stt] keep-warm expired for {name}; stopping");
-                let _ = s.child.kill();
-                let _ = s.child.wait();
-                pidfile_remove(&data_dir, name);
-                dead.push(name.clone());
-            }
-            for name in dead {
-                map.remove(&name);
-            }
-            if !map.is_empty() {
-                // Idle-stop invalidates queued warmups for the old key.
-                bump_generation();
-            }
+            reap_expired_servers(&data_dir);
         }
     });
+}
+
+/// One keep-warm tick: stop ready servers idle past the configured
+/// timeout. Returns true when anything was removed (and the control
+/// generation was advanced to invalidate queued warmups).
+fn reap_expired_servers(data_dir: &Path) -> bool {
+    // Hint first, outside all locks.
+    let keep = crate::store::Store::open(&data_dir.join("state.db"))
+        .map(|store| store.load_settings().stt.keep_warm.clone())
+        .unwrap_or_default();
+    let Some(timeout) = keep_warm_timeout(&keep) else {
+        return false;
+    };
+    // Non-blocking lease, retained across the atomic check+destroy
+    // below: inference cannot begin mid-destroy, and an admitted
+    // capture (ACTIVE/LIVE, including presses that incremented ACTIVE
+    // but have not installed LIVE yet) defers us instead of dying.
+    let _lease = match EngineLease::acquire(false) {
+        Ok(l) => l,
+        Err(_) => return false,
+    };
+    let _admission = match SERVER_START_LOCK.lock() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    let live_guard = match live().lock() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    if live_guard.is_some()
+        || BUSY.load(Ordering::SeqCst)
+        || ACTIVE_UTTERANCES.load(Ordering::Acquire) > 0
+    {
+        return false;
+    }
+    drop(live_guard);
+    let mut map = match servers().lock() {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    let mut dead = Vec::new();
+    for (name, s) in map.iter_mut() {
+        if !s.ready || s.last_used.elapsed() < timeout {
+            continue;
+        }
+        let alive = s.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
+        if !alive {
+            dead.push(name.clone());
+            continue;
+        }
+        eprintln!("[stt] keep-warm expired for {name}; stopping");
+        let _ = s.child.kill();
+        let _ = s.child.wait();
+        pidfile_remove(data_dir, name);
+        dead.push(name.clone());
+    }
+    for name in &dead {
+        map.remove(name);
+    }
+    // Bump only on an actual removal: stopping the sole server advances
+    // (queued warmups for it must abort); a tick that removed nothing —
+    // including one that merely kept a non-expired server — changes
+    // nothing and must not invalidate queued work.
+    if !dead.is_empty() {
+        bump_generation();
+    }
+    !dead.is_empty()
 }
 
 static SERVERS: OnceLock<Mutex<HashMap<String, Supervised>>> = OnceLock::new();
@@ -998,10 +1047,18 @@ fn threads_arg() -> String {
 /// a port held by another process is an error (never reused,
 /// adopted, or killed based on port/cmdline substrings).
 /// `expected_gen` (press/startup warmups) aborts when the control
-/// generation moved: validated inside startup admission (holding
-/// `SERVER_START_LOCK`) and again after spawn, so a Stop/switch
-/// between validation and launch cannot resurrect. Authority paths
-/// (reconciliation, active inference) pass `None`.
+/// generation moved: validated once inside startup admission (holding
+/// `SERVER_START_LOCK`, so no concurrent Stop/switch bump can slip
+/// between validation and launch). Authority paths (reconciliation
+/// after its own atomic idle check, active inference holding the
+/// blocking lease, explicit cold start) pass `None`.
+///
+/// `defer` revalidates idleness inside the same admission: a capture
+/// admitted between the caller's outer check and this admission defers
+/// instead of killing. Long waits revoke via `baseline` (sampled after
+/// this call's own bumps, so a valid replacement never invalidates
+/// itself) plus instance/map.
+#[allow(clippy::too_many_arguments)]
 fn ensure_server(
     data_dir: &Path,
     name: &str,
@@ -1010,6 +1067,7 @@ fn ensure_server(
     spawn: impl FnOnce() -> Result<Child, String>,
     probe: impl FnOnce() -> Result<(), String>,
     expected_gen: Option<u64>,
+    defer: ActiveDefer,
 ) -> Result<(), String> {
     // Port is part of identity: a custom-port switch must replace,
     // not reuse, the old listener. (Bind host is folded into the
@@ -1017,9 +1075,10 @@ fn ensure_server(
     // flag and always listens on 0.0.0.0.)
     let key = format!("{key}|port={port}");
     // Quick admission, serialized with Stop bumps via START_LOCK.
-    // Order everywhere: START_LOCK -> servers(). Long waits run
-    // without START_LOCK (revoked via instance).
+    // Order everywhere: START_LOCK -> LIVE -> servers(). Long waits run
+    // without START_LOCK (revoked via baseline/instance).
     let instance: u64;
+    let baseline: u64;
     let mut startup: StartupGuard;
     {
         let _admission = SERVER_START_LOCK.lock().map_err(|e| e.to_string())?;
@@ -1028,22 +1087,38 @@ fn ensure_server(
         {
             return Err("obsolete generation, skipping".to_string());
         }
+        // Authoritative idle revalidation: no capture admitted ahead of
+        // us is killed by the removals below.
+        if defer != ActiveDefer::Never {
+            let live_active = live().lock().map(|g| g.is_some()).unwrap_or(true);
+            let busy = BUSY.load(Ordering::SeqCst);
+            let leased = ENGINE_LEASED.load(Ordering::Acquire);
+            let active = ACTIVE_UTTERANCES.load(Ordering::Acquire);
+            let occupied = match defer {
+                ActiveDefer::Never => false,
+                ActiveDefer::IfAnyActive => live_active || busy || leased || active > 0,
+                ActiveDefer::IfOthersActive => busy || leased || active > 1,
+            };
+            if occupied {
+                return Err("deferred: capture or inference active".to_string());
+            }
+        }
         let mut map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
         // Single STT server at a time (one local configuration): any
         // OTHER *owned* server dies here, on every ensure — reuse or
         // spawn. Fallback chains still work serially (each plan ensures
         // its own server when tried). Owned only: pidfile entries for
         // other names are stale metadata and are forgotten, never
-        // signalled. Cross-engine removal invalidates queued warmups.
+        // signalled. Every removal below bumps the generation so older
+        // queued warmups abort.
         let others: Vec<String> = map.keys().filter(|k| k.as_str() != name).cloned().collect();
-        let mut removed_other = false;
         for other in others {
             if let Some(mut o) = map.remove(&other) {
                 let _ = o.child.kill();
                 let _ = o.child.wait();
                 pidfile_remove(data_dir, &other);
                 eprintln!("[stt] single-server rule: stopped {other} for {name}");
-                removed_other = true;
+                bump_generation();
             } else {
                 pidfile_remove(data_dir, &other);
             }
@@ -1053,9 +1128,6 @@ fn ensure_server(
             if other != name {
                 pidfile_remove(data_dir, other);
             }
-        }
-        if removed_other {
-            bump_generation();
         }
         if let Some(s) = map.get_mut(name) {
             let alive = s.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
@@ -1067,6 +1139,7 @@ fn ensure_server(
                 // Another starter is warming the same config: wait for
                 // it outside admission (released below).
                 instance = s.instance;
+                baseline = server_generation();
             } else {
                 match s.child.try_wait() {
                     Ok(Some(status)) => {
@@ -1078,7 +1151,10 @@ fn ensure_server(
                 let _ = s.child.wait();
                 map.remove(name);
                 pidfile_remove(data_dir, name);
-                // Bump so warmups queued for the old key abort.
+                // Bump so warmups queued for the old key abort. Our own
+                // `expected_gen` was authorized above; the long-phase
+                // revocation below uses `baseline` (post-bump), so this
+                // valid transition never invalidates itself.
                 bump_generation();
                 instance = SERVER_INSTANCE.fetch_add(1, Ordering::AcqRel) + 1;
                 // Fall through to spawn below (new instance).
@@ -1089,26 +1165,14 @@ fn ensure_server(
                     ready: false,
                 };
                 // Spawn while still holding admission (serialized with
-                // Stop bumps): post-spawn generation re-check closes
-                // Stop-between-validation-and-launch.
-                if let Some(exp) = expected_gen
-                    && exp != server_generation()
-                {
-                    return Err("obsolete generation, skipping".to_string());
-                }
+                // Stop bumps): no concurrent bump can land between the
+                // entry validation above and this spawn.
                 if port_open(port) {
                     return Err(format!(
                         "port {port} is owned by another process; choose a free local port or configure a self-hosted endpoint"
                     ));
                 }
-                let mut child = spawn()?;
-                if let Some(exp) = expected_gen
-                    && exp != server_generation()
-                {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("obsolete generation, skipping".to_string());
-                }
+                let child = spawn()?;
                 let child_pid = child.id();
                 pidfile_record(data_dir, name, child_pid, port);
                 map.insert(
@@ -1123,14 +1187,15 @@ fn ensure_server(
                     },
                 );
                 startup.ready = false;
+                baseline = server_generation();
                 drop(map);
                 drop(_admission);
-                return wait_ready(name, instance, port, probe, startup);
+                return wait_ready(name, instance, port, probe, startup, baseline);
             }
             // Reuse path for starting instance: wait outside admission.
             drop(map);
             drop(_admission);
-            return wait_ready_existing(name, instance, port);
+            return wait_ready_existing(name, instance, port, baseline);
         }
         if port_open(port) {
             // Never reuse/adopt: TCP connectivity proves nothing about
@@ -1147,19 +1212,7 @@ fn ensure_server(
             instance,
             ready: false,
         };
-        if let Some(exp) = expected_gen
-            && exp != server_generation()
-        {
-            return Err("obsolete generation, skipping".to_string());
-        }
-        let mut child = spawn()?;
-        if let Some(exp) = expected_gen
-            && exp != server_generation()
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("obsolete generation, skipping".to_string());
-        }
+        let child = spawn()?;
         let child_pid = child.id();
         pidfile_record(data_dir, name, child_pid, port);
         map.insert(
@@ -1173,21 +1226,26 @@ fn ensure_server(
                 ready: false,
             },
         );
+        baseline = server_generation();
         drop(map);
         drop(_admission);
     }
-    wait_ready(name, instance, port, probe, startup)
+    wait_ready(name, instance, port, probe, startup, baseline)
 }
 
 /// Wait for listen + probe for a freshly spawned instance.
-/// Revoked when the map entry vanishes or the instance changes
+/// Revoked when the map entry vanishes, the instance changes, or a
+/// concurrent transition bumps the generation past `baseline`
 /// (Stop/switch during startup); the guard reaps on abandon.
+/// `baseline` is sampled after this call's own bumps, so a valid
+/// replacement never revokes itself — only someone else's transition.
 fn wait_ready(
     name: &str,
     instance: u64,
     port: u16,
     probe: impl FnOnce() -> Result<(), String>,
     mut startup: StartupGuard,
+    baseline: u64,
 ) -> Result<(), String> {
     // Wait for listen, but fail fast when the child dies first (e.g.
     // cuda binary with no CUDA libs exits 127 in ms — no 20 s mystery).
@@ -1195,6 +1253,9 @@ fn wait_ready(
     loop {
         if port_open(port) {
             break;
+        }
+        if server_generation() != baseline {
+            return Err(format!("{name} startup ownership was revoked"));
         }
         let exited = {
             let mut map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
@@ -1217,9 +1278,13 @@ fn wait_ready(
         std::thread::sleep(Duration::from_millis(200));
     }
     probe()?;
-    // Mark ready only for the owning instance; a concurrent Stop/switch
-    // revokes (map cleared or instance replaced).
+    // Mark ready only for the owning instance at the owning baseline; a
+    // concurrent Stop/switch revokes (map cleared, instance replaced,
+    // or generation moved).
     {
+        if server_generation() != baseline {
+            return Err(format!("{name} startup ownership was revoked"));
+        }
         let mut map = servers().lock().map_err(|e| e.to_string())?;
         match map.get_mut(name) {
             Some(s) if s.instance == instance => {
@@ -1236,10 +1301,14 @@ fn wait_ready(
 }
 
 /// Wait for an already-starting instance (same key, not ready yet).
-fn wait_ready_existing(name: &str, instance: u64, port: u16) -> Result<(), String> {
+/// Revoked like `wait_ready` (instance/baseline).
+fn wait_ready_existing(name: &str, instance: u64, port: u16, baseline: u64) -> Result<(), String> {
     let start = Instant::now();
     loop {
         {
+            if server_generation() != baseline {
+                return Err(format!("{name} startup ownership was revoked"));
+            }
             let mut map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
             match map.get_mut(name) {
                 Some(s) if s.instance == instance => {
@@ -1363,6 +1432,7 @@ fn ensure_whisper(
     lang: &str,
     net: &ServerNet,
     expected_gen: Option<u64>,
+    defer: ActiveDefer,
 ) -> Result<(), String> {
     let bin = whisper_binary(data_dir, backend)?;
     // Bind host is launch identity: toggling LAN exposure must rebind.
@@ -1407,18 +1477,25 @@ fn ensure_whisper(
         },
         || Ok(()), // model loads before listen: TCP-ready ≈ serving
         expected_gen,
+        defer,
     )?;
-    // /load when the running server holds another model.
-    let map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
-    let swap = map
+    // /load when the running server holds another model. The instance
+    // is pinned across the HTTP round-trip so a concurrent replacement
+    // cannot misrecord a stale model against the new server.
+    let instance = servers()
+        .lock()
+        .map_err(|e| format!("server lock: {e}"))?
         .get(&"whisper".to_string())
-        .map(|s| s.loaded_model.as_deref() != Some(model))
-        .unwrap_or(true);
+        .map(|s| (s.instance, s.loaded_model.as_deref() != Some(model)));
+    let Some((instance, swap)) = instance else {
+        return Ok(());
+    };
     if swap {
-        drop(map);
         whisper_load(model, whisper_port)?;
         let mut map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
-        if let Some(s) = map.get_mut("whisper") {
+        if let Some(s) = map.get_mut("whisper")
+            && s.instance == instance
+        {
             s.loaded_model = Some(model.to_path_buf());
         }
     }
@@ -1543,6 +1620,7 @@ fn ensure_sherpa_offline(
     lang: &str,
     net: &ServerNet,
     expected_gen: Option<u64>,
+    defer: ActiveDefer,
 ) -> Result<(), String> {
     let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-offline-websocket-server")?;
     // Cohere is the only offline model taking a language (required:
@@ -1629,6 +1707,7 @@ fn ensure_sherpa_offline(
         },
         move || probe_sherpa_offline(offline_port),
         expected_gen,
+        defer,
     )
 }
 
@@ -1638,6 +1717,7 @@ fn ensure_sherpa_online(
     model_dir: &Path,
     net: &ServerNet,
     expected_gen: Option<u64>,
+    defer: ActiveDefer,
 ) -> Result<(), String> {
     let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-online-websocket-server")?;
     let words = load_hint_words(data_dir);
@@ -1693,6 +1773,7 @@ fn ensure_sherpa_online(
         },
         move || probe_sherpa_online(online_port),
         expected_gen,
+        defer,
     )
 }
 
@@ -2843,25 +2924,15 @@ pub fn begin_utterance(
         // settings above), not a fresh load that could pair stale plans
         // with a bumped generation.
         if let Err(e) = crate::runtime::submit("stt-warmup", move || {
-            // Lease-gated (non-blocking, held only for the decision):
-            // defer while active inference holds the engine; the
-            // release worker still ensures. Released before the long
-            // startup so inference never blocks on warmup.
-            if EngineLease::acquire(false).is_err() {
-                eprintln!("[stt] warmup: local engine is in use; configuration warmup deferred");
-                return;
-            }
-            if ACTIVE_UTTERANCES.load(Ordering::Acquire) > 1 {
-                eprintln!("[stt] warmup: overlapping utterance active, deferred");
-                return;
-            }
-            if let Err(e) = ensure_servers(
+            // Idleness + staleness revalidate inside startup admission;
+            // the release worker still ensures authoritatively.
+            if let Err(e) = ensure_for_plan_at_gen(
                 &plan,
                 &data_dir,
                 backend,
                 sherpa_backend,
                 &warm_net,
-                Some(generation),
+                generation,
             ) {
                 eprintln!("[stt] warmup: {e}");
             }
@@ -3340,6 +3411,7 @@ fn finish_session(
         sess.sherpa_backend,
         &sess.net,
         None,
+        ActiveDefer::Never,
     )
     .ok();
     for (name, plan) in &sess.fallbacks {
@@ -3350,6 +3422,7 @@ fn finish_session(
             sess.sherpa_backend,
             &sess.net,
             None,
+            ActiveDefer::Never,
         ) {
             eprintln!("[stt] fallback {name} not ready: {e}");
         }
@@ -3571,11 +3644,21 @@ pub fn ensure_for_plan(
     sherpa_backend: SherpaBackendSetting,
     net: &ServerNet,
 ) -> Result<(), String> {
-    ensure_servers(plan, data_dir, gpu_backend, sherpa_backend, net, None)
+    ensure_servers(
+        plan,
+        data_dir,
+        gpu_backend,
+        sherpa_backend,
+        net,
+        None,
+        ActiveDefer::Never,
+    )
 }
 
 /// Warmup entry carrying the submit-time control generation.
-/// Aborts when obsolete (see `ensure_server`).
+/// Aborts when obsolete; defers when other captures/inference own the
+/// engine (see `ensure_server`). The release worker still ensures
+/// authoritatively.
 pub fn ensure_for_plan_at_gen(
     plan: &Plan,
     data_dir: &Path,
@@ -3591,6 +3674,7 @@ pub fn ensure_for_plan_at_gen(
         sherpa_backend,
         net,
         Some(expected_gen),
+        ActiveDefer::IfOthersActive,
     )
 }
 
@@ -3601,17 +3685,35 @@ fn ensure_servers(
     sherpa_backend: SherpaBackendSetting,
     net: &ServerNet,
     expected_gen: Option<u64>,
+    defer: ActiveDefer,
 ) -> Result<(), String> {
     match plan {
-        Plan::WhisperHttp { model_bin, lang } => {
-            ensure_whisper(data_dir, gpu_backend, model_bin, lang, net, expected_gen)
-        }
-        Plan::SherpaOnline { model_dir } => {
-            ensure_sherpa_online(data_dir, sherpa_backend, model_dir, net, expected_gen)
-        }
-        Plan::SherpaOffline { model_dir, lang } => {
-            ensure_sherpa_offline(data_dir, sherpa_backend, model_dir, lang, net, expected_gen)
-        }
+        Plan::WhisperHttp { model_bin, lang } => ensure_whisper(
+            data_dir,
+            gpu_backend,
+            model_bin,
+            lang,
+            net,
+            expected_gen,
+            defer,
+        ),
+        Plan::SherpaOnline { model_dir } => ensure_sherpa_online(
+            data_dir,
+            sherpa_backend,
+            model_dir,
+            net,
+            expected_gen,
+            defer,
+        ),
+        Plan::SherpaOffline { model_dir, lang } => ensure_sherpa_offline(
+            data_dir,
+            sherpa_backend,
+            model_dir,
+            lang,
+            net,
+            expected_gen,
+            defer,
+        ),
         // CLI per utterance: nothing to keep running.
         // Self-hosted WS: foreign by definition, never spawned.
         Plan::WhistleCli { .. } | Plan::SelfHostedWs { .. } => Ok(()),
@@ -3706,11 +3808,14 @@ pub fn owned_servers_running(data_dir: &Path) -> bool {
 /// - Leaving local (cloud / self-hosted / Whistle / disabled / no
 ///   resolvable plan): stop owned locals so the previous engine does
 ///   not stay warm.
-/// - Coordinated admission: non-blocking lease + LIVE check under
-///   `SERVER_START_LOCK` so a capture beginning during the decision
-///   survives (defer, `Ok(true)`); the watcher retries on the next
-///   idle tick. Transient ensure failures are `Err` (watcher retries);
-///   only explicit Stop is immediate.
+/// - Atomic decide+destroy: the idle revalidation (lease + `LIVE` +
+///   `BUSY` + `ACTIVE_UTTERANCES`) and the destructive stop run under
+///   one `SERVER_START_LOCK` holding, so a capture admitted between
+///   checking and shutting down is impossible — it either wins (we
+///   defer, `Ok(true)`) or loses (it re-read the already-new settings
+///   and warms the new config). The start path additionally revalidates
+///   inside startup admission (`ActiveDefer::IfAnyActive`). The watcher
+///   retries deferred/failed ticks; only explicit Stop is immediate.
 /// - Obsolete queued warmups cannot resurrect: every stop/replace
 ///   bumps `server_generation`; press/startup warmups carry it into
 ///   startup admission and abort on mismatch.
@@ -3719,33 +3824,8 @@ pub fn owned_servers_running(data_dir: &Path) -> bool {
 ///
 /// Returns `Ok(true)` when deferred, `Ok(false)` when applied.
 pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, String> {
-    // Non-blocking inference lease first (no locks): active inference
-    // defers without blocking its transcribe.
-    let _lease = match EngineLease::acquire(false) {
-        Ok(l) => l,
-        Err(_) => return Ok(true),
-    };
-    // Coordinated recording check under admission + LIVE (order:
-    // START_LOCK -> LIVE). A press arming here blocks for ms, then
-    // survives because we defer when it wins (including presses that
-    // incremented ACTIVE_UTTERANCES but have not set LIVE yet).
-    let _admission = SERVER_START_LOCK.lock().map_err(|e| e.to_string())?;
-    {
-        let live_guard = live().lock().map_err(|e| e.to_string())?;
-        if live_guard.is_some()
-            || BUSY.load(Ordering::SeqCst)
-            || ACTIVE_UTTERANCES.load(Ordering::Acquire) > 0
-        {
-            return Ok(true);
-        }
-    }
-    // Release admission before the long ensure (which re-acquires it
-    // for its quick section); the lease above already excluded active
-    // inference, and LIVE/ACTIVE exclusion rode on the check. A capture
-    // beginning now uses the already-new settings (Store already
-    // moved), so it needs the new server we are about to warm.
-    drop(_admission);
-    drop(_lease);
+    // Derive first (file/DB reads, no locks): pure function of the
+    // passed settings, so staleness here only delays a tick.
     let local_on = stt
         .entries
         .iter()
@@ -3757,8 +3837,25 @@ pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, Str
     let want_local = local_on && primary.as_ref().is_some_and(local_server);
     if !want_local {
         // Leaving local operation (or nothing resolvable): stop owned.
+        // Atomic check+destroy under one admission holding: the
+        // non-blocking lease is retained across the kill/clear (never
+        // dropped-then-reused), so inference cannot begin mid-destroy
+        // and an admitted capture cannot slip between check and stop.
+        let _lease = match EngineLease::acquire(false) {
+            Ok(l) => l,
+            Err(_) => return Ok(true),
+        };
+        let _admission = SERVER_START_LOCK.lock().map_err(|e| e.to_string())?;
+        let live_guard = live().lock().map_err(|e| e.to_string())?;
+        if live_guard.is_some()
+            || BUSY.load(Ordering::SeqCst)
+            || ACTIVE_UTTERANCES.load(Ordering::Acquire) > 0
+        {
+            return Ok(true);
+        }
+        drop(live_guard);
         if owned_servers_running(data_dir) {
-            drop_servers(data_dir);
+            drop_servers_locked(data_dir);
         } else {
             // Still clear stale metadata without signalling.
             for name in ["whisper", "sherpa-offline", "sherpa-online"] {
@@ -3767,30 +3864,46 @@ pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, Str
         }
         return Ok(false);
     }
-    let plan = primary.unwrap();
+    let plan = primary.expect("want_local implies a primary plan");
     if !stt.auto_start_server {
-        // Lazy: stop any owned server whose key no longer matches is
-        // handled by fingerprint change in the caller (stop-all on
-        // change). Here just ensure nothing is auto-started; if the
-        // current owned server already matches, keep it (no bounce).
-        // Without key introspection, the watcher stops on fingerprint
-        // change before calling here with lazy? Actually this path is
-        // for steady state: do nothing (next utterance warms).
-        // To avoid leaving a stale engine after a local-to-local
-        // switch, the watcher calls `drop_servers` on fingerprint
-        // change when lazy; steady-state ticks are no-ops.
+        // Lazy: the watcher routes fingerprint moves to
+        // `reconcile_lazy_switch` (stop-old, stay cold); steady-state
+        // ticks are no-ops and the next utterance warms.
         return Ok(false);
     }
+    // Autostart: warm the new engine now. The outer fast-path check
+    // below avoids pointless churn; the authoritative idle revalidation
+    // happens inside startup admission (`IfAnyActive`), so a capture
+    // admitted after this check defers the start instead of being
+    // killed by it.
+    {
+        let _lease = match EngineLease::acquire(false) {
+            Ok(l) => l,
+            Err(_) => return Ok(true),
+        };
+        let _admission = SERVER_START_LOCK.lock().map_err(|e| e.to_string())?;
+        let live_guard = live().lock().map_err(|e| e.to_string())?;
+        if live_guard.is_some()
+            || BUSY.load(Ordering::SeqCst)
+            || ACTIVE_UTTERANCES.load(Ordering::Acquire) > 0
+        {
+            return Ok(true);
+        }
+    }
     let net = server_net(stt);
-    ensure_servers(
+    match ensure_servers(
         &plan,
         data_dir,
         stt.gpu_backend,
         stt.sherpa_backend,
         &net,
         None,
-    )?;
-    Ok(false)
+        ActiveDefer::IfAnyActive,
+    ) {
+        Ok(()) => Ok(false),
+        Err(e) if e.starts_with("deferred:") => Ok(true),
+        Err(e) => Err(e),
+    }
 }
 
 /// Any owned record still listening (used to decide stop-on-leave
@@ -3806,24 +3919,26 @@ fn owned_listening(data_dir: &Path) -> bool {
 
 /// Watcher-side helper for lazy switches: stop owned servers when the
 /// fingerprint moved but autostart is off. Steady-state lazy ticks
-/// (same fingerprint) are no-ops; active utterances defer via the
-/// same coordinated admission as `reconcile_servers`.
+/// (same fingerprint) are no-ops. The idle check and the destroy run
+/// under one admission holding (lease retained across both), so a
+/// capture admitted between checking and shutting down is impossible:
+/// it either wins first (we defer) or loses (it re-read the already-new
+/// settings). Explicit Stop aside, nothing kills an admitted capture.
 pub fn reconcile_lazy_switch(data_dir: &Path) -> Result<bool, String> {
     let _lease = match EngineLease::acquire(false) {
         Ok(l) => l,
         Err(_) => return Ok(true),
     };
+    let _admission = SERVER_START_LOCK.lock().map_err(|e| e.to_string())?;
+    let live_guard = live().lock().map_err(|e| e.to_string())?;
+    if live_guard.is_some()
+        || BUSY.load(Ordering::SeqCst)
+        || ACTIVE_UTTERANCES.load(Ordering::Acquire) > 0
     {
-        let _admission = SERVER_START_LOCK.lock().map_err(|e| e.to_string())?;
-        let live_guard = live().lock().map_err(|e| e.to_string())?;
-        if live_guard.is_some()
-            || BUSY.load(Ordering::SeqCst)
-            || ACTIVE_UTTERANCES.load(Ordering::Acquire) > 0
-        {
-            return Ok(true);
-        }
+        return Ok(true);
     }
-    drop_servers(data_dir);
+    drop(live_guard);
+    drop_servers_locked(data_dir);
     Ok(false)
 }
 
@@ -4589,6 +4704,7 @@ mod tests {
             "en",
             &net,
             None,
+            ActiveDefer::Never,
         )
         .expect("spawn+probe");
         let text =
@@ -4658,6 +4774,7 @@ mod tests {
             },
             || Ok(()),
             None,
+            ActiveDefer::Never,
         )?;
         Ok(servers()
             .lock()
@@ -4780,6 +4897,7 @@ mod tests {
             || panic!("foreign port must not spawn"),
             || panic!("foreign port must not probe"),
             None,
+            ActiveDefer::Never,
         )
         .unwrap_err();
         assert!(err.contains("owned by another process"), "{err}");
@@ -4908,6 +5026,7 @@ mod tests {
                 },
                 || Ok(()),
                 None,
+                ActiveDefer::Never,
             )
             .unwrap();
             servers().lock().unwrap()["sherpa-online"].child.id()
@@ -5029,6 +5148,7 @@ mod tests {
             },
             || Ok(()),
             None,
+            ActiveDefer::Never,
         )
         .unwrap();
         assert_ne!(gen2, server_generation());
@@ -5185,6 +5305,7 @@ mod tests {
                 || panic!("obsolete warmup must not spawn"),
                 || panic!("obsolete warmup must not probe"),
                 Some(gen_old),
+                ActiveDefer::IfOthersActive,
             );
             let _ = done_tx.send(out);
         })
@@ -5253,6 +5374,7 @@ mod tests {
             "en",
             &net_wild,
             None,
+            ActiveDefer::Never,
         )
         .unwrap();
         let pid_wild = servers().lock().unwrap()["whisper"].child.id();
@@ -5274,6 +5396,7 @@ mod tests {
             "en",
             &net_loop,
             None,
+            ActiveDefer::Never,
         )
         .unwrap();
         let pid_loop = servers().lock().unwrap()["whisper"].child.id();
@@ -5294,6 +5417,7 @@ mod tests {
             "en",
             &net_wild,
             None,
+            ActiveDefer::Never,
         )
         .unwrap();
         let pid_wild2 = servers().lock().unwrap()["whisper"].child.id();
@@ -5339,6 +5463,7 @@ mod tests {
                 },
                 || Ok(()),
                 None,
+                ActiveDefer::Never,
             )
             .unwrap();
             servers().lock().unwrap()["sherpa-online"].child.id()
@@ -5353,6 +5478,7 @@ mod tests {
             || panic!("sherpa host toggle must not respawn"),
             || panic!("sherpa host toggle must not probe"),
             None,
+            ActiveDefer::Never,
         )
         .unwrap();
         let pid_b = servers().lock().unwrap()["sherpa-online"].child.id();
@@ -5484,6 +5610,7 @@ mod tests {
                 },
                 || Ok(()),
                 Some(gen_old),
+                ActiveDefer::IfOthersActive,
             );
             let _ = done_tx.send(out);
         })
@@ -5605,5 +5732,326 @@ mod tests {
         assert!(!has_live());
         assert_eq!(active_count(), 0);
         drop_servers(root.path());
+    }
+
+    /// Seed an isolated Store with a resolvable whisper-tiny config
+    /// (synthetic model bytes, no packs installed).
+    fn seed_whisper_tiny(root: &Path) -> crate::store::Store {
+        let entry = stt::find_model("tiny").unwrap();
+        let dir = stt::model_dir(root, entry);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ggml-tiny.bin"), b"synthetic").unwrap();
+        let store = crate::store::Store::open(&root.join("state.db")).unwrap();
+        let mut settings = store.load_settings();
+        settings.stt.local_provider = LocalSttProvider::OpenAi;
+        settings.stt.whisper_model = "tiny".into();
+        settings.stt.language = "en".into();
+        store.save_settings(&settings).unwrap();
+        store
+    }
+
+    fn cancel_and_drain() {
+        let (tx, rx) = mpsc::channel::<()>();
+        cancel_utterance(move || {
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    }
+
+    #[test]
+    fn lazy_switch_cannot_kill_admitted_capture() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        // Admitted first: a live capture defers the switch and its
+        // server survives, through the real press path.
+        {
+            let root = tempfile::tempdir().unwrap();
+            drop_servers(root.path());
+            let writer = seed_whisper_tiny(root.path());
+            let port = free_port();
+            let pid = spawn_owned(root.path(), "whisper", "old", port).unwrap();
+            let stt_param = writer.load_settings().stt;
+            begin_utterance(stt_param, false, root.path(), 0);
+            assert!(has_live());
+            assert_eq!(active_count(), 1);
+            let deferred = reconcile_lazy_switch(root.path()).unwrap();
+            assert!(deferred, "switch destroyed an admitted capture");
+            assert!(has_live());
+            assert!(port_open(port), "admitted capture lost its server");
+            assert!(!proc_gone(pid));
+            cancel_and_drain();
+            assert!(!has_live());
+            assert_eq!(active_count(), 0);
+            drop_servers(root.path());
+            wait_gone(pid);
+        }
+        // Destruction requires admission: with START_LOCK held by the
+        // test, a concurrent switch cannot complete its check+destroy.
+        {
+            let root = tempfile::tempdir().unwrap();
+            drop_servers(root.path());
+            let port = free_port();
+            let pid = spawn_owned(root.path(), "whisper", "old", port).unwrap();
+            let (done_tx, done_rx) = mpsc::channel::<Result<bool, String>>();
+            let data = root.path().to_path_buf();
+            let held = SERVER_START_LOCK.lock().unwrap();
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    let out = reconcile_lazy_switch(&data);
+                    let _ = done_tx.send(out);
+                });
+                // The switch is parked on admission: nothing destroyed.
+                assert!(
+                    done_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+                    "switch slipped destruction past held admission"
+                );
+                assert!(port_open(port));
+                assert!(!proc_gone(pid));
+                drop(held);
+            });
+            let out = done_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert!(!out.unwrap(), "idle switch should apply once admitted");
+            wait_gone(pid);
+            assert!(proc_gone(pid));
+        }
+        // True concurrency at the boundary, repeated: every interleaving
+        // satisfies the contract — either the capture wins (deferred,
+        // old server alive, LIVE armed) or the switch wins (applied, and
+        // the capture armed fresh afterwards with a balanced ACTIVE).
+        for _ in 0..6 {
+            let root = tempfile::tempdir().unwrap();
+            drop_servers(root.path());
+            let writer = seed_whisper_tiny(root.path());
+            let port = free_port();
+            let pid = spawn_owned(root.path(), "whisper", "old", port).unwrap();
+            let foreign = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let foreign_port = foreign.local_addr().unwrap().port();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let data = root.path().to_path_buf();
+            let (lazy_tx, lazy_rx) = mpsc::channel::<Result<bool, String>>();
+            let (press_tx, press_rx) = mpsc::channel::<()>();
+            let b1 = barrier.clone();
+            std::thread::spawn(move || {
+                b1.wait();
+                let out = reconcile_lazy_switch(&data);
+                let _ = lazy_tx.send(out);
+            });
+            let b2 = barrier.clone();
+            let data2 = root.path().to_path_buf();
+            // Store read here is only a fallback: admission re-reads.
+            let stt_param = writer.load_settings().stt;
+            std::thread::spawn(move || {
+                b2.wait();
+                begin_utterance(stt_param, false, &data2, 0);
+                let _ = press_tx.send(());
+            });
+            barrier.wait();
+            let switched = lazy_rx
+                .recv_timeout(Duration::from_secs(15))
+                .unwrap()
+                .unwrap();
+            press_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+            assert!(has_live(), "capture missing after boundary race");
+            assert_eq!(active_count(), 1);
+            if switched {
+                // Capture won: its server is untouched.
+                assert!(port_open(port), "winner capture lost its server");
+                assert!(!proc_gone(pid));
+            }
+            // Unrelated listeners are never adopted or killed.
+            assert!(port_open(foreign_port));
+            cancel_and_drain();
+            assert_eq!(active_count(), 0);
+            drop(foreign);
+            drop_servers(root.path());
+        }
+        assert_eq!(active_count(), 0);
+        assert!(!has_live());
+    }
+
+    #[test]
+    fn current_generation_replacement_completes() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        // Cross-engine: a valid same-generation Sherpa request replaces
+        // Whisper instead of invalidating itself.
+        let port_a = free_port();
+        let mut port_b = free_port();
+        while port_b == port_a {
+            port_b = free_port();
+        }
+        let pid_a = spawn_owned(root.path(), "whisper", "old-whisper", port_a).unwrap();
+        let gen_now = server_generation();
+        ensure_server(
+            root.path(),
+            "sherpa-online",
+            "new-sherpa".into(),
+            port_b,
+            || {
+                let mut cmd = Command::new("python3");
+                cmd.arg("-c")
+                    .arg(
+                        "import socket,sys,time\n\
+                         s=socket.socket()\n\
+                         s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n\
+                         s.bind(('127.0.0.1',int(sys.argv[1])))\n\
+                         s.listen(8)\n\
+                         time.sleep(30)",
+                    )
+                    .arg(port_b.to_string())
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                kill_on_parent_death(&mut cmd);
+                cmd.spawn().map_err(|e| e.to_string())
+            },
+            || Ok(()),
+            Some(gen_now),
+            ActiveDefer::IfOthersActive,
+        )
+        .expect("valid current-generation replacement must complete");
+        let pid_b = servers().lock().unwrap()["sherpa-online"].child.id();
+        wait_gone(pid_a);
+        assert!(proc_gone(pid_a), "previous engine survived replacement");
+        assert!(!port_open(port_a), "previous socket survived replacement");
+        assert!(port_open(port_b));
+        assert!(server_generation() > gen_now);
+        // Older queued work for the displaced engine stays rejected and
+        // never resurrects it over the replacement.
+        let stale = ensure_server(
+            root.path(),
+            "whisper",
+            "old-whisper".into(),
+            port_a,
+            || panic!("stale warmup must not spawn"),
+            || panic!("stale warmup must not probe"),
+            Some(gen_now),
+            ActiveDefer::IfOthersActive,
+        );
+        assert!(stale.is_err(), "stale request was not rejected");
+        assert!(!port_open(port_a));
+        assert!(port_open(port_b));
+        assert!(!proc_gone(pid_b));
+        // Same-engine key change (new port): same contract.
+        let mut port_c = free_port();
+        while port_c == port_a || port_c == port_b {
+            port_c = free_port();
+        }
+        let gen_now2 = server_generation();
+        ensure_server(
+            root.path(),
+            "sherpa-online",
+            "new-sherpa-moved".into(),
+            port_c,
+            || {
+                let mut cmd = Command::new("python3");
+                cmd.arg("-c")
+                    .arg(
+                        "import socket,sys,time\n\
+                         s=socket.socket()\n\
+                         s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n\
+                         s.bind(('127.0.0.1',int(sys.argv[1])))\n\
+                         s.listen(8)\n\
+                         time.sleep(30)",
+                    )
+                    .arg(port_c.to_string())
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                kill_on_parent_death(&mut cmd);
+                cmd.spawn().map_err(|e| e.to_string())
+            },
+            || Ok(()),
+            Some(gen_now2),
+            ActiveDefer::IfOthersActive,
+        )
+        .expect("valid same-engine replacement must complete");
+        let pid_c = servers().lock().unwrap()["sherpa-online"].child.id();
+        assert_ne!(pid_b, pid_c);
+        wait_gone(pid_b);
+        assert!(proc_gone(pid_b));
+        assert!(!port_open(port_b));
+        assert!(port_open(port_c));
+        let stale2 = ensure_server(
+            root.path(),
+            "sherpa-online",
+            "new-sherpa".into(),
+            port_b,
+            || panic!("stale warmup must not spawn"),
+            || panic!("stale warmup must not probe"),
+            Some(gen_now2),
+            ActiveDefer::IfOthersActive,
+        );
+        assert!(
+            stale2.is_err(),
+            "stale same-engine request was not rejected"
+        );
+        drop_servers(root.path());
+        wait_gone(pid_c);
+    }
+
+    #[test]
+    fn keep_warm_expiry_bumps_and_idle_tick_does_not() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let store = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let mut settings = store.load_settings();
+        settings.stt.keep_warm = "1m".into();
+        store.save_settings(&settings).unwrap();
+        // Expired idle server: the tick stops it and advances the
+        // generation so queued warmups for it abort.
+        let port = free_port();
+        let pid = spawn_owned(root.path(), "whisper", "idle", port).unwrap();
+        {
+            let mut map = servers().lock().unwrap();
+            let s = map.get_mut("whisper").unwrap();
+            assert!(s.ready);
+            s.last_used = Instant::now() - Duration::from_secs(7200);
+        }
+        let gen_before = server_generation();
+        assert!(reap_expired_servers(root.path()));
+        assert!(
+            server_generation() > gen_before,
+            "expiry stopped a server without invalidating queued work"
+        );
+        wait_gone(pid);
+        assert!(proc_gone(pid));
+        assert!(!port_open(port));
+        // Non-expired server: no-op tick, generation preserved.
+        let port2 = free_port();
+        let pid2 = spawn_owned(root.path(), "whisper", "warm", port2).unwrap();
+        let gen_idle = server_generation();
+        assert!(!reap_expired_servers(root.path()));
+        assert_eq!(server_generation(), gen_idle, "idle tick moved generation");
+        assert!(port_open(port2));
+        assert!(!proc_gone(pid2));
+        // Keep-warm unset: early-out tick, generation preserved.
+        let mut settings = store.load_settings();
+        settings.stt.keep_warm = String::new();
+        store.save_settings(&settings).unwrap();
+        {
+            let mut map = servers().lock().unwrap();
+            map.get_mut("whisper").unwrap().last_used = Instant::now() - Duration::from_secs(7200);
+        }
+        assert!(!reap_expired_servers(root.path()));
+        assert_eq!(server_generation(), gen_idle, "unset tick moved generation");
+        assert!(port_open(port2));
+        drop_servers(root.path());
+        wait_gone(pid2);
     }
 }
