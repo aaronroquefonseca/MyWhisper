@@ -219,6 +219,9 @@ fn run_headless(
                                 settings.stt.sherpa_backend,
                                 &net,
                                 generation,
+                                // Startup work has no owning utterance:
+                                // defer whenever any recording is active.
+                                None,
                             ) {
                                 eprintln!("[stt] startup warmup: {e}");
                             }

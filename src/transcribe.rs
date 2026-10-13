@@ -550,9 +550,70 @@ fn active_dec() {
     ACTIVE_UTTERANCES.fetch_sub(1, Ordering::AcqRel);
 }
 
+/// Monotonic utterance identities for warmup ownership. `begin`
+/// assigns the next id inside admission; every terminal path
+/// (cancel, release-take, stale-takeover, busy-drop, early failure)
+/// revokes it. A press warmup may only destroy inside admission while
+/// its owner is still the latest admitted AND unrevoked — so a stale
+/// queued warmup can never kill a newer recording's server, even when
+/// the control generation did not move (cancellation and
+/// first-spawn-into-empty-map bump nothing).
+static UTTERANCE_SEQ: AtomicU64 = AtomicU64::new(0);
+static ADMITTED_ID: AtomicU64 = AtomicU64::new(0);
+static REVOKED_ID: AtomicU64 = AtomicU64::new(0);
+
+fn admit_owner() -> u64 {
+    let id = UTTERANCE_SEQ.fetch_add(1, Ordering::AcqRel) + 1;
+    ADMITTED_ID.store(id, Ordering::Release);
+    id
+}
+
+fn revoke_owner(id: u64) {
+    REVOKED_ID.fetch_max(id, Ordering::AcqRel);
+}
+
+/// Explicit-Stop authority. Public `drop_servers` (user Stop only —
+/// never config-driven drops) records the post-bump generation and the
+/// fingerprint it stopped whenever it actually stopped something. A
+/// queued autostart that observes a newer Stop settles instead of
+/// resurrecting, on its own tick and all later ones, until a deliberate
+/// settings change or a user press starts normally again.
+static LAST_STOP_GEN: AtomicU64 = AtomicU64::new(0);
+static STOPPED_FP: Mutex<String> = Mutex::new(String::new());
+
 #[cfg(test)]
 pub(crate) fn active_count() -> usize {
     ACTIVE_UTTERANCES.load(Ordering::Acquire)
+}
+
+/// Latest admitted utterance id (0 = none yet). Tests use it to bind a
+/// parked warmup to a real admission, instead of inventing ids.
+#[cfg(test)]
+pub(crate) fn last_admitted_id() -> u64 {
+    ADMITTED_ID.load(Ordering::Acquire)
+}
+
+/// Test-only barrier parked between reconciliation's outer idle check
+/// and its startup admission, so a test can land an explicit Stop
+/// deterministically inside that window. Production builds contain no
+/// hook: the window there is microseconds with no blocking between the
+/// two admissions.
+#[cfg(test)]
+static RECONCILE_ENSURE_PAUSE: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> =
+    Mutex::new(None);
+
+/// Install the pause barrier. The next `reconcile_servers` autostart
+/// path signals entry and blocks (up to 10 s) until the test releases
+/// it. Single-shot: installing entry takes it.
+#[cfg(test)]
+pub(crate) fn set_reconcile_ensure_pause(tx: mpsc::Sender<()>, rx: mpsc::Receiver<()>) {
+    *RECONCILE_ENSURE_PAUSE.lock().unwrap() = Some((tx, rx));
+}
+
+/// Clear a parked (never reached) barrier so later tests never block.
+#[cfg(test)]
+pub(crate) fn clear_reconcile_ensure_pause() {
+    RECONCILE_ENSURE_PAUSE.lock().unwrap().take();
 }
 
 /// Startup admission: serializes the quick check/spawn/insert section
@@ -564,9 +625,17 @@ pub(crate) fn active_count() -> usize {
 /// hints aside, or transcription):
 /// - Capture admission (`begin_utterance`) holds `SERVER_START_LOCK` →
 ///   `LIVE` while handling stale takeovers, re-reading current Store
-///   settings, incrementing `ACTIVE_UTTERANCES` and capturing the
-///   generation, so every admitted capture pairs current settings with
-///   a current generation.
+///   settings, incrementing `ACTIVE_UTTERANCES`, assigning the utterance
+///   owner id and capturing the generation, so every admitted capture
+///   pairs current settings with a current generation and a verifiable
+///   owner. Every terminal path (cancel, release-take, stale-takeover,
+///   busy-drop, early failure) revokes the owner.
+/// - Press warmups carry `(generation, owner)` and may only destroy
+///   inside admission while their owner is still the latest admitted
+///   AND unrevoked; startup warmups carry no owner and defer on any
+///   recording. Useful warming during the requesting recording is
+///   preserved; stale queued warmups can never kill a newer server,
+///   even when cancellation moved no generation.
 /// - Destructive control (reconciliation drop paths, keep-warm reaper)
 ///   holds the inference lease + `SERVER_START_LOCK` → `LIVE` across
 ///   the idle revalidation AND the kill/clear, so a capture admitted
@@ -577,7 +646,11 @@ pub(crate) fn active_count() -> usize {
 ///   (`defer`) inside its own admission; long waits revoke via the
 ///   per-startup `baseline` (own bumps included) plus instance/map.
 /// - Explicit Stop (`drop_servers`) is immediate (no idle check) but
-///   still serialized via `SERVER_START_LOCK` for bump ordering.
+///   still serialized via `SERVER_START_LOCK` for bump ordering, and
+///   records Stop authority (`LAST_STOP_GEN` + `STOPPED_FP`) whenever it
+///   actually stopped something, so a queued autostart observes the
+///   newer Stop and settles instead of resurrecting — this tick and
+///   later ones, until a deliberate settings change or user press.
 static SERVER_START_LOCK: Mutex<()> = Mutex::new(());
 static SERVER_INSTANCE: AtomicU64 = AtomicU64::new(0);
 
@@ -589,10 +662,15 @@ enum ActiveDefer {
     /// Authority paths: active inference (holds the blocking lease),
     /// release-worker fallback ensures, explicit cold start.
     Never,
-    /// Reconciliation-driven starts: no own utterance exists.
+    /// Reconciliation/startup starts: no own utterance exists; any
+    /// recording, inference hangover or admitted press defers.
     IfAnyActive,
-    /// Background warmups: the pressing utterance itself counts as one.
-    IfOthersActive,
+    /// Press warmup bound to utterance `owner`: proceeds only while its
+    /// capture is still the latest admitted AND unrevoked (cancellation
+    /// or replacement revokes), plus no *other* utterance is active —
+    /// so useful warming during the requesting recording is preserved
+    /// while stale queued warmups can never kill a newer server.
+    Owned(u64),
 }
 
 struct StartupGuard {
@@ -875,14 +953,28 @@ pub fn server_status(data_dir: &Path, net: &ServerNet) -> Vec<(String, bool)> {
 /// Stop-between-validation-and-launch. Explicit semantics: always
 /// stops, even while recording (unlike reconciliation/reaper).
 pub fn drop_servers(data_dir: &Path) {
+    // Explicit user Stop: immediate (no idle checks, no lease waits),
+    // so it stays prompt during startup and inference.
     // Order: START_LOCK -> servers(). Admission quick sections use the
     // same order; long waits never hold START_LOCK (revoked by
     // instance), so Stop never blocks on startup.
+    // The fingerprint is read before locking (plain Store read, no
+    // locks held). When this Stop actually stopped something it records
+    // Stop authority (`LAST_STOP_GEN` + `STOPPED_FP`) so a queued
+    // autostart observes the newer Stop and settles instead of
+    // resurrecting — on its own tick and all later ones, until a
+    // deliberate settings change or a user press starts normally again.
+    let stopped_fp = current_fingerprint(data_dir);
     let _admission = match SERVER_START_LOCK.lock() {
         Ok(g) => g,
         Err(_) => return,
     };
+    let had_owned = servers().lock().map(|m| !m.is_empty()).unwrap_or(false);
     drop_servers_locked(data_dir);
+    if had_owned && !stopped_fp.is_empty() {
+        LAST_STOP_GEN.store(server_generation(), Ordering::Release);
+        *STOPPED_FP.lock().unwrap_or_else(|p| p.into_inner()) = stopped_fp;
+    }
 }
 
 fn drop_servers_locked(data_dir: &Path) {
@@ -1087,8 +1179,8 @@ fn ensure_server(
         {
             return Err("obsolete generation, skipping".to_string());
         }
-        // Authoritative idle revalidation: no capture admitted ahead of
-        // us is killed by the removals below.
+        // Authoritative idle/ownership revalidation: no capture admitted
+        // ahead of us is killed by the removals below.
         if defer != ActiveDefer::Never {
             let live_active = live().lock().map(|g| g.is_some()).unwrap_or(true);
             let busy = BUSY.load(Ordering::SeqCst);
@@ -1097,7 +1189,16 @@ fn ensure_server(
             let occupied = match defer {
                 ActiveDefer::Never => false,
                 ActiveDefer::IfAnyActive => live_active || busy || leased || active > 0,
-                ActiveDefer::IfOthersActive => busy || leased || active > 1,
+                // Own utterance counts as one: other overlapping captures
+                // or inference hangovers still defer, but the requesting
+                // recording itself never blocks its own warmup.
+                ActiveDefer::Owned(id) => {
+                    ADMITTED_ID.load(Ordering::Acquire) != id
+                        || REVOKED_ID.load(Ordering::Acquire) >= id
+                        || busy
+                        || leased
+                        || active > 1
+                }
             };
             if occupied {
                 return Err("deferred: capture or inference active".to_string());
@@ -2780,6 +2881,10 @@ fn run_spec(
 }
 
 struct LiveUtterance {
+    /// Admission id from `begin_utterance`: the press warmup proves this
+    /// id is still the latest admitted and unrevoked before destroying
+    /// anything inside startup admission.
+    owner: u64,
     recorder: Arc<Mutex<Recorder>>,
     stop: Arc<AtomicBool>,
     /// Cancel (Escape): pump aborts without finishing (no Done, no
@@ -2863,11 +2968,13 @@ pub fn begin_utterance(
     release_delay_ms: u64,
 ) {
     // Coordinated admission (order START_LOCK -> LIVE): stale handling,
-    // current-Store re-read, ACTIVE increment and generation capture are
-    // atomic wrt reconciliation check+stop (same order, ms-short). The
-    // re-read guarantees a capture beginning here never pins params that
-    // predate a concurrent provider switch.
-    let (stt, generation): (crate::settings::SttSettings, u64);
+    // current-Store re-read, ACTIVE increment, owner assignment and
+    // generation capture are atomic wrt reconciliation check+stop (same
+    // order, ms-short). The re-read guarantees a capture beginning here
+    // never pins params that predate a concurrent provider switch; the
+    // owner id lets this press's warmup prove the capture is still live
+    // when it reaches startup admission.
+    let (stt, generation, owner): (crate::settings::SttSettings, u64, u64);
     {
         let _admission = SERVER_START_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let mut live_guard = live().lock().unwrap_or_else(|p| p.into_inner());
@@ -2876,6 +2983,7 @@ pub fn begin_utterance(
             sess.stop.store(true, Ordering::Relaxed);
             sess.settled.store(true, Ordering::Relaxed);
             audio::set_recorder(None);
+            revoke_owner(sess.owner);
             active_dec();
         }
         let current = crate::store::Store::open(&data_dir.join("state.db"))
@@ -2883,6 +2991,7 @@ pub fn begin_utterance(
             .unwrap_or_else(|_| stt_param.clone());
         stt = current;
         active_inc();
+        owner = admit_owner();
         generation = server_generation();
     }
     CANCELLED.store(false, Ordering::Relaxed);
@@ -2890,6 +2999,7 @@ pub fn begin_utterance(
         Ok(v) => v,
         Err(e) => {
             eprintln!("[stt] press: cannot start: {e}");
+            revoke_owner(owner);
             active_dec();
             return;
         }
@@ -2924,8 +3034,9 @@ pub fn begin_utterance(
         // settings above), not a fresh load that could pair stale plans
         // with a bumped generation.
         if let Err(e) = crate::runtime::submit("stt-warmup", move || {
-            // Idleness + staleness revalidate inside startup admission;
-            // the release worker still ensures authoritatively.
+            // Ownership + staleness + idleness revalidate inside startup
+            // admission; the release worker still ensures
+            // authoritatively.
             if let Err(e) = ensure_for_plan_at_gen(
                 &plan,
                 &data_dir,
@@ -2933,6 +3044,7 @@ pub fn begin_utterance(
                 sherpa_backend,
                 &warm_net,
                 generation,
+                Some(owner),
             ) {
                 eprintln!("[stt] warmup: {e}");
             }
@@ -3006,6 +3118,7 @@ pub fn begin_utterance(
                 }) {
                     eprintln!("[stt] press: {e}");
                     audio::set_recorder(None);
+                    revoke_owner(owner);
                     active_dec();
                     return;
                 }
@@ -3073,6 +3186,7 @@ pub fn begin_utterance(
         _ => None,
     };
     *live().lock().unwrap() = Some(LiveUtterance {
+        owner,
         recorder,
         stop,
         cancel,
@@ -3194,6 +3308,9 @@ pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
     sess.settled.store(true, Ordering::Relaxed);
     CANCELLED.store(true, Ordering::Relaxed);
     let held_secs = sess.started.elapsed().as_secs_f64();
+    // Revoke before dropping: queued warmups bound to this utterance
+    // must stand down even though cancellation bumps no generation.
+    revoke_owner(sess.owner);
     drop(sess); // result_rx drop unblocks the aborting pump
     active_dec();
     let on_done = Arc::new(Mutex::new(Some(
@@ -3289,6 +3406,10 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
         return;
     };
     sess.stop.store(true, Ordering::Relaxed);
+    // The release worker owns warming from here (authoritative ensure),
+    // so revoke the press warmup's ownership on every take, including
+    // the release path itself.
+    revoke_owner(sess.owner);
     if stale {
         audio::set_recorder(None);
         sess.settled.store(true, Ordering::Relaxed);
@@ -3655,10 +3776,12 @@ pub fn ensure_for_plan(
     )
 }
 
-/// Warmup entry carrying the submit-time control generation.
-/// Aborts when obsolete; defers when other captures/inference own the
-/// engine (see `ensure_server`). The release worker still ensures
-/// authoritatively.
+/// Warmup entry carrying the submit-time control generation and, for
+/// press warmups, the admitted utterance that owns it (`None` for
+/// startup work, which has no owner and defers on any recording).
+/// Aborts when obsolete or revoked; defers when other captures or
+/// inference own the engine (see `ensure_server`). The release worker
+/// still ensures authoritatively.
 pub fn ensure_for_plan_at_gen(
     plan: &Plan,
     data_dir: &Path,
@@ -3666,6 +3789,7 @@ pub fn ensure_for_plan_at_gen(
     sherpa_backend: SherpaBackendSetting,
     net: &ServerNet,
     expected_gen: u64,
+    owner: Option<u64>,
 ) -> Result<(), String> {
     ensure_servers(
         plan,
@@ -3674,7 +3798,9 @@ pub fn ensure_for_plan_at_gen(
         sherpa_backend,
         net,
         Some(expected_gen),
-        ActiveDefer::IfOthersActive,
+        owner
+            .map(ActiveDefer::Owned)
+            .unwrap_or(ActiveDefer::IfAnyActive),
     )
 }
 
@@ -3741,6 +3867,18 @@ pub fn stt_fingerprint(stt: &SttSettings, data_dir: &Path) -> String {
         stt_primary_id(stt, data_dir),
         stt.auto_start_server
     )
+}
+
+/// Fingerprint of the settings currently stored for `data_dir`
+/// (best effort; empty when the Store is unreadable). Used to record
+/// Stop authority without holding any global lock.
+fn current_fingerprint(data_dir: &Path) -> String {
+    crate::store::Store::open(&data_dir.join("state.db"))
+        .map(|store| {
+            let stt = store.load_settings().stt;
+            stt_fingerprint(&stt, data_dir)
+        })
+        .unwrap_or_default()
 }
 
 /// Primary local identity without the autostart flag: lets the
@@ -3875,8 +4013,19 @@ pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, Str
     // below avoids pointless churn; the authoritative idle revalidation
     // happens inside startup admission (`IfAnyActive`), so a capture
     // admitted after this check defers the start instead of being
-    // killed by it.
-    {
+    // killed by it. Control authority crosses the check/start boundary
+    // two ways so a newer explicit Stop always revokes this queued
+    // start, on this tick and (via the settled fingerprint) later ones:
+    // - `STOPPED_FP`: a Stop that landed before this tick suppresses
+    //   starting the stopped fingerprint again.
+    // - `gen_at_check` carried as `expected_gen`: a Stop that lands
+    //   between the check and startup admission aborts there; the abort
+    //   settles (rather than retries into resurrection) exactly when a
+    //   Stop bumped the generation after the check.
+    // Later deliberate settings changes (new fingerprint) and user
+    // presses (authoritative release worker) still start normally.
+    let fp = stt_fingerprint(stt, data_dir);
+    let gen_at_check = {
         let _lease = match EngineLease::acquire(false) {
             Ok(l) => l,
             Err(_) => return Ok(true),
@@ -3889,19 +4038,44 @@ pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, Str
         {
             return Ok(true);
         }
-    }
+        if !fp.is_empty() && STOPPED_FP.lock().map(|g| g.as_str() == fp).unwrap_or(false) {
+            return Ok(false);
+        }
+        server_generation()
+    };
     let net = server_net(stt);
+    // Test seam (cfg(test) only): park here — after the outer idle
+    // check captured `gen_at_check`, before startup admission — so a
+    // test can land an explicit Stop inside the window and prove the
+    // queued start settles instead of resurrecting.
+    #[cfg(test)]
+    if let Some((entered, proceed_)) = RECONCILE_ENSURE_PAUSE
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take())
+    {
+        let _ = entered.send(());
+        let _ = proceed_.recv_timeout(Duration::from_secs(10));
+    }
     match ensure_servers(
         &plan,
         data_dir,
         stt.gpu_backend,
         stt.sherpa_backend,
         &net,
-        None,
+        Some(gen_at_check),
         ActiveDefer::IfAnyActive,
     ) {
         Ok(()) => Ok(false),
         Err(e) if e.starts_with("deferred:") => Ok(true),
+        Err(e)
+            if e.starts_with("obsolete generation")
+                && LAST_STOP_GEN.load(Ordering::Acquire) > gen_at_check =>
+        {
+            // A newer explicit Stop revoked this queued start: settle
+            // the fingerprint instead of retrying into resurrection.
+            Ok(false)
+        }
         Err(e) => Err(e),
     }
 }
@@ -5305,7 +5479,7 @@ mod tests {
                 || panic!("obsolete warmup must not spawn"),
                 || panic!("obsolete warmup must not probe"),
                 Some(gen_old),
-                ActiveDefer::IfOthersActive,
+                ActiveDefer::Never,
             );
             let _ = done_tx.send(out);
         })
@@ -5610,7 +5784,7 @@ mod tests {
                 },
                 || Ok(()),
                 Some(gen_old),
-                ActiveDefer::IfOthersActive,
+                ActiveDefer::Never,
             );
             let _ = done_tx.send(out);
         })
@@ -5756,6 +5930,264 @@ mod tests {
             let _ = tx.send(());
         });
         rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    }
+
+    /// Synthetic listener like `spawn_owned`, but reaching startup
+    /// admission with an explicit caller-chosen policy instead of
+    /// authority. Panicking spawn/probe prove nothing launches.
+    #[allow(clippy::too_many_arguments)]
+    fn park_warmup(
+        data_dir: PathBuf,
+        name: String,
+        key: String,
+        port: u16,
+        gen_at_submit: u64,
+        defer: ActiveDefer,
+        entered_tx: mpsc::Sender<()>,
+        proceed_rx: mpsc::Receiver<()>,
+        done_tx: mpsc::Sender<Result<(), String>>,
+    ) {
+        crate::runtime::submit("stt-warmup", move || {
+            let _ = entered_tx.send(());
+            let _ = proceed_rx.recv_timeout(Duration::from_secs(10));
+            let out = ensure_server(
+                &data_dir,
+                &name,
+                key,
+                port,
+                || panic!("stale warmup must not spawn"),
+                || panic!("stale warmup must not probe"),
+                Some(gen_at_submit),
+                defer,
+            );
+            let _ = done_tx.send(out);
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn stale_startup_warmup_defers_during_recording() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let writer = seed_whisper_tiny(root.path());
+        // Spanish successor records while an old English startup warmup
+        // is still queued: the ownerless warmup must defer (the same
+        // `IfAnyActive` policy `ensure_for_plan_at_gen(None)` maps to)
+        // rather than killing the recording's server.
+        let mut settings = writer.load_settings();
+        settings.stt.language = "es".into();
+        writer.save_settings(&settings).unwrap();
+        let stt = writer.load_settings().stt;
+        begin_utterance(stt, false, root.path(), 0);
+        assert!(has_live());
+        assert_eq!(active_count(), 1);
+        let port_s = free_port();
+        let pid_s = spawn_owned(root.path(), "whisper", "es-server", port_s).unwrap();
+        assert!(port_open(port_s));
+        // No bump happened anywhere (fresh spawns, no stops), so the
+        // generation check cannot save us: only the idle policy can.
+        let gen_now = server_generation();
+        let port_q = free_port();
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<Result<(), String>>();
+        park_warmup(
+            root.path().to_path_buf(),
+            "sherpa-stale".to_string(),
+            "old-en".to_string(),
+            port_q,
+            gen_now,
+            ActiveDefer::IfAnyActive,
+            entered_tx,
+            proceed_rx,
+            done_tx,
+        );
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        proceed_tx.send(()).unwrap();
+        let out = done_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        let err = out.unwrap_err();
+        assert!(
+            err.starts_with("deferred:"),
+            "startup warmup did not defer: {err:?}"
+        );
+        assert!(has_live(), "recording did not survive queued startup");
+        assert_eq!(active_count(), 1);
+        assert!(port_open(port_s), "recording lost its server");
+        assert!(!proc_gone(pid_s));
+        assert!(!port_open(port_q), "stale startup installed itself");
+        cancel_and_drain();
+        assert_eq!(active_count(), 0);
+        drop_servers(root.path());
+        wait_gone(pid_s);
+    }
+
+    #[test]
+    fn cancelled_press_warmup_cannot_kill_newer_server() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let writer = seed_whisper_tiny(root.path());
+        // English recording owns its warmup; park that warmup before
+        // admission, then cancel the recording (revoking ownership
+        // without moving generation).
+        let stt_en = writer.load_settings().stt;
+        begin_utterance(stt_en, false, root.path(), 0);
+        let owner_en = last_admitted_id();
+        assert_ne!(owner_en, 0);
+        assert_eq!(active_count(), 1);
+        let gen_en = server_generation();
+        let port_q = free_port();
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<Result<(), String>>();
+        park_warmup(
+            root.path().to_path_buf(),
+            "sherpa-stale".to_string(),
+            "old-en".to_string(),
+            port_q,
+            gen_en,
+            ActiveDefer::Owned(owner_en),
+            entered_tx,
+            proceed_rx,
+            done_tx,
+        );
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        cancel_and_drain();
+        assert!(!has_live());
+        assert_eq!(active_count(), 0);
+        // Spanish successor records and readies its own server while the
+        // cancelled warmup is still queued.
+        let mut settings = writer.load_settings();
+        settings.stt.language = "es".into();
+        writer.save_settings(&settings).unwrap();
+        let stt_es = writer.load_settings().stt;
+        begin_utterance(stt_es, false, root.path(), 0);
+        let owner_es = last_admitted_id();
+        assert_ne!(owner_es, owner_en);
+        assert!(has_live());
+        assert_eq!(active_count(), 1);
+        let port_s = free_port();
+        let pid_s = spawn_owned(root.path(), "whisper", "es-server", port_s).unwrap();
+        assert!(port_open(port_s));
+        // Resume the cancelled warmup: generation never moved, so only
+        // ownership revocation can stop it from killing the Spanish
+        // server and installing the stale English one.
+        proceed_tx.send(()).unwrap();
+        let out = done_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        assert!(out.is_err(), "cancelled warmup was not rejected");
+        assert!(has_live(), "successor capture did not survive");
+        assert!(port_open(port_s), "successor lost its server");
+        assert!(!proc_gone(pid_s));
+        assert!(!port_open(port_q), "cancelled warmup installed itself");
+        cancel_and_drain();
+        assert_eq!(active_count(), 0);
+        drop_servers(root.path());
+        wait_gone(pid_s);
+    }
+
+    #[test]
+    fn reconcile_settles_after_stop_without_resurrection() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        clear_reconcile_ensure_pause();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        // Startable synthetic whisper HTTP server (answers `/load`).
+        let pack = stt::GPU_PACKS
+            .iter()
+            .find(|p| p.id == "whisper-cpu")
+            .unwrap();
+        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(
+            bin_dir.join("whisper-server"),
+            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = bin_dir.join("whisper-server");
+            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin, perms).unwrap();
+        }
+        let writer = seed_whisper_tiny(root.path());
+        let port_a = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let stt = writer.load_settings().stt;
+        // First observation warms the new config normally.
+        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(port_open(port_a));
+        let pid_a = servers().lock().unwrap()["whisper"].child.id();
+        // Park the next reconciliation between its outer idle check and
+        // startup admission, then Stop while it is parked there.
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<Result<bool, String>>();
+        set_reconcile_ensure_pause(entered_tx, proceed_rx);
+        let data = root.path().to_path_buf();
+        let stt_next = stt.clone();
+        std::thread::spawn(move || {
+            let out = reconcile_servers(&stt_next, &data);
+            let _ = done_tx.send(out);
+        });
+        entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        drop_servers(root.path());
+        wait_gone(pid_a);
+        assert!(proc_gone(pid_a));
+        assert!(!port_open(port_a));
+        proceed_tx.send(()).unwrap();
+        // The queued start observes the newer Stop and settles instead
+        // of resurrecting: applied, but nothing launched.
+        let settled = done_rx
+            .recv_timeout(Duration::from_secs(25))
+            .unwrap()
+            .unwrap();
+        assert!(!settled);
+        assert!(
+            !port_open(port_a),
+            "queued reconcile resurrected after Stop"
+        );
+        assert!(servers().lock().unwrap().is_empty());
+        // Later ticks for the same fingerprint settle too (no resurrection
+        // postponed to the next poll).
+        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(!port_open(port_a));
+        assert!(servers().lock().unwrap().is_empty());
+        // A deliberate later change still starts normally.
+        let port_b = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_b.to_string();
+        writer.save_settings(&settings).unwrap();
+        let stt_new = writer.load_settings().stt;
+        assert!(!reconcile_servers(&stt_new, root.path()).unwrap());
+        assert!(port_open(port_b));
+        let pid_b = servers().lock().unwrap()["whisper"].child.id();
+        assert!(!proc_gone(pid_b));
+        clear_reconcile_ensure_pause();
+        drop_servers(root.path());
+        wait_gone(pid_b);
+        assert_eq!(active_count(), 0);
     }
 
     #[test]
@@ -5917,7 +6349,7 @@ mod tests {
             },
             || Ok(()),
             Some(gen_now),
-            ActiveDefer::IfOthersActive,
+            ActiveDefer::Never,
         )
         .expect("valid current-generation replacement must complete");
         let pid_b = servers().lock().unwrap()["sherpa-online"].child.id();
@@ -5936,7 +6368,7 @@ mod tests {
             || panic!("stale warmup must not spawn"),
             || panic!("stale warmup must not probe"),
             Some(gen_now),
-            ActiveDefer::IfOthersActive,
+            ActiveDefer::Never,
         );
         assert!(stale.is_err(), "stale request was not rejected");
         assert!(!port_open(port_a));
@@ -5973,7 +6405,7 @@ mod tests {
             },
             || Ok(()),
             Some(gen_now2),
-            ActiveDefer::IfOthersActive,
+            ActiveDefer::Never,
         )
         .expect("valid same-engine replacement must complete");
         let pid_c = servers().lock().unwrap()["sherpa-online"].child.id();
@@ -5990,7 +6422,7 @@ mod tests {
             || panic!("stale warmup must not spawn"),
             || panic!("stale warmup must not probe"),
             Some(gen_now2),
-            ActiveDefer::IfOthersActive,
+            ActiveDefer::Never,
         );
         assert!(
             stale2.is_err(),
