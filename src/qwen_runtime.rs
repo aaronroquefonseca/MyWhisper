@@ -204,6 +204,35 @@ pub fn venv_python(runtime: &Path) -> PathBuf {
     runtime.join("venv").join("bin").join("python")
 }
 
+/// True when the venv interpreter is usable from inside the runtime
+/// alone: a plain file (copied binary) always qualifies; a symlink
+/// must resolve lexically inside `runtime`. In particular a venv
+/// whose `python` points at deleted staging (the pre-fix layout
+/// created the venv from `<staging>/python` and then removed it) is
+/// broken and must reinstall, never silently serve. Dangling links
+/// fail closed. Lexical only — no filesystem touch, so it works in
+/// the 500 ms UI poll.
+pub fn venv_python_self_contained(runtime: &Path) -> bool {
+    let python = venv_python(runtime);
+    let Ok(md) = std::fs::symlink_metadata(&python) else {
+        return false;
+    };
+    if !md.file_type().is_symlink() {
+        return true;
+    }
+    let Ok(target) = std::fs::read_link(&python) else {
+        return false;
+    };
+    let abs = if target.is_absolute() {
+        target
+    } else if let Some(parent) = python.parent() {
+        parent.join(target)
+    } else {
+        return false;
+    };
+    abs.starts_with(runtime)
+}
+
 pub fn install_log(runtime: &Path) -> PathBuf {
     runtime.join("install.log")
 }
@@ -625,28 +654,31 @@ pub fn ensure_private_uv(
     Ok(uv_bin)
 }
 
-/// Install the pinned Python into `<staging>/python` via the private
-/// uv. Never consults system Python.
+/// Install the pinned Python into `python_dir` — always a directory
+/// inside the FINAL runtime root, never staging. venvs symlink (and
+/// share the stdlib of) the interpreter they were created from, so
+/// deleting staging after activation must not be able to break them.
+/// Never consults system Python.
 pub fn ensure_managed_python(
     uv: &Path,
-    staging: &Path,
+    python_dir: &Path,
+    scratch_dir: &Path,
     cancel: &AtomicBool,
     log_path: &Path,
 ) -> Result<PathBuf, String> {
-    let install_dir = staging.join("python");
-    let target = install_dir.join(format!("cpython-{QWEN_PYTHON_VERSION}"));
+    let install_dir = python_dir;
     // uv layout varies; find a usable python3 under install_dir.
-    if let Some(existing) = find_managed_python(&install_dir)
+    if let Some(existing) = find_managed_python(install_dir)
         && python_version_ok(&existing, cancel)?
     {
         return Ok(existing);
     }
-    std::fs::create_dir_all(&install_dir).map_err(|e| format!("mkdir python: {e}"))?;
+    std::fs::create_dir_all(install_dir).map_err(|e| format!("mkdir python: {e}"))?;
     let mut cmd = std::process::Command::new(uv);
     cmd.args(["python", "install", QWEN_PYTHON_VERSION, "--install-dir"])
-        .arg(&install_dir);
+        .arg(install_dir);
     // Isolate uv from user env/shell config.
-    cmd.env("UV_CACHE_DIR", staging.join("uv-cache"))
+    cmd.env("UV_CACHE_DIR", scratch_dir.join("uv-cache"))
         .env("UV_NO_CACHE", "0")
         .env_remove("PYTHONHOME")
         .env_remove("PYTHONPATH")
@@ -655,8 +687,7 @@ pub fn ensure_managed_python(
     if cancel.load(Ordering::SeqCst) {
         return Err("cancelled".to_string());
     }
-    let _ = target;
-    match find_managed_python(&install_dir) {
+    match find_managed_python(install_dir) {
         Some(p) => {
             if python_version_ok(&p, cancel)? {
                 Ok(p)
@@ -884,6 +915,43 @@ mod tests {
         // Empty resolution → Err.
         std::fs::write(&path, r#"{"version":"1","install":[]}"#).unwrap();
         assert!(parse_pip_report(&path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn venv_pointing_outside_runtime_is_not_self_contained() {
+        let dir = std::env::temp_dir().join(format!("qwen-sc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let runtime = dir.join("bin").join("qwen-vllm");
+        let bin = runtime.join("venv").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let python = bin.join("python");
+        // Missing → false.
+        assert!(!venv_python_self_contained(&runtime));
+        // Symlink into (deleted) staging → false (the shipped bug).
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            dir.join("bin")
+                .join(".staging-qwen-qwen-vllm")
+                .join("python"),
+            &python,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        assert!(!venv_python_self_contained(&runtime));
+        #[cfg(unix)]
+        let _ = std::fs::remove_file(&python);
+        // Symlink inside the runtime → true.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(runtime.join("python").join("bin").join("python3"), &python)
+            .unwrap();
+        #[cfg(unix)]
+        assert!(venv_python_self_contained(&runtime));
+        #[cfg(unix)]
+        let _ = std::fs::remove_file(&python);
+        // Plain copied binary → true.
+        std::fs::write(&python, b"x").unwrap();
+        assert!(venv_python_self_contained(&runtime));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

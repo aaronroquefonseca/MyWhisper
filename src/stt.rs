@@ -1833,13 +1833,18 @@ pub fn qwen_venv_python(data_dir: &Path, pack: &QwenPack) -> PathBuf {
 
 /// Installed = venv provisioned by the managed installer AND
 /// verified (v2 marker written after post-activation import checks
-/// at the final path). No per-poll python spawn: the marker pins the
-/// backend spec set + interpreter, so a spec bump or an old
-/// system-python (e.g. 3.14) venv reinstalls instead of being
+/// at the final path) AND self-contained (the venv interpreter
+/// resolves inside the runtime dir — a venv left pointing at deleted
+/// staging is broken, never trusted). No per-poll python spawn: the
+/// marker pins the backend spec set + interpreter, so a spec bump or
+/// an old system-python (e.g. 3.14) venv reinstalls instead of being
 /// trusted. Incomplete installs never write the marker.
 pub fn qwen_installed(data_dir: &Path, pack: &QwenPack) -> bool {
     let dir = qwen_runtime_dir(data_dir, pack);
     if !qwen_venv_python(data_dir, pack).exists() {
+        return false;
+    }
+    if !crate::qwen_runtime::venv_python_self_contained(&dir) {
         return false;
     }
     match std::fs::read_to_string(dir.join(".installed")) {
@@ -2015,14 +2020,12 @@ pub fn download_qwen_runtime(
             on_event(DownloadEvent::Progress { received, total });
         };
         let uv = qr::ensure_private_uv(&staging, cancel, &progress)?;
-        stage(qr::Stage::InstallPython);
-        let python = qr::ensure_managed_python(&uv, &staging, cancel, &log_path)?;
-        let _ = python;
         if cancel.load(Ordering::SeqCst) {
             return Err("cancelled".to_string());
         }
-        // Preserve a working runtime across replacement; partial or
-        // legacy (system-python/3.14) installs are not working.
+        // Preserve a working runtime across replacement; partial,
+        // legacy (system-python/3.14), or staging-linked (venv python
+        // resolving outside the runtime) installs are not working.
         let had_working = qwen_installed(data_dir, pack);
         if runtime.exists() {
             if had_working {
@@ -2035,10 +2038,20 @@ pub fn download_qwen_runtime(
             }
         }
         std::fs::create_dir_all(&runtime).map_err(|e| format!("mkdir runtime: {e}"))?;
-        // Venv at the FINAL path (venvs embed absolute paths).
+        // Managed interpreter INSIDE the final runtime root: venvs
+        // symlink (and share the stdlib of) their base interpreter,
+        // so a base under staging would dangle as soon as staging is
+        // cleaned. Only downloads live in staging.
+        stage(qr::Stage::InstallPython);
+        let python =
+            qr::ensure_managed_python(&uv, &runtime.join("python"), &staging, cancel, &log_path)?;
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".to_string());
+        }
+        // Venv at the FINAL path (venvs embed absolute paths), from
+        // the FINAL interpreter above.
         stage(qr::Stage::CreateVenv);
-        let staged_python = qr::ensure_managed_python(&uv, &staging, cancel, &log_path)?;
-        let mut venv_cmd = std::process::Command::new(&staged_python);
+        let mut venv_cmd = std::process::Command::new(&python);
         venv_cmd
             .args(["-m", "venv", "venv"])
             .current_dir(&runtime)
@@ -2158,6 +2171,23 @@ pub fn download_qwen_runtime(
         let _ = std::fs::copy(&log_path, qr::install_log(&runtime));
         let _ = std::fs::remove_dir_all(&backup);
         let _ = std::fs::remove_dir_all(&staging);
+        // Post-cleanup sanity: the venv must work with staging gone
+        // (this is the exact regression that shipped staging-linked
+        // venvs: activation looked fine until cleanup deleted their
+        // interpreter). Fail the install rather than marking it.
+        if !qr::venv_python_self_contained(&runtime) {
+            return Err("venv interpreter escapes the runtime dir (see install.log)".to_string());
+        }
+        let sanity = std::process::Command::new(qr::venv_python(&runtime))
+            .arg("--version")
+            .env_remove("PYTHONHOME")
+            .env_remove("PYTHONPATH")
+            .env_remove("VIRTUAL_ENV")
+            .output()
+            .map_err(|e| format!("post-cleanup python check: {e}"))?;
+        if !sanity.status.success() {
+            return Err("venv python broken after cleanup (see install.log)".to_string());
+        }
         on_event(DownloadEvent::Done);
         Ok(())
     })();
@@ -2355,6 +2385,73 @@ mod qwen_runtime_tests {
         let err = delete_qwen_runtime(&data, pack).unwrap_err();
         assert!(err.to_string().contains("cancel"));
         downloads().lock().unwrap().remove(pack.id);
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// Live provisioning through the real installer: full managed
+    /// install of the transformers pack into disposable storage
+    /// (network + ~9 GB free). Ignored by default; run explicitly.
+    /// Proves the venv works after staging cleanup (the shipped
+    /// staging-linked-venv regression) and that a retry heals the
+    /// broken layout left by it.
+    #[test]
+    #[ignore]
+    fn live_provision_transformers() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let data = Path::new(&home)
+            .join(".cache")
+            .join(format!("qwen-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let pack = QWEN_PACKS
+            .iter()
+            .find(|p| p.id == "qwen-transformers")
+            .unwrap();
+        // Plant the shipped broken layout first: marker + venv whose
+        // python points at (deleted) staging. Retry must heal it.
+        let dir = qwen_runtime_dir(&data, pack);
+        std::fs::create_dir_all(dir.join("venv").join("bin")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            data.join("bin")
+                .join(".staging-qwen-qwen-transformers")
+                .join("python"),
+            dir.join("venv").join("bin").join("python"),
+        )
+        .unwrap();
+        std::fs::write(dir.join(".installed"), "qwen-runtime-v2|stale\n").unwrap();
+        assert!(
+            !qwen_installed(&data, pack),
+            "staging-linked venv must not count as installed"
+        );
+        let cancel = AtomicBool::new(false);
+        let cb: DownloadCallback = Arc::new(|ev| match ev {
+            DownloadEvent::Progress { received, total } => {
+                eprintln!("[live] progress {received}/{total:?}");
+            }
+            DownloadEvent::Installing => eprintln!("[live] installing"),
+            DownloadEvent::Done => eprintln!("[live] done"),
+        });
+        download_qwen_runtime(&data, pack, &cancel, &cb).unwrap();
+        assert!(qwen_installed(&data, pack));
+        // Staging is gone and the venv still works: the regression.
+        assert!(
+            !crate::qwen_runtime::staging_dir(&data, pack.subdir).exists(),
+            "staging must be cleaned"
+        );
+        let out = std::process::Command::new(qwen_venv_python(&data, pack))
+            .arg("--version")
+            .env_remove("PYTHONHOME")
+            .env_remove("PYTHONPATH")
+            .env_remove("VIRTUAL_ENV")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "venv python broken after cleanup");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(text.contains("3.12"), "{text}");
         let _ = std::fs::remove_dir_all(&data);
     }
 }
