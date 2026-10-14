@@ -51,6 +51,8 @@ test|lib|audio::tests::wav_header_shape|run
 test|lib|child::tests::bounds_stalled_input_output_and_nonzero_exit|run
 test|lib|child::tests::communicates_large_input_without_pipe_deadlock|run
 test|lib|clipboard::tests::backend_dep_strings_present|run
+test|lib|clipboard::tests::delivery_authority_rejects_database_replacement|run
+test|lib|clipboard::tests::unreadable_delivery_policy_stays_denied_after_recovery|run
 test|lib|database_key::tests::create_item_prompt_is_dismissed_before_activation_and_its_future_is_cancelled|run
 test|lib|device::provisioning_tests::concurrent_create_and_legacy_migration_share_one_private_identity|run
 test|lib|device::provisioning_tests::interrupted_replacement_and_fresh_processes_preserve_both_keys|run
@@ -127,6 +129,10 @@ test|lib|runtime::finalization_tests::slow_first_delivery_cannot_be_overtaken_an
 test|lib|runtime::tests::background_owner_interrupts_idle_wait_and_joins_active_cleanup|run
 test|lib|runtime::tests::panicking_job_does_not_kill_pool|run
 test|lib|runtime::tests::pool_runs_jobs|run
+test|lib|selection::regressions::cancellation_interrupts_a_compositor_that_never_answers|run
+test|lib|selection::regressions::clipboard_preloads_markers_and_old_sources_do_not_complete_current_paste|run
+test|lib|selection::regressions::partial_unicode_transfer_completes_only_after_all_bytes_and_eof|run
+test|lib|selection::regressions::stalled_closed_and_excessive_recipients_release_every_descriptor|run
 test|lib|settings::legacy_shortcut_regressions::absent_new_list_preserves_legacy_but_explicit_new_and_empty_lists_win|run
 test|lib|settings::snippet_tests::triggers_split_commas|run
 test|lib|settings::tests::chain_respects_order_and_enabled|run
@@ -270,6 +276,7 @@ test|lib|transcribe::tests::whistle_stdout_shapes|run
 test|lib|transcribe::tests::whistle_stream_roundtrip|ignored
 harness|bin|mywhisper
 harness|bin|pill
+harness|example|clipboard_smoke
 harness|example|desktop_smoke
 harness|example|installer_fs_probe
 harness|example|ui_preview

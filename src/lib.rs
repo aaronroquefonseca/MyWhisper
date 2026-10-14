@@ -36,6 +36,8 @@ mod address;
 
 mod child;
 
+mod selection;
+
 mod database_key;
 
 mod diagnostics;

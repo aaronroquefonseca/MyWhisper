@@ -3732,7 +3732,7 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
             return;
         }
     };
-    let policy = match crate::operation::Operation::capture(
+    let policy = match crate::clipboard::DeliveryAuth::capture(
         policy_store,
         epoch,
         Arc::new(std::sync::atomic::AtomicBool::new(false)),

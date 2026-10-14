@@ -2,10 +2,9 @@
 
 Draft scope: R32, R45, R39 clipboard boundary.
 Source snapshot: `08d2f6ae1295cf088cb8bb9fc12ea38fd97a4186`; current main baseline: `092cd80626b71396c71ef5f275e34495d75301ad`.
-Parent: `fix/audit-verified-installers` at `367f54a56d674de7ffefabb790c2e497fd763af0`
-(merge `04cce9f` adopts #19 `7cb5fec`; six clipboard commits rebased onto it,
-single conflict in `src/selection.rs` resolved to this layer's implementation
-body per the parent relocation contract).
+Parent: `fix/audit-verified-installers` at `5edeeab8fd3167a93dd5813f0099c35b087677b9`
+(code `1344bd433b58be484c005b0723da8fdc25d3035b`, strict-zero; eight clipboard
+commits rebased onto it).
 
 Relocation executed: the parent keeps only the real
 `selection::Guard` type (byte-identical, consumed by
@@ -79,9 +78,29 @@ or deletion. Capture-edge authorization/completion is coordinated with #22
 (which replaces the legacy `transcribe::deliver` adapter) and user feedback
 with #23. Parent #20 must satisfy its own scope before any merge.
 
+Ownership-v2 gates on the reconciled head: strict `clippy -D warnings`
+zero diagnostics, fmt clean, own manifest 273 tests (268 run / 5 ignored;
+parent 262 + this layer's 6), four hosted-identical disposable batches
+exact-once green, full unpartitioned suite 268/0/5 on healthy scratch,
+live nest wtype CtrlV/CtrlShiftV/ShiftInsert green, ydotool fails closed. Box finding OPEN: /tmp at 77% (co-tenant scratch,
+not mine to delete) makes full-suite staging writes fail with SQLite
+write-class errors in untouched store/sync tests; same tests pass solo on
+healthy scratch and in every batch — cause established, not waived, not
+called fixed; hosted healthy runner arbitrates.
 Restacks: onto `367f54a` (one selection-stub conflict → implementation body,
-frozen `Guard` identical; `child::run` gating → guarded cleanup) and onto
-`aebdbd4` (7/7 zero-conflict). Adopted #15 `e2751d2` verbatim
+frozen `Guard` identical; `child::run` gating → guarded cleanup), onto
+`aebdbd4` (7/7 zero-conflict), and onto ownership-v2 `5edeeab8`
+(restored `src/selection.rs` wholesale over the parent deletion — one
+modify/delete conflict — plus `mod selection;`; `operation.rs` deletion
+propagates: deliver authorizes through the new owned `DeliveryAuth`
+(file-identity + epoch + reset rechecks, sticky denials, historic message
+strings, two ported contract tests) instead of the #22-owned `Operation`;
+unreachable async-copy scaffolding (`CopyTask`/`poll`/`copy_text_async`,
+zero callers) removed rather than silenced — re-add from
+`4123680:src/clipboard.rs:245-290` if capture-edge/GUI ever needs it.
+`installed_asset` and `net.rs` take the parent side untouched; handshake
+fixture `b842a0d` lives down-stack in #18, preserved by not touching it).
+Adopted #15 `e2751d2` verbatim
 (nested-harness detection, its unit test, batch-log artifact upload).
 Regenerated own manifest on the joined tree (277 lib tests: 272 run /
 5 ignored; parent's copy lacked 54 artifact tests now listed);

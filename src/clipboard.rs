@@ -242,49 +242,6 @@ fn request(
     stopped.store(true, Ordering::Release);
     outcome
 }
-pub(crate) struct CopyTask {
-    result: std::sync::mpsc::Receiver<Result<crate::selection::Payload, String>>,
-    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
-}
-impl CopyTask {
-    pub fn poll(&self) -> Option<Result<(), String>> {
-        match self.result.try_recv() {
-            Ok(result) => Some(result.map(|_| ())),
-            Err(std::sync::mpsc::TryRecvError::Empty) => None,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Some(Err("clipboard worker stopped".into()))
-            }
-        }
-    }
-}
-impl Drop for CopyTask {
-    fn drop(&mut self) {
-        self.cancelled
-            .store(true, std::sync::atomic::Ordering::Release);
-    }
-}
-pub(crate) fn copy_text_async(text: &str, sensitive: bool) -> Result<CopyTask, String> {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    };
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let stop = cancelled.clone();
-    let guard: crate::selection::Guard =
-        Arc::new(move || !crate::runtime::closing() && !stop.load(Ordering::Acquire));
-    let (response, result) = mpsc::channel();
-    worker()?
-        .sender
-        .try_send(Request {
-            operation: Operation::Copy(text_payload(text), sensitive),
-            guard,
-            response,
-        })
-        .map_err(|_| "clipboard delivery queue is full")?;
-    Ok(CopyTask { result, cancelled })
-}
-
 fn pipeline_owned(
     selection: &mut crate::selection::Selection,
     text: &str,
@@ -496,6 +453,119 @@ pub fn run_pipeline(
     request(Operation::Pipeline(text.into(), prefs.clone()), guard).map(|_| ())
 }
 
+/// Minimal durable capture authorization for the dictation delivery path.
+///
+/// The full session-operation contract lives in #22; this layer needs only
+/// what `deliver` consumes: a read-only policy reader pinned to its database
+/// file identity plus the capture epoch, rechecked on every use. Denials are
+/// sticky: an unreadable policy keeps denying (existing data preserved) while
+/// revocation (epoch change, replacement, reset) denies permanently. Denial
+/// strings match the historic delivery errors.
+pub(crate) struct DeliveryAuth {
+    store: std::sync::Arc<std::sync::Mutex<crate::store::Store>>,
+    file: Option<(std::path::PathBuf, u64, u64)>,
+    epoch: i64,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    denial: std::sync::Mutex<Option<&'static str>>,
+}
+
+impl DeliveryAuth {
+    pub(crate) fn capture(
+        store: crate::store::Store,
+        epoch: i64,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<Self, String> {
+        store
+            .policy_reads_only()
+            .map_err(|_| "capture policy reader unavailable")?;
+        let file = store
+            .path()
+            .zip(store.file_identity())
+            .map(|(path, (device, inode))| (path.to_owned(), device, inode));
+        let auth = Self {
+            store: std::sync::Arc::new(std::sync::Mutex::new(store)),
+            file,
+            epoch,
+            cancel,
+            denial: std::sync::Mutex::new(None),
+        };
+        auth.check()?;
+        Ok(auth)
+    }
+
+    pub(crate) fn permitted(&self) -> bool {
+        self.check().is_ok()
+    }
+
+    fn deny(&self, message: &'static str) -> String {
+        *self
+            .denial
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(message);
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+        message.into()
+    }
+
+    fn check(&self) -> Result<(), String> {
+        if let Some(message) = *self
+            .denial
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+        {
+            self.cancel
+                .store(true, std::sync::atomic::Ordering::Release);
+            return Err(message.into());
+        }
+        if crate::runtime::closing() || self.cancel.load(std::sync::atomic::Ordering::Acquire) {
+            self.cancel
+                .store(true, std::sync::atomic::Ordering::Release);
+            return Err("operation cancelled".into());
+        }
+        if let Some((path, device, inode)) = &self.file {
+            use std::os::unix::fs::MetadataExt;
+            match std::fs::symlink_metadata(path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(self.deny("capture policy changed or its database was replaced"));
+                }
+                Err(_) => {
+                    return Err(
+                        self.deny("capture policy could not be read; existing data preserved")
+                    );
+                }
+                Ok(metadata) => {
+                    if !metadata.is_file() || metadata.dev() != *device || metadata.ino() != *inode
+                    {
+                        return Err(
+                            self.deny("capture policy changed or its database was replaced")
+                        );
+                    }
+                }
+            }
+        }
+        let store = match self.store.lock() {
+            Ok(store) => store,
+            Err(_) => {
+                return Err(self.deny("capture policy could not be read; existing data preserved"));
+            }
+        };
+        match store.reset_pending() {
+            Err(_) => {
+                return Err(self.deny("capture policy could not be read; existing data preserved"));
+            }
+            Ok(true) => {
+                return Err(self.deny("capture policy changed or its database was replaced"));
+            }
+            Ok(false) => {}
+        }
+        match store.capture_epoch() {
+            Err(_) => Err(self.deny("capture policy could not be read; existing data preserved")),
+            Ok(current) if current == self.epoch => Ok(()),
+            Ok(_) => Err(self.deny("capture policy changed or its database was replaced")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,5 +575,68 @@ mod tests {
         assert!(copy_backend_deps().contains("data-control"));
         assert!(paste_backend_deps(PasteBackend::Wtype).contains("wtype"));
         assert!(paste_backend_deps(PasteBackend::Ydotool).contains("ydotool"));
+    }
+
+    #[test]
+    fn unreadable_delivery_policy_stays_denied_after_recovery() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("state.db");
+        let key = [0x21; 32];
+        let store = crate::store::Store::open_with_key(&path, &key).unwrap();
+        let epoch = store.capture_epoch().unwrap();
+        let auth = DeliveryAuth::capture(
+            store,
+            epoch,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .unwrap();
+        let writer = rusqlite::Connection::open(&path).unwrap();
+        writer
+            .execute_batch(&format!("PRAGMA key = \"x'{}'\"", "21".repeat(32)))
+            .unwrap();
+        writer
+            .execute_batch("ALTER TABLE sync_meta RENAME TO held_policy")
+            .unwrap();
+        assert!(auth.check().unwrap_err().contains("could not be read"));
+        writer
+            .execute_batch("ALTER TABLE held_policy RENAME TO sync_meta")
+            .unwrap();
+        assert!(auth.check().is_err());
+        drop(writer);
+        let recovered = crate::store::Store::open_with_key(&path, &key).unwrap();
+        let fresh = DeliveryAuth::capture(
+            recovered,
+            epoch,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .unwrap();
+        assert!(fresh.permitted());
+    }
+
+    #[test]
+    fn delivery_authority_rejects_database_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("state.db");
+        let store = crate::store::Store::open_with_key(&path, &[21; 32]).unwrap();
+        store.checkpoint().unwrap();
+        let epoch = store.capture_epoch().unwrap();
+        let auth = DeliveryAuth::capture(
+            store,
+            epoch,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .unwrap();
+        assert!(auth.permitted());
+        let replacement = root.path().join("replacement.db");
+        let fresh = crate::store::Store::open_with_key(&replacement, &[21; 32]).unwrap();
+        assert_eq!(fresh.capture_epoch().unwrap(), epoch);
+        fresh.checkpoint().unwrap();
+        drop(fresh);
+        std::fs::rename(&path, root.path().join("old.db")).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        assert!(
+            !auth.permitted(),
+            "a fresh database with the same epoch cannot inherit old authority"
+        );
     }
 }
