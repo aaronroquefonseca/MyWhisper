@@ -1,0 +1,11 @@
+Take care of PR #22 and keep working on it.
+
+Objectives: finish explicit capture/provider/engine lifecycle ownership: R08–R11, R13, R15, R17–R18, R28–R31, R34–R36, R39–R40 and R50. Parent is #21; preserve #18–#20’s policy, input and asset-lease contracts.
+
+Previous issues: canceled/reset recordings still uploaded to fallback; worker pressure lost recordings; ARM_LOCK blocked GTK; config warmup killed active inference; DNS bypassed WS deadlines; speculative workers/tail handling and FIFO/process cleanup leaked or lost speech; shutdown counters finished before actual TLS/resource destruction.
+
+Chosen strategy: input-edge session ownership, dedicated bounded admission, irreversible operation authorization, cancellable resolver/HTTP/WS/CLI IO, leased engines/assets, ordered finalization and joins of actual handles before DB/global finalization. Protected literal snippets and all merged #13 assertions are retained with cancellation-aware cleanup. Reviewed server status/switching in open #11 overlaps this scope: reconcile it without overwriting independently reviewed fixes.
+
+Next: hundreds of cancellation/replacement cycles, panic/recovery, stalled/partial IO, late-only tail and rolling-window agreement, active warmup/config changes, authenticated trusted WSS/cloud contracts and final packaged inference/shutdown/privacy. Actual Tiny Whisper CUDA and English Cohere CUDA historical gates passed; other model/language/backend combinations remain. Needle/Nemotron Hello accuracy failures are evidence, not words to manufacture. Locked all-target compilation passes; GUI reset-recovery presentation is completed by #23.
+
+Keep this PR draft until its scope and required checks are actually complete. Preserve supported behavior, user data, all meaningful assertions and the current version/license/workflows. Use disposable encrypted stores, identities, HOME/XDG/session state, synthetic transcripts and test-only keys. Do not add ignores, suppress failures, enlarge limits to hide symptoms, merge, tag, release or deploy. Update the finding ownership/evidence and review the complete resulting diff. Historical probes assert buggy behavior and are evidence only.

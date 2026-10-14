@@ -1,0 +1,11 @@
+Take care of PR #17 and keep working on it.
+
+Objectives: complete R11’s Unicode prompt boundary and R37–R38’s provider request/answer contracts. Return canonical completed text, excluding thoughts/refusals and rejecting truncation or malformed replies. Preserve protected literal snippet behavior from merged #13.
+
+Previous issues: byte truncation split Unicode; Claude thinking budgets were invalid; parsing selected the first content block or accepted incomplete/noncanonical responses. Ollama model-default thinking was repeatedly rewritten by storage migration, owned by #18.
+
+Chosen strategy: UTF-8-safe boundaries, capability-aware requests and provider-specific completed-answer parsing. This is an independent main-based draft; locked all-target compilation and strict Clippy passed. Fixtures alone do not certify current cloud contracts.
+
+Next: validate actual provider/model token and thinking capabilities, test malformed/empty/refusal/long Unicode replies and every tri-state setting, then exercise authenticated disposable live contracts when credentials are available. Coordinate cancellable transport and persistence with #22. Report exact credential/WSS gaps without substituting assumptions.
+
+Keep this PR draft until its scope and required checks are actually complete. Preserve supported behavior, user data, all meaningful assertions and the current version/license/workflows. Use disposable encrypted stores, identities, HOME/XDG/session state, synthetic transcripts and test-only keys. Do not add ignores, suppress failures, enlarge limits to hide symptoms, merge, tag, release or deploy. Update the finding ownership/evidence and review the complete resulting diff. Historical probes assert buggy behavior and are evidence only.

@@ -1,0 +1,7 @@
+    Checking secret-service v5.2.0 (/home/aaronroque/.cache/mywhisper-audit-handoffs.8uhx8ltp/settings/vendor/secret-service)
+    Checking tinyvec v1.13.3
+    Checking unicode-normalization v0.1.25
+    Checking zbus-secret-service-keyring-store v1.0.1
+    Checking keyring v4.2.0
+    Checking mywhisper v0.9.4 (/home/aaronroque/.cache/mywhisper-audit-handoffs.8uhx8ltp/settings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.27s

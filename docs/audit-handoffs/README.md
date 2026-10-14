@@ -35,4 +35,4 @@ review and final packaged inference/stress remain genuine acceptance gates.
 Continue independent work and report exact missing prerequisites; fixtures do
 not replace passing live integrations. Use private disposable data exclusively.
 
-The ownership/source inventory is completed after all draft PR numbers exist.
+The completed findings ownership is in FINDINGS.md; source-inventory.json assigns all 459 original changed paths. PR-15-PROMPT.txt through PR-23-PROMPT.txt provide independent copyable handoffs. Extraction compilation and limited strict-lint logs are retained separately; these are not current full-suite/live passes.

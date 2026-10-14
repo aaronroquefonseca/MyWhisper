@@ -1,0 +1,11 @@
+Take care of PR #21 and keep working on it.
+
+Objectives: finish R32/R45 clipboard delivery, ordering, ownership and privacy, including R39’s delivery boundary. Parent is #20. Coordinate capture-edge authorization/completion with #22 and UI feedback with #23.
+
+Previous issues: copy reported success before command completion; delivery could overlap/reorder; clipboard restoration lost empty/binary/multiple formats or overwrote user changes; stalled compositor/children blocked cancellation.
+
+Chosen strategy: one bounded owned selection actor, nonblocking protocol IO, real policy/cancellation guards, explicit paste/consumption and conditional restoration. The legacy delivery adapter checks durable authorization and cancellation; #22 replaces it with full capture-edge ownership. No permissive always-true guard is introduced. Locked all-target compilation passes.
+
+Next: test delayed consumption, queued cancellation/reset, empty/text/binary/multiple MIME offers, user replacement, copy-only/no-op modes, fallback failures and supported compositor/paste variants. Verify serialization through actual completion and selection ownership. Evaluate clipboard-manager reads and document the protocol limitation: set_selection offers no atomic ownership-conditional restore. Fixtures and an earlier private niri gate do not certify every compositor or final head.
+
+Keep this PR draft until its scope and required checks are actually complete. Preserve supported behavior, user data, all meaningful assertions and the current version/license/workflows. Use disposable encrypted stores, identities, HOME/XDG/session state, synthetic transcripts and test-only keys. Do not add ignores, suppress failures, enlarge limits to hide symptoms, merge, tag, release or deploy. Update the finding ownership/evidence and review the complete resulting diff. Historical probes assert buggy behavior and are evidence only.

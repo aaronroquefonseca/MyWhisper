@@ -1,0 +1,55 @@
+{
+  "main": "092cd80626b71396c71ef5f275e34495d75301ad",
+  "snapshot": "08d2f6ae1295cf088cb8bb9fc12ea38fd97a4186",
+  "checks": {
+    "ui": {
+      "check": true,
+      "clippy": true
+    },
+    "contracts": {
+      "check": true,
+      "clippy": true
+    },
+    "storage": {
+      "check": true,
+      "clippy": "pending scoped integration"
+    },
+    "input": {
+      "check": true,
+      "clippy": "pending scoped integration"
+    },
+    "assets": {
+      "check": true,
+      "clippy": "pending scoped integration"
+    },
+    "clipboard": {
+      "check": true,
+      "clippy": "pending scoped integration"
+    },
+    "sessions": {
+      "check": true,
+      "clippy": "pending scoped integration"
+    },
+    "settings": {
+      "check": true,
+      "clippy": true
+    }
+  },
+  "all_current_runtime_tests_live_security_release_and_native_gates_complete": false,
+  "all_drafts": true,
+  "checked_source_heads": {
+    "tracking": "3f3e969b4677d3d0d72c4add4a47b383a4d6b956",
+    "ui": "5d0b5f0319904934d7a5e491ef3bf5036a9098eb",
+    "contracts": "c0a096faac348d39bc4916a5da4391a6c02d4745",
+    "storage": "2f12b1b543dbdb7f6f8cbd58260214f52123ec6e",
+    "input": "264fd39c07509f11873781e335cefe1388485e06",
+    "assets": "ad0f218c4d6e7e49bc09fe5d4063d802b992323d",
+    "clipboard": "3a407e82b601b45a52b70e2aa71310d546c4ecc4",
+    "sessions": "8dac057f7b527d20848b3ef429a39b52f5d7b46d",
+    "settings": "feb531ee4fabe8c4d4664722d99c023f9d438a96"
+  },
+  "combined_head_strict_clippy_passed": true,
+  "independent_ui_and_contracts_strict_clippy_passed": true,
+  "source_snapshot_includes_original_uncommitted_store_patch": true,
+  "original_worktree_unmodified": true
+}

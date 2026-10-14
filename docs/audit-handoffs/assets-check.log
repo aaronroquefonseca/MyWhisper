@@ -1,0 +1,481 @@
+Command: ['python3', 'scripts/disposable.py', 'MYWHISPER_AUDIT_ROOT', 'extraction', 'env', 'CARGO_HOME=/home/aaronroque/.cargo', 'RUSTUP_HOME=/home/aaronroque/.rustup', 'cargo', 'check', '--locked', '--all-targets']
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Checking mywhisper v0.9.4 (/home/aaronroque/.cache/mywhisper-audit-handoffs.8uhx8ltp/assets)
+warning: function `sync_on_startup_owned` is never used
+    --> src/net.rs:1783:15
+     |
+1783 | pub(crate) fn sync_on_startup_owned(
+     |               ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `Launch` is never constructed
+   --> src/runtime.rs:356:5
+    |
+354 | enum ReaperMessage {
+    |      ------------- variant in this enum
+355 |     Join(OwnedThread),
+356 |     Launch(Job),
+    |     ^^^^^^
+
+warning: static `PROCESS_LAUNCH` is never used
+   --> src/runtime.rs:360:8
+    |
+360 | static PROCESS_LAUNCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    |        ^^^^^^^^^^^^^^
+
+warning: struct `LaunchPermit` is never constructed
+   --> src/runtime.rs:362:8
+    |
+362 | struct LaunchPermit;
+    |        ^^^^^^^^^^^^
+
+warning: function `submit_process_launch` is never used
+   --> src/runtime.rs:371:15
+    |
+371 | pub(crate) fn submit_process_launch(job: impl FnOnce() + Send + 'static) -> Result<(), String> {
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `CapturedUtterance` is never constructed
+   --> src/store.rs:148:19
+    |
+148 | pub(crate) struct CapturedUtterance<'a> {
+    |                   ^^^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> src/store.rs:575:19
+     |
+ 347 | impl Store {
+     | ---------- methods in this implementation
+...
+ 575 |     pub(crate) fn capture_epoch(&self) -> rusqlite::Result<i64> {
+     |                   ^^^^^^^^^^^^^
+...
+ 589 |     pub(crate) fn file_identity(&self) -> Option<(u64, u64)> {
+     |                   ^^^^^^^^^^^^^
+...
+ 593 |     pub(crate) fn policy_reads_only(&self) -> rusqlite::Result<()> {
+     |                   ^^^^^^^^^^^^^^^^^
+...
+ 600 |     pub(crate) fn capture_settings(&self) -> rusqlite::Result<(AppSettings, i64)> {
+     |                   ^^^^^^^^^^^^^^^^
+...
+1298 |     pub(crate) fn persist_capture(
+     |                   ^^^^^^^^^^^^^^^
+...
+1450 |     pub(crate) fn pending_reset_nonce(&self) -> rusqlite::Result<Option<String>> {
+     |                   ^^^^^^^^^^^^^^^^^^^
+...
+1460 |     pub(crate) fn completed_reset(&self, nonce: &str) -> rusqlite::Result<bool> {
+     |                   ^^^^^^^^^^^^^^^
+...
+1470 |     pub(crate) fn begin_reset(&self, nonce: &str) -> rusqlite::Result<()> {
+     |                   ^^^^^^^^^^^
+...
+1504 |     pub(crate) fn complete_reset(&self, nonce: &str) -> rusqlite::Result<()> {
+     |                   ^^^^^^^^^^^^^^
+...
+1523 |     pub(crate) fn adopt_settings_baseline(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+1544 |     pub(crate) fn maintain_retention_at(&self, now: i64) -> rusqlite::Result<(usize, usize)> {
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `model_present` is never used
+   --> src/stt.rs:458:15
+    |
+458 | pub(crate) fn model_present(data: &Path, entry: &ModelEntry) -> bool {
+    |               ^^^^^^^^^^^^^
+
+warning: function `start_verification` is never used
+   --> src/stt.rs:668:15
+    |
+668 | pub(crate) fn start_verification(data: PathBuf, id: &'static str) {
+    |               ^^^^^^^^^^^^^^^^^^
+
+warning: function `start_local_trust` is never used
+   --> src/stt.rs:692:15
+    |
+692 | pub(crate) fn start_local_trust(spec: crate::installed_asset::Spec, id: &'static str) {
+    |               ^^^^^^^^^^^^^^^^^
+
+warning: function `try_lock` is never used
+  --> src/private_fs.rs:37:8
+   |
+37 | pub fn try_lock(path: &Path) -> io::Result<File> {
+   |        ^^^^^^^^
+
+warning: struct `RetentionMaintenance` is never constructed
+ --> src/maintenance.rs:9:19
+  |
+9 | pub(crate) struct RetentionMaintenance {
+  |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: associated functions `start` and `spawn` are never used
+  --> src/maintenance.rs:15:19
+   |
+14 | impl RetentionMaintenance {
+   | ------------------------- associated functions in this implementation
+15 |     pub(crate) fn start(path: PathBuf) -> Result<Self, String> {
+   |                   ^^^^^
+...
+37 |     fn spawn(interval: Duration, mut pass: impl FnMut() + Send + 'static) -> Result<Self, String> {
+   |        ^^^^^
+
+warning: function `admit` is never used
+   --> src/installed_asset.rs:253:15
+    |
+253 | pub(crate) fn admit(
+    |               ^^^^^
+
+warning: function `trust_local` is never used
+   --> src/installed_asset.rs:676:15
+    |
+676 | pub(crate) fn trust_local(
+    |               ^^^^^^^^^^^
+
+warning: struct `Operation` is never constructed
+ --> src/operation.rs:6:19
+  |
+6 | pub(crate) struct Operation {
+  |                   ^^^^^^^^^
+
+warning: enum `Denial` is never used
+  --> src/operation.rs:15:6
+   |
+15 | enum Denial {
+   |      ^^^^^^
+
+warning: method `description` is never used
+  --> src/operation.rs:21:8
+   |
+20 | impl Denial {
+   | ----------- method in this implementation
+21 |     fn description(self) -> &'static str {
+   |        ^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src/operation.rs:30:19
+    |
+ 29 | impl Operation {
+    | -------------- associated items in this implementation
+ 30 |     pub(crate) fn unrestricted() -> Self {
+    |                   ^^^^^^^^^^^^
+...
+ 34 |     pub(crate) fn cancellable(cancel: Arc<AtomicBool>) -> Self {
+    |                   ^^^^^^^^^^^
+...
+ 44 |     pub(crate) fn capture(
+    |                   ^^^^^^^
+...
+ 55 |     pub(crate) fn capture_reader(
+    |                   ^^^^^^^^^^^^^^
+...
+ 78 |     pub(crate) fn admitted_capture(
+    |                   ^^^^^^^^^^^^^^^^
+...
+118 |     pub(crate) fn permitted(&self) -> bool {
+    |                   ^^^^^^^^^
+...
+122 |     pub(crate) fn check(&self) -> Result<(), String> {
+    |                   ^^^^^
+...
+152 |     pub(crate) fn with_assets(
+    |                   ^^^^^^^^^^^
+...
+161 |     pub(crate) fn policy_unavailable(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^^^
+...
+165 |     pub(crate) fn guard(&self) -> crate::selection::Guard {
+    |                   ^^^^^
+...
+170 |     pub(crate) fn cancel_flag(&self) -> &AtomicBool {
+    |                   ^^^^^^^^^^^
+...
+174 |     pub(crate) fn with_cancel(&self, cancel: Arc<AtomicBool>) -> Self {
+    |                   ^^^^^^^^^^^
+...
+184 |     pub(crate) fn with_permission(&self, guard: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+    |                   ^^^^^^^^^^^^^^^
+...
+198 |     pub(crate) fn next_phase(&self, cancel: Arc<AtomicBool>) -> Self {
+    |                   ^^^^^^^^^^
+
+warning: constant `UNSUPPORTED` is never used
+  --> src/selection.rs:21:18
+   |
+21 | pub(crate) const UNSUPPORTED: &str =
+   |                  ^^^^^^^^^^^
+
+warning: constant `MAX_BYTES` is never used
+  --> src/selection.rs:23:7
+   |
+23 | const MAX_BYTES: usize = 16 * 1024 * 1024;
+   |       ^^^^^^^^^
+
+warning: constant `IO_TIMEOUT` is never used
+  --> src/selection.rs:24:7
+   |
+24 | const IO_TIMEOUT: Duration = Duration::from_secs(5);
+   |       ^^^^^^^^^^
+
+warning: constant `MAX_TYPES` is never used
+  --> src/selection.rs:25:7
+   |
+25 | const MAX_TYPES: usize = 16;
+   |       ^^^^^^^^^
+
+warning: type alias `Guard` is never used
+  --> src/selection.rs:26:17
+   |
+26 | pub(crate) type Guard = Arc<dyn Fn() -> bool + Send + Sync>;
+   |                 ^^^^^
+
+warning: type alias `Payload` is never used
+  --> src/selection.rs:27:17
+   |
+27 | pub(crate) type Payload = Vec<(String, Arc<Vec<u8>>)>;
+   |                 ^^^^^^^
+
+warning: enum `Offer` is never used
+  --> src/selection.rs:29:6
+   |
+29 | enum Offer {
+   |      ^^^^^
+
+warning: methods `id`, `receive`, and `destroy` are never used
+  --> src/selection.rs:34:8
+   |
+33 | impl Offer {
+   | ---------- methods in this implementation
+34 |     fn id(&self) -> wayland_client::backend::ObjectId {
+   |        ^^
+...
+40 |     fn receive(&self, mime: &str, fd: &impl AsFd) {
+   |        ^^^^^^^
+...
+46 |     fn destroy(&self) {
+   |        ^^^^^^^
+
+warning: enum `Manager` is never used
+  --> src/selection.rs:53:6
+   |
+53 | enum Manager {
+   |      ^^^^^^^
+
+warning: enum `Device` is never used
+  --> src/selection.rs:57:6
+   |
+57 | enum Device {
+   |      ^^^^^^
+
+warning: enum `Source` is never used
+  --> src/selection.rs:61:6
+   |
+61 | enum Source {
+   |      ^^^^^^
+
+warning: methods `offer` and `destroy` are never used
+  --> src/selection.rs:66:8
+   |
+65 | impl Source {
+   | ----------- methods in this implementation
+66 |     fn offer(&self, mime: &str) {
+   |        ^^^^^
+...
+72 |     fn destroy(&self) {
+   |        ^^^^^^^
+
+warning: struct `SourceData` is never constructed
+  --> src/selection.rs:80:8
+   |
+80 | struct SourceData {
+   |        ^^^^^^^^^^
+
+warning: struct `Transfer` is never constructed
+  --> src/selection.rs:84:8
+   |
+84 | struct Transfer {
+   |        ^^^^^^^^
+
+warning: struct `State` is never constructed
+  --> src/selection.rs:93:8
+   |
+93 | struct State {
+   |        ^^^^^
+
+warning: methods `changed`, `send`, and `progress` are never used
+   --> src/selection.rs:109:8
+    |
+108 | impl State {
+    | ---------- methods in this implementation
+109 |     fn changed(&mut self, offer: Option<Offer>) {
+    |        ^^^^^^^
+...
+122 |     fn send(&mut self, mime: String, fd: std::os::fd::OwnedFd, data: &SourceData) {
+    |        ^^^^
+...
+149 |     fn progress(&mut self) {
+    |        ^^^^^^^^
+
+warning: function `marker` is never used
+   --> src/selection.rs:181:4
+    |
+181 | fn marker(generation: u64, nonce: &[u8; 16]) -> String {
+    |    ^^^^^^
+
+warning: struct `Selection` is never constructed
+   --> src/selection.rs:279:19
+    |
+279 | pub(crate) struct Selection {
+    |                   ^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src/selection.rs:289:12
+    |
+288 | impl Selection {
+    | -------------- associated items in this implementation
+289 |     pub fn open(guard: &Guard) -> Result<Self, String> {
+    |            ^^^^
+...
+341 |     fn sync(&mut self, guard: &Guard) -> Result<(), String> {
+    |        ^^^^
+...
+353 |     pub fn tick(&mut self) -> Result<(), String> {
+    |            ^^^^
+...
+356 |     pub fn snapshot(&mut self, guard: &Guard) -> Result<Payload, String> {
+    |            ^^^^^^^^
+...
+418 |     pub fn copy(
+    |            ^^^^
+...
+483 |     pub fn arm(&mut self, guard: &Guard) -> Result<(), String> {
+    |            ^^^
+...
+492 |     pub fn consumed(&mut self, guard: &Guard) -> Result<(), String> {
+    |            ^^^^^^^^
+...
+505 |     pub fn restore_if_owned(&mut self, payload: Payload, guard: &Guard) -> Result<(), String> {
+    |            ^^^^^^^^^^^^^^^^
+...
+514 |     pub fn clear_if_owned(&mut self) {
+    |            ^^^^^^^^^^^^^^
+
+warning: function `connect_compositor` is never used
+   --> src/selection.rs:526:4
+    |
+526 | fn connect_compositor(guard: &Guard) -> Result<Connection, String> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `check_guard` is never used
+   --> src/selection.rs:595:4
+    |
+595 | fn check_guard(guard: &Guard) -> Result<(), String> {
+    |    ^^^^^^^^^^^
+
+warning: function `pump_until` is never used
+   --> src/selection.rs:602:4
+    |
+602 | fn pump_until(
+    |    ^^^^^^^^^^
+
+warning: function `pump` is never used
+   --> src/selection.rs:621:4
+    |
+621 | fn pump(
+    |    ^^^^
+
+warning: struct `CliSelection` is never constructed
+   --> src/selection.rs:667:19
+    |
+667 | pub(crate) struct CliSelection {
+    |                   ^^^^^^^^^^^^
+
+warning: associated items `copy` and `alive` are never used
+   --> src/selection.rs:671:12
+    |
+670 | impl CliSelection {
+    | ----------------- associated items in this implementation
+671 |     pub fn copy(payload: &Payload, sensitive: bool, guard: &Guard) -> Result<Self, String> {
+    |            ^^^^
+...
+746 |     pub fn alive(&self) -> bool {
+    |            ^^^^^
+
+warning: unused `Result` that must be used
+   --> src/service.rs:188:17
+    |
+188 |                 crate::net::watch_discovered(db_path, identity.creds(), discovered.clone(), stop);
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+188 |                 let _ = crate::net::watch_discovered(db_path, identity.creds(), discovered.clone(), stop);
+    |                 +++++++
+
+warning: `mywhisper` (lib) generated 45 warnings
+warning: methods `pending_reset_nonce`, `completed_reset`, `begin_reset`, `complete_reset`, and `adopt_settings_baseline` are never used
+    --> src/store.rs:1450:19
+     |
+ 347 | impl Store {
+     | ---------- methods in this implementation
+...
+1450 |     pub(crate) fn pending_reset_nonce(&self) -> rusqlite::Result<Option<String>> {
+     |                   ^^^^^^^^^^^^^^^^^^^
+...
+1460 |     pub(crate) fn completed_reset(&self, nonce: &str) -> rusqlite::Result<bool> {
+     |                   ^^^^^^^^^^^^^^^
+...
+1470 |     pub(crate) fn begin_reset(&self, nonce: &str) -> rusqlite::Result<()> {
+     |                   ^^^^^^^^^^^
+...
+1504 |     pub(crate) fn complete_reset(&self, nonce: &str) -> rusqlite::Result<()> {
+     |                   ^^^^^^^^^^^^^^
+...
+1523 |     pub(crate) fn adopt_settings_baseline(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `start` is never used
+  --> src/maintenance.rs:15:19
+   |
+14 | impl RetentionMaintenance {
+   | ------------------------- associated function in this implementation
+15 |     pub(crate) fn start(path: PathBuf) -> Result<Self, String> {
+   |                   ^^^^^
+
+warning: methods `guard`, `cancel_flag`, `with_cancel`, and `with_permission` are never used
+   --> src/operation.rs:165:19
+    |
+ 29 | impl Operation {
+    | -------------- methods in this implementation
+...
+165 |     pub(crate) fn guard(&self) -> crate::selection::Guard {
+    |                   ^^^^^
+...
+170 |     pub(crate) fn cancel_flag(&self) -> &AtomicBool {
+    |                   ^^^^^^^^^^^
+...
+174 |     pub(crate) fn with_cancel(&self, cancel: Arc<AtomicBool>) -> Self {
+    |                   ^^^^^^^^^^^
+...
+184 |     pub(crate) fn with_permission(&self, guard: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: method `receive` is never used
+  --> src/selection.rs:40:8
+   |
+33 | impl Offer {
+   | ---------- method in this implementation
+...
+40 |     fn receive(&self, mime: &str, fd: &impl AsFd) {
+   |        ^^^^^^^
+
+warning: `mywhisper` (lib test) generated 21 warnings (17 duplicates)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.99s
+Exit: 0

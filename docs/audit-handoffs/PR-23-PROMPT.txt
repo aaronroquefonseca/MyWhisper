@@ -1,0 +1,11 @@
+Take care of PR #23 and keep working on it.
+
+Objectives: finish settings/page/job ownership, visible recovery and native/package integration for R05/R12/R21/R24/R28/R39/R41/R46/R47/R48/R50. Parent is #22; coordinate backend reset/capture/installer contracts with #18–#22.
+
+Previous issues: Reset All blocked GTK and displayed stale settings after filesystem failure; page closures retained removed widgets; stale model-load jobs affected replacements; opening settings changed active provider language; malformed settings and capture/copy failures lacked safe recovery feedback. System-theme/Tela issues in one inspection were launcher/environment determinations; separate GTK 4.22 logo/fallback defects are already merged in #6/#7.
+
+Chosen strategy: weak widget/page ownership, generation-aware cancellable jobs, transaction-safe settings patches, asynchronous durable reset with committed-state reflection and retry, owned Ollama controls, explicit recovery/error presentation and additional full shutdown/native acceptance. Preserve merged #13 trigger/conflict normalization. The combined extraction passes locked all-target compilation and strict Clippy, not complete acceptance.
+
+Next: both broad/focused themes/languages, reset under DB/installer locks, interrupted recovery, destroyed/replaced pages and rapid edits, native model-control/load/unload, shortcut capture suspension, long leak runs, normal/signal packaged shutdown and clean Arch/NixOS upgrade/device/provider behavior. Keep existing packaging/workflow checks and project license/version decisions. Open #4’s Qwen feature is separate; do not regress it during integration.
+
+Keep this PR draft until its scope and required checks are actually complete. Preserve supported behavior, user data, all meaningful assertions and the current version/license/workflows. Use disposable encrypted stores, identities, HOME/XDG/session state, synthetic transcripts and test-only keys. Do not add ignores, suppress failures, enlarge limits to hide symptoms, merge, tag, release or deploy. Update the finding ownership/evidence and review the complete resulting diff. Historical probes assert buggy behavior and are evidence only.
