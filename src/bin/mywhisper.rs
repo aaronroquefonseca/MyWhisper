@@ -21,19 +21,20 @@ fn main() -> gtk4::glib::ExitCode {
         println!("mywhisper {}", mywhisper::APP_VERSION);
         return gtk4::glib::ExitCode::SUCCESS;
     }
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!(
-            "MyWhisper {}\nUsage: mywhisper [--service] [--page PAGE] [--section SECTION] [--theme system|light|dark]\n       mywhisper --version | --help",
-            mywhisper::APP_VERSION
-        );
-        return gtk4::glib::ExitCode::SUCCESS;
-    }
     let paths = mywhisper::paths::AppPaths::create().expect("create app dirs");
     let _log_guard = mywhisper::paths::init_file_logging(&paths.state_dir);
-    let store =
-        std::rc::Rc::new(mywhisper::store::Store::open(&paths.db_file()).expect("open state.db"));
+    let store = match mywhisper::store::Store::open(&paths.db_file()) {
+        Ok(store) => std::rc::Rc::new(store),
+        Err(e) => {
+            eprintln!(
+                "Unable to open MyWhisper data: {e}. Check the keyring; existing data has been preserved."
+            );
+            return gtk4::glib::ExitCode::FAILURE;
+        }
+    };
     let identity = mywhisper::device::DeviceIdentity::load_or_create(&paths.device_key_file())
         .expect("node identity");
+    let shutdown_store = store.clone();
     tracing::info!(
         node = %identity.node_id,
         db = ?paths.db_file(),
@@ -56,11 +57,24 @@ fn main() -> gtk4::glib::ExitCode {
         // Sync engine obeys its toggle immediately: the watcher
         // starts/stops the stack as the setting moves (boot state
         // applies on the first tick, no restart needed).
-        mywhisper::service::spawn_sync_watcher(paths.db_file(), identity, discovered);
+        let sync_watcher =
+            match mywhisper::service::spawn_sync_watcher(paths.db_file(), identity, discovered) {
+                Ok(owner) => owner,
+                Err(error) => {
+                    eprintln!("[service] sync settings watcher unavailable: {error}");
+                    return gtk4::glib::ExitCode::FAILURE;
+                }
+            };
         let app = gtk4::Application::builder()
             .application_id(SERVICE_APP_ID)
             .build();
-        return run_headless(app, &paths);
+        let signals = ShutdownSignals::install(&app);
+        let result = run_headless(app, &paths);
+        drop(sync_watcher);
+        mywhisper::service::stop_sync_engine();
+        let result = shutdown_app(&paths, &shutdown_store, result);
+        drop(signals);
+        return result;
     }
 
     // GUI: pure frontend. Engine state is only observed (for the
@@ -77,9 +91,11 @@ fn main() -> gtk4::glib::ExitCode {
     > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
 
     let app = gtk4::Application::builder().application_id(APP_ID).build();
+    let signals = ShutdownSignals::install(&app);
 
-    {
+    let result = {
         let discovered_ui = discovered.clone();
+        let ui_db_path = paths.db_file();
         // Single window: repeat launches remote-activate this instance;
         // focus the existing window instead of building another.
         app.connect_activate(move |app| {
@@ -97,7 +113,7 @@ fn main() -> gtk4::glib::ExitCode {
             let state = AppState::load(
                 &store,
                 &identity.node_id,
-                &paths.db_file(),
+                &ui_db_path,
                 identity.creds(),
                 discovered_ui.clone(),
             );
@@ -118,9 +134,66 @@ fn main() -> gtk4::glib::ExitCode {
             log_theme_state();
             let win = build_app_window(app, &state, &page, &section);
             win.present();
+            mywhisper::app_settings::resume_pending_reset(&state);
         });
         app.run_with_args::<&str>(&[])
+    };
+    drop(app);
+    let result = shutdown_app(&paths, &shutdown_store, result);
+    drop(signals);
+    result
+}
+
+struct ShutdownSignals(Vec<gtk4::glib::SourceId>);
+impl ShutdownSignals {
+    fn install(app: &gtk4::Application) -> Self {
+        app.connect_shutdown(|_| mywhisper::runtime::begin_shutdown());
+        Self(
+            [libc::SIGINT, libc::SIGTERM]
+                .into_iter()
+                .map(|signal| {
+                    let app = app.downgrade();
+                    glib_unix::unix_signal_add_local(signal, move || {
+                        mywhisper::runtime::begin_shutdown();
+                        if let Some(app) = app.upgrade() {
+                            app.quit();
+                        }
+                        gtk4::glib::ControlFlow::Continue
+                    })
+                })
+                .collect(),
+        )
     }
+}
+impl Drop for ShutdownSignals {
+    fn drop(&mut self) {
+        for source in self.0.drain(..) {
+            source.remove();
+        }
+    }
+}
+
+fn shutdown_app(
+    paths: &mywhisper::paths::AppPaths,
+    store: &mywhisper::store::Store,
+    result: gtk4::glib::ExitCode,
+) -> gtk4::glib::ExitCode {
+    mywhisper::runtime::begin_shutdown();
+    mywhisper::hotkey::stop();
+    mywhisper::service::stop_sync_engine();
+    mywhisper::transcribe::shutdown(&paths.data_dir);
+    let stopped = mywhisper::runtime::finish_shutdown();
+    let checkpoint = store.checkpoint();
+    if let Err(error) = stopped {
+        eprintln!("[app] shutdown cleanup failed: {error}");
+        return gtk4::glib::ExitCode::FAILURE;
+    }
+    if let Err(error) = checkpoint {
+        eprintln!("[app] shutdown checkpoint failed; database preserved: {error}");
+        return gtk4::glib::ExitCode::FAILURE;
+    }
+    eprintln!("[app] owned shutdown complete; database checkpointed");
+    result
 }
 /// Headless engine: pill overlay + hotkeys + settings watcher, no
 /// window. The overlay and the poll loop live on the GTK thread; the
@@ -133,6 +206,13 @@ fn run_headless(
     use mywhisper::service::PillCmd;
     let (tx, rx) = std::sync::mpsc::channel::<PillCmd>();
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+    mywhisper::hotkey::configure_capture_suspend(&paths.data_dir);
+    mywhisper::hotkey::register_capture_suspend({
+        let tx = tx.clone();
+        move |nonce| {
+            let _ = tx.send(PillCmd::SuspendCapture(nonce));
+        }
+    });
     let down: mywhisper::hotkey::DictationHook = std::sync::Arc::new({
         let tx = tx.clone();
         move || {
@@ -160,15 +240,25 @@ fn run_headless(
     // A persisted mute and feedback preferences govern the very first
     // accepted input, before any listener or watcher can publish an edge.
     mywhisper::service::apply_input_preferences(&initial);
-    mywhisper::hotkey::start_dictation(
+    let capture_input =
+        match mywhisper::transcribe::CaptureInput::new(store, paths.data_dir.clone()) {
+            Ok(input) => input,
+            Err(error) => {
+                eprintln!("[service] input admission unavailable: {error}");
+                return gtk4::glib::ExitCode::FAILURE;
+            }
+        };
+    let capture_input = std::sync::Arc::new(capture_input);
+    if let Err(error) = mywhisper::runtime::init() {
+        eprintln!("[service] FATAL: {error}");
+        return gtk4::glib::ExitCode::FAILURE;
+    }    mywhisper::hotkey::start_dictation(
         initial.hotkeys.effective_hotkeys(),
         initial.hotkeys.smart_tap_ms,
         down.clone(),
         up.clone(),
         cancel.clone(),
     );
-    mywhisper::service::spawn_hotkey_watcher(db_path.clone(), down, up, cancel);
-    mywhisper::service::spawn_pill_watcher(db_path.clone(), tx.clone());
     // Fixed task runtime first: every background job below flows
     // through it (bounded pool, no panicking spawns). If even this
     // fails the box cannot run threads at all: fail loud, not limp.
@@ -179,21 +269,38 @@ fn run_headless(
     // Reap crash orphans first (pidfile), then start the keep-warm
     // reaper. PDEATHSIG on every spawn is the real guarantee; this
     // cleans up runs that died before it existed.
-    {
+    let reaper_data = {
         let db_path = paths.db_file();
         let data_dir = db_path
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_default();
         mywhisper::transcribe::reap_stale_servers(&data_dir);
-        mywhisper::transcribe::spawn_server_reaper(data_dir);
-    }
-    // Service heartbeat for the home banner (5 s cadence).
-    mywhisper::service::spawn_heartbeat(paths.state_dir.clone());
+        data_dir
+    };
+    // The service retains every settings/timer owner until the GTK loop ends.
+    // Startup errors tear down already-created owners before returning.
+    let watchers = (|| -> Result<Vec<mywhisper::runtime::BackgroundTask>, String> {
+        Ok(vec![
+            mywhisper::service::spawn_hotkey_watcher(db_path.clone(), down, up, cancel)?,
+            mywhisper::service::spawn_pill_watcher(db_path.clone(), tx.clone())?,
+            mywhisper::transcribe::spawn_server_reaper(reaper_data)?,
+            mywhisper::service::spawn_heartbeat(paths.state_dir.clone())?,
+        ])
+    })();
+    let watchers = match watchers {
+        Ok(owners) => owners,
+        Err(error) => {
+            mywhisper::hotkey::stop();
+            eprintln!("[service] background maintenance unavailable: {error}");
+            return gtk4::glib::ExitCode::FAILURE;
+        }
+    };
     // Warm the configured STT engine now (model load takes seconds):
     // first press then only arms capture instead of cold-starting.
     {
         let db_path = paths.db_file();
+        let server_generation = mywhisper::transcribe::server_generation();
         if let Err(e) = mywhisper::runtime::submit("startup-warmup", move || {
             let data_dir = db_path
                 .parent()
@@ -213,12 +320,13 @@ fn run_headless(
                         Ok(plan) => {
                             eprintln!("[stt] startup warmup: {}", plan.describe());
                             let net = mywhisper::transcribe::server_net(&settings.stt);
-                            if let Err(e) = mywhisper::transcribe::ensure_for_plan(
+                            if let Err(e) = mywhisper::transcribe::ensure_for_plan_at_generation(
                                 &plan,
                                 &data_dir,
                                 settings.stt.gpu_backend,
                                 settings.stt.sherpa_backend,
                                 &net,
+                                server_generation,
                             ) {
                                 eprintln!("[stt] startup warmup: {e}");
                             }
@@ -233,7 +341,16 @@ fn run_headless(
         }
     }
 
+    let timer = Rc::new(std::cell::RefCell::new(None::<gtk4::glib::SourceId>));
+    let timer_owner = timer.clone();
+    let hold = Rc::new(std::cell::RefCell::new(
+        None::<gtk4::gio::ApplicationHoldGuard>,
+    ));
+    let hold_owner = hold.clone();
     app.connect_activate(move |app| {
+        if hold_owner.borrow().is_some() {
+            return;
+        }
         eprintln!("[service] activate, headless engine");
         let overlay = mywhisper::overlay::VoiceOverlay::new(app);
         overlay.hide();
@@ -250,13 +367,24 @@ fn run_headless(
         let gen_show = ugen.clone();
         let gen_hide = ugen.clone();
         let tx_done = tx.clone();
-        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        let capture_input = capture_input.clone();
+        let poll_period = std::time::Duration::from_millis(50);
+        let source = gtk4::glib::timeout_add_local(poll_period, move || {
             // Live preview drain: pump-published partials reach the
             // pill here (option-gated at the pumps; silent otherwise).
             if let Some(text) = mywhisper::transcribe::take_live_text()
                 && !text.trim().is_empty()
             {
                 overlay.set_live_text(&text);
+            }
+            if overlay.state() == mywhisper::overlay::OverlayState::Listening
+                && overlay.capture_error().is_some()
+            {
+                gen_show.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                mywhisper::transcribe::abort_failed_capture();
+                mywhisper::hotkey::reset_activation();
+                mywhisper::media::resume(&paused.borrow_mut().drain(..).collect::<Vec<_>>());
+                overlay.show_error();
             }
             if let Ok(rx) = rx.lock() {
                 while let Ok(cmd) = rx.try_recv() {
@@ -266,41 +394,21 @@ fn run_headless(
                             mywhisper::sound::play(mywhisper::sound::UiSound::Start);
                             *paused.borrow_mut() = mywhisper::media::pause_playing();
                             overlay.show_listening();
-                            // Press: arm the RAM capture tap (+ open a
-                            // streaming session when the engine does
-                            // realtime). Prefs read fresh so UI edits
-                            // apply to the very next utterance. Pooled:
-                            // saturation drops the press, never the app.
-                            if let Err(e) = mywhisper::runtime::submit("press-arm", || {
-                                let paths = match mywhisper::paths::AppPaths::create() {
-                                    Ok(p) => p,
-                                    Err(e) => {
-                                        eprintln!("[stt] paths: {e}");
-                                        return;
-                                    }
-                                };
-                                let data_dir = paths.data_dir.clone();
-                                match mywhisper::store::Store::open(&paths.db_file()) {
-                                    Ok(store) => {
-                                        let settings = store.load_settings();
-                                        mywhisper::transcribe::begin_utterance(
-                                            settings.stt,
-                                            settings.privacy.keep_audio_recordings,
-                                            &data_dir,
-                                            settings.preferences.mic_release_delay_ms,
-                                        );
-                                    }
-                                    Err(e) => eprintln!("[stt] store: {e}"),
-                                }
-                            }) {
-                                eprintln!("[stt] press: {e}");
+                            if let Err(error) = capture_input.press() {
+                                eprintln!("[stt] input admission failed: {error}");
+                                mywhisper::media::resume(
+                                    &paused.borrow_mut().drain(..).collect::<Vec<_>>(),
+                                );
+                                overlay.show_error();
                             }
                         }
                         PillCmd::Hide => {
                             // Release after an Escape cancel: the pill
                             // already hid, no flash, no second cue.
                             if mywhisper::transcribe::take_cancelled() {
-                                overlay.hide();
+                                if overlay.state() != mywhisper::overlay::OverlayState::Error {
+                                    overlay.hide();
+                                }
                                 return gtk4::glib::ControlFlow::Continue;
                             }
                             mywhisper::sound::play(mywhisper::sound::UiSound::Stop);
@@ -314,7 +422,7 @@ fn run_headless(
                             let tx_done = tx_done.clone();
                             let gen_at_release = gen_hide.load(std::sync::atomic::Ordering::SeqCst);
                             let gen_hide = gen_hide.clone();
-                            mywhisper::transcribe::end_utterance(move || {
+                            mywhisper::transcribe::end_utterance_with_outcome(move |outcome| {
                                 // Stale completion (new press meanwhile):
                                 // leave the newer pill alone.
                                 if gen_hide.load(std::sync::atomic::Ordering::SeqCst)
@@ -322,7 +430,14 @@ fn run_headless(
                                 {
                                     return;
                                 }
-                                let _ = tx_done.send(PillCmd::Done(gen_at_release));
+                                let message = if outcome
+                                    == mywhisper::transcribe::FinalizationOutcome::Failed
+                                {
+                                    PillCmd::Error(gen_at_release)
+                                } else {
+                                    PillCmd::Done(gen_at_release)
+                                };
+                                let _ = tx_done.send(message);
                             });
                         }
                         PillCmd::Cancel => {
@@ -346,6 +461,23 @@ fn run_headless(
                                 let _ = tx_done.send(PillCmd::Done(gen_at_cancel));
                             });
                         }
+                        PillCmd::SuspendCapture(nonce) => {
+                            if !mywhisper::hotkey::capture_suspend_pending(nonce) {
+                                continue;
+                            }
+                            gen_show.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            mywhisper::transcribe::abort_failed_capture();
+                            mywhisper::hotkey::reset_activation();
+                            overlay.hide();
+                            mywhisper::media::resume(
+                                &paused.borrow_mut().drain(..).collect::<Vec<_>>(),
+                            );
+                            if let Err(error) =
+                                mywhisper::hotkey::acknowledge_capture_suspend(nonce)
+                            {
+                                eprintln!("[hotkey] capture acknowledgement: {error}");
+                            }
+                        }
                         PillCmd::Done(gen_at_release) => {
                             // Completion race (Show arrived after send):
                             // only hide our own generation.
@@ -355,16 +487,33 @@ fn run_headless(
                             }
                             overlay.hide();
                         }
+                        PillCmd::Error(generation) => {
+                            if gen_hide.load(std::sync::atomic::Ordering::SeqCst) == generation {
+                                overlay.show_error();
+                            }
+                        }
                         PillCmd::Apply(prefs) => overlay.apply_prefs(&prefs),
                     }
                 }
             }
             gtk4::glib::ControlFlow::Continue
         });
+        *timer_owner.borrow_mut() = Some(source);
         // No window: hold the application alive explicitly.
-        std::mem::forget(app.hold());
+        *hold_owner.borrow_mut() = Some(app.hold());
     });
-    app.run_with_args::<&str>(&[])
+    let result = app.run_with_args::<&str>(&[]);
+    if let Some(timer) = timer.borrow_mut().take() {
+        timer.remove();
+    }
+    hold.borrow_mut().take();
+    drop(app);
+    for watcher in &watchers {
+        watcher.stop();
+    }
+    drop(watchers);
+    mywhisper::hotkey::stop();
+    result
 }
 
 fn value_of(args: &[String], key: &str) -> Option<String> {

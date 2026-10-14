@@ -42,8 +42,6 @@ mod database_key;
 
 mod diagnostics;
 
-mod maintenance;
-
 mod reset;
 
 mod sync_jobs;
@@ -51,3 +49,10 @@ mod sync_jobs;
 mod artifact;
 
 mod installed_asset;
+mod operation;
+
+mod process_status;
+
+mod provider_io;
+
+mod provider_contract;

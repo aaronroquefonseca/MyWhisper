@@ -683,7 +683,7 @@ impl Stage {
         advance(&self.asset_epoch.0)?;
         self.asset_epoch.1 = epoch(&self.asset_epoch.0)?;
         crate::installed_asset::invalidate(&self.data, Some(&self.key));
-
+        crate::transcribe::retire_invalid_assets(&self.data);
         reached(PromotionPoint::BeforeExchange);
         self.check(cancel)?;
         if replacing {
@@ -743,7 +743,7 @@ pub(crate) fn delete(data: &Path, key: &str, destination: &Path) -> std::io::Res
     let metadata = crate::private_fs::lock(&control.join("metadata.lock"))?;
     advance(&control.join(format!("{key}.epoch"))).map_err(std::io::Error::other)?;
     drop(metadata);
-
+    crate::transcribe::retire_invalid_assets(data);
     let _asset = crate::private_fs::lock(&control.join(format!("{key}.lock")))?;
     managed_parent(data, parent, false).map_err(std::io::Error::other)?;
     StagingDirectory::recover(
@@ -797,7 +797,7 @@ pub(crate) fn reset(data: &Path) -> std::io::Result<File> {
     let metadata = crate::private_fs::lock(&control.join("metadata.lock"))?;
     advance(&control.join("epoch")).map_err(std::io::Error::other)?;
     drop(metadata);
-
+    crate::transcribe::retire_invalid_assets(data);
     crate::private_fs::lock(&control.join("reset.lock"))
 }
 

@@ -82,7 +82,11 @@ pub fn dictionary_prompt(words: &[String], max_chars: usize) -> Option<String> {
     if full.len() <= max_chars {
         return Some(full);
     }
-    let head = &full[..max_chars];
+    let mut end = max_chars.min(full.len());
+    while !full.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &full[..end];
     match head.rfind(',') {
         Some(i) => Some(head[..i].to_string()),
         None => Some(head.to_string()),

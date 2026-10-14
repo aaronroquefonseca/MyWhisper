@@ -36,6 +36,10 @@ const THREAD_OWNER_LIMIT: usize = 64;
 type StopState = (Mutex<bool>, Condvar);
 static STOPS: Mutex<Vec<Weak<StopState>>> = Mutex::new(Vec::new());
 
+#[cfg(test)]
+#[path = "runtime/shutdown_tests.rs"]
+mod shutdown_tests;
+
 pub fn closing() -> bool {
     CLOSING.load(Ordering::Acquire)
 }
