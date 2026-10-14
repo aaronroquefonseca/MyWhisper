@@ -308,6 +308,7 @@ pub fn spawn_hotkey_watcher(
                                     settings.stt.gpu_backend,
                                     settings.stt.sherpa_backend,
                                     settings.stt.qwen_backend,
+                                    settings.stt.qwen_vram,
                                     &net,
                                 );
                             }

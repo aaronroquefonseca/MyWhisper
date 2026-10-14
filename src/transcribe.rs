@@ -61,7 +61,8 @@ use std::time::{Duration, Instant};
 
 use crate::audio::{self, ENGINE_RATE, MIN_SAMPLES_16K, Recorder, Resampler, wav_bytes_16k};
 use crate::settings::{
-    GpuBackendSetting, LocalSttProvider, QwenBackendSetting, SherpaBackendSetting, SttSettings,
+    GpuBackendSetting, LocalSttProvider, QwenBackendSetting, QwenVramSetting, SherpaBackendSetting,
+    SttSettings,
 };
 use crate::stt;
 
@@ -1458,6 +1459,8 @@ fn qwen_server_key(
     python: &Path,
     model_dir: &Path,
     backend: QwenBackendSetting,
+    mem: &str,
+    max_len: &str,
     port: u16,
 ) -> String {
     use sha2::Digest;
@@ -1469,7 +1472,7 @@ fn qwen_server_key(
         .map(|b| format!("{b:02x}"))
         .collect();
     format!(
-        "{}|{}|{}|{}|port={port}",
+        "{}|{}|{}|{}|mem={mem}|len={max_len}|port={port}",
         python.display(),
         model_dir.display(),
         qwen_backend_arg(backend),
@@ -1480,10 +1483,21 @@ fn qwen_server_key(
 fn ensure_qwen(
     data_dir: &Path,
     backend: QwenBackendSetting,
+    vram: QwenVramSetting,
     model_dir: &Path,
     net: &ServerNet,
 ) -> Result<(), String> {
     let python = qwen_python(data_dir, backend)?;
+    // Compact fits the 0.6B model only (measured: 1.7B refuses to
+    // boot under a 0.25 share). Fail here with an actionable picker
+    // hint instead of a vLLM OOM deep in the log.
+    let model_id = model_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if backend == QwenBackendSetting::Vllm
+        && vram == QwenVramSetting::Compact
+        && model_id != "qwen3-asr-0.6b"
+    {
+        return Err("Qwen3-ASR 1.7B needs the Balanced (or larger) GPU footprint; Compact fits the 0.6B model".to_string());
+    }
     // (Re)write the sidecar when the embedded source moved on.
     let script = qwen_server_path(data_dir);
     let rewrite = std::fs::read_to_string(&script).unwrap_or_default() != QWEN_SERVER_SOURCE;
@@ -1494,7 +1508,8 @@ fn ensure_qwen(
         std::fs::write(&script, QWEN_SERVER_SOURCE).map_err(|e| format!("write sidecar: {e}"))?;
     }
     let qwen_port = engine_port(net, QWEN_PORT);
-    let key = qwen_server_key(&python, model_dir, backend, qwen_port);
+    let (mem, max_len) = qwen_vram_profile(vram);
+    let key = qwen_server_key(&python, model_dir, backend, &mem, &max_len, qwen_port);
     let (python_s, script_s, dir_s) = (python.clone(), script.clone(), model_dir.to_path_buf());
     let backend_s = qwen_backend_arg(backend);
     let qwen_host = net.host;
@@ -1528,11 +1543,10 @@ fn ensure_qwen(
             .env("TRANSFORMERS_OFFLINE", "1")
             // Dictation-sized context: the upstream 64k default costs
             // gigabytes of KV cache and tens of seconds of engine
-            // init for no ASR benefit (8k ≈ 5 min of audio + 1k new
-            // tokens; measured 0.88 GB KV need for 1.7B, fitting the
-            // default GPU share with margin). Explicit operator
-            // override still wins.
-            .env("QWEN_MAX_MODEL_LEN", qwen_max_model_len())
+            // init for no ASR benefit. Explicit operator override
+            // still wins; otherwise the footprint preset decides.
+            .env("QWEN_GPU_MEM_UTIL", mem.clone())
+            .env("QWEN_MAX_MODEL_LEN", max_len.clone())
             .env_remove("PYTHONHOME")
             .env_remove("PYTHONPATH")
             .spawn()
@@ -1542,13 +1556,19 @@ fn ensure_qwen(
     )
 }
 
-/// vLLM context cap for the sidecar: operator env wins, otherwise a
-/// dictation-sized default (see spawner note).
-fn qwen_max_model_len() -> String {
-    std::env::var("QWEN_MAX_MODEL_LEN")
+/// vLLM sizing for the sidecar from the footprint preset: operator
+/// process env wins per knob, otherwise the preset profile.
+fn qwen_vram_profile(vram: QwenVramSetting) -> (String, String) {
+    let (share, len) = vram.profile();
+    let mem = std::env::var("QWEN_GPU_MEM_UTIL")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "8192".to_string())
+        .unwrap_or_else(|| share.to_string());
+    let max_len = std::env::var("QWEN_MAX_MODEL_LEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| len.to_string());
+    (mem, max_len)
 }
 
 /// Readiness probe: /health answers, then 0.5 s of silence decodes
@@ -2729,6 +2749,7 @@ struct LiveUtterance {
     backend: GpuBackendSetting,
     sherpa_backend: SherpaBackendSetting,
     qwen_backend: QwenBackendSetting,
+    qwen_vram: QwenVramSetting,
     /// VAD snapshot at press: trim + silence-skip for file-based
     /// engines. Streaming pumps send everything (server-side
     /// endpointing owns that path).
@@ -2818,6 +2839,7 @@ pub fn begin_utterance(
     let backend = stt.gpu_backend;
     let sherpa_backend = stt.sherpa_backend;
     let qwen_backend = stt.qwen_backend;
+    let qwen_vram = stt.qwen_vram;
     let warm_net = server_net(&stt);
     // Background warmup; the release worker re-ensures anyway.
     // Pool-submitted: a saturated system skips warmup instead of
@@ -2832,6 +2854,7 @@ pub fn begin_utterance(
                 backend,
                 sherpa_backend,
                 qwen_backend,
+                qwen_vram,
                 &warm_net,
             ) {
                 eprintln!("[stt] warmup: {e}");
@@ -3029,6 +3052,7 @@ pub fn begin_utterance(
         backend,
         sherpa_backend,
         qwen_backend,
+        qwen_vram,
         vad_enabled: stt.vad_enabled,
         vad_gate: stt.vad_threshold,
         keep_audio,
@@ -3353,6 +3377,7 @@ fn finish_session(
         sess.backend,
         sess.sherpa_backend,
         sess.qwen_backend,
+        sess.qwen_vram,
         &sess.net,
     )
     .ok();
@@ -3363,6 +3388,7 @@ fn finish_session(
             sess.backend,
             sess.sherpa_backend,
             sess.qwen_backend,
+            sess.qwen_vram,
             &sess.net,
         ) {
             eprintln!("[stt] fallback {name} not ready: {e}");
@@ -3590,6 +3616,7 @@ pub fn ensure_for_plan(
     gpu_backend: GpuBackendSetting,
     sherpa_backend: SherpaBackendSetting,
     qwen_backend: QwenBackendSetting,
+    qwen_vram: QwenVramSetting,
     net: &ServerNet,
 ) -> Result<(), String> {
     ensure_servers(
@@ -3598,6 +3625,7 @@ pub fn ensure_for_plan(
         gpu_backend,
         sherpa_backend,
         qwen_backend,
+        qwen_vram,
         net,
     )
 }
@@ -3608,6 +3636,7 @@ fn ensure_servers(
     gpu_backend: GpuBackendSetting,
     sherpa_backend: SherpaBackendSetting,
     qwen_backend: QwenBackendSetting,
+    qwen_vram: QwenVramSetting,
     net: &ServerNet,
 ) -> Result<(), String> {
     match plan {
@@ -3621,7 +3650,7 @@ fn ensure_servers(
             ensure_sherpa_offline(data_dir, sherpa_backend, model_dir, lang, net)
         }
         Plan::QwenHttp { model_dir, .. } | Plan::QwenStream { model_dir, .. } => {
-            ensure_qwen(data_dir, qwen_backend, model_dir, net)
+            ensure_qwen(data_dir, qwen_backend, qwen_vram, model_dir, net)
         }
         // CLI per utterance: nothing to keep running.
         // Self-hosted WS: foreign by definition, never spawned.
@@ -4560,28 +4589,47 @@ mod tests {
 
     #[test]
     fn qwen_server_key_pins_port_and_source() {
-        use crate::settings::QwenBackendSetting;
-        let a = qwen_server_key(
-            Path::new("/bin/qwen-transformers/venv/bin/python"),
-            Path::new("/models/qwen/qwen3-asr-1.7b"),
+        use crate::settings::{QwenBackendSetting, QwenVramSetting};
+        let key = |backend, vram: QwenVramSetting, port| {
+            let (mem, len) = qwen_vram_profile(vram);
+            qwen_server_key(
+                Path::new("/bin/qwen-transformers/venv/bin/python"),
+                Path::new("/models/qwen/qwen3-asr-1.7b"),
+                backend,
+                &mem,
+                &len,
+                port,
+            )
+        };
+        let a = key(
             QwenBackendSetting::Transformers,
+            QwenVramSetting::Balanced,
             8011,
         );
-        let b = qwen_server_key(
-            Path::new("/bin/qwen-transformers/venv/bin/python"),
-            Path::new("/models/qwen/qwen3-asr-1.7b"),
+        let b = key(
             QwenBackendSetting::Transformers,
+            QwenVramSetting::Balanced,
             9090,
         );
         assert_ne!(a, b, "custom port must respawn, not reuse");
         assert!(a.contains("port=8011"));
-        let c = qwen_server_key(
-            Path::new("/bin/qwen-transformers/venv/bin/python"),
-            Path::new("/models/qwen/qwen3-asr-1.7b"),
-            QwenBackendSetting::Vllm,
-            8011,
-        );
+        let c = key(QwenBackendSetting::Vllm, QwenVramSetting::Balanced, 8011);
         assert_ne!(a, c, "backend switch must respawn");
+        let d = key(QwenBackendSetting::Vllm, QwenVramSetting::Compact, 8011);
+        assert_ne!(c, d, "footprint switch must respawn");
+        assert!(d.contains("mem=0.25") && d.contains("len=4096"));
+    }
+
+    #[test]
+    fn qwen_vram_profiles_are_ordered() {
+        use crate::settings::QwenVramSetting;
+        let (cm, cl) = qwen_vram_profile(QwenVramSetting::Compact);
+        let (bm, bl) = qwen_vram_profile(QwenVramSetting::Balanced);
+        let (lm, ll) = qwen_vram_profile(QwenVramSetting::Large);
+        assert!(cm.parse::<f64>().unwrap() < bm.parse::<f64>().unwrap());
+        assert!(bm.parse::<f64>().unwrap() < lm.parse::<f64>().unwrap());
+        assert!(cl.parse::<u32>().unwrap() < bl.parse::<u32>().unwrap());
+        assert!(bl.parse::<u32>().unwrap() < ll.parse::<u32>().unwrap());
     }
 
     #[test]

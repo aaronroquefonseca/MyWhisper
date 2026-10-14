@@ -369,6 +369,33 @@ pub enum QwenBackendSetting {
     Vllm,
 }
 
+/// vLLM GPU footprint preset: vLLM preallocates its whole share
+/// eagerly, so the 4.7 GB weights always read larger in VRAM.
+/// Measured on a 24 GB card (1.7B serves in ~7.5 GB at Balanced):
+/// Compact fits the 0.6B model only (1.7B refuses to boot under it —
+/// the installer errors clearly instead of OOMing later).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum QwenVramSetting {
+    Compact,
+    #[default]
+    Balanced,
+    Large,
+}
+
+impl QwenVramSetting {
+    /// (gpu_memory_utilization, max_model_len).
+    pub fn profile(self) -> (f64, u32) {
+        match self {
+            // ~6 GB cap, 4k context (~2.5 min audio).
+            QwenVramSetting::Compact => (0.25, 4096),
+            // ~9 GB cap, 8k context (~5 min audio).
+            QwenVramSetting::Balanced => (0.375, 8192),
+            // ~14 GB cap, 16k context (~10 min audio).
+            QwenVramSetting::Large => (0.6, 16384),
+        }
+    }
+}
+
 /// Pre-chain engine selector. Deprecated: the chain supersedes it,
 /// kept only so legacy configs migrate instead of resetting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -488,6 +515,9 @@ pub struct SttSettings {
     /// transformers (CPU/CUDA, offline) vs vLLM (CUDA, streaming).
     #[serde(default)]
     pub qwen_backend: QwenBackendSetting,
+    /// vLLM GPU footprint preset (ignored by transformers).
+    #[serde(default)]
+    pub qwen_vram: QwenVramSetting,
 }
 
 impl Default for SttSettings {
@@ -528,6 +558,7 @@ impl Default for SttSettings {
             gpu_backend: GpuBackendSetting::Cpu,
             sherpa_backend: SherpaBackendSetting::Cpu,
             qwen_backend: QwenBackendSetting::Transformers,
+            qwen_vram: QwenVramSetting::Balanced,
         }
     }
 }

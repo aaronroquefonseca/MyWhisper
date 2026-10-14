@@ -2998,6 +2998,44 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         b.append(&backend);
         qwen_box.append(&b);
     }
+    {
+        // vLLM GPU footprint preset (vLLM only; transformers ignores
+        // it): vLLM preallocates its whole share eagerly, so the
+        // preset picks how much VRAM the streaming server may hold.
+        // Changing it respawns the server via the server key.
+        // Compact fits the 0.6B model only.
+        let (b, _) = row(tr("stt.qwen.vram"));
+        let vram = DropDown::new(
+            Some(StringList::new(&[
+                tr("stt.qwen.vram.compact"),
+                tr("stt.qwen.vram.balanced"),
+                tr("stt.qwen.vram.large"),
+            ])),
+            None::<gtk4::Expression>,
+        );
+        {
+            use crate::settings::QwenVramSetting;
+            vram.set_selected(match state.settings.borrow().stt.qwen_vram {
+                QwenVramSetting::Compact => 0,
+                QwenVramSetting::Balanced => 1,
+                QwenVramSetting::Large => 2,
+            });
+        }
+        {
+            let state = state.clone();
+            vram.connect_selected_notify(move |d| {
+                use crate::settings::QwenVramSetting;
+                state.settings.borrow_mut().stt.qwen_vram = match d.selected() {
+                    0 => QwenVramSetting::Compact,
+                    2 => QwenVramSetting::Large,
+                    _ => QwenVramSetting::Balanced,
+                };
+                persist_prefs(state.clone())();
+            });
+        }
+        b.append(&vram);
+        qwen_box.append(&b);
+    }
     let qwen_list = GtkBox::new(Orientation::Vertical, 8);
     qwen_box.append(&qwen_list);
     root.append(&card);

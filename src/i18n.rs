@@ -296,6 +296,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "stt.sherpa.cpu" => ("CPU", "CPU"),
         "stt.sherpa.cuda" => ("CUDA", "CUDA"),
         "stt.qwen.backend" => ("Qwen backend", "Motor Qwen"),
+        "stt.qwen.vram" => ("vLLM GPU footprint", "Memoria GPU vLLM"),
+        "stt.qwen.vram.compact" => ("Compact (~6 GB, 0.6B only)", "Compacta (~6 GB, solo 0.6B)"),
+        "stt.qwen.vram.balanced" => ("Balanced (~9 GB)", "Equilibrada (~9 GB)"),
+        "stt.qwen.vram.large" => ("Large (~14 GB)", "Amplia (~14 GB)"),
         "stt.qwen.transformers" => (
             "Transformers (CPU/GPU, offline)",
             "Transformers (CPU/GPU, sin streaming)",
