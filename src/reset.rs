@@ -263,6 +263,23 @@ impl Recovery {
         }
     }
 
+    /// Service-driven interactive reset. The GUI posts a `reset` server
+    /// command (same pattern as stop/start); the service owns admission
+    /// and drains the outcome through the resume path. A second request
+    /// while one is active is refused by the worker's operation lock.
+    pub(crate) fn start_interactive(&mut self, db: &Path) {
+        if self.job.is_some() {
+            eprintln!("[reset] interactive reset already active; refusing second worker");
+            return;
+        }
+        match start(db.to_owned(), false) {
+            Ok(job) => {
+                self.job = Some(job);
+            }
+            Err(error) => eprintln!("[reset] interactive admission: {error}"),
+        }
+    }
+
     pub(crate) fn tick(&mut self, db: &Path, store: &Store) {
         self.drain();
         let Some(data) = db.parent() else { return };
@@ -793,6 +810,40 @@ mod tests {
         }
         assert!(!store.reset_pending().unwrap());
         assert!(!requested(data.path()).unwrap());
+    }
+
+    #[test]
+    fn interactive_reset_runs_one_owned_worker_to_completion() {
+        // Service-driven interactive reset: the first request owns the
+        // worker, a second request while active is refused, and the single
+        // worker runs to Finished with the barrier cleared.
+        let (data, db, store) = fixture();
+        drop(store);
+        let mut recovery = Recovery::default();
+        recovery.start_interactive(&db);
+        assert!(recovery.job.is_some());
+        recovery.start_interactive(&db);
+        let job = recovery.job.as_ref().unwrap();
+        let mut finished = 0;
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            match job.events.recv_timeout(Duration::from_millis(100)) {
+                Ok(Event::Finished(result)) => {
+                    result.unwrap();
+                    finished += 1;
+                    break;
+                }
+                Ok(Event::Snapshot(_, _)) => {}
+                Err(_) => assert!(Instant::now() < until, "interactive reset stalled"),
+            }
+        }
+        assert_eq!(finished, 1);
+        recovery.drain();
+        assert!(recovery.job.is_none());
+        let fresh = Store::open_existing(&db).unwrap();
+        assert!(!fresh.reset_pending().unwrap());
+        assert!(!requested(data.path()).unwrap());
+        assert!(fresh.load_words().unwrap().is_empty());
     }
 
     #[test]

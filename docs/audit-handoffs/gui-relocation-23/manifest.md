@@ -36,16 +36,19 @@ with the patch; no other #23 step needed for these symbols.
   preserved, not weakened.
 
 ## Explicitly NOT moved (retained in #22 foundation)
-- `src/reset.rs` worker/barriers: `run_owned`, `Recovery::{tick,drain}`,
-  `requested`, intent/nonce protocol, `Event::{Snapshot,Finished}`,
-  `Job{events}`, `start` — single worker-driving surface inherited by
-  #23. No competing GUI reset implementation: #23 drives `reset::start`
-  and consumes events; `Finished(Err)` is failure (never Snapshot +
-  success). #18 `complete_pending_reset` boot shortcut and
-  `reset_worker` FS-error suppression are BLOCKED (see #22 report);
-  #19 must not restack until the corrected contract is stable.
-- `reset::start` remains the one unused-here symbol: interactive entry
-  #23 drives via inheritance. No duplicate worker.
+- `src/reset.rs` worker/barriers: `run_owned`, `Recovery::{tick,drain,
+  start_interactive}`, `requested`, intent/nonce protocol,
+  `Event::{Snapshot,Finished}`, `Job{events}`, `start` — single worker
+  core in foundation. Interactive entry is service-driven: the GUI posts
+  a `reset` server command (same pattern as stop/start; see `service.rs`
+  `reset` arm), the service calls `Recovery::start_interactive`, and
+  outcomes drain through the resume path. #23 GUI contract: replace any
+  direct `reset::start` call with `set_server_cmd("reset")`; drive
+  interactive resets only through the service, never a parallel worker.
+  No competing worker, no suppression, no visibility widening.
+  #18 `complete_pending_reset` boot shortcut and `reset_worker`
+  FS-error suppression are BLOCKED (see #22 report); #19 must not
+  restack until the corrected contract is stable.
 
 ## #23 snippet failures note
 #23's 2 failures are the stale-base `FakeCleanup` shape (missing

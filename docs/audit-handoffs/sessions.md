@@ -32,6 +32,23 @@ llm_cleanup now builds through them with operation plumbing retained.
 Adopted parent c261f96 token correction (selection/clipboard verbatim);
 owned deliver() tail kept (privacy-epoch persist + Guard outcome).
 
+Reset correction (blocker): foundation keeps the honest worker; Recovery
+retains/drains resume jobs; service withholds admission while pending and
+drives interactive resets via a `reset` server command (GUI contract:
+set_server_cmd, no parallel worker). New regressions: cross-process
+second-startup barrier, pending-on-FS-failure, single-flight interactive
+completion. #18 competing worker/boot-shortcut BLOCKED, not integrated.
+
+Strict clippy is clean (0 errors): GUI-consumed impls relocated to #23
+with restoration payload in docs/audit-handoffs/gui-relocation-23/
+(CopyTask surface, baseline adopt, stt wrappers, RetentionMaintenance,
+trust_local+tests, async-copy shutdown assertion). reset::start stays as
+the service-driven entry. Launch machinery verified byte-identical to
+snapshot with real spawn_supervised consumer.
+
+New IO gates: stalled-body cancel abandonment + 20x cancel stress,
+deadline-bound test servers (no wedged joins under load).
+
 Remaining: hundreds of cancellation/replacement cycles, panic/recovery,
 stalled/partial IO, late-only tail and rolling-window agreement, active
 warmup/config changes, authenticated trusted WSS/cloud contracts, final

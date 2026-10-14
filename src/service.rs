@@ -396,6 +396,12 @@ pub fn spawn_hotkey_watcher(
                             }
                         }
                     }
+                    "reset" => {
+                        // Interactive data reset runs on the owned worker;
+                        // admission stays withheld while it is pending.
+                        eprintln!("[service] GUI reset command");
+                        reset_recovery.start_interactive(&db_path);
+                    }
                     _ => {}
                 }
             }
