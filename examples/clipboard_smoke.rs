@@ -52,7 +52,11 @@ fn main() {
     let event_received = received.clone();
     let event_triggered = triggered.clone();
     keys.connect_key_pressed(move |_, key, _, modifiers| {
-        if key == gdk::Key::v && modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
+        // Synthetic paste target: Ctrl+V, Ctrl+Shift+V (Ctrl contained), and
+        // Shift+Insert all count as the target consuming the paste.
+        let paste_key = (key == gdk::Key::v && modifiers.contains(gdk::ModifierType::CONTROL_MASK))
+            || (key == gdk::Key::Insert && modifiers.contains(gdk::ModifierType::SHIFT_MASK));
+        if paste_key {
             event_triggered.fetch_add(1, Ordering::AcqRel);
             let mode = event_mode.load(Ordering::Acquire);
             let clipboard = native.clone();
@@ -87,11 +91,16 @@ fn main() {
             Ok("ydotool") => PasteBackend::Ydotool,
             _ => PasteBackend::Wtype,
         };
+        let combo = match std::env::var("MYWHISPER_CLIPBOARD_PASTE_COMBO").as_deref() {
+            Ok("CtrlShiftV") => PasteCombo::CtrlShiftV,
+            Ok("ShiftInsert") => PasteCombo::ShiftInsert,
+            _ => PasteCombo::CtrlV,
+        };
         let prefs = Preferences {
             auto_paste: true,
             keep_transcription_in_clipboard: false,
             paste_backend: backend,
-            paste_combo: PasteCombo::CtrlV,
+            paste_combo: combo,
             ..Default::default()
         };
         let permitted: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
@@ -228,7 +237,8 @@ fn main() {
     worker.join().unwrap();
     mywhisper::runtime::finish_shutdown().expect("clipboard probe owned shutdown");
     println!(
-        "Real nested niri/{} passed: delayed consumption; empty/text/binary/multiple-MIME restoration; user replacement; cancellation; copy-only/no-op.",
-        std::env::var("MYWHISPER_CLIPBOARD_PASTE_BACKEND").unwrap_or_else(|_| "wtype".into())
+        "Real nested niri/{}/{} passed: delayed consumption; empty/text/binary/multiple-MIME restoration; user replacement; cancellation; copy-only/no-op.",
+        std::env::var("MYWHISPER_CLIPBOARD_PASTE_BACKEND").unwrap_or_else(|_| "wtype".into()),
+        std::env::var("MYWHISPER_CLIPBOARD_PASTE_COMBO").unwrap_or_else(|_| "CtrlV".into())
     );
 }
