@@ -115,6 +115,13 @@ skips + dupes, colored-log acceptance, nonempty-harness refusal).
 CARGO_TERM_COLOR=always forced locally regenerates a byte-identical
 manifest — the hosted failure mode fixed by construction.
 
+Hosted proof (run 38595511726, head 6838b9a, checks SUCCESS):
+`manifest current: 114 tests, 4 empty harnesses` then `batches
+cover all 114 tests exactly once (5 ignored), 4 harnesses ran` —
+drift gate, all 4 tmpfs batches and the verifier green in CI,
+plus every downstream gate in the job. Color-robustness fix
+confirmed by hosted pass, not just local forcing.
+
 #18 owes: precise testcase/target inventory (their 195 + ignored
 manifest on their branch) + validation of original scope and joined
 scope under this mechanism; report concrete constraint if coverage
