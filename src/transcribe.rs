@@ -1528,8 +1528,10 @@ fn ensure_qwen(
             .env("TRANSFORMERS_OFFLINE", "1")
             // Dictation-sized context: the upstream 64k default costs
             // gigabytes of KV cache and tens of seconds of engine
-            // init for no ASR benefit (16k ≈ 5 min of audio + 1k new
-            // tokens). Explicit operator override still wins.
+            // init for no ASR benefit (8k ≈ 5 min of audio + 1k new
+            // tokens; measured 0.88 GB KV need for 1.7B, fitting the
+            // default GPU share with margin). Explicit operator
+            // override still wins.
             .env("QWEN_MAX_MODEL_LEN", qwen_max_model_len())
             .env_remove("PYTHONHOME")
             .env_remove("PYTHONPATH")
@@ -1546,7 +1548,7 @@ fn qwen_max_model_len() -> String {
     std::env::var("QWEN_MAX_MODEL_LEN")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "16384".to_string())
+        .unwrap_or_else(|| "8192".to_string())
 }
 
 /// Readiness probe: /health answers, then 0.5 s of silence decodes
