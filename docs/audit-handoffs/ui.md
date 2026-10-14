@@ -21,7 +21,16 @@ overlay with `is_layer_shell()==false`, selectable preserved, retired
 widgets/windows verified released via weak upgrades); full
 `scripts/ui-smoke.sh` passes including the 36-step `ui_preview` smoke in
 light/en + dark/es and the logo/toast `desktop_smoke` in both themes.
-Remaining: longer repeated edit/navigation/language memory validation and
-final native reruns after all implementation changes; full
+Actual lifecycle `examples/focus_actual.rs` passes 12 rounds (2 themes x
+2 languages x 3 cycles, disposable X11, fatal-criticals): each round
+populates a real store (10 words + 3 snippets), builds a real
+dictionary window, navigates home/dictionary/settings, focuses a
+visible button, edits the store, verifies selectable text and the X11
+fallback overlay, closes the window and verifies release via weak refs
+after the i18n rebuild hook is replaced. One concrete probe failure was
+found and fixed in the probe itself (hidden-page button cannot take
+focus; the probe now retries visible buttons). No dictionary-card
+release is asserted here; that stays with #23.
+Remaining: final native reruns after all implementation changes; full
 Rust/native/provider/physical/security/migration/privacy/resource/artifact
 acceptance still open. PR stays draft.
