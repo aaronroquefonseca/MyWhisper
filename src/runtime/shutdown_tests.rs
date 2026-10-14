@@ -214,7 +214,6 @@ fn shutdown_cancels_stalled_http_children_and_asset_authority() {
     begin_shutdown();
     assert!(!operation.permitted());
     assert!(authority.check(&AtomicBool::new(false)).is_err());
-    assert!(crate::clipboard::copy_text_async("late synthetic", true).is_err());
     finish_shutdown().unwrap();
     assert!(
         began.elapsed() < Duration::from_secs(1),

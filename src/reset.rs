@@ -222,13 +222,49 @@ fn run_owned(
 /// The existing service watcher recovers an interrupted reset once it can
 /// take ownership. A failed cleanup remains available for an explicit retry;
 /// it is not retried every poll or allowed to pin the short-job workers.
+/// The retained job drains resume outcomes into the service log so a boot
+/// recovery is observable where admission is withheld; the GUI drives
+/// `start` directly for interactive resets and inherits this surface.
 #[derive(Default)]
 pub(crate) struct Recovery {
     attempted: Option<String>,
+    job: Option<Job>,
 }
 
 impl Recovery {
+    /// Drain one round of resume outcomes without blocking. Snapshot fields
+    /// are service-observed (post-reset sync stays disabled; warnings are
+    /// logged); completion only clears the retained job, never the barrier.
+    fn drain(&mut self) {
+        let Some(job) = &self.job else { return };
+        loop {
+            match job.events.try_recv() {
+                Ok(Event::Snapshot(settings, warning)) => {
+                    if settings.sync.enabled {
+                        eprintln!("[reset] resume: sync re-enabled before completion");
+                    }
+                    if let Some(warning) = warning {
+                        eprintln!("[reset] resume: {warning}");
+                    }
+                }
+                Ok(Event::Finished(result)) => {
+                    if let Err(error) = &result {
+                        eprintln!("[reset] resume: {error}");
+                    }
+                    self.job = None;
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.job = None;
+                    break;
+                }
+            }
+        }
+    }
+
     pub(crate) fn tick(&mut self, db: &Path, store: &Store) {
+        self.drain();
         let Some(data) = db.parent() else { return };
         let intent = match read_intent(data) {
             Ok(Some(intent)) => intent,
@@ -272,7 +308,7 @@ impl Recovery {
         match spawn(db.to_owned(), true, Some(ownership)) {
             Ok(job) => {
                 self.attempted = Some(intent.nonce);
-                drop(job);
+                self.job = Some(job);
             }
             Err(error) => eprintln!("[reset] recovery admission: {error}"),
         }
@@ -402,6 +438,10 @@ mod tests {
         );
         let pending = Store::open_existing(&db).unwrap();
         assert_eq!(pending.settings_warning(), None);
+        // Failed filesystem cleanup stays pending and keeps the barrier:
+        // admission remains denied until an explicit retry finishes.
+        assert!(pending.reset_pending().unwrap());
+        assert!(requested(data.path()).unwrap());
         assert!(!pending.load_settings().hotkeys.hotkeys_enabled);
         assert_eq!(
             pending.settings_warning(),
@@ -686,6 +726,73 @@ mod tests {
                     .all(|row| row.deleted && row.text.is_empty() && row.raw_text.is_empty())
             );
         }
+    }
+
+    #[test]
+    fn second_startup_never_clears_barrier_of_active_reset_worker() {
+        // A second process starting while another process's reset worker is
+        // active (operation lock held, intent + pending nonce up) must
+        // observe the barrier and never complete, resume, or release it.
+        // Regression against mark-only completion shortcuts that clear the
+        // pending nonce without establishing filesystem completion or worker
+        // absence.
+        const HELPER: &str = "MYWHISPER_RESET_HOLDER_ROLE";
+        if std::env::var(HELPER).is_ok() {
+            let data = PathBuf::from(std::env::var("MYWHISPER_RESET_TEST_DATA").unwrap());
+            let db = data.join("state.db");
+            let _ownership =
+                crate::private_fs::try_lock(&data.join(".reset-operation.lock")).unwrap();
+            let store = Store::open_existing(&db).unwrap();
+            let intent = write_intent(&data, &store).unwrap();
+            store.begin_reset(&intent.nonce).unwrap();
+            std::fs::write(data.join("ready"), b"ready").unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
+        let (data, db, store) = fixture();
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--exact",
+            "reset::tests::second_startup_never_clears_barrier_of_active_reset_worker",
+            "--nocapture",
+        ])
+        .env(HELPER, "holder")
+        .env("MYWHISPER_RESET_TEST_DATA", data.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+        let child = crate::child::OwnedChild::spawn(&mut cmd).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !data.path().join("ready").exists() && Instant::now() < deadline {
+            assert!(
+                child.try_status().unwrap().is_none(),
+                "holder exited before barrier"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(data.path().join("ready").exists());
+        assert!(requested(data.path()).unwrap());
+        assert!(store.reset_pending().unwrap());
+        // Recovery observation and explicit resume both refuse while the
+        // worker owns cleanup; the barrier stays intact throughout.
+        let mut recovery = Recovery::default();
+        recovery.tick(&db, &store);
+        assert!(requested(data.path()).unwrap());
+        assert!(store.reset_pending().unwrap());
+        let error = run(&db, true).unwrap_err();
+        assert!(error.contains("another reset owns cleanup"));
+        assert!(requested(data.path()).unwrap());
+        assert!(store.reset_pending().unwrap());
+        // Killing the holder releases the lock without cleanup; recovery
+        // then finishes the filesystem work and clears the barrier.
+        drop(child);
+        let until = Instant::now() + Duration::from_secs(5);
+        while store.reset_pending().unwrap() && Instant::now() < until {
+            recovery.tick(&db, &store);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!store.reset_pending().unwrap());
+        assert!(!requested(data.path()).unwrap());
     }
 
     #[test]

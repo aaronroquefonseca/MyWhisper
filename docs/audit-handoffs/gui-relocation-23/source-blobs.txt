@@ -1,0 +1,12 @@
+a2ad320edbcff19eb1716de8ed6ed5c0eae48f2b
+src/clipboard.rs
+400c797f754d00fb49e6c86b11122e1619c5e129
+src/store.rs
+2545fe87a96c46afb8989a24d12eeb1704570475
+src/stt.rs
+81b7b6e3e8b9956059f4de7f482a1b8bc4105f77
+src/maintenance.rs
+9ad091c8ef56dcafd5d999cb2390e75db4482f14
+src/installed_asset.rs
+924c3edcf9a156941b6842d819e59b2566b5708f
+src/lib.rs

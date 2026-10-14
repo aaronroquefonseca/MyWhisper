@@ -1,0 +1,470 @@
+diff --git b/src/clipboard.rs a/src/clipboard.rs
+index 54ed322..a2ad320 100644
+--- b/src/clipboard.rs
++++ a/src/clipboard.rs
+@@ -242,6 +242,48 @@ fn request(
+     stopped.store(true, Ordering::Release);
+     outcome
+ }
++pub(crate) struct CopyTask {
++    result: std::sync::mpsc::Receiver<Result<crate::selection::Payload, String>>,
++    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
++}
++impl CopyTask {
++    pub fn poll(&self) -> Option<Result<(), String>> {
++        match self.result.try_recv() {
++            Ok(result) => Some(result.map(|_| ())),
++            Err(std::sync::mpsc::TryRecvError::Empty) => None,
++            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
++                Some(Err("clipboard worker stopped".into()))
++            }
++        }
++    }
++}
++impl Drop for CopyTask {
++    fn drop(&mut self) {
++        self.cancelled
++            .store(true, std::sync::atomic::Ordering::Release);
++    }
++}
++pub(crate) fn copy_text_async(text: &str, sensitive: bool) -> Result<CopyTask, String> {
++    use std::sync::{
++        Arc,
++        atomic::{AtomicBool, Ordering},
++        mpsc,
++    };
++    let cancelled = Arc::new(AtomicBool::new(false));
++    let stop = cancelled.clone();
++    let guard: crate::selection::Guard =
++        Arc::new(move || !crate::runtime::closing() && !stop.load(Ordering::Acquire));
++    let (response, result) = mpsc::channel();
++    worker()?
++        .sender
++        .try_send(Request {
++            operation: Operation::Copy(text_payload(text), sensitive),
++            guard,
++            response,
++        })
++        .map_err(|_| "clipboard delivery queue is full")?;
++    Ok(CopyTask { result, cancelled })
++}
+ 
+ fn pipeline_owned(
+     selection: &mut crate::selection::Selection,
+diff --git b/src/installed_asset.rs a/src/installed_asset.rs
+index cd12cfa..9ad091c 100644
+--- b/src/installed_asset.rs
++++ a/src/installed_asset.rs
+@@ -671,6 +671,75 @@ pub(crate) fn adopt_reference(stage: Stage, spec: Spec, cancel: &AtomicBool) ->
+     publish(spec, check)
+ }
+ 
++/// Explicit local trust preserves custom/quantized models and manual engines.
++/// It attests to a stable local snapshot, never to upstream authenticity.
++pub(crate) fn trust_local(
++    spec: Spec,
++    cancel: &AtomicBool,
++    request: Option<&crate::artifact::Authority>,
++) -> Result<(), String> {
++    if cancel.load(Ordering::Acquire) {
++        return Err("local trust cancelled".into());
++    }
++    let captured = crate::artifact::observe_authority(&spec.data, &spec.key)?;
++    let request = request.unwrap_or(&captured);
++    let stage = Stage::new_requested(&spec.data, &spec.key, spec.root.clone(), request, cancel)?;
++    let check = || stage.check(cancel);
++    check()?;
++    // Required files and executable permissions remain mandatory, even when
++    // the user intentionally accepts a different local digest.
++    for required in &spec.required {
++        if !safe_path(required)
++            || !std::fs::metadata(spec.root.join(required))
++                .is_ok_and(|meta| meta.is_file() && meta.len() > 0)
++        {
++            return Err("cannot trust missing or empty installed files".into());
++        }
++    }
++    for executable in &spec.executables {
++        if !safe_path(executable)
++            || !std::fs::metadata(spec.root.join(executable))
++                .is_ok_and(|meta| meta.is_file() && meta.len() > 0 && meta.mode() & 0o111 != 0)
++        {
++            return Err("cannot trust a runtime that is not executable".into());
++        }
++    }
++    let original = scan(&spec.root, &check)?;
++    let claim = Claim {
++        version: 1,
++        key: spec.key.clone(),
++        source_sha256: spec.source.clone(),
++        entries: original.entries,
++        locally_trusted: true,
++    };
++    let authority = provision_key(&spec.data)?;
++    let receipt = Receipt {
++        signature: authority.sign(&message(&claim)?).to_bytes().to_vec(),
++        claim,
++    };
++    let encoded = serde_json::to_vec(&receipt).map_err(|_| "cannot encode local trust receipt")?;
++    if encoded.len() > RECEIPT_CAP {
++        return Err("local trust receipt exceeds limit".into());
++    }
++    let _metadata = crate::private_fs::lock(&spec.data.join(".install/metadata.lock"))
++        .map_err(|_| "local trust commit lock unavailable")?;
++    check()?;
++    if original
++        .paths
++        .iter()
++        .any(|(path, saved)| stamp(path).as_ref() != Ok(saved))
++    {
++        return Err("local files changed before trust commit".into());
++    }
++    crate::private_fs::replace(&spec.root.join(RECEIPT), &encoded)
++        .map_err(|_| "cannot persist local trust receipt")?;
++    File::open(&spec.root)
++        .and_then(|directory| directory.sync_all())
++        .map_err(|_| "cannot sync local trust receipt")?;
++    check()?;
++    publish(spec, check)
++}
++
+ /// Called only on private staging after authenticated download and extraction.
+ /// A crash before signing/promotion cannot make partial content look verified.
+ pub(crate) fn seal(
+@@ -901,6 +970,88 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn explicit_local_trust_preserves_manual_content_and_detects_later_corruption() {
++        let (_root, stage, mut spec) = prepared_fixture();
++        copy_legacy(&stage, &spec);
++        drop(stage);
++        spec.raw = Some("model".into());
++        let path = spec.root.join("model");
++        std::fs::write(&path, b"explicitly chosen manual model").unwrap();
++        let saved = std::fs::read(&path).unwrap();
++        let inode = stamp(&path).unwrap().ino;
++        assert!(admit(&spec, || Ok(())).is_err());
++        trust_local(spec.clone(), &AtomicBool::new(true), None).unwrap_err();
++        assert!(!spec.root.join(RECEIPT).exists());
++        trust_local(spec.clone(), &AtomicBool::new(false), None).unwrap();
++        let proof = admit(&spec, || Ok(())).unwrap();
++        assert_eq!(proof.status(), Status::ReadyLocal);
++        assert_eq!(std::fs::read(&path).unwrap(), saved);
++        assert_eq!(stamp(&path).unwrap().ino, inode);
++        let operation =
++            crate::operation::Operation::unrestricted().with_assets(vec![proof.clone()]);
++        operation.check().unwrap();
++        let mut altered = saved;
++        altered[0] ^= 1;
++        std::fs::write(&path, &altered).unwrap();
++        assert!(!proof.unchanged());
++        assert!(operation.check().is_err());
++        assert!(admit(&spec, || Ok(())).is_err());
++        assert_eq!(std::fs::read(path).unwrap(), altered);
++    }
++
++    #[test]
++    fn local_trust_never_attests_missing_empty_or_non_executable_files() {
++        for case in ["missing", "empty", "permissions"] {
++            let (_root, stage, mut spec) = prepared_fixture();
++            copy_legacy(&stage, &spec);
++            drop(stage);
++            let path = spec.root.join("model");
++            match case {
++                "missing" => std::fs::remove_file(&path).unwrap(),
++                "empty" => std::fs::write(&path, b"").unwrap(),
++                "permissions" => spec.executables.push("model".into()),
++                _ => unreachable!(),
++            }
++            assert!(trust_local(spec.clone(), &AtomicBool::new(false), None).is_err());
++            assert!(!spec.root.join(RECEIPT).exists());
++        }
++    }
++
++    #[test]
++    fn queued_verification_and_trust_cannot_renew_deleted_or_reset_authority() {
++        for reset in [false, true] {
++            let (_root, stage, spec) = prepared_fixture();
++            copy_legacy(&stage, &spec);
++            let request = stage.authority().unwrap();
++            drop(stage);
++            if reset {
++                drop(crate::artifact::reset(&spec.data).unwrap());
++            } else {
++                crate::artifact::delete(&spec.data, &spec.key, &spec.root).unwrap();
++                std::fs::create_dir_all(spec.root.join("lib")).unwrap();
++                std::fs::write(
++                    spec.root.join("model"),
++                    b"new installation at the same path",
++                )
++                .unwrap();
++            }
++            assert!(
++                Stage::new_requested(
++                    &spec.data,
++                    &spec.key,
++                    spec.root.clone(),
++                    &request,
++                    &AtomicBool::new(false)
++                )
++                .is_err()
++            );
++            assert!(trust_local(spec.clone(), &AtomicBool::new(false), Some(&request)).is_err());
++            assert!(!spec.root.join(RECEIPT).exists());
++            assert!(spec.root.join("model").exists());
++        }
++    }
++
+     #[test]
+     fn promotion_retires_queued_and_active_asset_authority_without_losing_data() {
+         let (_root, stage, spec) = prepared_fixture();
+diff --git b/src/lib.rs a/src/lib.rs
+index 16dadde..924c3ed 100644
+--- b/src/lib.rs
++++ a/src/lib.rs
+@@ -40,6 +40,8 @@ mod database_key;
+ 
+ mod diagnostics;
+ 
++mod maintenance;
++
+ mod reset;
+ 
+ mod sync_jobs;
+diff --git b/src/maintenance.rs a/src/maintenance.rs
+new file mode 100644
+index 0000000..81b7b6e
+--- /dev/null
++++ a/src/maintenance.rs
+@@ -0,0 +1,152 @@
++//! Idle retention owned by a frontend's application state.
++//!
++//! The worker has its own connection and never runs SQLite or filesystem
++//! cleanup on GTK. Closing the owner interrupts its timer; any active pass
++//! finishes under the writer lock before the task is reaped.
++use std::path::PathBuf;
++use std::time::Duration;
++
++pub(crate) struct RetentionMaintenance {
++    control: crate::runtime::StopToken,
++    _task: crate::runtime::SessionTask,
++}
++
++impl RetentionMaintenance {
++    pub(crate) fn start(path: PathBuf) -> Result<Self, String> {
++        let mut store = None;
++        Self::spawn(Duration::from_secs(60), move || {
++            if store.is_none() {
++                match crate::store::Store::open_existing(&path) {
++                    Ok(connection) => store = Some(connection),
++                    Err(error) => {
++                        eprintln!("[retention] database unavailable: {error}");
++                        return;
++                    }
++                }
++            }
++            if let Err(error) = store
++                .as_ref()
++                .expect("opened retention connection")
++                .maintain_retention_at(crate::store::now_ms() / 1000)
++            {
++                eprintln!("[retention] cleanup failed; will retry: {error}");
++            }
++        })
++    }
++
++    fn spawn(interval: Duration, mut pass: impl FnMut() + Send + 'static) -> Result<Self, String> {
++        let control = crate::runtime::StopToken::new()?;
++        let worker = control.clone();
++        let task = crate::runtime::spawn_session("retention-maintenance", move || {
++            loop {
++                if worker.stopped() {
++                    return;
++                }
++                pass();
++                if worker.wait(interval) {
++                    return;
++                }
++            }
++        })?;
++        Ok(Self {
++            control,
++            _task: task,
++        })
++    }
++}
++
++impl Drop for RetentionMaintenance {
++    fn drop(&mut self) {
++        self.control.stop();
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::store::{HistoryRecord, Store};
++    use std::sync::Arc;
++    use std::sync::atomic::{AtomicI64, Ordering};
++    use std::sync::mpsc;
++
++    #[test]
++    fn idle_worker_expires_existing_data_with_recording_off_and_stops_with_owner() {
++        let root = tempfile::tempdir().unwrap();
++        let path = root.path().join("state.db");
++        let store = Store::open(&path).unwrap();
++        let now = crate::store::now_ms() / 1000;
++        let mut settings = store.load_settings();
++        settings.privacy.keep_audio_recordings = false;
++        settings.privacy.transcript_auto_delete_days = 1;
++        settings.privacy.audio_retention_days = 1;
++        store.save_settings(&settings).unwrap();
++        store
++            .apply_history(&[HistoryRecord {
++                uuid: "synthetic-idle".into(),
++                text: "synthetic private text".into(),
++                raw_text: "synthetic private raw".into(),
++                words: 3,
++                duration_secs: 1,
++                deleted: false,
++                discarded: false,
++                recorded_at: now,
++            }])
++            .unwrap();
++        let vault = crate::audio::audio_vault_dir(root.path());
++        crate::private_fs::directory(&vault).unwrap();
++        let clip = vault.join("synthetic-idle.wav");
++        std::fs::write(&clip, b"synthetic retained WAV").unwrap();
++        let clock = Arc::new(AtomicI64::new(now));
++        let worker_clock = clock.clone();
++        let (completed, events) = mpsc::channel();
++        let mut connection = None;
++        let worker = RetentionMaintenance::spawn(Duration::from_millis(10), move || {
++            let store = connection.get_or_insert_with(|| Store::open(&path).unwrap());
++            let at = worker_clock.load(Ordering::Acquire);
++            let result = store.maintain_retention_at(at).unwrap();
++            let _ = completed.send((at, result));
++        })
++        .unwrap();
++        assert_eq!(
++            events.recv_timeout(Duration::from_secs(2)).unwrap(),
++            (now, (0, 0))
++        );
++        assert!(clip.exists());
++        clock.store(now + 2 * 86400, Ordering::Release);
++        loop {
++            let (at, result) = events.recv_timeout(Duration::from_secs(2)).unwrap();
++            if at > now {
++                assert_eq!(result, (1, 1));
++                break;
++            }
++        }
++        assert!(!clip.exists());
++        let history = store.export_history().unwrap();
++        assert!(history[0].deleted && history[0].text.is_empty() && history[0].raw_text.is_empty());
++        drop(worker);
++        // Drain a pass already in flight, then prove the sender/task actually
++        // exits rather than merely ceasing visible timer updates.
++        loop {
++            match events.recv_timeout(Duration::from_secs(2)) {
++                Ok(_) => continue,
++                Err(mpsc::RecvTimeoutError::Disconnected) => break,
++                Err(error) => panic!("retention worker outlived its owner: {error}"),
++            }
++        }
++    }
++
++    #[test]
++    fn closing_owner_interrupts_a_long_idle_timer() {
++        let (completed, events) = mpsc::channel();
++        let worker = RetentionMaintenance::spawn(Duration::from_secs(3600), move || {
++            completed.send(()).unwrap();
++        })
++        .unwrap();
++        events.recv_timeout(Duration::from_secs(2)).unwrap();
++        drop(worker);
++        assert_eq!(
++            events.recv_timeout(Duration::from_secs(2)),
++            Err(mpsc::RecvTimeoutError::Disconnected)
++        );
++    }
++}
+diff --git b/src/runtime/shutdown_tests.rs a/src/runtime/shutdown_tests.rs
+index 8580c9d..9228563 100644
+--- b/src/runtime/shutdown_tests.rs
++++ a/src/runtime/shutdown_tests.rs
+@@ -214,6 +214,7 @@ fn shutdown_cancels_stalled_http_children_and_asset_authority() {
+     begin_shutdown();
+     assert!(!operation.permitted());
+     assert!(authority.check(&AtomicBool::new(false)).is_err());
++    assert!(crate::clipboard::copy_text_async("late synthetic", true).is_err());
+     finish_shutdown().unwrap();
+     assert!(
+         began.elapsed() < Duration::from_secs(1),
+diff --git b/src/store.rs a/src/store.rs
+index ae6d016..400c797 100644
+--- b/src/store.rs
++++ a/src/store.rs
+@@ -1519,6 +1519,17 @@ impl Store {
+         Ok(())
+     }
+ 
++    /// Adopt a worker-loaded snapshot without doing database IO on GTK.
++    pub(crate) fn adopt_settings_baseline(
++        &self,
++        settings: &AppSettings,
++        warning: Option<&'static str>,
++    ) -> rusqlite::Result<()> {
++        *self.settings_baseline.borrow_mut() = Some(Self::settings_value(settings)?);
++        self.settings_warning.set(warning);
++        Ok(())
++    }
++
+     /// Delete rows older than `days` (auto-delete transcripts).
+     /// Tombstones survive: dropping them would resurrect peers' rows.
+     pub fn purge_old_history(&self, days: u32) -> rusqlite::Result<usize> {
+diff --git b/src/stt.rs a/src/stt.rs
+index af9524f..2545fe8 100644
+--- b/src/stt.rs
++++ a/src/stt.rs
+@@ -665,6 +665,38 @@ pub fn start_download(data_dir: PathBuf, id: &'static str) {
+     });
+ }
+ 
++pub(crate) fn start_verification(data: PathBuf, id: &'static str) {
++    let key = if find_model(id).is_some() {
++        format!("model-{id}")
++    } else if GPU_PACKS.iter().any(|pack| pack.id == id) {
++        format!("gpu-{id}")
++    } else {
++        format!("sherpa-{id}")
++    };
++    let request = crate::artifact::observe_authority(&data, &key);
++    if let Some(entry) = find_model(id) {
++        start_artifact_download(id, entry.expected_bytes, move |cancel, callback| {
++            prepare_model(&data, entry, cancel, callback, true, Some(&request?))
++        });
++    } else if let Some(pack) = GPU_PACKS.iter().find(|pack| pack.id == id) {
++        start_artifact_download(id, None, move |cancel, callback| {
++            prepare_gpu_pack(&data, pack, cancel, callback, true, Some(&request?))
++        });
++    } else if let Some(pack) = SHERPA_PACKS.iter().find(|pack| pack.id == id) {
++        start_artifact_download(id, None, move |cancel, callback| {
++            prepare_sherpa_pack(&data, pack, cancel, callback, true, Some(&request?))
++        });
++    }
++}
++
++pub(crate) fn start_local_trust(spec: crate::installed_asset::Spec, id: &'static str) {
++    let request = crate::artifact::observe_authority(&spec.data, &spec.key);
++    start_artifact_download(id, None, move |cancel, callback| {
++        callback(DownloadEvent::Installing);
++        crate::installed_asset::trust_local(spec, cancel, Some(&request?))
++    });
++}
++
+ /// Admission and ownership are atomic. Long network IO does not consume the
+ /// short-job pool, and completion cannot overwrite a later attempt's state.
+ fn start_artifact_download(
