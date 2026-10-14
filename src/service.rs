@@ -444,6 +444,12 @@ pub fn stt_watcher_tick(
     // it predates every input above and no transition interleaved. It is
     // carried into every apply branch below (never re-sampled), so a
     // queued tick cannot authorize stale work with a fresh generation.
+    // The fingerprint travels with it: apply paths compare current truth
+    // against this attested identity, not a re-derived one.
+    let authority = crate::transcribe::ReconcileAuthority {
+        witness: gen_snap,
+        snapshot_fp: crate::transcribe::stt_fingerprint(&stt, data_dir),
+    };
     if curr_primary == *last_primary && curr_auto == *last_auto {
         return;
     }
@@ -457,7 +463,7 @@ pub fn stt_watcher_tick(
         // tick; only success advances the fingerprint. Active
         // captures/inference defer the same way.
         let applied = if curr_auto {
-            match crate::transcribe::reconcile_servers(&stt, data_dir, Some(gen_snap)) {
+            match crate::transcribe::reconcile_servers(&stt, data_dir, Some(authority.clone())) {
                 Ok(deferred) => !deferred,
                 Err(e) => {
                     eprintln!("[service] STT reconcile failed, retrying: {e}");
@@ -465,7 +471,7 @@ pub fn stt_watcher_tick(
                 }
             }
         } else {
-            match crate::transcribe::reconcile_lazy_switch(data_dir, Some(gen_snap)) {
+            match crate::transcribe::reconcile_lazy_switch(data_dir, Some(authority.clone())) {
                 Ok(deferred) => !deferred,
                 Err(e) => {
                     eprintln!("[service] STT lazy stop failed, retrying: {e}");
@@ -487,11 +493,11 @@ pub fn stt_watcher_tick(
             // Stop (past the last observed disable) revoked this
             // observation, in which case settle cold (recording the
             // toggle as seen so later ticks stay cold).
-            if !crate::transcribe::expire_stop_suppression(data_dir) {
+            if !crate::transcribe::expire_stop_suppression_at(data_dir, &authority) {
                 *last_auto = curr_auto;
                 return;
             }
-            match crate::transcribe::reconcile_servers(&stt, data_dir, Some(gen_snap)) {
+            match crate::transcribe::reconcile_servers(&stt, data_dir, Some(authority)) {
                 Ok(deferred) => {
                     if !deferred {
                         *last_auto = curr_auto;

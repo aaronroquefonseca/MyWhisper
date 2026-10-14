@@ -653,16 +653,30 @@ pub(crate) fn clear_tick_snapshot_pause() {
     TICK_SNAPSHOT_PAUSE.lock().unwrap().take();
 }
 
+/// Validated watcher observation carried into apply calls so queued work
+/// can never authorize stale settings with a fresh generation, nor
+/// destroy or clear on behalf of a superseded snapshot.
+#[derive(Clone, Debug)]
+pub struct ReconcileAuthority {
+    /// Control generation validated at observation time (never re-sampled
+    /// downstream: a newer control transition revokes this authority).
+    pub witness: u64,
+    /// Fingerprint of the observed settings snapshot.
+    pub snapshot_fp: String,
+}
+
 /// Expire Stop suppression for a deliberate control transition (service
-/// watcher: autostart re-enable). Refuses — settling cold — when a Stop
-/// strictly newer than the last observed disable targets the current
-/// configuration; otherwise clears and lets the caller reconcile. The
-/// compare-and-clear runs under `START_LOCK` — the same lock every
-/// recorder holds — so a Stop cannot slip between the check and the
-/// clear. `LAST_STOP_GEN` is never cleared here, so in-flight stale
-/// work still settles against it.
+/// watcher: autostart re-enable), validated end to end: the witness must
+/// still match (no control transition since observation), the snapshot
+/// must still be current (recomputed under admission — a Store read of
+/// milliseconds, same scale as the kill/wait sections it guards), and no
+/// Stop strictly newer than the last observed disable may target the
+/// current configuration. Anything stale defers (returns false) without
+/// touching suppression, so a newer Stop survives and later ticks stay
+/// cold. `LAST_STOP_GEN` is never cleared here, so in-flight stale work
+/// still settles against it.
 /// Returns true when the suppression was expired.
-pub fn expire_stop_suppression(data_dir: &Path) -> bool {
+pub fn expire_stop_suppression_at(data_dir: &Path, auth: &ReconcileAuthority) -> bool {
     // Test seam (cfg(test) only): park before touching any lock, so a
     // test can land an explicit Stop inside this window and prove the
     // older transition settles instead of clearing.
@@ -671,14 +685,18 @@ pub fn expire_stop_suppression(data_dir: &Path) -> bool {
         let _ = entered.send(());
         let _ = proceed_.recv_timeout(Duration::from_secs(10));
     }
-    // Plain Store read, no locks held.
-    let fp_now = current_fingerprint(data_dir);
     let _admission = match SERVER_START_LOCK.lock() {
         Ok(g) => g,
         Err(_) => return false,
     };
-    if !fp_now.is_empty()
-        && LAST_STOP_GEN.load(Ordering::Acquire) > LAST_DISABLE_OBSERVED_GEN.load(Ordering::Acquire)
+    if server_generation() != auth.witness {
+        return false;
+    }
+    let fp_now = current_fingerprint(data_dir);
+    if fp_now.is_empty() || fp_now != auth.snapshot_fp {
+        return false;
+    }
+    if LAST_STOP_GEN.load(Ordering::Acquire) > LAST_DISABLE_OBSERVED_GEN.load(Ordering::Acquire)
         && STOPPED_FP
             .lock()
             .map(|g| g.as_str() == fp_now)
@@ -4110,7 +4128,7 @@ pub fn owned_servers_running(data_dir: &Path) -> bool {
 pub fn reconcile_servers(
     stt: &SttSettings,
     data_dir: &Path,
-    authority: Option<u64>,
+    authority: Option<ReconcileAuthority>,
 ) -> Result<bool, String> {
     // Derive first (file/DB reads, no locks): pure function of the
     // passed settings, so staleness here only delays a tick.
@@ -4132,7 +4150,11 @@ pub fn reconcile_servers(
         // Applying this configuration expires any older Stop
         // suppression (freshness-gated, still holding admission so no
         // Stop can slip between the decision and the expiry).
-        let fp = stt_fingerprint(stt, data_dir);
+        // Attested identity when carried, locally derived otherwise.
+        let fp = match &authority {
+            Some(auth) => auth.snapshot_fp.clone(),
+            None => stt_fingerprint(stt, data_dir),
+        };
         let cur_fp = current_fingerprint(data_dir);
         let _lease = match EngineLease::acquire(false) {
             Ok(l) => l,
@@ -4147,16 +4169,20 @@ pub fn reconcile_servers(
             return Ok(true);
         }
         // Carried authority revalidated under admission: a queued call
-        // whose witness predates a control transition (or whose snapshot
-        // no longer matches current settings) defers instead of
+        // whose witness predates a control transition defers instead of
         // destroying on stale intent. `None` (synchronous direct
-        // callers) skips both checks exactly as before.
-        if let Some(expected) = authority
-            && server_generation() != expected
+        // callers) skips the witness check exactly as before.
+        if let Some(ref auth) = authority
+            && server_generation() != auth.witness
         {
             return Ok(true);
         }
-        if authority.is_some() && cur_fp != fp {
+        // Acting on a superseded snapshot is never correct here,
+        // regardless of how the call was issued: destroying owned
+        // servers for settings that are no longer current can only kill
+        // the right engine. Direct callers deliberate on current
+        // settings (save-then-load in tests, fresh loads in prod).
+        if cur_fp != fp {
             return Ok(true);
         }
         drop(live_guard);
@@ -4195,7 +4221,12 @@ pub fn reconcile_servers(
     //   Stop bumped the generation after the check.
     // Later deliberate settings changes (new fingerprint) and user
     // presses (authoritative release worker) still start normally.
-    let fp = stt_fingerprint(stt, data_dir);
+    // Attested identity when carried, locally derived otherwise; every
+    // decision below keys off this one value.
+    let fp = match &authority {
+        Some(auth) => auth.snapshot_fp.clone(),
+        None => stt_fingerprint(stt, data_dir),
+    };
     // Freshness witness for the suppression-lifetime update below: only
     // a call deliberating on current settings may expire an older Stop.
     let cur_fp = current_fingerprint(data_dir);
@@ -4229,7 +4260,7 @@ pub fn reconcile_servers(
             *STOPPED_FP.lock().unwrap_or_else(|p| p.into_inner()) = String::new();
         }
         match authority {
-            Some(g) => g,
+            Some(auth) => auth.witness,
             None => server_generation(),
         }
     };
@@ -4247,12 +4278,13 @@ pub fn reconcile_servers(
         let _ = entered.send(());
         let _ = proceed_.recv_timeout(Duration::from_secs(10));
     }
-    // Snapshot-freshness recheck for carried authority: a queued call
-    // whose settings no longer match current truth defers instead of
-    // starting a superseded configuration. Direct (`None`) callers own
-    // their snapshot timing and keep legacy behavior. The remaining
-    // check-to-mutation gap holds no blocking operations.
-    if authority.is_some() && current_fingerprint(data_dir) != fp {
+    // Snapshot-freshness recheck: a call whose settings no longer match
+    // current truth defers instead of starting a superseded
+    // configuration. This holds for carried authority and for direct
+    // callers alike — acting on a superseded snapshot is never correct
+    // here. The remaining check-to-mutation gap holds no blocking
+    // operations.
+    if current_fingerprint(data_dir) != fp {
         return Ok(true);
     }
     match ensure_servers(
@@ -4302,7 +4334,10 @@ fn owned_listening(data_dir: &Path) -> bool {
 /// capture admitted between checking and shutting down is impossible:
 /// it either wins first (we defer) or loses (it re-read the already-new
 /// settings). Explicit Stop aside, nothing kills an admitted capture.
-pub fn reconcile_lazy_switch(data_dir: &Path, authority: Option<u64>) -> Result<bool, String> {
+pub fn reconcile_lazy_switch(
+    data_dir: &Path,
+    authority: Option<ReconcileAuthority>,
+) -> Result<bool, String> {
     let _lease = match EngineLease::acquire(false) {
         Ok(l) => l,
         Err(_) => return Ok(true),
@@ -4316,13 +4351,23 @@ pub fn reconcile_lazy_switch(data_dir: &Path, authority: Option<u64>) -> Result<
         return Ok(true);
     }
     // Carried authority revalidated under admission: a queued call whose
-    // witness predates a control transition (Stop, replace, cold start)
-    // defers instead of destroying on stale intent. `None` (synchronous
-    // direct callers) skips the check exactly as before.
-    if let Some(g) = authority
-        && server_generation() != g
-    {
-        return Ok(true);
+    // witness predates a control transition, or whose observed snapshot
+    // no longer matches current settings, defers instead of destroying
+    // on stale intent. A bare generation check is insufficient — pure
+    // settings saves move no generation — so the configuration identity
+    // travels with the witness and is rechecked here, under the same
+    // holding that serializes the destroy below. `None` (synchronous
+    // direct callers with no window) skips both checks exactly as before.
+    if let Some(ref auth) = authority {
+        if server_generation() != auth.witness {
+            return Ok(true);
+        }
+        // Store read of milliseconds, same scale as the kill/wait sections
+        // this guards (and as the Store reads `begin_utterance` already
+        // performs under admission).
+        if current_fingerprint(data_dir) != auth.snapshot_fp {
+            return Ok(true);
+        }
     }
     drop(live_guard);
     drop_servers_locked(data_dir);
@@ -6411,22 +6456,25 @@ mod tests {
         let pid = spawn_owned(root.path(), "whisper", "k", port).unwrap();
         assert!(port_open(port));
         // Cloud primary (leaving local): reconcile must stop owned.
+        // Saved through the Store first: reconcile only deliberates on
+        // current settings, so the snapshot must be stored to be current.
         use crate::settings::{SttChainEntry, SttEntryKind};
-        let stt = SttSettings {
-            entries: vec![SttChainEntry {
-                id: "c".into(),
-                name: "cloud".into(),
-                kind: SttEntryKind::Cloud,
-                enabled: true,
-                provider: "OpenAI".into(),
-                url: String::new(),
-                model: "whisper-1".into(),
-                api_key: "k".into(),
-                streaming: true,
-            }],
-            auto_start_server: true,
-            ..Default::default()
-        };
+        let writer = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt.entries = vec![SttChainEntry {
+            id: "c".into(),
+            name: "cloud".into(),
+            kind: SttEntryKind::Cloud,
+            enabled: true,
+            provider: "OpenAI".into(),
+            url: String::new(),
+            model: "whisper-1".into(),
+            api_key: "k".into(),
+            streaming: true,
+        }];
+        settings.stt.auto_start_server = true;
+        writer.save_settings(&settings).unwrap();
+        let stt = writer.load_settings().stt;
         assert!(!reconcile_servers(&stt, root.path(), None).unwrap());
         wait_gone(pid);
         wait_port_closed(port);
@@ -6444,8 +6492,11 @@ mod tests {
         );
         // Disabled local entry also leaves local operation.
         let pid2 = spawn_owned(root.path(), "whisper", "k2", port).unwrap();
-        let mut stt2 = SttSettings::default();
-        stt2.entries[0].enabled = false;
+        let mut settings = writer.load_settings();
+        settings.stt = SttSettings::default();
+        settings.stt.entries[0].enabled = false;
+        writer.save_settings(&settings).unwrap();
+        let stt2 = writer.load_settings().stt;
         assert!(!reconcile_servers(&stt2, root.path(), None).unwrap());
         wait_gone(pid2);
         assert!(proc_gone(pid2));
@@ -6549,9 +6600,15 @@ mod tests {
         assert!(!proc_gone(pid));
         assert!(reconcile_lazy_switch(root.path(), None).unwrap());
         assert!(port_open(port));
-        // Idle: the pending switch applies.
+        // Idle: the pending switch applies. Stored first: reconcile only
+        // deliberates on current settings.
         test_set_busy(false);
         assert!(!inference_active());
+        let writer = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = stt.clone();
+        writer.save_settings(&settings).unwrap();
+        let stt = writer.load_settings().stt;
         assert!(!reconcile_servers(&stt, root.path(), None).unwrap());
         wait_gone(pid);
         assert!(proc_gone(pid));
@@ -6598,10 +6655,15 @@ mod tests {
         // Lazy steady state is a no-op (next utterance warms).
         // Use an isolated closed port: default ports may be held by
         // the installed service on this host (never touch it).
-        let stt_lazy = SttSettings {
+        // Stored first: reconcile only deliberates on current settings.
+        let writer = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = SttSettings {
             auto_start_server: false,
             ..Default::default()
         };
+        writer.save_settings(&settings).unwrap();
+        let stt_lazy = writer.load_settings().stt;
         assert!(!reconcile_servers(&stt_lazy, root.path(), None).unwrap());
         let closed = free_port();
         let isolated = ServerNet {
@@ -8152,6 +8214,12 @@ mod tests {
             gen_valid,
             "test setup raced control state"
         );
+        // Attested exactly like the watcher tick: validated witness plus
+        // the observed snapshot's fingerprint, bound before parking.
+        let auth_b = ReconcileAuthority {
+            witness: gen_valid,
+            snapshot_fp: stt_fingerprint(&stt_b, &data_dir),
+        };
         // Park the validated B tick before its primary reconciliation
         // call — the barrier the production seam cannot provide, forcing
         // the vulnerable scheduling window deterministically.
@@ -8168,7 +8236,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let _ = entered_tx.send(());
             let _ = proceed_rx.recv_timeout(Duration::from_secs(15));
-            let out = reconcile_servers(&stt_b, &worker_data, Some(gen_valid));
+            let out = reconcile_servers(&stt_b, &worker_data, Some(auth_b));
             let _ = done_tx.send(out);
             let _ = finished_rx.recv_timeout(Duration::from_secs(15));
         });
@@ -8299,6 +8367,10 @@ mod tests {
             gen_valid,
             "test setup raced control state"
         );
+        let auth_b = ReconcileAuthority {
+            witness: gen_valid,
+            snapshot_fp: stt_fingerprint(&stt_b, &data_dir),
+        };
         // Park the superseded B call before its reconciliation, then
         // restore A (save only — still no bump) and resume it.
         let (entered_tx, entered_rx) = mpsc::channel::<()>();
@@ -8308,7 +8380,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let _ = entered_tx.send(());
             let _ = proceed_rx.recv_timeout(Duration::from_secs(15));
-            let out = reconcile_servers(&stt_b, &data_dir, Some(gen_valid));
+            let out = reconcile_servers(&stt_b, &data_dir, Some(auth_b));
             let _ = done_tx.send(out);
             let _ = finished_rx.recv_timeout(Duration::from_secs(15));
         });
@@ -8400,6 +8472,10 @@ mod tests {
             gen_valid,
             "test setup raced control state"
         );
+        let auth_b = ReconcileAuthority {
+            witness: gen_valid,
+            snapshot_fp: stt_fingerprint(&stt_b, &data_dir),
+        };
         let (entered_tx, entered_rx) = mpsc::channel::<()>();
         let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
         let (done_tx, done_rx) = mpsc::channel::<Result<bool, String>>();
@@ -8407,7 +8483,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let _ = entered_tx.send(());
             let _ = proceed_rx.recv_timeout(Duration::from_secs(15));
-            let out = reconcile_servers(&stt_b, &data_dir, Some(gen_valid));
+            let out = reconcile_servers(&stt_b, &data_dir, Some(auth_b));
             let _ = done_tx.send(out);
             let _ = finished_rx.recv_timeout(Duration::from_secs(15));
         });
@@ -8469,8 +8545,14 @@ mod tests {
         drop_servers(root.path());
         let data_dir = root.path().to_path_buf();
         // Nothing is running: capture authority, then park the lazy call
-        // before its admission.
+        // before its admission. The observed identity is whatever is
+        // currently stored (nothing deliberate pending here); only the
+        // witness matters for the cold-start race below.
         let gen_valid = server_generation();
+        let auth_lazy = ReconcileAuthority {
+            witness: gen_valid,
+            snapshot_fp: current_fingerprint(&data_dir),
+        };
         let (entered_tx, entered_rx) = mpsc::channel::<()>();
         let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
         let (done_tx, done_rx) = mpsc::channel::<Result<bool, String>>();
@@ -8478,7 +8560,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let _ = entered_tx.send(());
             let _ = proceed_rx.recv_timeout(Duration::from_secs(15));
-            let out = reconcile_lazy_switch(&data_dir, Some(gen_valid));
+            let out = reconcile_lazy_switch(&data_dir, Some(auth_lazy));
             let _ = done_tx.send(out);
             let _ = finished_rx.recv_timeout(Duration::from_secs(15));
         });
@@ -8503,6 +8585,102 @@ mod tests {
         assert_eq!(active_count(), 0);
         let _ = finished_tx.send(());
         worker.join().expect("leftover worker thread panicked");
+    }
+
+    /// A queued lazy switch must not destroy the correct running server
+    /// when its observation was superseded by a pure settings save: an
+    /// unchanged control generation does not prove settings are current,
+    /// so the observed configuration identity travels with the witness
+    /// and is rechecked under admission before destroying anything.
+    #[test]
+    fn superseded_lazy_defers_without_bump() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        clear_reconcile_ensure_pause();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let writer = seed_whisper_tiny(root.path());
+        // Owned Whisper configuration A on a private port, autostart off
+        // (the lazy regime): start it directly so the map holds the
+        // exact entry a stale switch would reap.
+        let port_a = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = false;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let pid_a = spawn_owned(root.path(), "whisper", "a-server", port_a).unwrap();
+        assert!(port_open(port_a));
+        // Save configuration B (different port), still autostart off, and
+        // validate the observation exactly like the watcher tick does.
+        // No Stop, replace or start happens anywhere here: the
+        // generation check alone cannot save A.
+        let port_b = free_port();
+        assert_ne!(port_a, port_b);
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_b.to_string();
+        writer.save_settings(&settings).unwrap();
+        let gen_valid = server_generation();
+        let stt_b = writer.load_settings().stt;
+        assert_eq!(
+            server_generation(),
+            gen_valid,
+            "test setup raced control state"
+        );
+        let data_dir = root.path().to_path_buf();
+        let auth_b = ReconcileAuthority {
+            witness: gen_valid,
+            snapshot_fp: stt_fingerprint(&stt_b, &data_dir),
+        };
+        // Park the superseded B observation before its admission, then
+        // restore A (save only — still no bump) and resume it.
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<Result<bool, String>>();
+        let (finished_tx, finished_rx) = mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            let _ = entered_tx.send(());
+            let _ = proceed_rx.recv_timeout(Duration::from_secs(15));
+            let out = reconcile_lazy_switch(&data_dir, Some(auth_b));
+            let _ = done_tx.send(out);
+            let _ = finished_rx.recv_timeout(Duration::from_secs(15));
+        });
+        entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        assert_eq!(
+            server_generation(),
+            gen_valid,
+            "restore must not move generation (that is the point)"
+        );
+        proceed_tx.send(()).unwrap();
+        let deferred = done_rx
+            .recv_timeout(Duration::from_secs(25))
+            .unwrap()
+            .unwrap();
+        assert!(deferred, "superseded lazy switch was not deferred");
+        // Original A survives untouched: PID, listener, supervisor entry.
+        assert!(port_open(port_a), "stale switch killed the right engine");
+        assert!(!proc_gone(pid_a));
+        assert!(
+            servers()
+                .lock()
+                .unwrap()
+                .get("whisper")
+                .is_some_and(|s| s.ready),
+            "stale switch disturbed the supervisor map"
+        );
+        assert!(!port_open(port_b), "stale switch started B");
+        assert_eq!(active_count(), 0);
+        drop_servers(root.path());
+        wait_gone(pid_a);
+        let _ = finished_tx.send(());
+        worker.join().expect("leftover worker thread panicked");
+        clear_reconcile_ensure_pause();
     }
 
     #[test]
