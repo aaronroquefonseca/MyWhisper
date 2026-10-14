@@ -10,10 +10,10 @@ their tip) is distinct from final integrated release acceptance
 
 | PR | Branch (base) | Tip | Scope gate state |
 | --- | --- | --- | --- |
-| #15 | docs/audit-work-handoffs (main) | (this push) | GREEN this turn: fmt, strict Clippy, 109 tests, release 11, upgrade 5, CLI 2, audit 0 vulns (rustls 0.23.46), UI smoke both themes, Arch install+upgrade, Nix logo/desktop-VM/loader-VM. Hosted run 38573390119: steps 1–9 passed; step 10 never ran cargo audit — cargo install exited 1 on cached exact binary under sh -e. Fixed by idempotent audit step (same file, below) |
+| #15 | docs/audit-work-handoffs (main) | (this push) | Baseline source (rustls 0.23.45): fresh advisory DB reports RUSTSEC-2026-0346–0349 — RECORDED GAP, NOT WAIVED. Correction owned by #18 d09ce1d (verified identical IDs + 0.23.46 patch, audit clean reported); my duplicate lock bump reverted to baseline to avoid divergent code changes. Integration pending chain merge or owner manual merge. Retained: workflow audit-step idempotency fix (no owner conflict; required for hosted green regardless). Hosted run 38573390119 cause: steps 1–9 passed; step 10 never ran cargo audit — cargo install exited 1 on cached exact binary under sh -e |
 | #16 | fix/audit-ui-ownership (main) | da4f08e | GREEN reported (strict Clippy + checks) |
 | #17 | fix/audit-provider-contracts (main) | 8eabfaf | GREEN reported (strict Clippy + checks) |
-| #18 | fix/audit-storage-sync (main) | 8733bfe | BLOCKED, unresolved (not stable foundation): inspected GUI worker suppresses filesystem errors; boot blindly clears pending-reset marker; owner accepted relocation/removal of competing path, correction underway; hosted all-target 120s timeout still fails. Checkpoint migration-path use stands, gate evidence still owed |
+| #18 | fix/audit-storage-sync (main) | 8733bfe→d09ce1d | d09ce1d: reset-barrier correction (competing GUI worker removed, relocation contract to #22/#23) + rustls 0.23.45→0.23.46 for RUSTSEC-2026-0346..0349, audit clean reported (IDs + patch verified identical to independent check). Still BLOCKED/unresolved: hosted all-target 120s timeout fails; gate evidence still owed. Owns the dependency correction; #15 reverted its duplicate bump |
 | #19 | fix/audit-input-ownership (#18) | c7479bc | strict lint FAIL from layering |
 | #20 | fix/audit-verified-installers (#19) | 169a1cf | strict lint FAIL from layering |
 | #21 | fix/audit-clipboard-ownership (#20) | c261f96 | strict lint FAIL from layering; 11 commits behind #20 tip |
@@ -32,10 +32,10 @@ with the owning agents; #15 does not restack or force-push them.
 None in code APIs. Workflow change (R51, main-based, no sibling
 owns it): audit step installs cargo-audit 0.22.2 only when the exact
 binary is absent; `cargo audit --deny warnings` still always runs.
-Dependency change: `rustls` 0.23.45 → 0.23.46 in Cargo.lock
-(patch bump, no API change) resolving fresh RUSTSEC-2026-0346–0349;
-audit green, fmt/strict-Clippy/109-tests green on bumped tree.
-Siblings rebasing onto main will inherit both via merge.
+Dependency correction (rustls 0.23.46) owned by #18 d09ce1d; #15
+carries no lock delta vs baseline. Siblings rebasing onto main will
+inherit the workflow fix via merge; the lock correction arrives via
+the #18 chain or owner manual merge.
 
 ## Checkpoint finding (source evidence, read-only)
 
