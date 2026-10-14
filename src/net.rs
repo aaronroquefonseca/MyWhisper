@@ -2551,6 +2551,37 @@ mod tests {
             .apply_history(std::slice::from_ref(&original))
             .unwrap();
         assert!(original.text.len() > CONTENT_CAP);
+        // Every rendezvous in this fixture is bounded: a peer that can
+        // never arrive (early client failure) must fail the round, not
+        // hang the suite. 30 s is orders of magnitude above healthy
+        // localhost connect latency yet strictly below the client-side
+        // round bound, so expiry always means a true stall; the round
+        // is then retried from persisted offsets, never wedged.
+        fn accept_bounded(
+            listener: &TcpListener,
+            what: &str,
+        ) -> std::io::Result<(TcpStream, std::net::SocketAddr)> {
+            listener.set_nonblocking(true)?;
+            let start = std::time::Instant::now();
+            loop {
+                match listener.accept() {
+                    Ok(pair) => {
+                        let _ = listener.set_nonblocking(false);
+                        return Ok(pair);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if start.elapsed() > Duration::from_secs(30) {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                format!("{what} rendezvous stalled with no peer"),
+                            ));
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
         // Commit a fragment, drop the socket before its ACK, and reopen the
         // receiver. A subsequent real negotiation must send the saved offset.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2559,7 +2590,7 @@ mod tests {
         let receiver_a = a.clone();
         let receiver_b = b.clone();
         let cut = std::thread::spawn(move || {
-            let (socket, _) = listener.accept().unwrap();
+            let (socket, _) = accept_bounded(&listener, "cut server").unwrap();
             let (mut session, hash, _) =
                 NoiseStream::handshake(socket, &receiver_b.noise_static, false).unwrap();
             let hello: Hello = session.recv_json().unwrap();
@@ -2660,12 +2691,18 @@ mod tests {
             // exhausted the round/timeout budgets without exercising
             // any new protocol path; a byte budget forces partial
             // progress and lost-ACK resume deterministically on any
-            // machine while keeping every assertion intact. No read
-            // timeout: a healthy-but-computing peer (debug crypto of
-            // megabytes) must not look like a dead link — rounds end
-            // by budget cut, completion, or close, and the session
-            // deadline plus the production progress watchdog still
-            // bound genuinely stuck transfers.
+            // machine while keeping every assertion intact. The generous
+            // 60 s socket backstop below never fires on healthy-slow
+            // rounds (they take seconds even loaded); it only converts
+            // a wedged peer — one that neither sends, closes, nor lets
+            // the session deadline fire — from a suite hang into a
+            // failed round retried from persisted offsets.
+            source
+                .set_read_timeout(Some(Duration::from_secs(60)))
+                .unwrap();
+            target
+                .set_write_timeout(Some(Duration::from_secs(60)))
+                .unwrap();
             let mut buffer = [0u8; 8192];
             let mut relayed: u64 = 0;
             loop {
@@ -2696,7 +2733,7 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap().to_string();
             let proxy = std::thread::spawn(move || {
-                let (client, _) = listener.accept().unwrap();
+                let (client, _) = accept_bounded(&listener, "proxy client").unwrap();
                 let peer = TcpStream::connect(target_address).unwrap();
                 client.set_nodelay(true).unwrap();
                 peer.set_nodelay(true).unwrap();
@@ -2709,7 +2746,7 @@ mod tests {
             let receiver_db = db_b.clone();
             let receiver_b = b.clone();
             let server = std::thread::spawn(move || {
-                let (socket, _) = target.accept().unwrap();
+                let (socket, _) = accept_bounded(&target, "sync server").unwrap();
                 let (mut session, hash, _) =
                     NoiseStream::handshake(socket, &receiver_b.noise_static, false).unwrap();
                 // The byte-budget proxy cuts below force interrupted
