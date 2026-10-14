@@ -30,6 +30,9 @@ pub struct AppState {
     /// mDNS-discovered LAN peers, refreshed by the browser thread.
     pub discovered:
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, crate::net::Discovered>>>,
+    /// A settings reset worker is running; danger-zone controls stay
+    /// disabled until its snapshot/finish events land on GTK.
+    pub reset_busy: std::cell::Cell<bool>,
 }
 
 impl AppState {
@@ -45,6 +48,7 @@ impl AppState {
             sync_port: std::cell::Cell::new(0),
             service_alive: std::cell::Cell::new(false),
             discovered: Default::default(),
+            reset_busy: std::cell::Cell::new(false),
         })
     }
 
@@ -60,6 +64,14 @@ impl AppState {
             std::sync::Mutex<std::collections::HashMap<String, crate::net::Discovered>>,
         >,
     ) -> Rc<Self> {
+        // Crash resume: a reset interrupted between its database commit
+        // and completion left captures/pairing wedged. Completion only
+        // clears the pending mark (orphaned clips are pruned by idle
+        // maintenance); post-crash edits are never wiped. Runs before
+        // any settings read so the fresh blob is observed.
+        if let Err(e) = store.complete_pending_reset() {
+            eprintln!("[reset] recovery: {e}");
+        }
         let mut settings = store.load_settings();
         // One-time hotkey migration (legacy single -> list); persist
         // so the old value can never resurface.
@@ -80,6 +92,7 @@ impl AppState {
             sync_port: std::cell::Cell::new(0),
             service_alive: std::cell::Cell::new(false),
             discovered,
+            reset_busy: std::cell::Cell::new(false),
         })
     }
 }

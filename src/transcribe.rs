@@ -3639,6 +3639,7 @@ fn restore_protected(cleaned: &str, token: &str, replacements: &[String]) -> Opt
 /// Retention: history off pastes without storing; auto-delete purges
 /// old rows first (tombstones survive).
 fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
+    use std::sync::atomic::AtomicBool;
     eprintln!("[stt] raw: {raw}");
     let paths = match crate::paths::AppPaths::create() {
         Ok(p) => p,
@@ -3654,7 +3655,16 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
             return;
         }
     };
-    let settings = store.load_settings();
+    // Atomic capture snapshot: input configuration and its durable
+    // policy/capture epoch come from one transaction, so a concurrent
+    // settings edit or reset cannot split policy from content (R19).
+    let (settings, epoch) = match store.capture_settings() {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("[stt] capture policy: {e}");
+            return;
+        }
+    };
     // Snippets keyed per trigger (comma-separated aliases flatten to
     // one entry each). Recognition runs inside finalize_transcript
     // BEFORE cleanup, with placeholders guarding the matched spans.
@@ -3673,44 +3683,32 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
         &snips,
     );
     eprintln!("[stt] final: {text}");
-    if settings.privacy.keep_audio_recordings && settings.privacy.audio_retention_days > 0 {
-        let data_dir = paths
-            .db_file()
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
-        let n = crate::audio::purge_old_audio(&data_dir, settings.privacy.audio_retention_days);
-        if n > 0 {
-            eprintln!("[stt] audio auto-delete: {n} files");
-        }
-    }
-    if settings.privacy.transcript_auto_delete_days > 0
-        && let Err(e) = store.purge_old_history(settings.privacy.transcript_auto_delete_days)
-    {
-        eprintln!("[stt] auto-delete: {e}");
+    // Idle-capable retention on every delivery, not only on success:
+    // expired transcripts are redacted (tombstones survive) and
+    // orphaned vault clips are pruned; the idle worker retries.
+    let now = crate::store::now_ms() / 1000;
+    match store.maintain_retention_at(now) {
+        Ok((0, 0)) => {}
+        Ok((rows, clips)) => eprintln!("[stt] retention: {rows} rows, {clips} clips"),
+        Err(e) => eprintln!("[stt] retention: {e}"),
     }
     if settings.privacy.history_enabled {
-        let words = text.split_whitespace().count() as u32;
-        let node = crate::device::DeviceIdentity::load_or_create(&paths.device_key_file())
-            .map(|i| i.node_id)
-            .unwrap_or_else(|_| "unknown".to_string());
-        match store.add_history(&raw, &text, words, secs.round() as i64, &node) {
-            Ok(uuid) => {
-                if let Some(wav) = wav {
-                    let data_dir = paths
-                        .db_file()
-                        .parent()
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_default();
-                    let dir = crate::audio::audio_vault_dir(&data_dir);
-                    match std::fs::create_dir_all(&dir)
-                        .and_then(|_| std::fs::write(dir.join(format!("{uuid}.wav")), wav))
-                    {
-                        Ok(()) => eprintln!("[stt] audio kept: {uuid}.wav"),
-                        Err(e) => eprintln!("[stt] audio vault write: {e}"),
-                    }
-                }
-            }
+        // Transactional capture: content, tombstone-safe history row
+        // and vault clip commit atomically under the press-time epoch;
+        // a concurrent reset or policy change abandons the write
+        // instead of resurrecting or leaking text.
+        let cancel = AtomicBool::new(false);
+        let capture = crate::store::CapturedUtterance {
+            raw: &raw,
+            text: &text,
+            duration_secs: secs.round() as i64,
+            recorded_at: now,
+            discarded: false,
+            wav: wav.as_deref(),
+        };
+        match store.persist_capture(epoch, capture, &cancel) {
+            Ok(true) => eprintln!("[stt] history kept"),
+            Ok(false) => eprintln!("[stt] capture superseded; pasting without storing"),
             Err(e) => eprintln!("[stt] history: {e}"),
         }
     } else {

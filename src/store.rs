@@ -318,6 +318,14 @@ fn cleanup_migration_sidecars(path: &Path) {
 fn migrate_plaintext_to_encrypted(path: &Path, key: &[u8; 32]) -> rusqlite::Result<()> {
     let staging = tempfile::NamedTempFile::new_in(path.parent().unwrap_or(Path::new(".")))
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+    // The staging file will hold encrypted pages; pin it private before
+    // any bytes land so SQLite-created sidecars beside a 0700 directory
+    // never broaden readability regardless of umask or tempfile version.
+    use std::os::unix::fs::PermissionsExt;
+    staging
+        .as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
     #[cfg(test)]
     crate::private_fs::replacement_fault::point("migration-created", path);
     let tmp = staging.path();
@@ -1577,6 +1585,19 @@ impl Store {
         tx.commit()?;
         bump_data_gen();
         Ok(())
+    }
+
+    /// Boot recovery for an interrupted reset: the database transaction
+    /// already committed (edits after the crash are post-reset and are
+    /// preserved); only the pending mark is cleared so captures, sync
+    /// and pairing resume. Orphaned clips are pruned by maintenance.
+    /// Returns true when a pending reset was completed.
+    pub(crate) fn complete_pending_reset(&self) -> rusqlite::Result<bool> {
+        let Some(nonce) = self.pending_reset_nonce()? else {
+            return Ok(false);
+        };
+        self.complete_reset(&nonce)?;
+        Ok(true)
     }
 
     /// Adopt a worker-loaded snapshot without doing database IO on GTK.
@@ -3343,6 +3364,52 @@ mod release_regressions {
         store.upsert_peer(&peer, "peer", "", true).unwrap();
         assert!(!store.is_revoked(&peer).unwrap());
         assert!(!store.get_peer(&peer).unwrap().unwrap().introducer);
+    }
+
+    #[test]
+    fn two_phase_reset_serializes_nonces_and_boot_resume_preserves_post_crash_edits() {
+        let store = Store::open_memory().unwrap();
+        const NONCE: &str = "0123456789abcdef0123456789abcdef";
+        const OTHER: &str = "fedcba9876543210fedcba9876543210";
+        assert_eq!(store.pending_reset_nonce().unwrap(), None);
+        assert!(!store.completed_reset(NONCE).unwrap());
+        assert!(!store.complete_pending_reset().unwrap());
+        store.begin_reset(NONCE).unwrap();
+        assert_eq!(store.pending_reset_nonce().unwrap().as_deref(), Some(NONCE));
+        assert!(store.reset_pending().unwrap());
+        // Same-nonce retry is idempotent; a different nonce is refused
+        // while one reset owns the transaction.
+        store.begin_reset(NONCE).unwrap();
+        assert!(store.begin_reset(OTHER).is_err());
+        // An edit written after the crash is post-reset and must survive
+        // recovery: resume only clears the pending mark.
+        store
+            .apply_history(&[HistoryRecord {
+                uuid: "synthetic-post-crash".into(),
+                text: "synthetic post-crash speech".into(),
+                raw_text: "synthetic post-crash raw".into(),
+                words: 3,
+                duration_secs: 1,
+                deleted: false,
+                discarded: false,
+                recorded_at: 1_700_000_001,
+            }])
+            .unwrap();
+        assert!(store.complete_pending_reset().unwrap());
+        assert_eq!(store.pending_reset_nonce().unwrap(), None);
+        assert!(store.completed_reset(NONCE).unwrap());
+        assert!(!store.reset_pending().unwrap());
+        assert!(!store.complete_pending_reset().unwrap());
+        assert_eq!(
+            store.export_history().unwrap()[0].uuid,
+            "synthetic-post-crash"
+        );
+        // A completed nonce short-circuits without wiping again.
+        store.begin_reset(NONCE).unwrap();
+        assert_eq!(
+            store.export_history().unwrap()[0].uuid,
+            "synthetic-post-crash"
+        );
     }
 
     #[test]

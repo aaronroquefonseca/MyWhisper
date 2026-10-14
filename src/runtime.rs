@@ -353,52 +353,13 @@ static SESSION_TASKS: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomic
 const SESSION_TASK_LIMIT: usize = 8;
 enum ReaperMessage {
     Join(OwnedThread),
-    Launch(Job),
 }
 struct ReaperQueue(Mutex<Option<mpsc::Sender<ReaperMessage>>>);
 static SESSION_REAPER: OnceLock<Result<ReaperQueue, String>> = OnceLock::new();
-static PROCESS_LAUNCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-struct LaunchPermit;
-impl Drop for LaunchPermit {
-    fn drop(&mut self) {
-        PROCESS_LAUNCH.store(false, std::sync::atomic::Ordering::Release);
-    }
-}
-
-/// The existing persistent ownership thread creates supervised processes.
-/// One launch may be queued/active, independently of the short-job pool.
-pub(crate) fn submit_process_launch(job: impl FnOnce() + Send + 'static) -> Result<(), String> {
-    let owner = session_reaper()?;
-    let _admission = admitted()?;
-    PROCESS_LAUNCH
-        .compare_exchange(
-            false,
-            true,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-        )
-        .map_err(|_| "a supervised process launch is already pending")?;
-    let permit = LaunchPermit;
-    let sender = owner.0.lock().unwrap_or_else(|p| p.into_inner());
-    sender
-        .as_ref()
-        .ok_or("process ownership thread stopped")?
-        .send(ReaperMessage::Launch(tracked(move || {
-            let _permit = permit;
-            job();
-        })))
-        .map_err(|_| "process ownership thread unavailable".into())
-}
 
 fn receive_owned_work(message: ReaperMessage, pending: &mut Vec<OwnedThread>) {
     match message {
         ReaperMessage::Join(handle) => pending.push(handle),
-        ReaperMessage::Launch(job) => {
-            if catch_unwind(AssertUnwindSafe(job)).is_err() {
-                eprintln!("[runtime] supervised process launch panicked");
-            }
-        }
     }
 }
 
@@ -499,32 +460,6 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
-
-    #[test]
-    fn supervised_launch_admission_recovers_after_owned_job_panics() {
-        let (started, ready) = mpsc::channel();
-        let (release, wait) = mpsc::channel();
-        submit_process_launch(move || {
-            started.send(()).unwrap();
-            wait.recv().unwrap();
-            panic!("synthetic launch failure");
-        })
-        .unwrap();
-        ready.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(submit_process_launch(|| panic!("excess launch must not execute")).is_err());
-        release.send(()).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while PROCESS_LAUNCH.load(std::sync::atomic::Ordering::Acquire) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "launch permit leaked after panic"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        let (finished, completion) = mpsc::channel();
-        submit_process_launch(move || finished.send(()).unwrap()).unwrap();
-        completion.recv_timeout(Duration::from_secs(2)).unwrap();
-    }
 
     #[test]
     fn pool_runs_jobs() {

@@ -14,7 +14,14 @@ Continuation (this draft, disposable fixtures only):
 - Maintenance/fairness: retention policy still refuses incomplete settings (no permissive defaults); Coalescer FIFO+coalesce preserved, caps unchanged.
 - Pairing/discovery/restart: mDNS guard extracted as should_refresh_addresses (tested); revocation stays local durable (gossiped revocation deferred to avoid wire change); older-build refusal + unknown-settings preservation untouched.
 - Service threads use bounded runtime spawn_dedicated (Result, never panic); in-flight syncs abort via policy watcher (comment corrected).
+- SyncEngine owns discovery handle + idle retention worker (joins/stops on drop); startup catch-up uses cancellable owned-epoch path; shutdown checkpoints best-effort (durability never depends on it).
+- Authorization barrier: dedicated policy connection is query-only; file-identity mismatch aborts exchanges/watcher (replaced-DB safety).
+- Capture path: deliver() uses atomic capture_settings snapshot + transactional persist_capture (vault via crash-safe replace); retention runs on every delivery; capture overflow is refused, never silently decoded.
+- Reset path: danger-zone runs two-phase nonce reset on a worker with GTK snapshot adopt (sync stays disabled; R05 re-enable bug fixed); boot resumes pending resets in AppState::load + start_sync_engine; orphan clips pruned by maintenance.
+- Oversized-sync fixture is deterministic: byte-budget proxy cuts force interrupted rounds (generous round deadline); assertions unchanged.
+- Migration staging file explicitly pinned 0600 before encrypted bytes land.
+- Supervised process-launch API (ReaperMessage::Launch, PROCESS_LAUNCH, LaunchPermit, submit_process_launch + unit test) relocates to #22 with add-back contract (source: 08d2f6a; consumer: transcribe server spawn per snapshot:864); shared OwnedThread/spawn_session/reaper semantics untouched.
 
-Gates here: cargo check --locked --all-targets passes (17 pre-existing dead-code warnings for downstream layers); cargo test --locked --lib 195 passed, 5 ignored; 6 new disposable regression tests pass. Strict clippy -D warnings and live/native gates remain (expected for isolated layer).
+Gates here: cargo fmt clean; cargo clippy --locked --all-targets -- -D warnings clean (0 warnings); cargo test --locked --all-targets 195 passed + 0-test binaries ok, 5 ignored (incl. new two-phase-reset + deterministic-oversized coverage); packaging/iteration/pr-test python gates pass. Remaining external: cargo audit (4 pre-existing rustls advisories, pinned locked versions), release builds/cli/ui-smoke/shellcheck (CI runners).
 
 Original report, full matrix, source map and historical evidence are owned by the audit tracking PR. The final source snapshot preserves every pre-split correction. Intermediate layers may expose interfaces completed downstream; document every actual compiler/test failure rather than hiding it.

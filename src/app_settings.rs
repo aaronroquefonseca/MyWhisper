@@ -17,6 +17,111 @@ use crate::settings::{CopyBackend, PasteBackend, PasteCombo, Theme};
 
 // ---------------------------------------------------------------- helpers
 
+/// Reset worker events: a settings snapshot for GTK to adopt (no
+/// database IO on the UI thread) and terminal completion.
+enum ResetEvent {
+    Snapshot(Box<crate::settings::AppSettings>, Option<&'static str>),
+    Finished(Result<(), String>),
+}
+
+/// Database commit, downloads/audio cleanup and completion on a
+/// worker thread. The intent (nonce) is durable: a crash anywhere
+/// resumes at boot via complete_pending_reset; post-crash edits are
+/// never wiped and sync stays disabled until the user re-enables it.
+fn reset_worker(
+    db_path: &std::path::Path,
+    data_dir: &std::path::Path,
+    nonce: &str,
+    events: &std::sync::mpsc::Sender<ResetEvent>,
+) -> Result<(), String> {
+    let store = crate::store::Store::open_existing(db_path)
+        .map_err(|e| format!("[system] reset open: {e}"))?;
+    store
+        .begin_reset(nonce)
+        .map_err(|e| format!("[system] reset db: {e}"))?;
+    for sub in ["models", "bin", "audio"] {
+        let dir = data_dir.join(sub);
+        if dir.exists()
+            && let Err(e) = std::fs::remove_dir_all(&dir).and(std::fs::create_dir_all(&dir))
+        {
+            eprintln!("[system] reset {sub}: {e}");
+        }
+    }
+    // Identity (device key) and the running service survive: the next
+    // dictation re-reads defaults from the fresh DB and reports
+    // missing models; restart the service for a fully clean slate.
+    let settings = store
+        .try_load_settings()
+        .map_err(|e| format!("[system] reset read: {e}"))?;
+    let warning = store.settings_warning();
+    let _ = events.send(ResetEvent::Snapshot(Box::new(settings), warning));
+    store
+        .complete_reset(nonce)
+        .map_err(|e| format!("[system] reset complete: {e}"))?;
+    Ok(())
+}
+
+/// Drain worker events on GTK: adopt the snapshot (baseline included,
+/// so later saves merge instead of overwriting), refresh language,
+/// theme and in-memory settings, then rebuild once finished.
+fn pump_reset_events(
+    state: &Rc<AppState>,
+    events: &std::sync::mpsc::Receiver<ResetEvent>,
+    button: &Button,
+) -> gtk4::glib::ControlFlow {
+    use gtk4::glib::ControlFlow;
+    let mut rebuild = false;
+    let mut finished: Option<Result<(), String>> = None;
+    loop {
+        match events.try_recv() {
+            Ok(ResetEvent::Snapshot(settings, warning)) => {
+                if let Err(error) = state.store.adopt_settings_baseline(&settings, warning) {
+                    eprintln!("[system] reset snapshot: {error}");
+                }
+                crate::i18n::set_lang(crate::i18n::UiLang::parse(
+                    &settings.preferences.ui_language,
+                ));
+                apply_theme(settings.preferences.theme);
+                *state.settings.borrow_mut() = *settings;
+                rebuild = true;
+            }
+            Ok(ResetEvent::Finished(result)) => {
+                finished = Some(result);
+                break;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                finished = Some(Err("reset worker lost; boot recovery completes it".into()));
+                break;
+            }
+        }
+    }
+    let done = finished.is_some();
+    if let Some(result) = finished {
+        state.reset_busy.set(false);
+        button.set_sensitive(true);
+        match result {
+            Ok(()) => {
+                eprintln!("[system] application data reset");
+                super::app::notify(tr("feedback.cleared"));
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                super::app::notify(tr("feedback.deletefailed"));
+            }
+        }
+        rebuild = true;
+    }
+    if rebuild {
+        crate::i18n::rebuild_ui();
+    }
+    if done {
+        ControlFlow::Break
+    } else {
+        ControlFlow::Continue
+    }
+}
+
 fn connect_download_delete(button: &Button, remove: impl Fn() -> std::io::Result<()> + 'static) {
     super::app::connect_confirmed(
         button,
@@ -4640,41 +4745,45 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
             tr("confirm.reset.title"),
             tr("confirm.reset.body"),
             tr("action.resetdots"),
-            move |_| {
-                // Wipe user data + downloads. Identity (device key) and
-                // the running service survive: the next dictation
-                // re-reads defaults from the fresh DB and reports missing
-                // models; restart the service for a fully clean slate.
-                if let Err(e) = state.store.reset_all_data() {
-                    eprintln!("[system] reset db: {e}");
+            move |button| {
+                // Two-phase durable reset (R05): the database transaction
+                // commits under a nonce first, so a crash can never
+                // resurrect peers/history or re-enable sync. Filesystem
+                // cleanup and completion run on a worker; GTK only
+                // adopts the snapshot and rebuilds. Interrupted runs
+                // resume at boot (AppState::load / start_sync_engine).
+                if state.reset_busy.replace(true) {
+                    return;
+                }
+                button.set_sensitive(false);
+                let mut nonce_bytes = [0u8; 16];
+                if getrandom::fill(&mut nonce_bytes).is_err() {
+                    state.reset_busy.set(false);
+                    button.set_sensitive(true);
+                    eprintln!("[system] reset identity unavailable");
                     super::app::notify(tr("feedback.deletefailed"));
                     return;
                 }
-                for sub in ["models", "bin", "audio"] {
-                    let dir = data_dir.join(sub);
-                    if dir.exists()
-                        && let Err(e) =
-                            std::fs::remove_dir_all(&dir).and(std::fs::create_dir_all(&dir))
-                    {
-                        eprintln!("[system] reset {sub}: {e}");
-                    }
+                let nonce: String = nonce_bytes.iter().map(|b| format!("{b:02x}")).collect();
+                let db_path = state.db_path.clone();
+                let data_dir = data_dir.clone();
+                let (events_tx, events_rx) = std::sync::mpsc::channel();
+                let worker = move || {
+                    let outcome = reset_worker(&db_path, &data_dir, &nonce, &events_tx);
+                    let _ = events_tx.send(ResetEvent::Finished(outcome));
+                };
+                if let Err(e) = crate::runtime::submit("reset-data", worker) {
+                    state.reset_busy.set(false);
+                    button.set_sensitive(true);
+                    eprintln!("[system] reset worker: {e}");
+                    super::app::notify(tr("feedback.deletefailed"));
+                    return;
                 }
-                {
-                    let mut settings = state.settings.borrow_mut();
-                    *settings = crate::settings::AppSettings::default();
-                    drop(settings);
-                }
-                if let Err(e) = state
-                    .store
-                    .save_settings(&crate::settings::AppSettings::default())
-                {
-                    eprintln!("[system] reset persist: {e}");
-                }
-                eprintln!("[system] application data reset");
-                crate::i18n::set_lang(crate::i18n::UiLang::System);
-                apply_theme(crate::settings::Theme::System);
-                crate::i18n::rebuild_ui();
-                super::app::notify(tr("feedback.cleared"));
+                let state_pump = state.clone();
+                let button_pump = button.clone();
+                gtk4::glib::timeout_add_local(std::time::Duration::from_millis(20), move || {
+                    pump_reset_events(&state_pump, &events_rx, &button_pump)
+                });
             },
         );
     }
