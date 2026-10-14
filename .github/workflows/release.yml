@@ -75,7 +75,10 @@ jobs:
           cargo test --locked --all-targets --no-run
           # The fixture belongs only to this child. Keep toolchain caches outside
           # its private HOME, and never pass desktop keyring/session state.
-          python3 scripts/disposable.py MYWHISPER_AUDIT_ROOT rusttests \
+          # Ephemeral tmpfs scratch applies ONLY to this Rust regression
+          # fixture (host /tmp fsync cost dominates it); native UI, package,
+          # Nix and physical-filesystem gates stay on their real storage.
+          MYWHISPER_AUDIT_TMPFS_TMP=1 python3 scripts/disposable.py MYWHISPER_AUDIT_ROOT rusttests \
             env -u DISPLAY -u SSH_AUTH_SOCK CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
             RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
             MYWHISPER_DB_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
