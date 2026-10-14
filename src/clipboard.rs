@@ -291,13 +291,31 @@ fn pipeline_owned(
     prefs: &Preferences,
     guard: &crate::selection::Guard,
 ) -> Result<(), String> {
-    let saved = if prefs.keep_transcription_in_clipboard {
-        None
+    // Borrowed transcripts are temporary: always publish the sensitive hint
+    // so compliant clipboard managers skip them even when the user allows
+    // kept transcripts in history. Managers that ignore the hint still read
+    // the offer; that eager read counts as completion (see `consumed`), so a
+    // manager-heavy session can restore before the focused target consumes
+    // the paste. That is a protocol limitation, not a scheduling bug: with
+    // data-control the reader is anonymous, and `set_selection` offers no
+    // atomic ownership-conditional restore. The nested niri gate covers the
+    // no-manager case only.
+    let borrowed = !prefs.keep_transcription_in_clipboard;
+    let sensitive = prefs.hide_from_history || borrowed;
+    let saved = if borrowed {
+        Some(selection.snapshot_tracked(guard)?)
     } else {
-        Some(selection.snapshot(guard)?)
+        None
     };
     let result = (|| {
-        selection.copy(text_payload(text), prefs.hide_from_history, guard)?;
+        match &saved {
+            // Never overwrite a user's replacement that landed between the
+            // snapshot and the copy with the stale snapshot's predecessor.
+            Some((_, token)) => {
+                selection.copy_if_selection_matches(text_payload(text), sensitive, guard, token)?
+            }
+            None => selection.copy(text_payload(text), sensitive, guard)?,
+        }
         if prefs.auto_paste {
             selection.arm(guard)?;
             paste_guarded(prefs.paste_backend, prefs.paste_combo, guard)?;
@@ -307,9 +325,14 @@ fn pipeline_owned(
         }
         Ok(())
     })();
-    if let Some(saved) = saved {
+    if let Some((saved, _)) = saved {
         // Returning the user's earlier selection is cleanup, even when the
         // transcription was cancelled. This never republishes the transcript.
+        // Restoration itself is check-then-set: `restore_if_owned` syncs and
+        // skips when another client owns the selection, but a replacement
+        // that lands between that sync and `set_selection` cannot be detected
+        // atomically and would be overwritten. The window is one roundtrip on
+        // the same connection; document it rather than claim atomicity.
         let cleanup: crate::selection::Guard = std::sync::Arc::new(|| true);
         if let Err(error) = selection.restore_if_owned(saved, &cleanup) {
             selection.clear_if_owned();

@@ -95,6 +95,11 @@ fn main() {
                 mime: "image/png".into(),
                 bytes: vec![137, 80, 78, 71, 0, 255],
             },
+            clipboard::SavedClipboard::Formats(vec![
+                ("text/plain".into(), b"synthetic plain".to_vec()),
+                ("text/html".into(), b"<p>synthetic html</p>".to_vec()),
+                ("image/png".into(), vec![137, 80, 78, 71, 0, 255]),
+            ]),
         ] {
             clipboard::restore_clipboard(&initial).unwrap();
             received.lock().unwrap().clear();
@@ -127,7 +132,19 @@ fn main() {
                         _ => panic!("binary offer lost"),
                     }
                 }
-                _ => unreachable!(),
+                clipboard::SavedClipboard::Formats(expected) => {
+                    match clipboard::save_clipboard().unwrap() {
+                        clipboard::SavedClipboard::Formats(formats) => {
+                            for (mime, bytes) in expected {
+                                assert!(
+                                    formats.contains(&(mime.clone(), bytes.clone())),
+                                    "multiple MIME offer lost: {mime}"
+                                );
+                            }
+                        }
+                        _ => panic!("multiple MIME offers lost"),
+                    }
+                }
             }
         }
         mode.store(1, Ordering::Release);
@@ -204,6 +221,6 @@ fn main() {
     worker.join().unwrap();
     mywhisper::runtime::finish_shutdown().expect("clipboard probe owned shutdown");
     println!(
-        "Real nested niri/wtype passed: delayed consumption; empty/text/binary restoration; user replacement; cancellation; copy-only/no-op."
+        "Real nested niri/wtype passed: delayed consumption; empty/text/binary/multiple-MIME restoration; user replacement; cancellation; copy-only/no-op."
     );
 }
