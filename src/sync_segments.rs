@@ -1092,8 +1092,29 @@ mod tests {
 
     #[test]
     fn reset_revocation_and_untrust_remove_both_directions_and_deny_old_work() {
-        for action in ["reset", "revoke", "untrust"] {
-            let (_root, a, b, a_id, b_id) = stores();
+        // One shared pre-action snapshot: the two staged directions are
+        // expensive to build (multi-megabyte staging per direction) and
+        // identical for all three actions. Each action restores the
+        // snapshot files and reopens, so tails observe byte-identical
+        // starting states — including the staged rows, which the
+        // navigation below reuses from cache without re-staging.
+        let root = tempfile::tempdir().unwrap();
+        let a_id = crate::device::DeviceIdentity::ephemeral().creds().node_id;
+        let b_id = crate::device::DeviceIdentity::ephemeral().creds().node_id;
+        let snap_a = root.path().join("snap_a.db");
+        let snap_b = root.path().join("snap_b.db");
+        {
+            let a =
+                crate::store::Store::open_with_key(&root.path().join("a.db"), &[51; 32]).unwrap();
+            let b =
+                crate::store::Store::open_with_key(&root.path().join("b.db"), &[52; 32]).unwrap();
+            for store in [&a, &b] {
+                let mut settings = store.load_settings();
+                settings.sync.enabled = true;
+                store.save_settings(&settings).unwrap();
+            }
+            a.upsert_peer(&b_id, "synthetic b", "", true).unwrap();
+            b.upsert_peer(&a_id, "synthetic a", "", true).unwrap();
             let original = record();
             a.apply_history(std::slice::from_ref(&original)).unwrap();
             let manifest = a.sync_manifest(&b_id, a.sync_epoch()).unwrap();
@@ -1109,6 +1130,63 @@ mod tests {
             .unwrap();
             let opposite = b.sync_manifest(&a_id, epoch).unwrap();
             let _ = first_history(&b, &a, &b_id, &a_id, &opposite);
+            assert_eq!(
+                b.conn
+                    .query_row("SELECT count(*) FROM sync_transfers", [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                2
+            );
+            for store in [&a, &b] {
+                store.checkpoint().unwrap();
+            }
+            drop(a);
+            drop(b);
+            for (live, snap) in [
+                (root.path().join("a.db"), &snap_a),
+                (root.path().join("b.db"), &snap_b),
+            ] {
+                std::fs::copy(&live, snap).unwrap();
+                for suffix in ["-wal", "-journal"] {
+                    let mut sidecar = live.as_os_str().to_owned();
+                    sidecar.push(suffix);
+                    let sidecar = std::path::PathBuf::from(sidecar);
+                    if sidecar.exists() {
+                        let mut target = snap.as_os_str().to_owned();
+                        target.push(suffix);
+                        std::fs::copy(&sidecar, std::path::PathBuf::from(target)).unwrap();
+                    }
+                }
+            }
+        }
+        for action in ["reset", "revoke", "untrust"] {
+            for (live, snap) in [
+                (root.path().join("a.db"), &snap_a),
+                (root.path().join("b.db"), &snap_b),
+            ] {
+                let _ = std::fs::remove_file(&live);
+                std::fs::copy(snap, &live).unwrap();
+                for suffix in ["-wal", "-journal"] {
+                    let mut sidecar = live.as_os_str().to_owned();
+                    sidecar.push(suffix);
+                    let sidecar = std::path::PathBuf::from(sidecar);
+                    let _ = std::fs::remove_file(&sidecar);
+                    let mut source = snap.as_os_str().to_owned();
+                    source.push(suffix);
+                    let source = std::path::PathBuf::from(source);
+                    if source.exists() {
+                        std::fs::copy(&source, &sidecar).unwrap();
+                    }
+                }
+            }
+            let a =
+                crate::store::Store::open_with_key(&root.path().join("a.db"), &[51; 32]).unwrap();
+            let b =
+                crate::store::Store::open_with_key(&root.path().join("b.db"), &[52; 32]).unwrap();
+            let original = record();
+            let manifest = a.sync_manifest(&b_id, a.sync_epoch()).unwrap();
+            let (packet, _) = first_history(&a, &b, &a_id, &b_id, &manifest);
+            let epoch = b.sync_epoch();
             assert_eq!(
                 b.conn
                     .query_row("SELECT count(*) FROM sync_transfers", [], |row| row
