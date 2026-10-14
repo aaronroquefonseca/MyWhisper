@@ -7283,6 +7283,45 @@ while True:
     }
 
     #[test]
+    fn repeated_release_before_press_never_installs_stale_sessions() {
+        // R08: a release/cancel/reset (epoch bump) landing before the queued
+        // press installs its session must publish nothing, no matter how many
+        // replacement cycles race it. Stale epochs return before any policy,
+        // asset or recorder work; only the latest reservation may proceed.
+        let Some(_shutdown) =
+            isolated_capture_probe("repeated_release_before_press_never_installs_stale_sessions")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let writer = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let stt = writer.load_settings().stt;
+        let mut installed = 0usize;
+        for _ in 0..300 {
+            let stale = reserve_utterance();
+            // A newer input edge (or release/cancel/reset) replaces it before
+            // the queued press runs.
+            let fresh = reserve_utterance();
+            assert!(fresh > stale);
+            invalidate_all_capture();
+            begin_reserved_utterance(stale, stt.clone(), false, root.path(), 0);
+            assert!(live().lock().unwrap().is_none());
+            installed += live().lock().unwrap().is_some() as usize;
+        }
+        assert_eq!(installed, 0);
+        // 300 cycles × (2 reservations + 1 invalidation) all advanced the
+        // epoch: this also proves the loop above really ran.
+        let after_storm = INPUT_EPOCH.load(Ordering::Acquire);
+        // Ownership still belongs to the latest reservation after the storm.
+        let epoch = reserve_utterance();
+        assert!(after_storm >= 900);
+        assert_eq!(INPUT_EPOCH.load(Ordering::Acquire), epoch);
+        assert!(live().lock().unwrap().is_none());
+        crate::runtime::drain(Duration::from_secs(3)).unwrap();
+    }
+
+    #[test]
     fn background_authorization_cannot_block_input_or_adopt_a_replaced_database() {
         let Some(_shutdown) = isolated_capture_probe(
             "background_authorization_cannot_block_input_or_adopt_a_replaced_database",
