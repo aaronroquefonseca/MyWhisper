@@ -72,6 +72,12 @@ const SHERPA_ONLINE_PORT: u16 = 6006;
 const SHERPA_OFFLINE_PORT: u16 = 6007;
 /// Qwen sidecar default (clear of whisper/sherpa/self-hosted ports).
 const QWEN_PORT: u16 = 8011;
+/// vLLM engine init (weights + KV cache + warmup) takes ~40 s for
+/// the 1.7B model before it binds; the native servers answer in
+/// milliseconds. Cold starts must wait it out instead of failing at
+/// the shared 20 s budget (the child stays supervised, so a timeout
+/// error on first use would be pure UX damage).
+const QWEN_START_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Effective server bind + port override, resolved from settings
 /// once per utterance/ensure (see Network section). One server runs
@@ -544,7 +550,7 @@ pub fn reap_stale_servers(data_dir: &Path) {
         let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
         if cmdline.contains("whisper-server")
             || cmdline.contains("sherpa-onnx")
-            || cmdline.contains("qwen_server.py")
+            || cmdline.contains("qwen/server.py")
         {
             eprintln!("[stt] reaping stale {name} (pid {pid})");
             unsafe {
@@ -565,15 +571,17 @@ pub fn reap_stale_servers(data_dir: &Path) {
     }
 }
 
-/// Exact server binary per supervised name. Exact match matters:
-/// the packs ship dozens of `sherpa-onnx-*` CLI tools that must
-/// never be mistaken for servers (adopt/reap/scan).
+/// Exact sidecar script path fragment per supervised name. This
+/// matches the child's argv (`.../bin/qwen/server.py`): a bare
+/// `qwen_server.py` never appears there (the file on disk is
+/// `server.py`), and matching it would leave Qwen permanently
+/// "external" — unadoptable, unreapable, unstoppable.
 fn server_binary_marker(name: &str) -> &str {
     match name {
         "whisper" => "whisper-server",
         "sherpa-offline" => "sherpa-onnx-offline-websocket-server",
         "sherpa-online" => "sherpa-onnx-online-websocket-server",
-        "qwen" => "qwen_server.py",
+        "qwen" => "qwen/server.py",
         other => other,
     }
 }
@@ -638,7 +646,7 @@ pub fn server_status(data_dir: &Path, net: &ServerNet) -> Vec<(String, bool)> {
                 std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
             cmdline.contains("whisper-server")
                 || cmdline.contains("sherpa-onnx")
-                || cmdline.contains("qwen_server.py")
+                || cmdline.contains("qwen/server.py")
         });
         // Local map (same process) is authoritative when present.
         let local = servers().lock().ok().and_then(|mut m| {
@@ -677,7 +685,7 @@ pub fn drop_servers(data_dir: &Path) {
         let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
         if cmdline.contains("whisper-server")
             || cmdline.contains("sherpa-onnx")
-            || cmdline.contains("qwen_server.py")
+            || cmdline.contains("qwen/server.py")
         {
             unsafe {
                 libc_kill(*pid);
@@ -770,6 +778,7 @@ fn ensure_server(
     name: &str,
     key: String,
     port: u16,
+    start_timeout: Duration,
     spawn: impl FnOnce() -> Result<Child, String>,
     probe: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
@@ -882,8 +891,11 @@ fn ensure_server(
                  see /tmp/mywhisper-{name}.log (missing shared libs?)"
             ));
         }
-        if start.elapsed() >= SERVER_START_TIMEOUT {
-            return Err(format!("server on port {port} did not answer in 20 s"));
+        if start.elapsed() >= start_timeout {
+            return Err(format!(
+                "server on port {port} did not answer in {} s",
+                start_timeout.as_secs()
+            ));
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -1000,6 +1012,7 @@ fn ensure_whisper(
         "whisper",
         key,
         whisper_port,
+        SERVER_START_TIMEOUT,
         || {
             let (out, err) = server_logs("whisper-server");
             let mut cmd = Command::new(&bin);
@@ -1201,6 +1214,7 @@ fn ensure_sherpa_offline(
         "sherpa-offline",
         key,
         offline_port,
+        SERVER_START_TIMEOUT,
         || {
             let f = |n: &str| dir_s.join(n).to_string_lossy().to_string();
             let (out, err) = server_logs("sherpa-offline-server");
@@ -1264,6 +1278,7 @@ fn ensure_sherpa_online(
         "sherpa-online",
         key,
         online_port,
+        SERVER_START_TIMEOUT,
         || {
             let f = |n: &str| dir_s.join(n).to_string_lossy().to_string();
             let (out, err) = server_logs("sherpa-online-server");
@@ -1488,6 +1503,7 @@ fn ensure_qwen(
         "qwen",
         key,
         qwen_port,
+        QWEN_START_TIMEOUT,
         || {
             let (out, err) = server_logs("qwen-server");
             let mut cmd = Command::new(&python_s);
@@ -1510,6 +1526,11 @@ fn ensure_qwen(
             // file is missing (fail fast instead of downloading).
             .env("HF_HUB_OFFLINE", "1")
             .env("TRANSFORMERS_OFFLINE", "1")
+            // Dictation-sized context: the upstream 64k default costs
+            // gigabytes of KV cache and tens of seconds of engine
+            // init for no ASR benefit (16k ≈ 5 min of audio + 1k new
+            // tokens). Explicit operator override still wins.
+            .env("QWEN_MAX_MODEL_LEN", qwen_max_model_len())
             .env_remove("PYTHONHOME")
             .env_remove("PYTHONPATH")
             .spawn()
@@ -1517,6 +1538,15 @@ fn ensure_qwen(
         },
         move || probe_qwen(qwen_port),
     )
+}
+
+/// vLLM context cap for the sidecar: operator env wins, otherwise a
+/// dictation-sized default (see spawner note).
+fn qwen_max_model_len() -> String {
+    std::env::var("QWEN_MAX_MODEL_LEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "16384".to_string())
 }
 
 /// Readiness probe: /health answers, then 0.5 s of silence decodes
@@ -4282,6 +4312,47 @@ mod tests {
             8011,
         );
         assert_ne!(a, c, "backend switch must respawn");
+    }
+
+    #[test]
+    fn qwen_marker_matches_spawned_argv() {
+        // The sidecar is spawned as `<venv>/bin/python
+        // <data>/bin/qwen/server.py ...`: the marker must hit that
+        // argv, or Qwen can never be managed (adopt/status/reap/drop
+        // all miss it and it reads "external" forever).
+        let argv = "/home/u/.local/share/mywhisper/bin/qwen/server.py --model x --backend vllm";
+        assert!(
+            argv.contains(server_binary_marker("qwen")),
+            "marker must match spawned argv"
+        );
+        assert!(
+            !argv.contains("qwen_server.py"),
+            "old marker never matched the real argv"
+        );
+        // No cross-talk with the native servers' markers.
+        for other in [
+            "/usr/bin/whisper-server --model m",
+            "sherpa-onnx-online-websocket-server --port 6006",
+            "sherpa-onnx-offline-websocket-server --port 6007",
+        ] {
+            assert!(
+                !other.contains(server_binary_marker("qwen")),
+                "qwen marker must not hit {other}"
+            );
+            assert!(
+                !argv.contains(server_binary_marker("whisper"))
+                    && !argv.contains(server_binary_marker("sherpa-online")),
+                "native markers must not hit the sidecar argv"
+            );
+        }
+    }
+
+    #[test]
+    fn qwen_gets_patient_start_budget() {
+        // vLLM binds after weights + KV cache + warmup (~40 s for
+        // 1.7B); the shared 20 s budget failed every cold start.
+        assert!(QWEN_START_TIMEOUT >= Duration::from_secs(120));
+        assert_eq!(SERVER_START_TIMEOUT, Duration::from_secs(20));
     }
 
     #[test]
