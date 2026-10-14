@@ -327,6 +327,18 @@ impl VoiceOverlay {
         self.set_state(OverlayState::Processing);
     }
 
+    pub fn capture_error(&self) -> Option<String> {
+        self.inner.viz.capture_error()
+    }
+
+    pub fn show_error(&self) {
+        self.set_state(OverlayState::Error);
+        self.inner
+            .viz
+            .set_live_text(Some(crate::i18n::tr("capture.failed").to_owned()));
+        self.fit_window_to_content();
+    }
+
     /// Show the expanded Assistant panel.
     pub fn show_assistant(&self) {
         self.set_state(OverlayState::Assistant);
