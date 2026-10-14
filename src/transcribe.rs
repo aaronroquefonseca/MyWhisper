@@ -5036,7 +5036,8 @@ fn deliver(
             discarded: false,
             wav: wav.as_deref(),
         },
-        operation.cancel_flag(),    ) {
+        operation.cancel_flag(),
+    ) {
         Ok(true) => {}
         Ok(false) => return FinalizationOutcome::Cancelled,
         Err(error) => {
@@ -5045,24 +5046,25 @@ fn deliver(
         }
     }
     let settings = store.load_settings();
-    if !operation.permitted() || store.capture_epoch().ok() != Some(privacy_epoch) {
-        return FinalizationOutcome::Cancelled;
-    }
-    // Same-store authority: the frozen `Operation::guard()` already binds
-    // the pressed database identity (device/inode) plus the durable epoch
-    // on every check, so a replaced database can never pair a stale epoch
-    // with a new file. The separately opened delivery handle below is only
-    // ever trusted when it agrees on the admitted `privacy_epoch`.
+    // Owned delivery authority on the delivery handle (DeliveryAuth
+    // evolution): pins file identity plus the admitted epoch and
+    // rechecks on every use with sticky denials. This subsumes the manual
+    // epoch comparison: the press-time Operation and the delivery-time
+    // authority must both stay live, each bound to its own handle, so a
+    // replaced database can never pair a stale epoch with a new file.
+    let delivery = match crate::clipboard::DeliveryAuth::capture(
+        store,
+        privacy_epoch,
+        Arc::new(AtomicBool::new(false)),
+    ) {
+        Ok(delivery) => Arc::new(delivery),
+        Err(error) => {
+            eprintln!("[stt] delivery authority: {error}");
+            return stopped_outcome(operation);
+        }
+    };
     let authority = operation.guard();
-    let clipboard_store = Mutex::new(store);
-    let guard: crate::selection::Guard = Arc::new(move || {
-        authority()
-            && clipboard_store
-                .lock()
-                .ok()
-                .and_then(|store| store.capture_epoch().ok())
-                == Some(privacy_epoch)
-    });
+    let guard: crate::selection::Guard = Arc::new(move || authority() && delivery.permitted());
     if settings.preferences.auto_paste {
         // Paste sequencing needs the synchronous token-verified pipeline
         // (snapshot, guarded copy, paste, conditional restore).

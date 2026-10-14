@@ -248,6 +248,25 @@ pub(crate) fn status(spec: Spec) -> Status {
     value
 }
 
+/// Provider admission always verifies content anew on its owned worker. UI
+/// cache hints are never authority to execute an installed runtime/model.
+pub(crate) fn admit(
+    spec: &Spec,
+    check: impl Fn() -> Result<(), String>,
+) -> Result<Arc<VerifiedAsset>, String> {
+    check()?;
+    let proof = verify_spec(spec, &check).map_err(|status| match status {
+        Status::NeedsVerification => "Existing runtime files need verification in Language Models before use; files have been preserved".into(),
+        Status::Missing => "Required local files are missing; install them in Language Models".into(),
+        value => verification_error(value),
+    })?;
+    check()?;
+    if !proof.unchanged() {
+        return Err("installed content changed during provider admission".into());
+    }
+    Ok(Arc::new(proof))
+}
+
 fn verify_spec(
     spec: &Spec,
     check: &impl Fn() -> Result<(), String>,

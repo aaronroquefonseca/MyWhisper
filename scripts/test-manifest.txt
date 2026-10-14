@@ -120,6 +120,9 @@ test|lib|net::tests::queued_enumeration_cannot_gain_permission_after_disable_and
 test|lib|net::tests::spoofed_node_id_rejected|run
 test|lib|net::tests::stopped_engine_cancels_queued_dials_and_an_active_noise_handshake|run
 test|lib|net::tests::trickled_frames_obey_whole_frame_deadline_and_reject_lengths|run
+test|lib|operation::tests::capture_authority_survives_phase_change_but_not_database_replacement|run
+test|lib|operation::tests::guard_cancel_and_permission_chain_share_fate|run
+test|lib|operation::tests::unreadable_capture_policy_stays_denied_after_recovery|run
 test|lib|private_fs::tests::bounded_read_rejects_oversized_files_and_symlinks_without_modifying_them|run
 test|lib|private_fs::tests::fifo_reads_and_locks_fail_without_waiting_for_a_writer|run
 test|lib|private_fs::tests::ordinary_reads_preserve_metadata_and_private_reads_protect_legacy_keys|run
