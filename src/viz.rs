@@ -136,6 +136,12 @@ impl SimMic {
     }
 }
 
+impl Default for SimMic {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LevelSource for SimMic {
     fn sample(&mut self, dt: f32) -> f32 {
         self.t += dt;
@@ -284,9 +290,12 @@ impl Visualizer {
 
         // Frame clock.
         {
-            let s = state.clone();
-            let a = area.clone();
+            let s = Rc::downgrade(&state);
+            let a = area.downgrade();
             glib::timeout_add_local(Duration::from_millis(TICK_MS), move || {
+                let (Some(s), Some(a)) = (s.upgrade(), a.upgrade()) else {
+                    return glib::ControlFlow::Break;
+                };
                 tick(&mut s.borrow_mut());
                 a.queue_draw();
                 glib::ControlFlow::Continue
@@ -416,6 +425,16 @@ impl Visualizer {
     /// it the moment it hides.
     pub fn set_mic_active(&self, active: bool) {
         self.state.borrow_mut().mic.set_active(active);
+    }
+
+    pub fn capture_error(&self) -> Option<String> {
+        self.state.borrow().mic.capture_error().map(str::to_owned)
+    }
+}
+
+impl Default for Visualizer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -774,16 +793,4 @@ fn draw_mic(cr: &cairo::Context, x: f64, height: f64) {
     cr.move_to(cx - 3.5, top + 16.0);
     cr.line_to(cx + 3.5, top + 16.0);
     let _ = cr.stroke();
-}
-
-impl Default for SimMic {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Default for Visualizer {
-    fn default() -> Self {
-        Self::new()
-    }
 }
