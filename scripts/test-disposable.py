@@ -206,6 +206,7 @@ class DisposableTmpfsScratch(unittest.TestCase):
 import os, pathlib
 root = pathlib.Path(os.environ['MYWHISPER_AUDIT_ROOT'])
 temporary = pathlib.Path(os.environ['TMPDIR'])
+limit_probe = root / '.limitprobe'
 assert temporary.is_relative_to(root)
 mounts = [line.split() for line in open('/proc/mounts')]
 assert 'MYWHISPER_AUDIT_TMPFS_TMP' not in os.environ
@@ -215,7 +216,19 @@ for variable, mode in [('HOME', 0o700), ('XDG_CONFIG_HOME', 0o700),
                        ('XDG_DATA_HOME', 0o700), ('XDG_RUNTIME_DIR', 0o700)]:
     assert pathlib.Path(os.environ[variable]).stat().st_mode & 0o777 == mode
 overlay = [fields for fields in mounts if fields[1] == str(temporary)]
-print('OVERLAY' if overlay and overlay[0][0] == 'tmpfs' else 'HOSTBACKED')
+capped_mount = [fields for fields in mounts if fields[1] == str(limit_probe)]
+if overlay and overlay[0][0] == 'tmpfs':
+    assert temporary.stat().st_mode & 0o777 == 0o700
+    scratch = os.statvfs(temporary)
+    assert scratch.f_blocks * scratch.f_frsize == 2147483648
+    assert capped_mount and capped_mount[0][0] == 'tmpfs'
+    assert limit_probe.stat().st_mode & 0o777 == 0o700
+    capped = os.statvfs(limit_probe)
+    assert capped.f_blocks * capped.f_frsize == 1048576
+    print('OVERLAY')
+else:
+    assert not capped_mount
+    print('HOSTBACKED')
 """
 
     def run_probe(self, label, flag):
@@ -244,6 +257,40 @@ print('OVERLAY' if overlay and overlay[0][0] == 'tmpfs' else 'HOSTBACKED')
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertIn("OVERLAY", result.stdout.decode())
 
+    def test_limit_probe_enforces_enospc_without_gigabyte_allocs(self):
+        code = r"""
+import errno, os, pathlib
+probe = pathlib.Path(os.environ['MYWHISPER_AUDIT_ROOT']) / '.limitprobe'
+written = 0
+try:
+    with open(probe / 'fill', 'wb') as handle:
+        while True:
+            handle.write(b'z' * 65536)
+            written += 65536
+except OSError as error:
+    assert error.errno == errno.ENOSPC, error
+assert written < 2 * 1048576, written
+print('ENOSPC-OK')
+"""
+        env = os.environ.copy()
+        env["MYWHISPER_AUDIT_TMPFS_TMP"] = "1"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(RUNNER),
+                "MYWHISPER_AUDIT_ROOT",
+                "tmpfsenospc",
+                sys.executable,
+                "-c",
+                code,
+            ],
+            env=env,
+            capture_output=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertIn("ENOSPC-OK", result.stdout.decode())
+
     def test_default_tmpdir_has_no_overlay(self):
         result = self.run_probe("tmpfsdefault", None)
         self.assertEqual(result.returncode, 0, result.stderr.decode())
@@ -262,6 +309,8 @@ print('OVERLAY' if overlay and overlay[0][0] == 'tmpfs' else 'HOSTBACKED')
             "temporary = pathlib.Path(os.environ['TMPDIR'])\n"
             "handle = os.open(temporary / 'secret', os.O_RDWR | os.O_CREAT, 0o600)\n"
             "os.write(handle, b'private'); os.fsync(handle); os.close(handle)\n"
+            "with open(root / '.limitprobe/fill', 'wb') as probe:\n"
+            "    probe.write(b'z' * 65536)\n"
             "(root / 'home/signal').touch()\n"
             "time.sleep(60)\n"
         )
@@ -299,6 +348,8 @@ print('OVERLAY' if overlay and overlay[0][0] == 'tmpfs' else 'HOSTBACKED')
                     time.sleep(0.05)
             hosted = [entry for entry in (scope / "tmp").iterdir()]
             self.assertEqual(hosted, [], "tmpfs contents leaked to the host view")
+            probed = [entry for entry in (scope / ".limitprobe").iterdir()]
+            self.assertEqual(probed, [], "probe contents leaked to the host view")
             self.assertTrue((scope / ".disposable").is_file())
             self.assertEqual(scope.stat().st_mode & 0o777, 0o700)
         finally:
