@@ -43,11 +43,13 @@ Specific version:
 ./packaging/arch/update.sh 0.9.0
 ```
 
-The script downloads the tarball, bumps the PKGBUILD, runs
-`makepkg -si` (needs sudo), then enables the user service:
+The script downloads the tarball, verifies its authoritative SHA-256
+digest, validates the artifact, bumps the PKGBUILD, runs
+`makepkg -si` (needs sudo), then enables and restarts the user service
+so the upgraded engine replaces the running one:
 
 ```bash
-systemctl --user enable --now mywhisper.service
+systemctl --user status mywhisper.service
 ```
 
 NixOS — flake input (HTTPS + token, no SSH needed):
@@ -67,9 +69,9 @@ imports = [ mywhisper.nixosModules.default ];
 services.mywhisper.enable = true;
 ```
 
-Plus a GitHub token in nix.conf for the private tarball
-(`access-tokens = github.com=...`) and the per-release `fetchzip`
-hash (see comments in `packaging/nixos/flake.nix`).
+Plus a GitHub token in nix.conf for the private source
+(`access-tokens = github.com=...`). The flake builds the locked
+source directly; there is no per-release binary hash to update.
 
 ## Build
 
@@ -108,7 +110,11 @@ change system graphics settings or the background service.
 
 ## System deps (Arch)
 
-gtk4, gtk4-layer-shell, libadwaita, alsa-lib, pkgconf.
+gtk4 (>= 4.22), gtk4-layer-shell, libadwaita (>= 1.5), alsa-lib,
+hicolor-icon-theme, wl-clipboard, wtype, libpulse (provides the
+`parec`/`pactl` capture and device tools), ca-certificates, pkgconf.
+Optional: gnome-keyring (Secret Service for the encrypted store),
+ydotool (optional paste backend, requires ydotoold).
 
 ### Packaging audit checks
 
