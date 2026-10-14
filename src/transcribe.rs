@@ -585,13 +585,74 @@ fn revoke_owner(id: u64) {
 /// clear a newer Stop (freshness-gated below).
 static LAST_STOP_GEN: AtomicU64 = AtomicU64::new(0);
 static STOPPED_FP: Mutex<String> = Mutex::new(String::new());
+/// Generation at which the watcher last observed autostart disabled.
+/// Together with `LAST_STOP_GEN` this orders a Stop against the
+/// deliberate toggle that suppression-expiry would serve: a Stop
+/// recorded after the last observed disable is newer than any toggle
+/// observation predating it, so the older transition must settle cold.
+/// A bare tick-top generation cannot express this (it postdates both an
+/// enable-save and a Stop in either order); the disable observation can.
+static LAST_DISABLE_OBSERVED_GEN: AtomicU64 = AtomicU64::new(0);
 
-/// Expire Stop suppression (service watcher: autostart re-enable is
-/// itself a deliberate control transition). Clears the fingerprint
-/// only; `LAST_STOP_GEN` is left intact so in-flight stale work still
-/// settles against it rather than resurrecting.
-pub fn expire_stop_suppression() {
+/// Record an observed autostart disable (service watcher only).
+pub(crate) fn note_disable_observed() {
+    LAST_DISABLE_OBSERVED_GEN.store(server_generation(), Ordering::Release);
+}
+
+/// Expire Stop suppression for a deliberate control transition (service
+/// watcher: autostart re-enable). Refuses — settling cold — when a Stop
+/// strictly newer than the last observed disable targets the current
+/// configuration; otherwise clears and lets the caller reconcile. The
+/// compare-and-clear runs under `START_LOCK` — the same lock every
+/// recorder holds — so a Stop cannot slip between the check and the
+/// clear. `LAST_STOP_GEN` is never cleared here, so in-flight stale
+/// work still settles against it.
+/// Returns true when the suppression was expired.
+pub fn expire_stop_suppression(data_dir: &Path) -> bool {
+    // Test seam (cfg(test) only): park before touching any lock, so a
+    // test can land an explicit Stop inside this window and prove the
+    // older transition settles instead of clearing.
+    #[cfg(test)]
+    if let Some((entered, proceed_)) = EXPIRY_PAUSE.lock().ok().and_then(|mut g| g.take()) {
+        let _ = entered.send(());
+        let _ = proceed_.recv_timeout(Duration::from_secs(10));
+    }
+    // Plain Store read, no locks held.
+    let fp_now = current_fingerprint(data_dir);
+    let _admission = match SERVER_START_LOCK.lock() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    if !fp_now.is_empty()
+        && LAST_STOP_GEN.load(Ordering::Acquire) > LAST_DISABLE_OBSERVED_GEN.load(Ordering::Acquire)
+        && STOPPED_FP
+            .lock()
+            .map(|g| g.as_str() == fp_now)
+            .unwrap_or(false)
+    {
+        return false;
+    }
     *STOPPED_FP.lock().unwrap_or_else(|p| p.into_inner()) = String::new();
+    true
+}
+
+/// Test-only barrier parked at expiry entry, so a test can land an
+/// explicit Stop between a tick's observation and its expiry and prove
+/// the older transition settles instead of clearing. Production builds
+/// contain no hook.
+#[cfg(test)]
+static EXPIRY_PAUSE: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> = Mutex::new(None);
+
+/// Install the expiry barrier (single-shot: entering takes it).
+#[cfg(test)]
+pub(crate) fn set_expiry_pause(tx: mpsc::Sender<()>, rx: mpsc::Receiver<()>) {
+    *EXPIRY_PAUSE.lock().unwrap() = Some((tx, rx));
+}
+
+/// Clear a parked (never reached) barrier so later tests never block.
+#[cfg(test)]
+pub(crate) fn clear_expiry_pause() {
+    EXPIRY_PAUSE.lock().unwrap().take();
 }
 
 #[cfg(test)]
@@ -7557,6 +7618,127 @@ mod tests {
         clear_reconcile_ensure_pause();
         drop_servers(root.path());
         wait_gone(pid_a2);
+        assert_eq!(active_count(), 0);
+    }
+
+    #[test]
+    fn older_toggle_cannot_clear_newer_stop() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        clear_reconcile_ensure_pause();
+        clear_expiry_pause();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let pack = stt::GPU_PACKS
+            .iter()
+            .find(|p| p.id == "whisper-cpu")
+            .unwrap();
+        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(
+            bin_dir.join("whisper-server"),
+            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = bin_dir.join("whisper-server");
+            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin, perms).unwrap();
+        }
+        let writer = seed_whisper_tiny(root.path());
+        // Local A starts through reconciliation.
+        let port_a = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let stt = writer.load_settings().stt;
+        let data_dir = root.path().to_path_buf();
+        let db_path = root.path().join("state.db");
+        // Watcher-style state, driven through the real tick: observe the
+        // boot state, then a genuine disable (recorded by the watcher
+        // for Stop ordering), so the parked toggle tick below is a
+        // re-enable of the same primary.
+        let stt_now = writer.load_settings().stt;
+        let mut last_primary = stt_primary_id(&stt_now, &data_dir);
+        let mut last_auto = true;
+        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(port_open(port_a));
+        let pid_a = servers().lock().unwrap()["whisper"].child.id();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = false;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(!last_auto, "disable was not observed");
+        assert!(port_open(port_a), "disable bounced a running server");
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        writer.save_settings(&settings).unwrap();
+        // Park the older toggle tick at expiry entry, then Stop while it
+        // is parked there: the Stop reaps the original PID, closes the
+        // socket and records its authority.
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        set_expiry_pause(entered_tx, proceed_rx);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                crate::service::stt_watcher_tick(
+                    &db_path,
+                    &data_dir,
+                    &mut last_primary,
+                    &mut last_auto,
+                );
+                let _ = done_tx.send(());
+            });
+            entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+            drop_servers(root.path());
+            wait_gone(pid_a);
+            assert!(proc_gone(pid_a));
+            assert!(!port_open(port_a));
+            proceed_tx.send(()).unwrap();
+            done_rx.recv_timeout(Duration::from_secs(25)).unwrap();
+        });
+        // The older tick settled cold without launching a replacement,
+        // yet recorded the toggle as seen.
+        assert!(last_auto, "revoked toggle was not settled");
+        assert!(!port_open(port_a), "older tick resurrected after Stop");
+        assert!(servers().lock().unwrap().is_empty());
+        // Subsequent unchanged ticks remain cold (no postponed
+        // resurrection on the next poll).
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(!port_open(port_a));
+        assert!(servers().lock().unwrap().is_empty());
+        // A genuinely later deliberate transition still starts: observe
+        // a disable (refreshing the ordering marker past the Stop),
+        // then enable, so the expiry observes no newer Stop.
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(!port_open(port_a));
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = false;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(!last_auto);
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(last_auto);
+        assert!(port_open(port_a), "genuine later enable did not start A");
+        let pid_on = servers().lock().unwrap()["whisper"].child.id();
+        assert!(!proc_gone(pid_on));
+        clear_expiry_pause();
+        clear_reconcile_ensure_pause();
+        drop_servers(root.path());
+        wait_gone(pid_on);
         assert_eq!(active_count(), 0);
     }
 

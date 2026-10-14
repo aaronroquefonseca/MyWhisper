@@ -451,8 +451,14 @@ pub fn stt_watcher_tick(
         if curr_auto {
             // Re-enabling is itself deliberate: expire any Stop
             // suppression of this fingerprint before warming, so
-            // the current local configuration starts.
-            crate::transcribe::expire_stop_suppression();
+            // the current local configuration starts — unless a newer
+            // Stop (past the last observed disable) revoked this
+            // observation, in which case settle cold (recording the
+            // toggle as seen so later ticks stay cold).
+            if !crate::transcribe::expire_stop_suppression(data_dir) {
+                *last_auto = curr_auto;
+                return;
+            }
             match crate::transcribe::reconcile_servers(&stt, data_dir) {
                 Ok(deferred) => {
                     if !deferred {
@@ -464,7 +470,10 @@ pub fn stt_watcher_tick(
                 }
             }
         } else {
-            // Disable keeps the running server (no bounce).
+            // Disable keeps the running server (no bounce), but
+            // records the observation so a later Stop is ordered
+            // strictly after it for suppression-expiry purposes.
+            crate::transcribe::note_disable_observed();
             *last_auto = curr_auto;
         }
     }
