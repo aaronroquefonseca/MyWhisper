@@ -409,13 +409,39 @@ pub fn stt_watcher_tick(
     let Ok(store) = Store::open(db_path) else {
         return;
     };
+    // Control-generation witness BEFORE any settings/fingerprint reads:
+    // a Stop (or any bump) landing inside the snapshot window below must
+    // not pair its authority with this observation.
+    let gen_before = crate::transcribe::server_generation();
+    // Test seam (cfg(test) only): park after the witness, before the
+    // reads, so a test can land a control transition strictly inside
+    // the snapshot window. Production builds contain no hook.
+    #[cfg(test)]
+    if let Some((entered, proceed_)) = crate::transcribe::TICK_SNAPSHOT_PAUSE
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take())
+    {
+        let _ = entered.send(());
+        let _ = proceed_.recv_timeout(Duration::from_secs(10));
+    }
     let stt = store.load_settings().stt;
     let curr_primary = crate::transcribe::stt_primary_id(&stt, data_dir);
     let curr_auto = stt.auto_start_server;
-    // Observation authority: sampled with the snapshot above, so a
-    // delayed disable update below cannot acquire a later Stop's
-    // generation as its own.
-    let gen_at_observe = crate::transcribe::server_generation();
+    let gen_snap = crate::transcribe::server_generation();
+    if gen_snap != gen_before {
+        // Torn snapshot: a control transition landed mid-read. Apply
+        // nothing — no marker, no last_* advance, no reconcile — and
+        // retry on the next poll with a fresh snapshot. The transition
+        // itself already recorded its own authority (Stop bumps and
+        // records; replacements bump for stale-work abort), so deferring
+        // here only costs one poll interval, never correctness. Never
+        // re-sample and continue: that would reintroduce the gap.
+        eprintln!("[service] STT snapshot torn by concurrent control; retrying next poll");
+        return;
+    }
+    // From here `gen_snap` is validated authority for this observation:
+    // it predates every input above and no transition interleaved.
     if curr_primary == *last_primary && curr_auto == *last_auto {
         return;
     }
@@ -475,10 +501,10 @@ pub fn stt_watcher_tick(
             }
         } else {
             // Disable keeps the running server (no bounce), but
-            // records the observation (with the authority sampled
-            // above) so a later Stop is ordered strictly after it
+            // records the observation with the validated witness
+            // above, so a later Stop is ordered strictly after it
             // for suppression-expiry purposes.
-            crate::transcribe::note_disable_observed(gen_at_observe);
+            crate::transcribe::note_disable_observed(gen_snap);
             *last_auto = curr_auto;
         }
     }

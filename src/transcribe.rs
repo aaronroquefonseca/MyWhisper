@@ -632,6 +632,27 @@ pub(crate) fn clear_note_pause() {
     NOTE_PAUSE.lock().unwrap().take();
 }
 
+/// Test-only barrier parked between the watcher's control-generation
+/// witness and its settings/fingerprint reads. Lets a test land a Stop
+/// (or any bumping transition) strictly inside the snapshot window and
+/// prove the torn tick discards instead of pairing stale settings with
+/// newer authority. Production builds contain no hook.
+#[cfg(test)]
+pub(crate) static TICK_SNAPSHOT_PAUSE: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> =
+    Mutex::new(None);
+
+/// Install the snapshot-window barrier (single-shot).
+#[cfg(test)]
+pub(crate) fn set_tick_snapshot_pause(tx: mpsc::Sender<()>, rx: mpsc::Receiver<()>) {
+    *TICK_SNAPSHOT_PAUSE.lock().unwrap() = Some((tx, rx));
+}
+
+/// Clear a parked (never reached) barrier so later tests never block.
+#[cfg(test)]
+pub(crate) fn clear_tick_snapshot_pause() {
+    TICK_SNAPSHOT_PAUSE.lock().unwrap().take();
+}
+
 /// Expire Stop suppression for a deliberate control transition (service
 /// watcher: autostart re-enable). Refuses — settling cold — when a Stop
 /// strictly newer than the last observed disable targets the current
@@ -7877,6 +7898,131 @@ mod tests {
         assert!(port_open(port_a), "genuine later enable did not start A");
         let pid_on = servers().lock().unwrap()["whisper"].child.id();
         assert!(!proc_gone(pid_on));
+        clear_note_pause();
+        clear_expiry_pause();
+        clear_reconcile_ensure_pause();
+        drop_servers(root.path());
+        wait_gone(pid_on);
+        assert_eq!(active_count(), 0);
+    }
+
+    #[test]
+    fn torn_snapshot_tick_discards_without_authority() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        clear_tick_snapshot_pause();
+        clear_note_pause();
+        clear_expiry_pause();
+        clear_reconcile_ensure_pause();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let pack = stt::GPU_PACKS
+            .iter()
+            .find(|p| p.id == "whisper-cpu")
+            .unwrap();
+        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(
+            bin_dir.join("whisper-server"),
+            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = bin_dir.join("whisper-server");
+            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin, perms).unwrap();
+        }
+        let writer = seed_whisper_tiny(root.path());
+        // Local A starts through reconciliation.
+        let port_a = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let data_dir = root.path().to_path_buf();
+        let db_path = root.path().join("state.db");
+        let stt = writer.load_settings().stt;
+        let mut last_primary = stt_primary_id(&stt, &data_dir);
+        let mut last_auto = true;
+        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(port_open(port_a));
+        let pid_a = servers().lock().unwrap()["whisper"].child.id();
+        // Disable through a real tick so the marker is genuinely fresh
+        // (no Stop can be newer than this observation yet).
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = false;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(!last_auto);
+        assert!(port_open(port_a), "disable bounced a running server");
+        // Park the next (re-enable) tick between its witness capture and
+        // its settings reads, then Stop strictly inside that window: the
+        // tick must discard the torn snapshot instead of pairing the
+        // pre-window witness with post-window authority.
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        writer.save_settings(&settings).unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        set_tick_snapshot_pause(entered_tx, proceed_rx);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                crate::service::stt_watcher_tick(
+                    &db_path,
+                    &data_dir,
+                    &mut last_primary,
+                    &mut last_auto,
+                );
+                let _ = done_tx.send(());
+            });
+            entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+            drop_servers(root.path());
+            wait_gone(pid_a);
+            assert!(proc_gone(pid_a));
+            assert!(!port_open(port_a));
+            proceed_tx.send(()).unwrap();
+            done_rx.recv_timeout(Duration::from_secs(25)).unwrap();
+        });
+        // Discarded: the toggle was neither applied nor settled, the
+        // recording-less server stays down, and no marker was touched —
+        // the next tick still sees a pending re-enable.
+        assert!(!last_auto, "torn tick applied or settled anything");
+        assert!(!port_open(port_a), "torn tick resurrected after Stop");
+        assert!(servers().lock().unwrap().is_empty());
+        // Retry with a clean window: the pending re-enable is observed
+        // against post-Stop authority and settles cold (the Stop is
+        // newer than the disable observation, settings unchanged).
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(last_auto);
+        assert!(!port_open(port_a));
+        assert!(servers().lock().unwrap().is_empty());
+        // Unchanged ticks stay cold.
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(!port_open(port_a));
+        // A genuinely later deliberate transition still starts: fresh
+        // disable observation past the Stop, then enable.
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = false;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(!last_auto);
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(last_auto);
+        assert!(port_open(port_a), "genuine later enable did not start A");
+        let pid_on = servers().lock().unwrap()["whisper"].child.id();
+        assert!(!proc_gone(pid_on));
+        clear_tick_snapshot_pause();
         clear_note_pause();
         clear_expiry_pause();
         clear_reconcile_ensure_pause();
