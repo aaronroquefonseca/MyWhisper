@@ -1,62 +1,67 @@
-diff --git b/src/clipboard.rs a/src/clipboard.rs
-index 54ed322..a2ad320 100644
---- b/src/clipboard.rs
-+++ a/src/clipboard.rs
-@@ -242,6 +242,48 @@ fn request(
-     stopped.store(true, Ordering::Release);
-     outcome
+--- a/src/store.rs
++++ b/src/store.rs
+@@ -1598,6 +1598,17 @@
+         bump_data_gen();
+         Ok(())
+     }
++    /// Adopt a worker-loaded snapshot without doing database IO on GTK.
++    pub(crate) fn adopt_settings_baseline(
++        &self,
++        settings: &AppSettings,
++        warning: Option<&'static str>,
++    ) -> rusqlite::Result<()> {
++        *self.settings_baseline.borrow_mut() = Some(Self::settings_value(settings)?);
++        self.settings_warning.set(warning);
++        Ok(())
++    }
++
+     /// Delete rows older than `days` (auto-delete transcripts).
+     /// Tombstones survive: dropping them would resurrect peers' rows.
+     pub fn purge_old_history(&self, days: u32) -> rusqlite::Result<usize> {
+--- a/src/stt.rs
++++ b/src/stt.rs
+@@ -672,6 +672,37 @@
+     });
  }
-+pub(crate) struct CopyTask {
-+    result: std::sync::mpsc::Receiver<Result<crate::selection::Payload, String>>,
-+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
-+}
-+impl CopyTask {
-+    pub fn poll(&self) -> Option<Result<(), String>> {
-+        match self.result.try_recv() {
-+            Ok(result) => Some(result.map(|_| ())),
-+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
-+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-+                Some(Err("clipboard worker stopped".into()))
-+            }
-+        }
-+    }
-+}
-+impl Drop for CopyTask {
-+    fn drop(&mut self) {
-+        self.cancelled
-+            .store(true, std::sync::atomic::Ordering::Release);
-+    }
-+}
-+pub(crate) fn copy_text_async(text: &str, sensitive: bool) -> Result<CopyTask, String> {
-+    use std::sync::{
-+        Arc,
-+        atomic::{AtomicBool, Ordering},
-+        mpsc,
-+    };
-+    let cancelled = Arc::new(AtomicBool::new(false));
-+    let stop = cancelled.clone();
-+    let guard: crate::selection::Guard =
-+        Arc::new(move || !crate::runtime::closing() && !stop.load(Ordering::Acquire));
-+    let (response, result) = mpsc::channel();
-+    worker()?
-+        .sender
-+        .try_send(Request {
-+            operation: Operation::Copy(text_payload(text), sensitive),
-+            guard,
-+            response,
-+        })
-+        .map_err(|_| "clipboard delivery queue is full")?;
-+    Ok(CopyTask { result, cancelled })
-+}
  
- fn pipeline_owned(
-     selection: &mut crate::selection::Selection,
-diff --git b/src/installed_asset.rs a/src/installed_asset.rs
-index cd12cfa..9ad091c 100644
---- b/src/installed_asset.rs
-+++ a/src/installed_asset.rs
-@@ -671,6 +671,75 @@ pub(crate) fn adopt_reference(stage: Stage, spec: Spec, cancel: &AtomicBool) ->
-     publish(spec, check)
++pub(crate) fn start_verification(data: PathBuf, id: &'static str) {
++    let key = if find_model(id).is_some() {
++        format!("model-{id}")
++    } else if GPU_PACKS.iter().any(|pack| pack.id == id) {
++        format!("gpu-{id}")
++    } else {
++        format!("sherpa-{id}")
++    };
++    let request = crate::artifact::observe_authority(&data, &key);
++    if let Some(entry) = find_model(id) {
++        start_artifact_download(id, entry.expected_bytes, move |cancel, callback| {
++            prepare_model(&data, entry, cancel, callback, true, Some(&request?))
++        });
++    } else if let Some(pack) = GPU_PACKS.iter().find(|pack| pack.id == id) {
++        start_artifact_download(id, None, move |cancel, callback| {
++            prepare_gpu_pack(&data, pack, cancel, callback, true, Some(&request?))
++        });
++    } else if let Some(pack) = SHERPA_PACKS.iter().find(|pack| pack.id == id) {
++        start_artifact_download(id, None, move |cancel, callback| {
++            prepare_sherpa_pack(&data, pack, cancel, callback, true, Some(&request?))
++        });
++    }
++}
++
++pub(crate) fn start_local_trust(spec: crate::installed_asset::Spec, id: &'static str) {
++    let request = crate::artifact::observe_authority(&spec.data, &spec.key);
++    start_artifact_download(id, None, move |cancel, callback| {
++        callback(DownloadEvent::Installing);
++        crate::installed_asset::trust_local(spec, cancel, Some(&request?))
++    });
++}
+ /// Admission and ownership are atomic. Long network IO does not consume the
+ /// short-job pool, and completion cannot overwrite a later attempt's state.
+ fn start_artifact_download(
+--- a/src/installed_asset.rs
++++ b/src/installed_asset.rs
+@@ -772,6 +772,74 @@
+     }
  }
  
 +/// Explicit local trust preserves custom/quantized models and manual engines.
@@ -127,11 +132,10 @@ index cd12cfa..9ad091c 100644
 +    check()?;
 +    publish(spec, check)
 +}
-+
- /// Called only on private staging after authenticated download and extraction.
- /// A crash before signing/promotion cannot make partial content look verified.
- pub(crate) fn seal(
-@@ -901,6 +970,88 @@ mod tests {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -901,6 +969,88 @@
          }
      }
  
@@ -220,11 +224,9 @@ index cd12cfa..9ad091c 100644
      #[test]
      fn promotion_retires_queued_and_active_asset_authority_without_losing_data() {
          let (_root, stage, spec) = prepared_fixture();
-diff --git b/src/lib.rs a/src/lib.rs
-index 16dadde..924c3ed 100644
---- b/src/lib.rs
-+++ a/src/lib.rs
-@@ -40,6 +40,8 @@ mod database_key;
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -40,6 +40,8 @@
  
  mod diagnostics;
  
@@ -233,11 +235,18 @@ index 16dadde..924c3ed 100644
  mod reset;
  
  mod sync_jobs;
-diff --git b/src/maintenance.rs a/src/maintenance.rs
-new file mode 100644
-index 0000000..81b7b6e
+--- a/src/runtime/shutdown_tests.rs
++++ b/src/runtime/shutdown_tests.rs
+@@ -210,6 +210,7 @@
+         ..Default::default()
+     };
+     assert!(crate::clipboard::run_pipeline("synthetic", &prefs, Arc::new(|| false)).is_err());
++    assert!(crate::clipboard::copy_text_async("late synthetic", true).is_err());
+     let began = std::time::Instant::now();
+     begin_shutdown();
+     assert!(!operation.permitted());
 --- /dev/null
-+++ a/src/maintenance.rs
++++ b/src/maintenance.rs
 @@ -0,0 +1,152 @@
 +//! Idle retention owned by a frontend's application state.
 +//!
@@ -391,80 +400,3 @@ index 0000000..81b7b6e
 +        );
 +    }
 +}
-diff --git b/src/runtime/shutdown_tests.rs a/src/runtime/shutdown_tests.rs
-index 8580c9d..9228563 100644
---- b/src/runtime/shutdown_tests.rs
-+++ a/src/runtime/shutdown_tests.rs
-@@ -214,6 +214,7 @@ fn shutdown_cancels_stalled_http_children_and_asset_authority() {
-     begin_shutdown();
-     assert!(!operation.permitted());
-     assert!(authority.check(&AtomicBool::new(false)).is_err());
-+    assert!(crate::clipboard::copy_text_async("late synthetic", true).is_err());
-     finish_shutdown().unwrap();
-     assert!(
-         began.elapsed() < Duration::from_secs(1),
-diff --git b/src/store.rs a/src/store.rs
-index ae6d016..400c797 100644
---- b/src/store.rs
-+++ a/src/store.rs
-@@ -1519,6 +1519,17 @@ impl Store {
-         Ok(())
-     }
- 
-+    /// Adopt a worker-loaded snapshot without doing database IO on GTK.
-+    pub(crate) fn adopt_settings_baseline(
-+        &self,
-+        settings: &AppSettings,
-+        warning: Option<&'static str>,
-+    ) -> rusqlite::Result<()> {
-+        *self.settings_baseline.borrow_mut() = Some(Self::settings_value(settings)?);
-+        self.settings_warning.set(warning);
-+        Ok(())
-+    }
-+
-     /// Delete rows older than `days` (auto-delete transcripts).
-     /// Tombstones survive: dropping them would resurrect peers' rows.
-     pub fn purge_old_history(&self, days: u32) -> rusqlite::Result<usize> {
-diff --git b/src/stt.rs a/src/stt.rs
-index af9524f..2545fe8 100644
---- b/src/stt.rs
-+++ a/src/stt.rs
-@@ -665,6 +665,38 @@ pub fn start_download(data_dir: PathBuf, id: &'static str) {
-     });
- }
- 
-+pub(crate) fn start_verification(data: PathBuf, id: &'static str) {
-+    let key = if find_model(id).is_some() {
-+        format!("model-{id}")
-+    } else if GPU_PACKS.iter().any(|pack| pack.id == id) {
-+        format!("gpu-{id}")
-+    } else {
-+        format!("sherpa-{id}")
-+    };
-+    let request = crate::artifact::observe_authority(&data, &key);
-+    if let Some(entry) = find_model(id) {
-+        start_artifact_download(id, entry.expected_bytes, move |cancel, callback| {
-+            prepare_model(&data, entry, cancel, callback, true, Some(&request?))
-+        });
-+    } else if let Some(pack) = GPU_PACKS.iter().find(|pack| pack.id == id) {
-+        start_artifact_download(id, None, move |cancel, callback| {
-+            prepare_gpu_pack(&data, pack, cancel, callback, true, Some(&request?))
-+        });
-+    } else if let Some(pack) = SHERPA_PACKS.iter().find(|pack| pack.id == id) {
-+        start_artifact_download(id, None, move |cancel, callback| {
-+            prepare_sherpa_pack(&data, pack, cancel, callback, true, Some(&request?))
-+        });
-+    }
-+}
-+
-+pub(crate) fn start_local_trust(spec: crate::installed_asset::Spec, id: &'static str) {
-+    let request = crate::artifact::observe_authority(&spec.data, &spec.key);
-+    start_artifact_download(id, None, move |cancel, callback| {
-+        callback(DownloadEvent::Installing);
-+        crate::installed_asset::trust_local(spec, cancel, Some(&request?))
-+    });
-+}
-+
- /// Admission and ownership are atomic. Long network IO does not consume the
- /// short-job pool, and completion cannot overwrite a later attempt's state.
- fn start_artifact_download(

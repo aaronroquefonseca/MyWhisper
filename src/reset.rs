@@ -26,7 +26,7 @@ pub(crate) fn requested(data: &Path) -> std::io::Result<bool> {
 }
 
 fn read_intent(data: &Path) -> Result<Option<Intent>, String> {
-    match crate::private_fs::read_bounded(&data.join(INTENT), 1024) {
+    match crate::private_fs::read_private(&data.join(INTENT), 1024) {
         Ok(bytes) => {
             let intent: Intent = serde_json::from_slice(&bytes)
                 .map_err(|_| "reset recovery record is invalid; existing data preserved")?;

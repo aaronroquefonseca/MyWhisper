@@ -101,7 +101,8 @@ pub struct SyncEngine {
     stop: Arc<AtomicBool>,
     mdns: Option<crate::net::MdnsHandles>,
     listener: Option<crate::runtime::OwnedThread>,
-    watchers: Vec<crate::runtime::OwnedThread>,}
+    watchers: Vec<crate::runtime::OwnedThread>,
+}
 
 impl Drop for SyncEngine {
     fn drop(&mut self) {
@@ -113,7 +114,8 @@ impl Drop for SyncEngine {
             let _ = listener.join();
         }
         for watcher in self.watchers.drain(..) {
-            let _ = watcher.join();        }
+            let _ = watcher.join();
+        }
         set_sync_port(0);
         eprintln!("[sync] engine stopped");
     }
@@ -149,7 +151,8 @@ pub fn start_sync_engine(
         Ok(listener) => listener,
         Err(error) => {
             eprintln!("[sync] listener unavailable: {error}");
-            return 0;        }
+            return 0;
+        }
     };
     let port = listener
         .as_ref()
@@ -231,7 +234,8 @@ pub fn spawn_sync_watcher(
     identity: DeviceIdentity,
     discovered: Arc<Mutex<HashMap<String, Discovered>>>,
 ) -> Result<crate::runtime::BackgroundTask, String> {
-    crate::runtime::BackgroundTask::spawn("sync-settings", move |stop| {        let mut first = true;
+    crate::runtime::BackgroundTask::spawn("sync-settings", move |stop| {
+        let mut first = true;
         // Last applied (enabled, port, name, advertise): any move
         // restarts the engine, so all edits apply immediately.
         let mut applied: Option<(bool, u16, String, bool)> = None;
@@ -285,7 +289,8 @@ pub fn spawn_sync_watcher(
                 applied = Some(want);
             }
         }
-    })}
+    })
+}
 
 /// Apply the persisted input gate and feedback preferences before accepting
 /// any listener event. Also used for later settings changes.
@@ -305,7 +310,8 @@ pub fn spawn_hotkey_watcher(
     if let Some(data) = db_path.parent() {
         crate::hotkey::configure_capture_suspend(data);
     }
-    crate::runtime::BackgroundTask::spawn("input-settings", move |stop| {        let mut last: (Vec<(String, crate::settings::ActivationMode)>, u64) = (Vec::new(), 0);
+    crate::runtime::BackgroundTask::spawn("input-settings", move |stop| {
+        let mut last: (Vec<(String, crate::settings::ActivationMode)>, u64) = (Vec::new(), 0);
         let mut first = true;
         let mut capture_epoch = Store::open_existing(&db_path)
             .ok()
@@ -431,7 +437,8 @@ pub fn spawn_hotkey_watcher(
                 );
             }
         }
-    })}
+    })
+}
 
 /// Commands from background threads to the service's GTK thread.
 /// `VoiceOverlay` is `!Send`, so everything pill-related crosses as
@@ -455,7 +462,8 @@ pub fn spawn_pill_watcher(
     db_path: PathBuf,
     tx: std::sync::mpsc::Sender<PillCmd>,
 ) -> Result<crate::runtime::BackgroundTask, String> {
-    crate::runtime::BackgroundTask::spawn("pill-settings", move |stop| {        let mut last: Option<crate::settings::PillPrefs> = None;
+    crate::runtime::BackgroundTask::spawn("pill-settings", move |stop| {
+        let mut last: Option<crate::settings::PillPrefs> = None;
         while !stop.wait(Duration::from_secs(2)) {
             let Ok(store) = Store::open_existing(&db_path) else {
                 continue;
@@ -469,7 +477,8 @@ pub fn spawn_pill_watcher(
                 }
             }
         }
-    })}
+    })
+}
 
 /// Service heartbeat file for the home banner (`<state>/service.json`,
 /// 5 s cadence): pid, version, boot time, last beat, consecutive
@@ -482,7 +491,8 @@ pub fn spawn_heartbeat(state_dir: PathBuf) -> Result<crate::runtime::BackgroundT
         .unwrap_or(0);
     let pid = std::process::id();
     crate::runtime::BackgroundTask::spawn("service-heartbeat", move |stop| {
-        while !stop.wait(Duration::from_secs(5)) {            let now = std::time::SystemTime::now()
+        while !stop.wait(Duration::from_secs(5)) {
+            let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
@@ -500,7 +510,8 @@ pub fn spawn_heartbeat(state_dir: PathBuf) -> Result<crate::runtime::BackgroundT
             }
             let _ = std::fs::write(&path, body.to_string());
         }
-    })}
+    })
+}
 
 /// Read someone else's heartbeat (GUI side). Ok only when fresh
 /// (< 15 s): stale or missing means not running.

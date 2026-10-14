@@ -468,7 +468,7 @@ struct ServerRecord {
 }
 
 fn pidfile_records(data_dir: &Path) -> HashMap<String, ServerRecord> {
-    crate::private_fs::read_bounded(&pidfile(data_dir), 16 * 1024)
+    crate::private_fs::read_private(&pidfile(data_dir), 16 * 1024)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
@@ -963,13 +963,14 @@ fn server_ld_path(data_dir: &Path, bin: &Path) -> String {
 /// Diagnose dependencies without storing runtime stderr (which may contain
 /// speech). Library names are bounded and validated before reaching a log/UI.
 fn require_runtime_dependencies(binary: &Path, loader_path: &str) -> Result<(), String> {
-    let output = crate::child::run(
+    let output = crate::child::run_guarded(
         Command::new("ldd")
             .arg(binary)
             .env("LD_LIBRARY_PATH", loader_path),
         &[],
         Duration::from_secs(3),
         1024 * 1024,
+        || !crate::runtime::closing(),
     )?;
     let missing = String::from_utf8_lossy(&output)
         .lines()
@@ -1080,12 +1081,7 @@ fn multipart_body(
     body
 }
 
-fn http_client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .dns_resolver(std::sync::Arc::new(crate::address::HttpResolver))
-        .timeout(INFERENCE_TIMEOUT)
-        .build()
-        .map_err(|e| format!("http client: {e}"))/// Provider URLs may contain credentials in userinfo, paths or queries.
+/// Provider URLs may contain credentials in userinfo, paths or queries.
 /// Classify failures without formatting the request or a provider body.
 pub(crate) fn http_error(operation: &str, error: &reqwest::Error) -> String {
     let category = if error.is_timeout() {
@@ -1099,7 +1095,8 @@ pub(crate) fn http_error(operation: &str, error: &reqwest::Error) -> String {
     } else {
         "transport failed"
     };
-    format!("{operation}: {category}")}
+    format!("{operation}: {category}")
+}
 
 #[cfg(test)]
 const MAX_PROVIDER_REPLY: u64 = 1024 * 1024;
@@ -3858,7 +3855,8 @@ fn finish_session(
             }
         }
     }
-    let overflowed = sess.recorder.lock().unwrap().overflowed();    if let Some(spec) = &sess.spec {
+    let overflowed = sess.recorder.lock().unwrap().overflowed();
+    if let Some(spec) = &sess.spec {
         spec.stop.store(true, Ordering::Release);
         // The speculative result is a preview until a settled complete decode
         // confirms it. Never consume the authoritative recorder before the
@@ -3868,7 +3866,8 @@ fn finish_session(
             operation,
             INFERENCE_TIMEOUT + Duration::from_secs(10),
         )?;
-    }    let (pcm, rate) = sess.recorder.lock().unwrap().finish();
+    }
+    let (pcm, rate) = sess.recorder.lock().unwrap().finish();
     if overflowed || crate::audio::capture_failed() {
         eprintln!("[stt] release: capture overflowed its bound; dropping truncated utterance");
         return Err("capture overflowed its bound".to_string());
@@ -4998,7 +4997,8 @@ fn deliver(
     let settings = store.load_settings();
     // Snippet expansion BEFORE post-processing: deterministic
     // trigger rewrites on the STT text. Raw stays pure for the raw
-    // view; final carries expansions into the LLM stage later.    let snips: Vec<(String, String)> = settings
+    // view; final carries expansions into the LLM stage later.
+    let snips: Vec<(String, String)> = settings
         .dictionary
         .snippets
         .iter()
@@ -5013,7 +5013,8 @@ fn deliver(
     );
     let text = match text {
         Ok(text) => text,
-        Err(_) if !operation.permitted() => return stopped_outcome(operation),        Err(error) => {
+        Err(_) if !operation.permitted() => return stopped_outcome(operation),
+        Err(error) => {
             eprintln!("[stt] cleanup failed: {error}");
             return FinalizationOutcome::Failed;
         }
@@ -5047,26 +5048,99 @@ fn deliver(
     if !operation.permitted() || store.capture_epoch().ok() != Some(privacy_epoch) {
         return FinalizationOutcome::Cancelled;
     }
-    let authority = operation.clone();
+    // Same-store authority: the frozen `Operation::guard()` already binds
+    // the pressed database identity (device/inode) plus the durable epoch
+    // on every check, so a replaced database can never pair a stale epoch
+    // with a new file. The separately opened delivery handle below is only
+    // ever trusted when it agrees on the admitted `privacy_epoch`.
+    let authority = operation.guard();
     let clipboard_store = Mutex::new(store);
     let guard: crate::selection::Guard = Arc::new(move || {
-        authority.permitted()
+        authority()
             && clipboard_store
                 .lock()
                 .ok()
                 .and_then(|store| store.capture_epoch().ok())
                 == Some(privacy_epoch)
     });
-    match crate::clipboard::run_pipeline(&text, &settings.preferences, guard.clone()) {
-        Ok(()) => FinalizationOutcome::Complete,
+    if settings.preferences.auto_paste {
+        // Paste sequencing needs the synchronous token-verified pipeline
+        // (snapshot, guarded copy, paste, conditional restore).
+        return match crate::clipboard::run_pipeline(&text, &settings.preferences, guard.clone()) {
+            Ok(()) => FinalizationOutcome::Complete,
+            Err(error) => {
+                eprintln!("[stt] clipboard delivery: {error}");
+                if guard() {
+                    FinalizationOutcome::Failed
+                } else {
+                    FinalizationOutcome::Cancelled
+                }
+            }
+        };
+    }
+    if !settings.preferences.keep_transcription_in_clipboard {
+        return FinalizationOutcome::Complete;
+    }
+    // Kept transcripts stay in the clipboard: no snapshot, paste or
+    // restore applies, so the async capture-edge copy is exactly
+    // equivalent to the synchronous leg while staying cancellable and
+    // bounded when a compositor stalls. Dropping the task revokes it.
+    async_copy_leg(&text, settings.preferences.hide_from_history, operation)
+}
+
+/// Async capture-edge copy for kept transcripts. Mirrors the outcome
+/// mapping of the synchronous leg: revocation/cancellation (epoch,
+/// policy or explicit cancel) reports `Cancelled`, live-authority
+/// failures report `Failed`. Deadline matches the sync worker bound.
+fn async_copy_leg(text: &str, sensitive: bool, operation: &Operation) -> FinalizationOutcome {
+    if !operation.permitted() {
+        return FinalizationOutcome::Cancelled;
+    }
+    let task = match crate::clipboard::copy_text_async(text, sensitive) {
+        Ok(task) => task,
         Err(error) => {
-            eprintln!("[stt] clipboard delivery: {error}");
-            if guard() {
+            eprintln!("[stt] async copy queue: {error}");
+            return if operation.permitted() {
                 FinalizationOutcome::Failed
             } else {
                 FinalizationOutcome::Cancelled
+            };
+        }
+    };
+    let deadline = Instant::now() + Duration::from_secs(100);
+    loop {
+        if !operation.permitted() {
+            drop(task);
+            return FinalizationOutcome::Cancelled;
+        }
+        if Instant::now() >= deadline {
+            eprintln!("[stt] async copy deadline exceeded");
+            drop(task);
+            return if operation.permitted() {
+                FinalizationOutcome::Failed
+            } else {
+                FinalizationOutcome::Cancelled
+            };
+        }
+        match task.poll() {
+            Some(Ok(())) => {
+                return if operation.permitted() {
+                    FinalizationOutcome::Complete
+                } else {
+                    FinalizationOutcome::Cancelled
+                };
             }
-        }    }
+            Some(Err(error)) => {
+                eprintln!("[stt] async copy: {error}");
+                return if operation.permitted() {
+                    FinalizationOutcome::Failed
+                } else {
+                    FinalizationOutcome::Cancelled
+                };
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -5124,6 +5198,20 @@ mod tests {
         isolated_capture_probe_with(name, |_| {})
     }
 
+    /// Test-only tap-slot read: contention never occurs in these
+    /// single-owner tests (production skips contended slices instead).
+    fn tap_owner() -> std::sync::Arc<std::sync::Mutex<Recorder>> {
+        match audio::callback_recorder() {
+            audio::TapSnapshot::Ready(owner) => owner.unwrap(),
+            audio::TapSnapshot::Contended => panic!("tap slot contended in test"),
+        }
+    }
+    fn tap_empty() {
+        match audio::callback_recorder() {
+            audio::TapSnapshot::Ready(owner) => assert!(owner.is_none()),
+            audio::TapSnapshot::Contended => panic!("tap slot contended in test"),
+        }
+    }
     fn isolated_capture_probe_with(
         name: &str,
         configure: impl FnOnce(&mut Command),
@@ -7042,7 +7130,7 @@ while True:
         input.press().unwrap();
         let samples: Vec<i16> = (0..16_000).map(|n| (n % 2000) as i16).collect();
         audio::tap_samples(&samples, 16_000);
-        let owner = audio::callback_recorder().unwrap().unwrap();
+        let owner = tap_owner();
         assert_eq!(owner.lock().unwrap().samples_since(0), samples);
         let server = std::thread::spawn(move || {
             let mut socket = accept_http_fixture(listener);
@@ -7063,27 +7151,19 @@ while True:
             FinalizationOutcome::Complete
         );
         assert!(result.try_recv().is_err(), "completion must occur once");
-        assert!(audio::callback_recorder().unwrap().is_none());
+        tap_empty();
         server.join().unwrap();
         // Repeated input remains independent of the still-blocked pool, and
         // a canceled owner cannot collect samples for the next recording.
         for _ in 0..12 {
             input.press().unwrap();
             audio::tap_samples(&[17; 320], 16_000);
-            let old = audio::callback_recorder().unwrap().unwrap();
+            let old = tap_owner();
             cancel_utterance(|| {});
             input.press().unwrap();
             audio::tap_samples(&[29; 320], 16_000);
             assert_eq!(old.lock().unwrap().samples_since(0), vec![17; 320]);
-            assert_eq!(
-                audio::callback_recorder()
-                    .unwrap()
-                    .unwrap()
-                    .lock()
-                    .unwrap()
-                    .samples_since(0),
-                vec![29; 320]
-            );
+            assert_eq!(tap_owner().lock().unwrap().samples_since(0), vec![29; 320]);
             cancel_utterance(|| {});
         }
         // This reader observes current mute even before the settings watcher
@@ -7091,7 +7171,7 @@ while True:
         settings.hotkeys.hotkeys_enabled = false;
         writer.save_settings(&settings).unwrap();
         assert!(input.press().is_err());
-        assert!(audio::callback_recorder().unwrap().is_none());
+        tap_empty();
         // All four short workers remain blocked through capture, inference
         // and completion: releasing them cannot be what makes this pass.
         for release in releases {
@@ -7188,7 +7268,7 @@ while True:
                 input.press().unwrap();
                 let first_samples = vec![100 + cycle; 16_000];
                 audio::tap_samples(&first_samples, 16_000);
-                let first_owner = audio::callback_recorder().unwrap().unwrap();
+                let first_owner = tap_owner();
                 let first_settled = live().lock().unwrap().as_ref().unwrap().settled.clone();
                 // Hold an actual reader callback at release. The tail worker
                 // cannot finish while the next input edge replaces its tap.
@@ -7196,7 +7276,7 @@ while True:
                 let (done, completion) = mpsc::channel();
                 end_utterance_with_outcome(move |outcome| done.send(outcome).unwrap());
                 input.press().unwrap();
-                let next_owner = audio::callback_recorder().unwrap().unwrap();
+                let next_owner = tap_owner();
                 assert!(!Arc::ptr_eq(&first_owner, &next_owner));
                 assert!(!first_settled.load(Ordering::Acquire));
                 let next_samples = vec![300 + cycle; 16_000];
@@ -7241,10 +7321,7 @@ while True:
                 assert!(completion.try_recv().is_err());
                 server.join().unwrap();
                 assert!(first_settled.load(Ordering::Acquire));
-                assert!(Arc::ptr_eq(
-                    &next_owner,
-                    &audio::callback_recorder().unwrap().unwrap()
-                ));
+                assert!(Arc::ptr_eq(&next_owner, &tap_owner()));
                 // Both a late callback retained by the old microphone reader
                 // and normal new-owner capture must preserve ownership.
                 first_owner.lock().unwrap().push(&[901; 320]);
@@ -7254,10 +7331,21 @@ while True:
                 assert_eq!(next_owner.lock().unwrap().snapshot(), expected_next);
                 assert_eq!(first_owner.lock().unwrap().len(), 0);
                 cancel_utterance(|| {});
-                assert!(audio::callback_recorder().unwrap().is_none());
+                tap_empty();
                 crate::runtime::drain(Duration::from_secs(3)).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn async_copy_leg_cancelled_operation_reports_cancelled_without_queueing() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        cancel.store(true, Ordering::Release);
+        let operation = Operation::cancellable(cancel);
+        assert_eq!(
+            async_copy_leg("synthetic", true, &operation),
+            FinalizationOutcome::Cancelled
+        );
     }
 
     #[test]
@@ -7328,20 +7416,12 @@ while True:
         input.press().unwrap();
         assert!(began.elapsed() < Duration::from_millis(100));
         audio::tap_samples(&[71; 320], 16_000);
-        assert_eq!(
-            audio::callback_recorder()
-                .unwrap()
-                .unwrap()
-                .lock()
-                .unwrap()
-                .snapshot(),
-            vec![71; 320]
-        );
+        assert_eq!(tap_owner().lock().unwrap().snapshot(), vec![71; 320]);
         let (done, completion) = mpsc::channel();
         let began = Instant::now();
         cancel_utterance(move || done.send(()).unwrap());
         assert!(began.elapsed() < Duration::from_millis(100));
-        assert!(audio::callback_recorder().unwrap().is_none());
+        tap_empty();
         drop(held);
         completion.recv_timeout(Duration::from_secs(3)).unwrap();
         assert!(completion.try_recv().is_err());
@@ -7360,7 +7440,7 @@ while True:
         std::fs::rename(&path, root.path().join("original.db")).unwrap();
         std::fs::rename(&replacement, &path).unwrap();
         assert!(input.press().unwrap_err().contains("replaced"));
-        assert!(audio::callback_recorder().unwrap().is_none());
+        tap_empty();
     }
 
     #[test]
@@ -7427,7 +7507,7 @@ while True:
                 "input action {action} blocked on database IO for {elapsed:?}"
             );
             assert!(!has_live());
-            assert!(audio::callback_recorder().unwrap().is_none());
+            tap_empty();
             set_session_preview(epoch, "stale synthetic preview".into());
             assert!(take_live_text().is_none());
         }

@@ -34,7 +34,9 @@ fn lock_file(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-#[cfg(test)]
+/// Non-blocking ownership probe for admission paths (reset worker,
+/// recovery ticks, installer promotion): `WouldBlock` means another
+/// process owns the operation and the caller must refuse, never wait.
 pub fn try_lock(path: &Path) -> io::Result<File> {
     let file = lock_file(path)?;
     file.try_lock_exclusive()?;

@@ -39,6 +39,15 @@ set_server_cmd, no parallel worker). New regressions: cross-process
 second-startup barrier, pending-on-FS-failure, single-flight interactive
 completion. #18 competing worker/boot-shortcut BLOCKED, not integrated.
 
+Restacked onto parent 4123680 (rebase, superseded c261f96 commits
+dropped): kept owned deliver pipeline + session core; adopted parent
+input rework (TapSnapshot contention-skip), clipboard token/selection
+evolution, smoke/harness files, rustls .46 lock. Transplant fixes:
+read_private/read-private + try_lock restored for prod admission paths,
+Launch machinery restored with spawn_supervised consumer, model_present
+carried for inference admission, store nonce primitives restored under
+#18 barrier comment, child::run call site moved to run_guarded,
+CopyTask wired as async keep-mode copy leg with operation.guard() root.
 Strict clippy is clean (0 errors): GUI-consumed impls relocated to #23
 with restoration payload in docs/audit-handoffs/gui-relocation-23/
 (CopyTask surface, baseline adopt, stt wrappers, RetentionMaintenance,

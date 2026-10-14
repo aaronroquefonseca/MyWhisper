@@ -1525,7 +1525,9 @@ impl Store {
     // nonce without re-wiping post-transaction edits; a failed
     // filesystem phase keeps the nonce pending and reports failure.
     // Foundation keeps the pending-reset barriers (capture, sync and
-    // settings gates refuse while pending) enforced here.    pub(crate) fn pending_reset_nonce(&self) -> rusqlite::Result<Option<String>> {
+    // settings gates refuse while pending) enforced here.
+
+    pub(crate) fn pending_reset_nonce(&self) -> rusqlite::Result<Option<String>> {
         self.conn
             .query_row(
                 "SELECT value FROM kv WHERE key='reset_pending'",

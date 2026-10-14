@@ -1,21 +1,20 @@
 # GUI-consumed implementation relocation → #23 (from #22)
 
 Supervisor ACCEPT (no suppression, no fake callers, exact preservation).
-Source head: see `source-head.txt`; per-file source blobs: `source-blobs.txt`.
-Base for `restore.patch`: #22 post-deletion head (this branch after the
-relocation commit). #23 pins its old parent while preparing, then applies
-its new parent plus this restoration as one child update and runs full
-gates before publication.
+Sources: immutable snapshot `08d2f6a` (byte-exact blocks) + pre-deletion
+blobs in `source-blobs.txt` (`source-head.txt`).
+Base for `restore.patch`: current #22 head (verified `git apply --check`
+clean). #23 pins its old parent while preparing, then applies its new
+parent plus this restoration as one child update and runs full gates
+before publication.
 
 ## Apply (in #23, from repo root, after rebasing onto new #22 parent)
 `git apply docs/audit-handoffs/gui-relocation-23/restore.patch`
-(from #22 head; paths are `src/...`). Then run fmt + strict clippy +
-full lib gates. `mod maintenance;` and `src/maintenance.rs` come back
-with the patch; no other #23 step needed for these symbols.
+(paths are `src/...`). Then run fmt + strict clippy + full lib gates.
+`mod maintenance;` and `src/maintenance.rs` come back with the patch;
+no other #23 step needed for these symbols.
 
 ## Moved symbols (prod callers all in #23-owned GUI files)
-- `src/clipboard.rs`: `CopyTask{result,cancelled}`, `CopyTask::poll`,
-  `Drop for CopyTask`, `copy_text_async` ← `app.rs` copy flow.
 - `src/store.rs`: `Store::adopt_settings_baseline` (stays `impl Store`;
   no broad API exposure) ← `app_settings.rs` snapshot adopt.
 - `src/stt.rs`: `start_verification`, `start_local_trust` ←
@@ -35,7 +34,14 @@ with the patch; no other #23 step needed for these symbols.
   shutdown cover; the sync-path denial assertion stays here. Coverage
   preserved, not weakened.
 
-## Explicitly NOT moved (retained in #22 foundation)
+## Explicitly NOT in this payload (carried in #22 foundation)
+- `CopyTask`/`poll`/`copy_text_async`: WIRED in #22 as the async
+  capture-edge copy (`transcribe.rs` keep-mode leg). #23 inherits.
+- `stt::model_present`: carried in #22 for inference admission
+  (`transcribe.rs` caller); #23 inherits it for status UI.
+- `reset::start`/`Job`/`Event`: service-driven entry (`reset` server
+  command → `Recovery::start_interactive`); #23 GUI contract is
+  `set_server_cmd("reset")`, never a parallel worker.
 - `src/reset.rs` worker/barriers: `run_owned`, `Recovery::{tick,drain,
   start_interactive}`, `requested`, intent/nonce protocol,
   `Event::{Snapshot,Finished}`, `Job{events}`, `start` — single worker

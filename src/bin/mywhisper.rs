@@ -252,7 +252,8 @@ fn run_headless(
     if let Err(error) = mywhisper::runtime::init() {
         eprintln!("[service] FATAL: {error}");
         return gtk4::glib::ExitCode::FAILURE;
-    }    mywhisper::hotkey::start_dictation(
+    }
+    mywhisper::hotkey::start_dictation(
         initial.hotkeys.effective_hotkeys(),
         initial.hotkeys.smart_tap_ms,
         down.clone(),
