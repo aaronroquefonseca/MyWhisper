@@ -481,6 +481,33 @@ mod tests {
     }
 
     #[test]
+    fn failed_cleanup_reports_failure_event_and_stays_pending_for_retry() {
+        // Supervisor-mandated: a failed filesystem phase must surface as
+        // Finished(Err) (the UI shows failure, never success) while the
+        // pending barrier stays set for an explicit retry.
+        let (data, db, _store) = fixture();
+        std::fs::write(data.path().join("models"), b"synthetic obstruction").unwrap();
+        let job = start(db.clone(), false).unwrap();
+        let mut finished = None;
+        let until = Instant::now() + Duration::from_secs(5);
+        while finished.is_none() && Instant::now() < until {
+            match job.events.recv_timeout(Duration::from_millis(100)) {
+                Ok(Event::Finished(result)) => finished = Some(result),
+                Ok(Event::Snapshot(..)) => {}
+                Err(_) => {}
+            }
+        }
+        let error = finished.expect("worker finished").unwrap_err();
+        assert!(error.contains("reset committed"));
+        let pending = Store::open_existing(&db).unwrap();
+        assert!(pending.reset_pending().unwrap());
+        assert_eq!(
+            std::fs::read(data.path().join("models")).unwrap(),
+            b"synthetic obstruction"
+        );
+    }
+
+    #[test]
     fn intent_revokes_active_capture_and_prevents_installer_promotion_before_commit() {
         let (data, db, store) = fixture();
         let epoch = store.capture_epoch().unwrap();
