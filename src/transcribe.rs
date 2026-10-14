@@ -3714,7 +3714,13 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
     } else {
         eprintln!("[stt] history disabled: pasting without storing");
     }
-    let epoch = store.capture_epoch();
+    let epoch = match store.capture_epoch() {
+        Ok(epoch) => epoch,
+        Err(error) => {
+            eprintln!("[stt] capture policy read failed: {error}");
+            return;
+        }
+    };
     let policy = crate::store::Store::open_existing(&paths.db_file())
         .map_err(|error| error.to_string())
         .and_then(|store| {
