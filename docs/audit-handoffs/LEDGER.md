@@ -93,18 +93,27 @@ retries-to-green unchanged. Whole suite stays REQUIRED locally for
 cross-case interference. libtest --exact full paths (no substring
 leak); empty bin/example harnesses run whole via --all-targets.
 
-Fail-closed coverage contract: manifest drift vs compiled --list
+Fail-closed coverage contract: manifest drift vs compiled listing
 (missing/extra test/target/ignored change), batch union/disjointness
 from logs (exactly once, no unrecognized, identical 5-ignored set),
-any batch exit failure or timeout. No test removal, payload shrink,
-output suppression or producer-count change.
+any batch exit failure or timeout. Target identity uses structured
+cargo artifact JSON (never colorized human banners — hosted
+CARGO_TERM_COLOR=always broke banner parsing: harnesses parsed as
+empty while tests matched); tests/ignored come from each harness
+executable's canonical libtest --list; batch logs are ANSI-stripped
+before verification and harnesses matched by target-name prefix.
+No test removal, payload shrink, output suppression or
+producer-count change.
 
 Evidence on this scope: manifest 114 tests + 4 empty harnesses,
 verify-manifest current; 4 local batches exit 0 (27+2, 28+1, 28+0,
 26+2 = 109 run + 5 ignored); verify-batches proves exactly-once.
-test-partition.py 6/6 synthetic regressions (stride, rejection,
-malformed/duplicate, 6 fail-closed log mutations, drift incl.
-ignored change).
+test-partition.py 9/9 synthetic + artifact/ANSI regressions
+(stride, rejection, malformed/duplicate, 6 fail-closed log mutations,
+drift incl. ignored change, artifact selection incl. rlib/build-script
+skips + dupes, colored-log acceptance, nonempty-harness refusal).
+CARGO_TERM_COLOR=always forced locally regenerates a byte-identical
+manifest — the hosted failure mode fixed by construction.
 
 #18 owes: precise testcase/target inventory (their 195 + ignored
 manifest on their branch) + validation of original scope and joined
