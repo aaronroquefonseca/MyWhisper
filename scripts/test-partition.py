@@ -203,27 +203,106 @@ class PartitionContract(unittest.TestCase):
         argv = ["partition-tests.py", "verify-manifest"]
         with tempfile.TemporaryDirectory() as directory:
             manifest = synthetic_manifest(directory)
-            extra = (
-                NAMES + ["mod::tests::case_new"],
-                IGNORED,
-                [(*harness, 0) for harness in HARNESSES],
-            )
+            extra = (NAMES + ["mod::tests::case_new"], IGNORED, HARNESSES)
             with mock.patch.object(PARTITION, "collect_tree", return_value=extra):
                 with self.assertRaises(SystemExit):
                     PARTITION.main([*argv, "--manifest", str(manifest)])
-            changed = (
-                NAMES,
-                IGNORED | {"mod::tests::case_00"},
-                [(*harness, 0) for harness in HARNESSES],
-            )
+            changed = (NAMES, IGNORED | {"mod::tests::case_00"}, HARNESSES)
             with mock.patch.object(PARTITION, "collect_tree", return_value=changed):
                 with self.assertRaises(SystemExit):
                     PARTITION.main([*argv, "--manifest", str(manifest)])
-            current = (NAMES, IGNORED, [(*harness, 0) for harness in HARNESSES])
+            current = (NAMES, IGNORED, HARNESSES)
             with mock.patch.object(PARTITION, "collect_tree", return_value=current):
                 self.assertEqual(
                     PARTITION.main([*argv, "--manifest", str(manifest)]), 0
                 )
+
+    def test_parse_harness_artifacts_selects_only_test_harnesses(self):
+        import json
+
+        def artifact(kind, name, executable, test):
+            return json.dumps(
+                {
+                    "reason": "compiler-artifact",
+                    "target": {"kind": [kind], "name": name},
+                    "executable": executable,
+                    "profile": {"test": test},
+                }
+            )
+
+        lines = [
+            artifact("lib", "mywhisper", "/tmp/lib-hash", True),
+            artifact("bin", "mywhisper", "/tmp/bin-hash", True),
+            artifact("example", "ui_preview", "/tmp/ex-hash", True),
+            artifact("lib", "mywhisper", None, test=False),  # rlib, no executable
+            json.dumps({"reason": "build-script", "package": "x"}),
+            artifact("bin", "pill", "/tmp/pill-hash", test=False),
+            "not json at all",
+            # ANSI-colored cargo banners live on stderr and never feed identity.
+            "\x1b[1m\x1b[32m     Running\x1b[0m unittests src/lib.rs (hash)",
+        ]
+        self.assertEqual(
+            PARTITION.parse_harness_artifacts("\n".join(lines)),
+            [
+                ("lib", "mywhisper", "/tmp/lib-hash"),
+                ("bin", "mywhisper", "/tmp/bin-hash"),
+                ("example", "ui_preview", "/tmp/ex-hash"),
+            ],
+        )
+        with self.assertRaises(SystemExit):
+            PARTITION.parse_harness_artifacts(
+                "\n".join(
+                    [
+                        artifact("bin", "mywhisper", "/tmp/a", True),
+                        artifact("bin", "mywhisper", "/tmp/b", True),
+                    ]
+                )
+            )
+
+    def test_verify_batches_accepts_colored_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = synthetic_manifest(directory)
+            log = Path(directory) / "batch-0.log"
+            lines = [
+                "     \x1b[1m\x1b[32mRunning\x1b[0m unittests src/bin/mywhisper.rs (target/debug/deps/mywhisper-abcdef)",
+                "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+                "     \x1b[1m\x1b[32mRunning\x1b[0m unittests examples/ui_preview.rs (target/debug/examples/ui_preview-123456)",
+                "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+            ]
+            for name in NAMES:
+                status = "ignored" if name in IGNORED else "ok"
+                lines.append(f"test {name} ... {status}")
+            log.write_text("\n".join(lines) + "\n")
+            self.assertEqual(
+                PARTITION.main(
+                    [
+                        "partition-tests.py",
+                        "verify-batches",
+                        "--manifest",
+                        str(manifest),
+                        "--logs",
+                        str(log),
+                    ]
+                ),
+                0,
+            )
+
+    def test_collect_tree_rejects_nonempty_nonlib_harness(self):
+        from unittest import mock
+
+        artifacts = [("lib", "mywhisper", "/tmp/lib"), ("bin", "tool", "/tmp/tool")]
+        listings = {"/tmp/lib": (["a::one"], []), "/tmp/tool": (["b::two"], [])}
+
+        def fake_list(executable, ignored_only):
+            tests, ignored = listings[executable]
+            return sorted(ignored) if ignored_only else sorted(tests)
+
+        with mock.patch.object(
+            PARTITION, "parse_harness_artifacts", return_value=artifacts
+        ):
+            with mock.patch.object(PARTITION, "list_executable", side_effect=fake_list):
+                with self.assertRaises(SystemExit):
+                    PARTITION.collect_tree()
 
 
 if __name__ == "__main__":

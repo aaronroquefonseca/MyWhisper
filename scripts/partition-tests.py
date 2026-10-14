@@ -10,14 +10,20 @@ unchanged libtest concurrency, production deadlines and assertions.
 Coverage contract (fail closed):
 - scripts/test-manifest.txt is CHECKED IN and reviewable. It pins every
   compiled test (target, path, run/ignored) and every empty harness.
-- CI regenerates the listing from the compiled tree and byte-compares the
+- CI regenerates the listing from the compiled tree and compares the
   test/harness sets: any missing/extra test, target, or ignored-set change
   fails the gate until the manifest is explicitly refreshed in review.
+  Target identity comes from structured cargo compiler-artifact JSON (never
+  human banners, which cargo colorizes under CARGO_TERM_COLOR=always);
+  test/ignored names come from canonical libtest --list of each harness
+  executable (uncolored when piped).
 - Batch i of N owns every Nth sorted lib test (stride). The verifier proves
   the batch logs execute every manifest test exactly once, with no
   failures, no unrecognized tests, and the identical ignored set.
+  Log parsing strips ANSI color codes first.
 - Empty harnesses (bins/examples with zero tests) always run whole via
   --all-targets; the verifier requires their zero-test summaries.
+  A non-empty non-lib harness is an explicit error, not silent coverage.
 - libtest filters use --exact full paths: no substring over-matching, so a
   test can never leak into two batches.
 
@@ -30,6 +36,7 @@ Subcommands:
                                     prove coverage from batch output logs
 """
 
+import json
 import re
 import subprocess
 import sys
@@ -39,40 +46,89 @@ ROOT = Path(__file__).resolve().parent.parent
 BATCHES = 4
 
 LIST_LINE = re.compile(r"^(\S+): test$")
-RUNNING_LINE = re.compile(r"^\s*Running unittests (\S+) \(")
-COUNT_LINE = re.compile(r"^\s*(\d+) tests?, \d+ benchmarks?$")
+RUNNING_LINE = re.compile(r"Running unittests (\S+) \(")
+ANSI_LINE = re.compile(r"\x1b\[[0-9;]*m")
 RESULT_LINE = re.compile(r"^test (\S+) \.\.\. (ok|ignored|FAILED)", re.MULTILINE)
 
 
-def cargo_list(target_args):
+def strip_ansi(text):
+    return ANSI_LINE.sub("", text)
+
+
+def cargo_no_run_json():
+    """Compile all targets and return stdout artifact JSON (banners on stderr)."""
     process = subprocess.run(
-        ["cargo", "test", "--locked", *target_args, "--", "--list"],
+        [
+            "cargo",
+            "test",
+            "--locked",
+            "--all-targets",
+            "--no-run",
+            "--message-format=json",
+        ],
         cwd=ROOT,
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=600,
     )
     if process.returncode != 0:
-        raise SystemExit(
-            f"cargo --list failed for {target_args}:\n{process.stderr[-2000:]}"
-        )
-    # Running/test-count banners go to stderr; test names to stdout.
-    return process.stdout + process.stderr
-
-
-def cargo_list_ignored(target_args):
-    process = subprocess.run(
-        ["cargo", "test", "--locked", *target_args, "--", "--list", "--ignored"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    if process.returncode != 0:
-        raise SystemExit(
-            f"cargo --list --ignored failed for {target_args}:\n{process.stderr[-2000:]}"
-        )
+        raise SystemExit(f"cargo --no-run failed:\n{process.stderr[-2000:]}")
     return process.stdout
+
+
+def parse_harness_artifacts(json_text):
+    """Return [(kind, name, executable)] for test harnesses from artifact JSON.
+
+    Skips rlibs (no executable), non-test profiles and non-JSON lines.
+    Duplicate (kind, name) entries fail closed.
+    """
+    harnesses = []
+    for line in json_text.splitlines():
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        if (
+            not isinstance(message, dict)
+            or message.get("reason") != "compiler-artifact"
+        ):
+            continue
+        target = message.get("target", {})
+        executable = message.get("executable")
+        profile = message.get("profile", {})
+        if not executable or not profile.get("test"):
+            continue
+        kinds = target.get("kind", [])
+        if "lib" in kinds:
+            kind = "lib"
+        elif "bin" in kinds:
+            kind = "bin"
+        elif "example" in kinds:
+            kind = "example"
+        else:
+            continue
+        entry = (kind, target.get("name"), executable)
+        if any(
+            known[0] == kind and known[1] == target.get("name") for known in harnesses
+        ):
+            raise SystemExit(
+                f"duplicate test harness artifact: {kind}/{target.get('name')}"
+            )
+        harnesses.append(entry)
+    return harnesses
+
+
+def list_executable(executable, ignored_only):
+    """Return sorted test names from one harness executable via libtest --list."""
+    args = [executable, "--list"] + (["--ignored"] if ignored_only else [])
+    process = subprocess.run(
+        args, cwd=ROOT, capture_output=True, text=True, timeout=120
+    )
+    if process.returncode != 0:
+        raise SystemExit(
+            f"harness --list failed for {executable}:\n{process.stderr[-2000:]}"
+        )
+    return parse_tests(process.stdout)
 
 
 def parse_tests(output):
@@ -86,28 +142,23 @@ def parse_tests(output):
 
 def collect_tree():
     """Return (lib_tests, lib_ignored, harnesses) from the compiled tree."""
-    lib_tests = parse_tests(cargo_list(["--lib"]))
-    lib_ignored = set(parse_tests(cargo_list_ignored(["--lib"])))
+    lib_tests = []
+    lib_ignored = set()
     harnesses = []
-    for args, kind in [(["--bins"], "bin"), (["--examples"], "example")]:
-        output = cargo_list(args)
-        current = None
-        total = 0
-        for line in output.splitlines():
-            running = RUNNING_LINE.match(line)
-            if running:
-                if current is not None:
-                    harnesses.append((current[0], current[1], total))
-                name = Path(running.group(1)).stem
-                current = (kind, name)
-                total = 0
-                continue
-            count = COUNT_LINE.match(line)
-            if count and current is not None:
-                total = int(count.group(1))
-        if current is not None:
-            harnesses.append((current[0], current[1], total))
-    return lib_tests, lib_ignored, harnesses
+    for kind, name, executable in parse_harness_artifacts(cargo_no_run_json()):
+        tests = list_executable(executable, False)
+        ignored = set(list_executable(executable, True))
+        if kind == "lib":
+            lib_tests.extend(tests)
+            lib_ignored.update(ignored)
+        else:
+            if tests or ignored:
+                raise SystemExit(
+                    f"non-empty {kind} harness {name} holds {len(tests)} tests: "
+                    "partitioning assumes empty non-lib harnesses; extend the mechanism explicitly"
+                )
+            harnesses.append((kind, name))
+    return sorted(lib_tests), lib_ignored, harnesses
 
 
 def manifest_entries(lib_tests, lib_ignored, harnesses):
@@ -115,11 +166,7 @@ def manifest_entries(lib_tests, lib_ignored, harnesses):
     for name in lib_tests:
         status = "ignored" if name in lib_ignored else "run"
         lines.append(f"test|lib|{name}|{status}")
-    for kind, name, total in harnesses:
-        if total != 0:
-            raise SystemExit(
-                f"non-empty {kind} harness {name} has {total} tests: partitioning assumes empty harnesses"
-            )
+    for kind, name in sorted(harnesses):
         lines.append(f"harness|{kind}|{name}")
     return lines
 
@@ -211,7 +258,7 @@ def main(argv):
                 f"  missing: {missing}\n  extra: {extra}\n  status-changed: {changed}\n"
                 "refresh explicitly in review with the generate subcommand"
             )
-        fresh_pairs = sorted((kind, name) for kind, name, _ in fresh_harnesses)
+        fresh_pairs = sorted(fresh_harnesses)
         if fresh_pairs != sorted(harnesses):
             raise SystemExit(
                 f"harness drift: compiled {fresh_pairs} vs manifest {sorted(harnesses)}"
@@ -254,7 +301,9 @@ def main(argv):
         seen_ok, seen_ignored, failures, unknown = {}, set(), [], []
         harness_runs = {harness: 0 for harness in harnesses}
         for log in logs:
-            text = Path(log).read_text(errors="replace")
+            # Batch logs may carry cargo ANSI color codes (CARGO_TERM_COLOR);
+            # strip them before parsing so colored and plain logs verify alike.
+            text = strip_ansi(Path(log).read_text(errors="replace"))
             if re.search(r"test result: [^\n]*[1-9]\d* failed", text):
                 failures.append(f"{log}: nonzero failed count")
             for match in RESULT_LINE.finditer(text):
@@ -278,8 +327,17 @@ def main(argv):
             for line in text.splitlines():
                 running = RUNNING_LINE.search(line)
                 if running:
+                    # Executable stems carry a hash suffix (name-deadbeef);
+                    # match the manifest harness by target-name prefix.
                     stem = Path(running.group(1)).stem
-                    current = next((h for h in harnesses if h[1] == stem), None)
+                    current = next(
+                        (
+                            h
+                            for h in harnesses
+                            if stem == h[1] or stem.startswith(h[1] + "-")
+                        ),
+                        None,
+                    )
                     continue
                 if current is not None and line.strip().startswith(
                     "test result: ok. 0 passed"
