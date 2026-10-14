@@ -609,7 +609,6 @@ impl Store {
         let mut settings: AppSettings = serde_json::from_value(value).map_err(|error| {
             rusqlite::Error::ToSqlConversionFailure(crate::diagnostics::json(&error).into())
         })?;
-        settings.stt.ensure_seed();
         if matches!(
             settings.stt.local_provider,
             crate::settings::LocalSttProvider::Nvidia
@@ -684,6 +683,10 @@ impl Store {
                 "unsupported settings version",
             ));
         }
+        let legacy = object
+            .get("settings_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(1);
         let mut incomplete = false;
         for (section, field) in [
             ("sync", "enabled"),
@@ -720,8 +723,28 @@ impl Store {
                 }
             }
         }
-        // Validate typed fields without discarding unrecognized settings.
-        serde_json::from_value::<AppSettings>(value.clone())?;
+        // Normalize legacy lists in the JSON used by both readers and writers.
+        // Seeding only the reader's typed snapshot makes an unchanged save
+        // mark unmigrated empty lists as current. Explicit current empty lists
+        // must not reactivate the deprecated connection fields.
+        let mut settings: AppSettings = serde_json::from_value(value.clone())?;
+        let needs_seed = |section: &str| {
+            value
+                .get(section)
+                .and_then(|section| section.get("entries"))
+                .is_none_or(|entries| legacy && entries.as_array().is_some_and(Vec::is_empty))
+        };
+        let seed_stt = needs_seed("stt");
+        let seed_lm = needs_seed("language_models");
+        if seed_stt {
+            settings.stt.ensure_seed();
+            value["stt"]["entries"] = serde_json::to_value(settings.stt.entries)?;
+        }
+        if seed_lm {
+            settings.language_models.ensure_seed();
+            value["language_models"]["entries"] =
+                serde_json::to_value(settings.language_models.entries)?;
+        }
         value["settings_version"] = serde_json::Value::from(1);
         Ok((value, incomplete))
     }
@@ -748,8 +771,6 @@ impl Store {
         let mut settings: AppSettings = serde_json::from_value(value).map_err(|error| {
             rusqlite::Error::ToSqlConversionFailure(crate::diagnostics::json(&error).into())
         })?;
-        settings.language_models.ensure_seed();
-        settings.stt.ensure_seed();
         settings.dictionary.words = self.load_words()?;
         settings.dictionary.snippets = self.load_snippets()?;
         if matches!(
@@ -3818,6 +3839,102 @@ mod release_regressions {
                 [0]["future_entry"]["synthetic"],
             "preserve"
         );
+    }
+
+    #[test]
+    fn explicitly_empty_provider_lists_do_not_reenable_legacy_connections() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("synthetic.db");
+        let store = Store::open_with_key(&path, &[99; 32]).unwrap();
+        let mut settings = store.try_load_settings().unwrap();
+        settings.stt.mode = crate::settings::SttMode::Cloud;
+        settings.stt.cloud_provider = "Groq".into();
+        settings.stt.cloud_model = "synthetic-legacy-model".into();
+        settings.stt.cloud_api_key = "synthetic-obsolete-credential".into();
+        settings.stt.entries.clear();
+        settings.language_models.entries.clear();
+        store.save_settings(&settings).unwrap();
+        drop(store);
+
+        let fresh = Store::open_with_key(&path, &[99; 32]).unwrap();
+        let loaded = fresh.try_load_settings().unwrap();
+        assert!(loaded.stt.entries.is_empty(), "reactivated legacy STT");
+        assert!(
+            loaded.language_models.entries.is_empty(),
+            "reactivated legacy LLM"
+        );
+        let (capture, _) = fresh.capture_settings().unwrap();
+        assert!(capture.stt.entries.is_empty());
+        assert!(
+            crate::transcribe::plan_for(&capture.stt, root.path())
+                .unwrap_err()
+                .contains("no enabled STT options")
+        );
+    }
+
+    #[test]
+    fn legacy_provider_lists_seed_once_without_losing_configuration() {
+        let store = Store::open_memory().unwrap();
+        let mut raw = serde_json::to_value(store.try_load_settings().unwrap()).unwrap();
+        raw["settings_version"] = serde_json::Value::from(0);
+        raw["stt"]["mode"] = serde_json::Value::from("Cloud");
+        raw["stt"]["cloud_provider"] = serde_json::Value::from("Groq");
+        raw["stt"]["cloud_model"] = serde_json::Value::from("synthetic-legacy-model");
+        raw["stt"]["cloud_api_key"] = serde_json::Value::from("synthetic-legacy-key");
+        raw["language_models"]["ollama_url"] = serde_json::Value::from("http://localhost:11434");
+        raw["language_models"]["ollama_model"] = serde_json::Value::from("synthetic-legacy-llm");
+        raw["future_root"] = serde_json::Value::from("synthetic unknown setting");
+        for absent in [false, true] {
+            let mut fixture = raw.clone();
+            for section in ["stt", "language_models"] {
+                if absent {
+                    fixture[section].as_object_mut().unwrap().remove("entries");
+                } else {
+                    fixture[section]["entries"] = serde_json::json!([]);
+                }
+            }
+            store
+                .conn
+                .execute(
+                    "UPDATE kv SET value=?1 WHERE key='settings'",
+                    [fixture.to_string()],
+                )
+                .unwrap();
+            let mut loaded = store.try_load_settings().unwrap();
+            assert_eq!(loaded.stt.entries.len(), 1);
+            assert_eq!(loaded.stt.entries[0].provider, "Groq");
+            assert_eq!(loaded.stt.entries[0].model, "synthetic-legacy-model");
+            assert_eq!(loaded.stt.entries[0].api_key, "synthetic-legacy-key");
+            assert_eq!(loaded.language_models.entries.len(), 1);
+            assert_eq!(
+                loaded.language_models.entries[0].url,
+                "http://127.0.0.1:11434"
+            );
+            assert_eq!(
+                loaded.language_models.entries[0].model,
+                "synthetic-legacy-llm"
+            );
+            store.save_settings(&loaded).unwrap();
+            let saved: String = store
+                .conn
+                .query_row("SELECT value FROM kv WHERE key='settings'", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+            assert_eq!(saved["settings_version"], 1);
+            assert_eq!(saved["future_root"], "synthetic unknown setting");
+            assert_eq!(
+                saved["stt"]["entries"][0]["api_key"],
+                "synthetic-legacy-key"
+            );
+            loaded.stt.entries.clear();
+            loaded.language_models.entries.clear();
+            store.save_settings(&loaded).unwrap();
+            let emptied = store.try_load_settings().unwrap();
+            assert!(emptied.stt.entries.is_empty());
+            assert!(emptied.language_models.entries.is_empty());
+        }
     }
 
     #[test]
