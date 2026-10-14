@@ -503,7 +503,27 @@ fn permitted(store: &Store, peer: &str) -> Result<(), String> {
 }
 
 impl SyncPolicy {
+    /// A replaced database (restore/delete-recreate) must abort the
+    /// exchange: long-lived handles would otherwise authorize against
+    /// an unlinked inode while a new database serves new policy.
+    fn file_replaced(store: &Store) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        let Some(path) = store.path() else {
+            return true;
+        };
+        let (device, inode) = match store.file_identity() {
+            Some(identity) => identity,
+            None => return true,
+        };
+        match std::fs::symlink_metadata(path) {
+            Ok(current) => !current.is_file() || current.dev() != device || current.ino() != inode,
+            Err(_) => true,
+        }
+    }
     fn check(&self) -> Result<(), String> {
+        if Self::file_replaced(&self.store) {
+            return Err("sync database was replaced during exchange".into());
+        }
         if self
             .owner_stop
             .as_ref()
@@ -538,6 +558,11 @@ impl SyncPolicy {
             let owner_stop = session.owner_stop.clone();
             let watcher_owner = owner_stop.clone();
             let policy_store = Store::open_existing(&path).map_err(|e| e.to_string())?;
+            // Dedicated authorization connection: quick policy reads must
+            // never queue behind a busy writer or mutate the database.
+            policy_store
+                .policy_reads_only()
+                .map_err(|e| e.to_string())?;
             let watcher = crate::runtime::spawn_dedicated("sync-policy", move || {
                 let Ok(store) = Store::open_existing(&watch_path) else {
                     let _ = socket.shutdown(std::net::Shutdown::Both);
@@ -547,6 +572,7 @@ impl SyncPolicy {
                     if watcher_owner
                         .as_ref()
                         .is_some_and(|stop| stop.load(Ordering::Acquire))
+                        || SyncPolicy::file_replaced(&store)
                         || permitted(&store, &watch_peer).is_err()
                         || store.sync_epoch() != epoch
                     {
@@ -2525,6 +2551,37 @@ mod tests {
             .apply_history(std::slice::from_ref(&original))
             .unwrap();
         assert!(original.text.len() > CONTENT_CAP);
+        // Every rendezvous in this fixture is bounded: a peer that can
+        // never arrive (early client failure) must fail the round, not
+        // hang the suite. 30 s is orders of magnitude above healthy
+        // localhost connect latency yet strictly below the client-side
+        // round bound, so expiry always means a true stall; the round
+        // is then retried from persisted offsets, never wedged.
+        fn accept_bounded(
+            listener: &TcpListener,
+            what: &str,
+        ) -> std::io::Result<(TcpStream, std::net::SocketAddr)> {
+            listener.set_nonblocking(true)?;
+            let start = std::time::Instant::now();
+            loop {
+                match listener.accept() {
+                    Ok(pair) => {
+                        let _ = listener.set_nonblocking(false);
+                        return Ok(pair);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if start.elapsed() > Duration::from_secs(30) {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                format!("{what} rendezvous stalled with no peer"),
+                            ));
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
         // Commit a fragment, drop the socket before its ACK, and reopen the
         // receiver. A subsequent real negotiation must send the saved offset.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2533,7 +2590,7 @@ mod tests {
         let receiver_a = a.clone();
         let receiver_b = b.clone();
         let cut = std::thread::spawn(move || {
-            let (socket, _) = listener.accept().unwrap();
+            let (socket, _) = accept_bounded(&listener, "cut server").unwrap();
             let (mut session, hash, _) =
                 NoiseStream::handshake(socket, &receiver_b.noise_static, false).unwrap();
             let hello: Hello = session.recv_json().unwrap();
@@ -2627,15 +2684,31 @@ mod tests {
         drop(store_b);
         let store_b = Store::open_existing(&db_b).unwrap();
         assert!(store_b.export_history().unwrap().is_empty());
-        fn relay(mut source: TcpStream, mut target: TcpStream, slow: bool) {
+        fn relay(mut source: TcpStream, mut target: TcpStream, budget: u64) {
+            // Deterministic slow-link cut: relay at most `budget` bytes
+            // this round, then break mid-transfer. Wall-clock sleeps
+            // made rounds arbitrarily slow under parallel load and
+            // exhausted the round/timeout budgets without exercising
+            // any new protocol path; a byte budget forces partial
+            // progress and lost-ACK resume deterministically on any
+            // machine while keeping every assertion intact. The generous
+            // 60 s socket backstop below never fires on healthy-slow
+            // rounds (they take seconds even loaded); it only converts
+            // a wedged peer — one that neither sends, closes, nor lets
+            // the session deadline fire — from a suite hang into a
+            // failed round retried from persisted offsets.
             source
-                .set_read_timeout(Some(Duration::from_secs(3)))
+                .set_read_timeout(Some(Duration::from_secs(60)))
                 .unwrap();
             target
-                .set_write_timeout(Some(Duration::from_secs(3)))
+                .set_write_timeout(Some(Duration::from_secs(60)))
                 .unwrap();
             let mut buffer = [0u8; 8192];
+            let mut relayed: u64 = 0;
             loop {
+                if relayed >= budget {
+                    break;
+                }
                 let n = match source.read(&mut buffer) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
@@ -2643,40 +2716,45 @@ mod tests {
                 if target.write_all(&buffer[..n]).is_err() {
                     break;
                 }
-                if slow {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
+                relayed += n as u64;
             }
             let _ = source.shutdown(std::net::Shutdown::Both);
             let _ = target.shutdown(std::net::Shutdown::Both);
         }
         let mut interrupted = 0;
         let mut completed = false;
-        for _ in 0..24 {
+        for round in 0..24 {
+            // Early rounds are cut after 1 MiB (mid-record for the
+            // ~19 MiB fixture) to force interrupted rounds; later
+            // rounds are uncut so persisted offsets must converge.
+            let budget = if round < 3 { 1 << 20 } else { u64::MAX };
             let target = TcpListener::bind("127.0.0.1:0").unwrap();
             let target_address = target.local_addr().unwrap();
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap().to_string();
             let proxy = std::thread::spawn(move || {
-                let (client, _) = listener.accept().unwrap();
+                let (client, _) = accept_bounded(&listener, "proxy client").unwrap();
                 let peer = TcpStream::connect(target_address).unwrap();
                 client.set_nodelay(true).unwrap();
                 peer.set_nodelay(true).unwrap();
                 let client_in = client.try_clone().unwrap();
                 let peer_out = peer.try_clone().unwrap();
-                let outbound = std::thread::spawn(move || relay(client_in, peer_out, true));
-                relay(peer, client, true);
+                let outbound = std::thread::spawn(move || relay(client_in, peer_out, budget));
+                relay(peer, client, budget);
                 outbound.join().unwrap();
             });
             let receiver_db = db_b.clone();
             let receiver_b = b.clone();
             let server = std::thread::spawn(move || {
-                let (socket, _) = target.accept().unwrap();
+                let (socket, _) = accept_bounded(&target, "sync server").unwrap();
                 let (mut session, hash, _) =
                     NoiseStream::handshake(socket, &receiver_b.noise_static, false).unwrap();
-                // Shorten this fixture's deadline to force many interrupted
-                // rounds; production's 60-second budget is not increased.
-                session.deadline = std::time::Instant::now() + Duration::from_secs(2);
+                // The byte-budget proxy cuts below force interrupted
+                // rounds deterministically; this deadline stays generous
+                // so per-round progress depends on persisted offsets,
+                // not on machine speed under parallel load. Production's
+                // 60-second budget is not increased.
+                session.deadline = std::time::Instant::now() + Duration::from_secs(30);
                 let store = Store::open_existing(&receiver_db).unwrap();
                 exchange(
                     &mut session,
@@ -2736,7 +2814,7 @@ mod tests {
         }
         assert!(
             interrupted > 0,
-            "fixture never exercised its shortened progress deadline"
+            "fixture never exercised its byte-budget progress cuts"
         );
         assert!(completed, "bounded slow-link retries did not converge");
         assert_eq!(

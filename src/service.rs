@@ -105,6 +105,7 @@ pub struct SyncEngine {
     mdns: Option<crate::net::MdnsHandles>,
     discovery: Option<crate::runtime::OwnedThread>,
     retention: Option<crate::maintenance::RetentionMaintenance>,
+    db: PathBuf,
 }
 
 impl Drop for SyncEngine {
@@ -117,6 +118,19 @@ impl Drop for SyncEngine {
             let _ = handle.join();
         }
         self.retention.take();
+        // Clean-shutdown checkpoint contract: truncate the WAL so the
+        // next boot starts from a single-file database and any file
+        // copy observes a consistent snapshot. Best-effort: an active
+        // reader makes SQLite report busy, and durability never
+        // depends on this (uncheckpointed WAL replays on open).
+        match crate::store::Store::open_existing(&self.db) {
+            Ok(store) => {
+                if let Err(e) = store.checkpoint() {
+                    eprintln!("[sync] shutdown checkpoint: {e}");
+                }
+            }
+            Err(e) => eprintln!("[sync] shutdown checkpoint unavailable: {e}"),
+        }
         set_sync_port(0);
         eprintln!("[sync] engine stopped");
     }
@@ -227,6 +241,7 @@ pub fn start_sync_engine(
                     mdns,
                     discovery,
                     retention,
+                    db: paths.db_file(),
                 });
             }
             port
