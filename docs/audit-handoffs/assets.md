@@ -135,16 +135,48 @@ Original report, full matrix, source map and historical evidence are owned by th
   Hosted lint goes green as the stack restacks bottom-up; #21 can adopt
   the current stable SHA now (APIs below are frozen for consumers).
 
-## Ownership relocation table (exact symbols, no waivers)
-| Symbol (location at `367f54a`) | Disposition | Owner | Preserving patch/commit |
+## v2 ownership distribution IMPLEMENTED (strict-green)
+
+- Removed from this branch: `src/operation.rs` (contract + 3 tests,
+  blob `eb7c429d`), `src/selection.rs` (Guard-only, blob `e7298a1f`),
+  `admit` (`installed_asset.rs:251-268` at `f1da614`), `trust_local` +
+  3 trust tests (`:674-741`, `:974-1053` at `f1da614`); `lib.rs` drops
+  both `mod` lines.
+- Rewrote 3 tests to direct-proof assertions with identical
+  transitions: `legacy_comparison` (`admit`→`verify_spec` status map),
+  `promotion_retires` (hand-built proof `unchanged()` directly),
+  `delete_and_reset_retire` (`verify_spec` Missing/Invalid + direct
+  `unchanged()`). No guarantee weakened; Operation-mediated boundary
+  covered where really exercised (#22).
+- Result: strict `clippy --locked --all-targets -- -D warnings` **zero
+  diagnostics**; full `cargo test --locked --all-targets` **262/0/5**;
+  smoke + audit green.
+- Restoration (exact, for consumer restacks):
+  - #22: `operation.rs` wholesale (`eb7c429d`, byte-identical there —
+    explicit `git checkout <pre-restack-head> -- src/operation.rs`
+    because silent deletion otherwise propagates); `admit` hunk
+    re-applied into `installed_asset.rs`; trust_local stays OUT
+    (deletion stands as move's first half).
+  - #21: `operation.rs` deletes cleanly (verified untouched);
+    `selection.rs` conflict takes #21 side wholesale (backend defines
+    `Guard` byte-identical).
+  - #23: canonical trust payload = #22
+    `docs/audit-handoffs/gui-relocation-23/restore.patch`
+    (byte-verified vs snapshot + `f1da614`) + `model_present` +
+    `start_*` specs in this ledger; one minimal fixture helper
+    duplicated there (helpers stay here for 9 untouched tests).
+## Ownership relocation table (final dispositions, implemented)
+
+| Symbol | Disposition | Owner | Preserving patch/commit |
 |---|---|---|---|
-| `stt::model_present` (`src/stt.rs:456-464`) | **Moved** (removed from #20, zero consumers) | #23 | Verbatim 9-line body in PR23 comment `6174231919`; restore above `model_status` |
-| `stt::{start_verification, start_local_trust}` (were `:674-704` at `169a1cf`) | **Moved** earlier | #23 | Spec in ledger above + handoff; restore verbatim |
-| `selection.rs` backend, 4 regression tests (blob `0dfdf7a`, 907 lines) | **Moved** earlier | #21 | Wholesale restore on restack; PR21 agreement comment `6169568528` |
-| `installed_asset::{admit (`:253`), trust_local (`:676`)}` | **Kept** (required backend APIs, tested in #20) | #22 wires inference admission, #23 wires trust buttons | Binding: PR22 comment `6174231878`; no duplication |
-| `operation::{Operation, Denial}` + all items (`:6-206`), `selection::Guard` (`:14`) | **Kept** (live contract, tested) | #21 adopts `guard()` for policy-gated IO; #22 session ops | Binding: PR22 comment `6174231878` |
-- `model_present` removal leaves test profile at zero and lib at 7;
-  hunk is GUI-pure (presence probe, no installer semantics).
+| `stt::model_present` | **Moved** | #23 | Verbatim body in PR23 comment `6174231919`; restore above `model_status` |
+| `stt::{start_verification, start_local_trust}` | **Moved** | #23 | Spec in API ledger above; restore verbatim |
+| `selection.rs` backend + 4 tests (blob `0dfdf7a`) | **Moved** | #21 | Wholesale restore; agreement PR21 `6169568528` |
+| `src/operation.rs` + 3 tests (blob `eb7c429d`) | **Moved** | #22 | Identical there; explicit checkout (silent deletion otherwise propagates) |
+| `selection::Guard` (was `:14`) | **Moved** | #21 | Defined byte-identical by restored backend |
+| `installed_asset::admit` (was `:253-268`) | **Moved** | #22 | Live caller transcribe:4451; re-apply hunk on restack |
+| `installed_asset::trust_local` + 3 tests | **Moved** | #23 | Canonical: #22 `gui-relocation-23/restore.patch` (byte-verified) |
+| verifier primitives + 14 tests | **Kept** | #20 | Production-called; suite rewritten without weakening |
 
 ## Full source manifest, regenerated on merged tree (never parent counts)
 
