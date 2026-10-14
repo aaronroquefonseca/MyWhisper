@@ -434,7 +434,7 @@ fn read_key(data: &Path) -> Result<SigningKey, String> {
     {
         return Err("installation integrity key has unsafe ownership or permissions".into());
     }
-    let bytes = crate::private_fs::read_bounded(&path, 32)
+    let bytes = crate::private_fs::read_private(&path, 32)
         .map_err(|_| "cannot read installation integrity key")?;
     let seed: [u8; 32] = bytes
         .try_into()
@@ -649,7 +649,7 @@ pub(crate) fn adopt_reference(stage: Stage, spec: Spec, cancel: &AtomicBool) -> 
     if original.entries != reference.entries {
         return Err("Existing files differ from the verified source; files have been preserved. Download to repair or explicitly trust your local files.".into());
     }
-    let encoded = crate::private_fs::read_bounded(&stage.path().join(RECEIPT), RECEIPT_CAP)
+    let encoded = crate::private_fs::read_private(&stage.path().join(RECEIPT), RECEIPT_CAP)
         .map_err(|_| "cannot read authenticated reference receipt")?;
     let _metadata = crate::private_fs::lock(&spec.data.join(".install/metadata.lock"))
         .map_err(|_| "verification commit lock unavailable")?;
@@ -791,7 +791,7 @@ pub(crate) fn verify(
     let key_stamp = stamp(&key_path(data))?;
     let authority = read_key(data)?;
     let receipt_stamp = stamp(&root.join(RECEIPT))?;
-    let encoded = crate::private_fs::read_bounded(&root.join(RECEIPT), RECEIPT_CAP)
+    let encoded = crate::private_fs::read_private(&root.join(RECEIPT), RECEIPT_CAP)
         .map_err(|_| "installed content needs verification or repair")?;
     let receipt: Receipt =
         serde_json::from_slice(&encoded).map_err(|_| "invalid installation receipt")?;

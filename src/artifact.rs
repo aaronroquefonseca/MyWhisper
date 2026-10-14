@@ -220,7 +220,7 @@ impl StagingDirectory {
     }
 
     fn read(journal: &Path) -> Result<Option<StagingRecord>, String> {
-        match crate::private_fs::read_bounded(journal, 4096) {
+        match crate::private_fs::read_private(journal, 4096) {
             Ok(bytes) => serde_json::from_slice(&bytes)
                 .map(Some)
                 .map_err(|_| "invalid interrupted installation record; files preserved".into()),

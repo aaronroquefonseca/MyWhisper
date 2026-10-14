@@ -48,6 +48,14 @@ Original report, full matrix, source map and historical evidence are owned by th
   "deleted, reset or changed"); `stt` every advertised model/runtime asserts
   pinned SHA-256 and authenticated specs with unique keys, and repeated
   cancelled downloads preserve existing files.
+- Restack onto parent `c7479bc`: parent gated `private_fs::read_bounded`
+  behind `#[cfg(test)]` and added production `read_private`; the 4
+  production journal/key/receipt read sites migrate to `read_private`
+  (permission-protecting; existing unsafe-permission and timestamp
+  assertions unchanged). Parent's `.dns_resolver(HttpResolver)` additions
+  are subsumed by the staged `artifact::download` path, which already
+  owns its resolver. Combined `cargo test --locked --all-targets`: 265
+  passed, 0 failed, 5 ignored; `cargo audit` clean.
 - Still deferred, unchanged: automatic startup sweep (recovery on next
   locked retry/delete/cache-clear only), physical power loss, resource/
   admission and complete provider/UI acceptance. Active engine-retirement
