@@ -134,3 +134,15 @@ Original report, full matrix, source map and historical evidence are owned by th
   contract + retained `Guard` (5, wired by #21/#22 provider integration).
   Hosted lint goes green as the stack restacks bottom-up; #21 can adopt
   the current stable SHA now (APIs below are frozen for consumers).
+
+## Ownership relocation table (exact symbols, no waivers)
+
+| Symbol (location at `367f54a`) | Disposition | Owner | Preserving patch/commit |
+|---|---|---|---|
+| `stt::model_present` (`src/stt.rs:456-464`) | **Moved** (removed from #20, zero consumers) | #23 | Verbatim 9-line body in PR23 comment `6174231919`; restore above `model_status` |
+| `stt::{start_verification, start_local_trust}` (were `:674-704` at `169a1cf`) | **Moved** earlier | #23 | Spec in ledger above + handoff; restore verbatim |
+| `selection.rs` backend, 4 regression tests (blob `0dfdf7a`, 907 lines) | **Moved** earlier | #21 | Wholesale restore on restack; PR21 agreement comment `6169568528` |
+| `installed_asset::{admit (`:253`), trust_local (`:676`)}` | **Kept** (required backend APIs, tested in #20) | #22 wires inference admission, #23 wires trust buttons | Binding: PR22 comment `6174231878`; no duplication |
+| `operation::{Operation, Denial}` + all items (`:6-206`), `selection::Guard` (`:14`) | **Kept** (live contract, tested) | #21 adopts `guard()` for policy-gated IO; #22 session ops | Binding: PR22 comment `6174231878` |
+- `model_present` removal leaves test profile at zero and lib at 7;
+  hunk is GUI-pure (presence probe, no installer semantics).

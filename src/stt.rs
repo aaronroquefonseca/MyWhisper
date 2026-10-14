@@ -453,16 +453,6 @@ pub(crate) fn model_spec(data: &Path, entry: &ModelEntry) -> crate::installed_as
     }
 }
 
-/// Configuration may be resolved while off-thread content verification is
-/// pending. This is not installation/readiness proof.
-pub(crate) fn model_present(data: &Path, entry: &ModelEntry) -> bool {
-    let spec = model_spec(data, entry);
-    spec.required.iter().all(|file| {
-        std::fs::metadata(spec.root.join(file))
-            .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
-    })
-}
-
 /// UI status is an off-thread integrity result, never a size/presence guess.
 pub(crate) fn model_status(data_dir: &Path, entry: &ModelEntry) -> crate::installed_asset::Status {
     crate::installed_asset::status(model_spec(data_dir, entry))
