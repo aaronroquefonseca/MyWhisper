@@ -63,9 +63,11 @@ Evidence: 4 new runner regressions (overlay+ownership+roundtrip,
 default-no-overlay, invalid-rejected, host-invisibility of tmpfs
 contents) — test-disposable.py 9/9 pass. Full rusttests fixture
 under flag: exit 0, 109/0/5. In-namespace peak TMPDIR usage 658 KB
-vs 2 GiB investigation budget. #18 owes: their-scope peak
-measurement (oversized sync suite) + full fixture validation under
-the flag; sharding stays an evidence-backed fallback only.
+vs 2 GiB investigation budget. Wiring commit 69a4eea scopes the flag
+to the release.yml rusttests invocation only (verified in wired
+form); native/package/Nix/physical gates excluded. #18 adopts
+843e0d4 + 69a4eea exactly and runs hosted suite; #19 waits for #18
+green then adopts sequentially.
 - main: `Store::checkpoint()` defined, unwired in production.
 - #18 tip: called in legacy migration path + tests.
 - #22 tip: wired in `shutdown_app` with failure reporting.
