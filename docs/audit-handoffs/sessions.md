@@ -26,6 +26,12 @@ ports error instead of reuse/adopt, single-server replacement). #11's newer
 Stop-authority refinements (LAST_STOP_GEN/STOPPED_FP, suppression expiry)
 remain #11-owned; coordinated merge required, no overwrite here.
 
+Adopted #17 8eabfaf contract hardening: provider_contract.rs taken verbatim
+(gemini_request/ollama_request builders, tool/refusal-hardened parsers);
+llm_cleanup now builds through them with operation plumbing retained.
+Adopted parent c261f96 token correction (selection/clipboard verbatim);
+owned deliver() tail kept (privacy-epoch persist + Guard outcome).
+
 Remaining: hundreds of cancellation/replacement cycles, panic/recovery,
 stalled/partial IO, late-only tail and rolling-window agreement, active
 warmup/config changes, authenticated trusted WSS/cloud contracts, final

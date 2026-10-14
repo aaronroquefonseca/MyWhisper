@@ -4606,25 +4606,15 @@ fn llm_cleanup(
             // temp 0 plus top_p/top_k/repeat_penalty. The penalty is
             // the anti-echo lever (temp 0.7 was tried; theirs pins 0).
             // keep_alive rides along unless the entry leaves it blank
-            // (Ollama server default).
-            let mut body = serde_json::json!({
-                "model": entry.model,
-                "stream": false,
-                "options": {
-                    "temperature": 0.0,
-                    "top_p": 0.9,
-                    "top_k": 40,
-                    "repeat_penalty": 1.1,
-                },
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-            });
-            // Tri-state: omit = model default; force either way.
-            if let Some(think) = entry.thinking {
-                body["think"] = serde_json::Value::Bool(think);
-            }
+            // (Ollama server default). Tri-state `think` lives in
+            // `provider_contract::ollama_request` (None omits = model
+            // default); storage migration of that field is owned by #18.
+            let mut body = crate::provider_contract::ollama_request(
+                &entry.model,
+                entry.thinking,
+                system,
+                &user,
+            );
             if let Some(nctx) = entry.num_ctx {
                 body["options"]["num_ctx"] = serde_json::Value::from(nctx);
             }
@@ -4653,22 +4643,10 @@ fn llm_cleanup(
         }
         LlmKind::Cloud => match entry.provider {
             CloudLlm::Google => {
-                let mut body = serde_json::json!({
-                    "contents": [{
-                        "parts": [
-                            {"text": system},
-                            {"text": user},
-                        ],
-                    }],
-                    "generationConfig": {"temperature": 0.0},
-                });
                 // None omits the block (server default); Some(true)
-                // = dynamic budget, Some(false) = off.
-                if let Some(think) = entry.thinking {
-                    body["generationConfig"]["thinkingConfig"] = serde_json::json!({
-                        "thinkingBudget": if think { -1 } else { 0 }
-                    });
-                }
+                // = dynamic budget, Some(false) = off. Builder lives in
+                // `provider_contract` so the tri-state is unit-tested.
+                let body = crate::provider_contract::gemini_request(entry.thinking, system, &user);
                 let url = format!(
                     "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
                     entry.model
