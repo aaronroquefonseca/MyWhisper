@@ -3249,8 +3249,7 @@ fn llm_cleanup(
                 // None omits the block (server default); Some(true)
                 // = dynamic budget, Some(false) = off. Builder lives in
                 // `provider_contract` so the tri-state is unit-tested.
-                let body =
-                    crate::provider_contract::gemini_request(entry.thinking, system, &user);
+                let body = crate::provider_contract::gemini_request(entry.thinking, system, &user);
                 let url = format!(
                     "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
                     entry.model

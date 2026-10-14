@@ -26,7 +26,7 @@
 //! Claude capabilities are an error so the caller falls back instead
 //! of sending a 400-invalid budget. Live model/thinking capabilities
 //! still need authenticated disposable checks (see R37 live gates).
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Claude Messages request. `max_tokens` 16384 leaves room for the
 /// 1024 thinking budget plus the answer (budget must be < max_tokens,
@@ -272,15 +272,19 @@ mod tests {
                 "model {model}"
             );
         }
-        assert!(claude_request("future-model", None, "s", "u")
-            .unwrap()
-            .get("thinking")
-            .is_none());
+        assert!(
+            claude_request("future-model", None, "s", "u")
+                .unwrap()
+                .get("thinking")
+                .is_none()
+        );
         // Tri-state: None omits everywhere.
-        assert!(claude_request("claude-sonnet-4-5", None, "s", "u")
-            .unwrap()
-            .get("thinking")
-            .is_none());
+        assert!(
+            claude_request("claude-sonnet-4-5", None, "s", "u")
+                .unwrap()
+                .get("thinking")
+                .is_none()
+        );
     }
     #[test]
     fn ollama_and_gemini_tristate_omit_or_force() {
@@ -316,15 +320,19 @@ mod tests {
         gemini["candidates"][0]["finishReason"] = json!("MAX_TOKENS");
         assert!(gemini_answer(&gemini).is_err());
         for reason in ["length", "content_filter", "tool_calls", ""] {
-            assert!(chat_answer(
-                &json!({"choices":[{"finish_reason":reason,"message":{"content":"partial"}}]})
-            )
-            .is_err());
+            assert!(
+                chat_answer(
+                    &json!({"choices":[{"finish_reason":reason,"message":{"content":"partial"}}]})
+                )
+                .is_err()
+            );
         }
-        assert!(ollama_answer(
-            &json!({"done":false,"done_reason":"stop","message":{"content":"partial"}})
-        )
-        .is_err());
+        assert!(
+            ollama_answer(
+                &json!({"done":false,"done_reason":"stop","message":{"content":"partial"}})
+            )
+            .is_err()
+        );
         // Missing done_reason is also incomplete.
         assert!(ollama_answer(&json!({"done":true,"message":{"content":"x"}})).is_err());
     }
@@ -332,21 +340,25 @@ mod tests {
     fn refusals_tool_calls_and_malformed_blocks_are_rejected() {
         // Claude: tool_use / unknown blocks never become answers;
         // thinking/redacted_thinking are skipped.
-        assert!(claude_answer(
-            &json!({"stop_reason":"end_turn","content":[{"type":"tool_use","id":"1"}]})
-        )
-        .is_err());
-        assert!(claude_answer(
-            &json!({"stop_reason":"end_turn","content":[{"type":"server_tool_use"}]})
-        )
-        .is_err());
+        assert!(
+            claude_answer(
+                &json!({"stop_reason":"end_turn","content":[{"type":"tool_use","id":"1"}]})
+            )
+            .is_err()
+        );
+        assert!(
+            claude_answer(
+                &json!({"stop_reason":"end_turn","content":[{"type":"server_tool_use"}]})
+            )
+            .is_err()
+        );
         assert!(
             claude_answer(&json!({"stop_reason":"end_turn","content":[{"type":"text"}]})).is_err()
         );
-        assert!(claude_answer(
-            &json!({"stop_reason":"refusal","content":[{"type":"text","text":"x"}]})
-        )
-        .is_err());
+        assert!(
+            claude_answer(&json!({"stop_reason":"refusal","content":[{"type":"text","text":"x"}]}))
+                .is_err()
+        );
         assert_eq!(
             claude_answer(
                 &json!({"stop_reason":"end_turn","content":[{"type":"redacted_thinking","data":"x"},{"type":"text","text":"ok"}]})
@@ -375,15 +387,19 @@ mod tests {
             &json!({"choices":[{"finish_reason":"stop","message":{"content":"x","tool_calls":[]}}]})
         )
         .is_err());
-        assert!(chat_answer(
-            &json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"x"}}]})
-        )
-        .is_err());
+        assert!(
+            chat_answer(
+                &json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"x"}}]})
+            )
+            .is_err()
+        );
         // Ollama: tool_calls rejected, thinking ignored, content required.
-        assert!(ollama_answer(
-            &json!({"done":true,"done_reason":"stop","message":{"content":"x","tool_calls":[]}})
-        )
-        .is_err());
+        assert!(
+            ollama_answer(
+                &json!({"done":true,"done_reason":"stop","message":{"content":"x","tool_calls":[]}})
+            )
+            .is_err()
+        );
         assert_eq!(
             ollama_answer(
                 &json!({"done":true,"done_reason":"stop","message":{"content":"hi 🎙️","thinking":"secret"}})
@@ -391,10 +407,10 @@ mod tests {
             .unwrap(),
             "hi 🎙️"
         );
-        assert!(ollama_answer(
-            &json!({"done":true,"done_reason":"stop","message":{"content":null}})
-        )
-        .is_err());
+        assert!(
+            ollama_answer(&json!({"done":true,"done_reason":"stop","message":{"content":null}}))
+                .is_err()
+        );
         assert!(ollama_answer(&json!({"done":true,"done_reason":"stop"})).is_err());
     }
     #[test]
