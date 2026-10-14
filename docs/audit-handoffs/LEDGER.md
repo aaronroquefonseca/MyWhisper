@@ -127,6 +127,36 @@ manifest on their branch) + validation of original scope and joined
 scope under this mechanism; report concrete constraint if coverage
 cannot be preserved faithfully. #19 stays pinned until then.
 
+## Nested-harness diagnosis (#19 run 38608553414, tip 27b82d6)
+
+Manifest current (223 + 4 harnesses); all 4 batch commands exited 0;
+verifier rejected batch-1: one test twice in the same log, one never
+executed. Batch logs were not uploaded, so diagnosis is from source
+(read-only) plus verifier reproduction — not assumed success.
+
+Root cause (source evidence): #19's
+hotkey::tests::saved_startup_mute... re-executes the test binary as a
+child (`--exact <itself> --nocapture`) via OwnedChild::spawn, which
+uses plain spawn with INHERITED stdout. The child's own
+`test ... ok` line lands in the parent harness output (phantom
+duplicate) and races sibling result lines without a shared lock, so
+the database_key result line is lost/corrupted (never executed).
+Real double execution, not a parser artifact: the verifier was right
+to fail closed. No #19 code touched.
+
+Mechanism correction (#15-owned): verifier now detects a second
+`running N tests` line inside one binary section and fails with an
+explicit nested-harness message (reproduced exactly on real output:
+same-log duplicate + nested message). Coverage/ignored assertions
+NOT weakened. Workflow gains fail-path artifact upload
+(batch-*.log + manifest, 7-day retention) so future failures preserve
+actual logs — the batch-1.log here is unrecoverable (0 artifacts).
+
+#19 owns the fixture correction (pipe/capture or redirect the nested
+child's stdout; do not inherit it) plus its inventory, then re-runs
+hosted. #20 gets informed only after an actual #19 head passes
+hosted subsequent jobs — pending, not yet sent.
+
 ## 120s fixture failure analysis (#18 run 38586390971, tip 1c121c9)
 
 Flag WAS active in CI (bwrap cmdline shows the tmpfs overlay), so
