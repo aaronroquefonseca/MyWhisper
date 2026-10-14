@@ -6,4 +6,30 @@ Parent: `fix/audit-clipboard-ownership`.
 
 Largest remaining scope; live WSS/cloud/stress and packaged inference pending. This is an extraction, not a completed or independently certified audit fix. Preserve all regressions and functionality. Shared API integration and current validation are reviewed before ready-for-review. No merge/tag/release/deployment.
 
+Continuation (this head): fix two extraction regressions without weakening
+assertions. R28 overlay show_error needs tr("capture.failed"); the entry was
+dropped with i18n.rs outside the extraction set, so the desktop literal-tag
+test failed — restored verbatim from the source snapshot. The retained #13
+snippet pipeline fixtures answered Ollama without done/done_reason, which the
+completed-answer contract rejects; the fake now returns a completed reply, so
+all merged snippet assertions pass unmodified.
+
+Verified on this head: locked --all-targets check passes; lib suite passes
+299/0 (5 ignored); fmt clean. Strict clippy -D warnings still fails on
+pre-existing layering dead code (RetentionMaintenance/CopyTask/selection
+probes); not suppressed — downstream layers consume those interfaces.
+
+#11 reconciliation: this head preserves #11's reviewed base invariants
+(live-process socket evidence via start_ticks+listening_on, owned-only drop
+with no PID-metadata signalling, port joined into the server key, foreign
+ports error instead of reuse/adopt, single-server replacement). #11's newer
+Stop-authority refinements (LAST_STOP_GEN/STOPPED_FP, suppression expiry)
+remain #11-owned; coordinated merge required, no overwrite here.
+
+Remaining: hundreds of cancellation/replacement cycles, panic/recovery,
+stalled/partial IO, late-only tail and rolling-window agreement, active
+warmup/config changes, authenticated trusted WSS/cloud contracts, final
+packaged inference/shutdown/privacy. Historical CUDA successes cover only
+tested combinations; Needle/Nemotron accuracy failures stay evidence.
+
 Original report, full matrix, source map and historical evidence are owned by the audit tracking PR. The final source snapshot preserves every pre-split correction. Intermediate layers may expose interfaces completed downstream; document every actual compiler/test failure rather than hiding it.

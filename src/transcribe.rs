@@ -8874,7 +8874,7 @@ while True:
                     .map(|mut t| t.push(transcript.clone()))
                     .ok();
                 let reply =
-                    serde_json::json!({"message": {"content": respond(&transcript)}}).to_string();
+                    serde_json::json!({"done": true, "done_reason": "stop", "message": {"content": respond(&transcript)}}).to_string();
                 let _ = stream.write_all(
                 format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
