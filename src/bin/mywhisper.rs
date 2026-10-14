@@ -21,6 +21,13 @@ fn main() -> gtk4::glib::ExitCode {
         println!("mywhisper {}", mywhisper::APP_VERSION);
         return gtk4::glib::ExitCode::SUCCESS;
     }
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "MyWhisper {}\nUsage: mywhisper [--service] [--page PAGE] [--section SECTION] [--theme system|light|dark]\n       mywhisper --version | --help",
+            mywhisper::APP_VERSION
+        );
+        return gtk4::glib::ExitCode::SUCCESS;
+    }
     let paths = mywhisper::paths::AppPaths::create().expect("create app dirs");
     let _log_guard = mywhisper::paths::init_file_logging(&paths.state_dir);
     let store = match mywhisper::store::Store::open(&paths.db_file()) {
