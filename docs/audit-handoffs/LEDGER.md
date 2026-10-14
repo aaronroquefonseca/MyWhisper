@@ -14,17 +14,17 @@ their tip) is distinct from final integrated release acceptance
 | #16 | fix/audit-ui-ownership (main) | da4f08e | GREEN reported (strict Clippy + checks) |
 | #17 | fix/audit-provider-contracts (main) | 8eabfaf | GREEN reported (strict Clippy + checks) |
 | #18 | fix/audit-storage-sync (main) | 8733bfe→d09ce1d | d09ce1d: reset-barrier correction (competing GUI worker removed, relocation contract to #22/#23) + rustls 0.23.45→0.23.46 for RUSTSEC-2026-0346..0349, audit clean reported (IDs + patch verified identical to independent check). Still BLOCKED/unresolved: hosted all-target 120s timeout fails; gate evidence still owed. Owns the dependency correction; #15 reverted its duplicate bump |
-| #19 | fix/audit-input-ownership (#18) | c7479bc | strict lint FAIL from layering |
-| #20 | fix/audit-verified-installers (#19) | 169a1cf | strict lint FAIL from layering |
-| #21 | fix/audit-clipboard-ownership (#20) | c261f96 | strict lint FAIL from layering; 11 commits behind #20 tip |
-| #22 | fix/audit-session-lifecycle (#21) | a3ccf74 | new head, no hosted checks yet; owned-shutdown checkpoint wired, evidence asked; 2 behind #21 |
-| #23 | fix/audit-settings-lifecycle (#22) | feb531e | CI failed: oversized throttled encrypted sync + 120s runner limit; 2 behind #22 |
-| #11 | fix/server-status-and-switching (main) | 7c066b16 | open, ready for review; overlaps #22, preserve on integrate |
+| #19 | fix/audit-input-ownership (#18) | d4a82a8 | HOSTED GREEN (run 38612411803): manifest 225 + 4 harnesses, batches cover all 225 exactly once (5 ignored). Nested-stdout fixture correction landed after run 38608553414 diagnosis |
+| #20 | fix/audit-verified-installers (#19) | 916a45c | hosted green/strict-zero reported; stacked on input-ownership |
+| #21 | fix/audit-clipboard-ownership (#20) | ed08181 | hosted green/strict-zero reported |
+| #22 | fix/audit-session-lifecycle (#21) | db1f4e5 | integrating new parent; Operation/admit/CopyTask preserved by source evidence (operation.rs, service.rs, clipboard.rs); shutdown-checkpoint evidence still owed |
+| #23 | fix/audit-settings-lifecycle (#22) | 5aabc5a | 343 Rust tests exactly once hosted; SKIP-bypass corrected (see R51 section); upgrade 5/5 + release 11/11 reproduced read-only; hosted Nix/candidate pending; GUI incl. trust+3tests restored |
+| #11 | fix/server-status-and-switching (main) | bcaff78 | open, ready for review; 10 probes pass reported, 2-phase settlement bug in progress; overlaps #22, preserve on integrate |
 | #4 | t3code/be770be5 (main) | 4c7f3873 | open; separate Qwen feature, no competing files |
 
-Stack lag verified by merge-base: #21 behind #20 by 11,
-#22 behind #21 by 2, #23 behind #22 by 2. Lag alone is not
-readiness; source-specific gates decide. Restack/merge order stays
+Stack lag shifts as owners advance (earlier snapshot: #21<#20 by 11,
+#22<#21 by 2, #23<#22 by 2). Lag alone is not readiness;
+source-specific gates decide. Restack/merge order stays
 with the owning agents; #15 does not restack or force-push them.
 
 ## API changes by #15
@@ -126,6 +126,30 @@ confirmed by hosted pass, not just local forcing.
 manifest on their branch) + validation of original scope and joined
 scope under this mechanism; report concrete constraint if coverage
 cannot be preserved faithfully. #19 stays pinned until then.
+
+## R51 packaging analysis (#23: 7011742 bypass → 5aabc5a correction)
+
+Failure (run 38633516808, 343 Rust tests exactly once, then upgrade
+gate): `assert pkgver + digest present and SKIP absent` caught
+commit 7011742's multi-arch template — sha256sums_aarch64=('SKIP'),
+host-only checksum replacement, x86_64-only release fill, dual-system
+flake. Exact R51 checksum bypass; gate worked as designed.
+
+Correction 5aabc5a independently inspected (read-only + gates
+executed in a disposable /tmp worktree, no sibling touched):
+PKGBUILD x86_64-only with plain verified sha256sums; update.sh exit 2
+with clear error on non-x86_64 BEFORE any network (proven with shimed
+uname -m=aarch64); release.py fills exactly one checksum field;
+validate-artifact.py accepts only the x86_64 root (aarch64 probe
+archive rejected: member escapes release directory); flake
+single-system x86_64 with unchanged check names (desktop,
+whisper-vulkan-loader, symbolic-logo — README stays accurate).
+SKIP token survives ONLY in the test assertion guard. Upgrade 5/5 and
+release 11/11 reproduced on corrected source. MIT/v0.9.4 preserved.
+Flake check renames (package-smoke/runtime-loader-test) predate the
+correction and stay consistent. Candidate build + hosted Nix/desktop
+gates on final source: PREPARED, HELD until #23 hosted stabilizes —
+not claimed. No arch expansion without validated artifacts.
 
 ## Nested-harness diagnosis (#19 run 38608553414, tip 27b82d6)
 
