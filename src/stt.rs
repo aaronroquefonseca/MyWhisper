@@ -672,6 +672,37 @@ pub fn start_download(data_dir: PathBuf, id: &'static str) {
     });
 }
 
+pub(crate) fn start_verification(data: PathBuf, id: &'static str) {
+    let key = if find_model(id).is_some() {
+        format!("model-{id}")
+    } else if GPU_PACKS.iter().any(|pack| pack.id == id) {
+        format!("gpu-{id}")
+    } else {
+        format!("sherpa-{id}")
+    };
+    let request = crate::artifact::observe_authority(&data, &key);
+    if let Some(entry) = find_model(id) {
+        start_artifact_download(id, entry.expected_bytes, move |cancel, callback| {
+            prepare_model(&data, entry, cancel, callback, true, Some(&request?))
+        });
+    } else if let Some(pack) = GPU_PACKS.iter().find(|pack| pack.id == id) {
+        start_artifact_download(id, None, move |cancel, callback| {
+            prepare_gpu_pack(&data, pack, cancel, callback, true, Some(&request?))
+        });
+    } else if let Some(pack) = SHERPA_PACKS.iter().find(|pack| pack.id == id) {
+        start_artifact_download(id, None, move |cancel, callback| {
+            prepare_sherpa_pack(&data, pack, cancel, callback, true, Some(&request?))
+        });
+    }
+}
+
+pub(crate) fn start_local_trust(spec: crate::installed_asset::Spec, id: &'static str) {
+    let request = crate::artifact::observe_authority(&spec.data, &spec.key);
+    start_artifact_download(id, None, move |cancel, callback| {
+        callback(DownloadEvent::Installing);
+        crate::installed_asset::trust_local(spec, cancel, Some(&request?))
+    });
+}
 /// Admission and ownership are atomic. Long network IO does not consume the
 /// short-job pool, and completion cannot overwrite a later attempt's state.
 fn start_artifact_download(

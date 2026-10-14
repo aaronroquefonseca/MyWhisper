@@ -42,6 +42,8 @@ mod database_key;
 
 mod diagnostics;
 
+mod maintenance;
+
 mod reset;
 
 mod sync_jobs;
