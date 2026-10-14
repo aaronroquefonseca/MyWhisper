@@ -1217,19 +1217,73 @@ mod tests {
         }
     }
 
+    /// Isolated re-execution of this gate. The child MUST NOT inherit the
+    /// harness stdout/stderr: its own libtest `running 1 test` / `ok` /
+    /// `test result` lines would otherwise land in the batch log and the
+    /// exactly-once batch verifier counts a duplicate execution
+    /// (hosted run 38608553414). Every other re-exec test in this tree
+    /// already detaches child stdio; this helper pins the same rule here.
+    /// The gate still asserts on the child exit status, unchanged.
+    fn isolated_gate_command() -> std::process::Command {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "hotkey::tests::saved_startup_mute_and_feedback_apply_before_first_input",
+                "--nocapture",
+            ])
+            .env("MYWHISPER_STARTUP_MUTE_CHILD", "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        command
+    }
+
+    #[test]
+    fn isolated_gate_child_output_is_detached_not_duplicated() {
+        // Regression from hosted run 38608553414: observe exactly what the
+        // isolated child prints by overriding stdio to pipes (observation
+        // only — the gate itself keeps the helper's null redirections).
+        // The child emits its own libtest result lines; inheriting the
+        // harness stdout would duplicate them in batch logs.
+        use std::io::Read;
+        let mut command = isolated_gate_command();
+        command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        let mut out = String::new();
+        let mut err = String::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut out)
+            .unwrap();
+        child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut err)
+            .unwrap();
+        assert!(child.wait().unwrap().success(), "gate child failed");
+        assert_eq!(
+            out.matches("test hotkey::tests::saved_startup_mute_and_feedback_apply_before_first_input ... ok").count(),
+            1,
+            "child must emit exactly one result line; harness must see no more"
+        );
+        assert!(
+            err.is_empty(),
+            "gate child must stay silent on stderr: {err:?}"
+        );
+    }
+
     #[test]
     fn saved_startup_mute_and_feedback_apply_before_first_input() {
         // Process isolation gives this check the real startup globals without
         // racing other tests or reading a user's configuration/keyring.
         if std::env::var_os("MYWHISPER_STARTUP_MUTE_CHILD").is_none() {
-            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-            command
-                .args([
-                    "--exact",
-                    "hotkey::tests::saved_startup_mute_and_feedback_apply_before_first_input",
-                    "--nocapture",
-                ])
-                .env("MYWHISPER_STARTUP_MUTE_CHILD", "1");
+            let mut command = isolated_gate_command();
             let child = crate::child::OwnedChild::spawn(&mut command).unwrap();
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
@@ -1859,7 +1913,10 @@ mod suspend_handshake_tests {
             // post-exit release assertions below remain unchanged.
             let mut owner=ChildGuard(Some(std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact","hotkey::suspend_handshake_tests::capture_requires_fresh_ack_and_recovers_after_process_exit","--test-threads=1"])
-                .env(ISOLATED_OWNER,"1").stdin(std::process::Stdio::null()).spawn().unwrap()));
+                // Detached like every other re-exec child: the owner's own
+                // libtest result lines must not land in the batch log and
+                // trip the exactly-once verifier (see isolated_gate_command).
+                .env(ISOLATED_OWNER,"1").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap()));
             let deadline = Instant::now() + Duration::from_secs(20);
             loop {
                 if let Some(status) = owner.0.as_mut().unwrap().try_wait().unwrap() {

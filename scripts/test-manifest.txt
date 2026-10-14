@@ -43,6 +43,7 @@ test|lib|hotkey::ownership_regressions::unplug_only_cancels_the_binding_owned_by
 test|lib|hotkey::suspend_handshake_tests::capture_requires_fresh_ack_and_recovers_after_process_exit|run
 test|lib|hotkey::suspend_handshake_tests::released_capture_nonce_cannot_replay_during_a_new_frontend_start|run
 test|lib|hotkey::tests::evdev_codes_roundtrip_through_parser|run
+test|lib|hotkey::tests::isolated_gate_child_output_is_detached_not_duplicated|run
 test|lib|hotkey::tests::mods_gate_correctly|run
 test|lib|hotkey::tests::parses_f13_and_combos|run
 test|lib|hotkey::tests::rescan_merge_keeps_fds|run
@@ -56,6 +57,7 @@ test|lib|maintenance::tests::idle_worker_expires_existing_data_with_recording_of
 test|lib|media::tests::no_players_is_empty_success|run
 test|lib|mic::format_regressions::callback_queue_never_allocates_blocks_or_redirects_old_slices|run
 test|lib|mic::format_regressions::capture_shutdown_drains_queued_audio_into_its_original_recorder|run
+test|lib|mic::format_regressions::contended_tap_slot_skips_slices_without_killing_capture|run
 test|lib|mic::format_regressions::interleaved_frames_downmix_without_changing_duration_or_order|run
 test|lib|mic::format_regressions::partial_channel_frames_and_invalid_samples_are_handled_explicitly|run
 test|lib|mic::format_regressions::tiny_callbacks_coalesce_and_pending_batches_survive_owner_change_and_drop|run
