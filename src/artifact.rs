@@ -379,6 +379,67 @@ impl Drop for StagingDirectory {
     }
 }
 
+/// Recover crashed installations whose owner is provably gone: a lock that
+/// can be taken exclusively means no live installer holds it, and the
+/// journal still proves exactly which temporary directory is owned. Every
+/// mismatch preserves files and is skipped. Returns the number of
+/// recovered installations. This is also the process-startup entry point:
+/// service startup should call it once before serving requests (it is
+/// additionally invoked opportunistically by new installations below).
+pub(crate) fn sweep_interrupted_installations(data: &Path) -> usize {
+    let staging = data.join(".install/staging");
+    let entries = match std::fs::read_dir(&staging) {
+        Ok(entries) => entries,
+        Err(_) => return 0,
+    };
+    let mut recovered = 0usize;
+    for entry in entries.flatten().take(4096) {
+        let path = entry.path();
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("");
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") || !valid_key(stem) {
+            continue;
+        }
+        let key = stem.to_owned();
+        let journal = StagingDirectory::journal(data, &key);
+        // Liveness first: an exclusively lockable asset lock proves no live
+        // installer owns this key. Missing or replaced control preserves.
+        let lock_path = data.join(".install").join(format!("{key}.lock"));
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&lock_path);
+        let Ok(lock) = lock else { continue };
+        if !lock.metadata().is_ok_and(|meta| meta.is_file()) {
+            continue;
+        }
+        if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
+            continue;
+        }
+        // The lock guard is held for the whole recovery below, so a new
+        // installer racing us blocks in its guarded lock instead of
+        // observing half-removed staging.
+        let record = match StagingDirectory::read(&journal) {
+            Ok(Some(record)) => record,
+            _ => continue,
+        };
+        if !record
+            .parent
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+        {
+            continue;
+        }
+        let parent = data.join(&record.parent);
+        if StagingDirectory::recover(data, &key, &parent).is_ok() {
+            recovered += 1;
+        }
+    }
+    recovered
+}
+
 pub(crate) struct Stage {
     temporary: StagingDirectory,
     _global: File,
@@ -521,6 +582,10 @@ impl Stage {
         if !valid_key(key) {
             return Err("invalid artifact key".into());
         }
+        // Opportunistic hygiene while holding no locks: recover other keys'
+        // crashed staging proved stale by journal plus released locks.
+        // Sweep failures preserve files and never fail this installation.
+        let _ = sweep_interrupted_installations(data);
         let control = data.join(".install");
         if request.data != data || request.asset_epoch.0 != control.join(format!("{key}.epoch")) {
             return Err("installation request belongs to another asset".into());
@@ -2636,6 +2701,175 @@ mod tests {
         setup.promote(&AtomicBool::new(false)).unwrap();
         std::fs::write(data.path().join(".install/model-test.epoch"), b"bad").unwrap();
         assert!(observe_authority(data.path(), "model-test").is_err());
+        assert_eq!(
+            std::fs::read(destination.join("model")).unwrap(),
+            b"previous complete model"
+        );
+    }
+
+    /// Post-kill staging as the kernel leaves it: journal plus directory
+    /// remain, locks released. No live process holds anything here.
+    fn craft_stale(data: &Path, key: &str, parent: &str, body: &[u8]) -> PathBuf {
+        let staging_parent = data.join(parent);
+        crate::private_fs::directory(&staging_parent).unwrap();
+        crate::private_fs::directory(&data.join(".install/staging")).unwrap();
+        let name = format!(".mywhisper-install-{}", "ab".repeat(16));
+        let staging = staging_parent.join(&name);
+        crate::private_fs::directory(&staging).unwrap();
+        std::fs::write(staging.join("model"), body).unwrap();
+        let record = StagingRecord {
+            version: 1,
+            key: key.into(),
+            parent: parent.into(),
+            name,
+            identities: vec![DirectoryIdentity::of(
+                &std::fs::symlink_metadata(&staging).unwrap(),
+            )],
+        };
+        let owned = StagingDirectory {
+            path: staging.clone(),
+            journal: StagingDirectory::journal(data, key),
+            record,
+            created: true,
+            closed: false,
+        };
+        owned.persist().unwrap();
+        std::fs::write(data.join(".install").join(format!("{key}.lock")), b"").unwrap();
+        staging
+    }
+
+    #[test]
+    fn sweep_recovers_stale_but_preserves_live_tampered_and_foreign_state() {
+        let data = tempfile::tempdir().unwrap();
+        let stale = craft_stale(
+            data.path(),
+            "stale-key",
+            "models/whisper",
+            b"orphaned partial",
+        );
+        // A new installation sweeps other keys' crashed staging while
+        // holding no locks yet.
+        let live_destination = data.path().join("models/live");
+        let live = Stage::new(data.path(), "live-key", live_destination).unwrap();
+        assert!(
+            !stale.exists(),
+            "new installations must recover proven-stale staging"
+        );
+        assert!(!StagingDirectory::journal(data.path(), "stale-key").exists());
+        // Live staging is never touched: its lock is held exclusively.
+        std::fs::write(live.path().join("model"), b"live partial").unwrap();
+        // Tampered journals and foreign files are preserved, never swept.
+        crate::private_fs::directory(&data.path().join(".install/staging")).unwrap();
+        std::fs::write(
+            StagingDirectory::journal(data.path(), "tampered-key"),
+            b"not a record",
+        )
+        .unwrap();
+        std::fs::write(data.path().join(".install/staging/note.txt"), b"foreign").unwrap();
+        assert_eq!(sweep_interrupted_installations(data.path()), 0);
+        assert!(live.check(&AtomicBool::new(false)).is_ok());
+        assert_eq!(
+            std::fs::read(live.path().join("model")).unwrap(),
+            b"live partial"
+        );
+        assert!(StagingDirectory::journal(data.path(), "tampered-key").exists());
+        assert_eq!(
+            std::fs::read(data.path().join(".install/staging/note.txt")).unwrap(),
+            b"foreign"
+        );
+        drop(live);
+    }
+
+    #[test]
+    fn sweep_rejects_parent_escape_records_without_touching_files() {
+        let data = tempfile::tempdir().unwrap();
+        crate::private_fs::directory(&data.path().join(".install/staging")).unwrap();
+        let evil = data.path().join("evil");
+        crate::private_fs::directory(&evil).unwrap();
+        std::fs::write(evil.join("sentinel"), b"user file outside app data").unwrap();
+        let record = StagingRecord {
+            version: 1,
+            key: "escape-key".into(),
+            parent: "../evil".into(),
+            name: format!(".mywhisper-install-{}", "cd".repeat(16)),
+            identities: Vec::new(),
+        };
+        let journal = StagingDirectory::journal(data.path(), "escape-key");
+        crate::private_fs::replace(&journal, &serde_json::to_vec(&record).unwrap()).unwrap();
+        std::fs::write(data.path().join(".install/escape-key.lock"), b"").unwrap();
+        assert_eq!(sweep_interrupted_installations(data.path()), 0);
+        assert!(journal.exists(), "escape journal must be preserved");
+        assert_eq!(
+            std::fs::read(evil.join("sentinel")).unwrap(),
+            b"user file outside app data"
+        );
+    }
+
+    /// SIGKILL worker for the power-loss probe below. Runs only when the
+    /// parent test spawns this exact test with `MYWHISPER_SWEEP_CHILD` set;
+    /// a direct suite run is a no-op, never a hang.
+    #[test]
+    fn sweep_power_loss_child_worker() {
+        let Some(data) = std::env::var_os("MYWHISPER_SWEEP_CHILD") else {
+            return;
+        };
+        let data = PathBuf::from(data);
+        let destination = data.join("models/test");
+        let stage = Stage::new(&data, "model-test", destination).unwrap();
+        std::fs::write(
+            stage.path().join("model"),
+            b"partial weights from killed worker",
+        )
+        .unwrap();
+        std::fs::write(data.join("child-ready"), b"ready").unwrap();
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+
+    #[test]
+    fn interrupted_installation_sweep_recovers_sigkilled_staging() {
+        let data = tempfile::tempdir().unwrap();
+        let destination = data.path().join("models/test");
+        crate::private_fs::directory(&destination).unwrap();
+        std::fs::write(destination.join("model"), b"previous complete model").unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "artifact::tests::sweep_power_loss_child_worker",
+                "--nocapture",
+            ])
+            .env("MYWHISPER_SWEEP_CHILD", data.path())
+            .spawn()
+            .unwrap();
+        let ready = data.path().join("child-ready");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "worker never staged partial content"
+            );
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "worker exited before being killed"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // SIGKILL: the kernel releases installer locks; journal plus
+        // partial staging remain, exactly like a power loss.
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .open(data.path().join(".install/model-test.lock"))
+            .unwrap();
+        assert!(
+            fs2::FileExt::try_lock_exclusive(&lock).is_ok(),
+            "death must release installer locks"
+        );
+        drop(lock);
+        assert_eq!(sweep_interrupted_installations(data.path()), 1);
+        assert!(!StagingDirectory::journal(data.path(), "model-test").exists());
         assert_eq!(
             std::fs::read(destination.join("model")).unwrap(),
             b"previous complete model"

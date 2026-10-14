@@ -95,3 +95,27 @@ Original report, full matrix, source map and historical evidence are owned by th
 - Stable tested parent recorded: `c7479bc` (265-pass base at restack).
   No restack taken awaiting #19's published stable parent; new commits
   are fast-forward only.
+
+## Startup sweep + power-loss recovery (independent installer work)
+
+- `artifact::sweep_interrupted_installations(data)` (production, used):
+  scans `.install/staging/*.json`, takes each key's asset lock
+  non-blockingly (lockable ⇒ no live owner ⇒ stale; `WouldBlock` ⇒
+  live ⇒ skip; missing/replaced control ⇒ preserve), revalidates the
+  journal ownership record, rejects non-`Normal` record parents, then
+  reuses `StagingDirectory::recover`. Returns recovered count;
+  per-key mismatches preserve files. Wired opportunistically into
+  `Stage::new_requested` (holds no locks yet; failures never fail the
+  install) and published as the process-startup entry point for service
+  startup (#18) to call once before serving requests.
+- Probes (disposable tempdirs; one bounded child, 10 s deadlines):
+  stale-vs-live-vs-tampered-vs-foreign sweep test (incl. proof that
+  construction sweeps), parent-escape record rejection with sentinel
+  intact, and a true SIGKILL probe — child stages partial content,
+  parent kills, kernel releases locks, sweep recovers 1 with previous
+  installation preserved.
+- Live bounded matrix: `downloads_cpu_pack` (1.3 MB) and
+  `downloads_tiny_model` (75 MB) both pass. All other advertised assets
+  carry pinned SHA-256 + authenticated specs (unit-proven); remaining
+  large downloads (CUDA 219 MB, Sherpa 255/25 MB, needle, 0.5–3 GB
+  models) are external bandwidth/hardware prerequisites, not code gaps.
