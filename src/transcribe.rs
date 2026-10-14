@@ -788,15 +788,25 @@ pub(crate) fn clear_reconcile_ensure_pause() {
 ///   in between either wins (control defers) or loses (it re-read the
 ///   already-new settings and warms the new config). Check and destroy
 ///   are never split across lock releasings.
+/// - Watcher observations travel as `ReconcileAuthority` (validated
+///   witness plus attested snapshot fingerprint, never re-sampled):
+///   every apply branch verifies both under admission before mutating,
+///   so queued work can never start, stop or clear on behalf of
+///   superseded settings. Snapshot checks apply uniformly — including
+///   to direct calls, whose snapshots must also be current — while
+///   generation checks are skipped only by synchronous callers with no
+///   window. Pure settings saves move no generation, so identity
+///   comparison (not the counter alone) decides.
 /// - `ensure_server` revalidates staleness (`expected_gen`) and idleness
 ///   (`defer`) inside its own admission; long waits revoke via the
 ///   per-startup `baseline` (own bumps included) plus instance/map.
 /// - Explicit Stop (`drop_servers`) is immediate (no idle check) but
 ///   still serialized via `SERVER_START_LOCK` for bump ordering, and
-///   records Stop authority (`LAST_STOP_GEN` + `STOPPED_FP`) whenever it
-///   actually stopped something, so a queued autostart observes the
-///   newer Stop and settles instead of resurrecting — this tick and
-///   later ones, until a deliberate settings change or user press.
+///   records Stop authority (`LAST_STOP_GEN` + `STOPPED_FP`) whenever
+///   its fingerprint is known — even with an empty map, so pending
+///   startup settles cold. A queued autostart observes the newer Stop
+///   and settles instead of resurrecting — this tick and later ones,
+///   until a deliberate settings change or user press.
 static SERVER_START_LOCK: Mutex<()> = Mutex::new(());
 static SERVER_INSTANCE: AtomicU64 = AtomicU64::new(0);
 
