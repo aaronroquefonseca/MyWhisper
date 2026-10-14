@@ -40,6 +40,7 @@ pub fn paste_backend_deps(backend: PasteBackend) -> &'static str {
 #[derive(Debug, Clone, Copy)]
 pub struct BackendStatus {
     pub wayland: bool,
+    pub wl_copy: bool,
     pub wtype: bool,
     pub ydotool: bool,
     pub ydotoold_socket: bool,
@@ -51,6 +52,7 @@ pub fn probe() -> BackendStatus {
         .map(|p| p.exists())
         .unwrap_or(false);
     BackendStatus {
+        wl_copy: have("wl-copy"),
         wayland: std::env::var_os("WAYLAND_DISPLAY").is_some()
             || std::env::var_os("WAYLAND_SOCKET").is_some(),
         wtype: have("wtype"),

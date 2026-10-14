@@ -3714,7 +3714,28 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
     } else {
         eprintln!("[stt] history disabled: pasting without storing");
     }
-    crate::clipboard::run_pipeline(&text, &settings.preferences);
+    let epoch = store.capture_epoch();
+    let policy = crate::store::Store::open_existing(&paths.db_file())
+        .map_err(|error| error.to_string())
+        .and_then(|store| {
+            crate::operation::Operation::capture(
+                store,
+                epoch,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+        });
+    match policy {
+        Ok(policy) => {
+            let permitted =
+                Arc::new(move || policy.permitted() && !CANCELLED.load(Ordering::SeqCst));
+            if let Err(error) =
+                crate::clipboard::run_pipeline(&text, &settings.preferences, permitted)
+            {
+                eprintln!("[stt] clipboard delivery failed: {error}");
+            }
+        }
+        Err(error) => eprintln!("[stt] clipboard authorization failed: {error}"),
+    }
 }
 
 #[cfg(test)]
