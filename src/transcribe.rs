@@ -7878,8 +7878,15 @@ while True:
             };
             let recorder = rec.clone();
             let stopping = stop.clone();
+            // Hold the recorder across spawn: the worker's blocking locks
+            // can only acquire after this push lands, so the settled tail
+            // always contains all 500 samples regardless of scheduling.
+            // (An atomic stop flag cannot order mutex acquisition: a worker
+            // snapshot racing this push would otherwise see only 200.)
+            let mut held = rec.lock().unwrap();
             let worker = std::thread::spawn(move || run_spec(recorder, stopping, config, tx));
-            rec.lock().unwrap().push(&[2; 300]);
+            held.push(&[2; 300]);
+            drop(held);
             stop.store(true, Ordering::Release);
             let (_, _, buffer) = rx.recv_timeout(Duration::from_secs(1)).unwrap();
             assert_eq!(buffer.len(), 500);
