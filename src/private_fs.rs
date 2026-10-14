@@ -119,19 +119,36 @@ pub fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .set_permissions(std::fs::Permissions::from_mode(0o600))?;
     #[cfg(test)]
     replacement_fault::point("created", path);
-    tmp.write_all(bytes)?;
+    tmp.write_all(bytes)
+        .map_err(|e| persist_io("write private file", e))?;
     #[cfg(test)]
     replacement_fault::point("written", path);
-    tmp.as_file().sync_all()?;
+    tmp.as_file()
+        .sync_all()
+        .map_err(|e| persist_io("fsync private file", e))?;
     #[cfg(test)]
     replacement_fault::point("file-synced", path);
-    tmp.persist(path).map_err(|e| e.error)?;
+    tmp.persist(path)
+        .map_err(|e| persist_io("replace private file", e.error))?;
     #[cfg(test)]
     replacement_fault::point("renamed", path);
-    File::open(parent)?.sync_all()?;
+    File::open(parent)?
+        .sync_all()
+        .map_err(|e| persist_io("fsync private directory", e))?;
     #[cfg(test)]
     replacement_fault::point("directory-synced", path);
     Ok(())
+}
+
+fn persist_io(context: &str, error: io::Error) -> io::Error {
+    if error.kind() == io::ErrorKind::StorageFull || error.raw_os_error() == Some(28) {
+        io::Error::new(
+            io::ErrorKind::StorageFull,
+            format!("{context}: storage full; free space and retry"),
+        )
+    } else {
+        io::Error::new(error.kind(), format!("{context}: {error}"))
+    }
 }
 
 // Test-only, thread-local barriers keep fault injection out of the production

@@ -391,6 +391,12 @@ impl Store {
             "DELETE FROM sync_transfers WHERE updated_at>?1 OR updated_at<?2",
             params![now, now.saturating_sub(3600)],
         )?;
+        // Retire orphaned parts left by an interrupted delete or a build
+        // without FK enforcement: parent cascade is primary, this is repair.
+        self.conn.execute(
+            "DELETE FROM sync_transfer_parts WHERE transfer NOT IN (SELECT id FROM sync_transfers)",
+            [],
+        )?;
         Ok(())
     }
     pub(super) fn expire_pending_history_at(&self, now: i64, days: u32) -> rusqlite::Result<usize> {
@@ -808,7 +814,7 @@ impl Store {
             if changed {
                 bump_data_gen();
             }
-            self.prune_audio_vault_at(now_ms() / 1000)?;
+            self.prune_audio_best_effort();
         } else {
             tx.commit()?;
         }
@@ -1357,5 +1363,46 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn orphaned_transfer_parts_are_retired_without_losing_active_work() {
+        let (_root, a, _, a_id, b_id) = stores();
+        // Peer row required by sync_transfers(peer REFERENCES devices).
+        a.upsert_peer(&b_id, "synthetic b", "", true).unwrap();
+        let _ = a_id;
+        let now = crate::store::now_ms() / 1000;
+        // Active transfer with one part.
+        a.conn
+            .execute(
+                "INSERT INTO sync_transfers(peer,direction,stream,base,seq,kind,record_key,digest,total,progress,updated_at) VALUES(?1,0,'s',0,1,0,'k','d',10,5,?2)",
+                rusqlite::params![b_id, now],
+            )
+            .unwrap();
+        let id: i64 = a
+            .conn
+            .query_row("SELECT id FROM sync_transfers", [], |r| r.get(0))
+            .unwrap();
+        a.conn
+            .execute(
+                "INSERT INTO sync_transfer_parts(transfer,position,data) VALUES(?1,0,X'00')",
+                [id],
+            )
+            .unwrap();
+        // Orphan part from an interrupted delete on a build without FK.
+        a.conn.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
+        a.conn
+            .execute(
+                "INSERT INTO sync_transfer_parts(transfer,position,data) VALUES(999999,0,X'00')",
+                [],
+            )
+            .unwrap();
+        a.conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        a.expire_sync_transfers_at(now).unwrap();
+        let remaining: i64 = a
+            .conn
+            .query_row("SELECT count(*) FROM sync_transfer_parts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 1, "only the orphan must be retired");
     }
 }

@@ -656,6 +656,29 @@ pub fn exchange(
         return Err("peer node id mismatch".to_string());
     }
 
+    // Sync-off must not create contact rows: check authorization before
+    // any record_seen write. Disabled/revoked/epoch-changed peers get a
+    // clean rejection with no pending row for this contact.
+    if !store.load_settings().sync.enabled {
+        if initiator {
+            return Err("sync disabled".to_string());
+        }
+        session.send_json(&Verdict {
+            ok: false,
+            error: "sync disabled".to_string(),
+        })?;
+        return Err("sync disabled".to_string());
+    }
+    if store.is_revoked(&peer.node_id).map_err(|e| e.to_string())? {
+        if initiator {
+            return Err("peer revoked".to_string());
+        }
+        session.send_json(&Verdict {
+            ok: false,
+            error: "peer revoked".to_string(),
+        })?;
+        return Err("peer revoked".to_string());
+    }
     // Contact bookkeeping: unknown nodes become pending requests,
     // known ones refresh addresses.
     let mut contact_addrs: Vec<String> = peer.addresses.clone();
@@ -1093,26 +1116,37 @@ pub fn serve(
         return;
     };
     let mut workers: Vec<(crate::runtime::OwnedThread, TcpStream)> = Vec::new();
+    let reap = |workers: &mut Vec<(crate::runtime::OwnedThread, TcpStream)>| {
+        let mut i = 0;
+        while i < workers.len() {
+            if workers[i].0.is_finished() {
+                let (worker, _) = workers.swap_remove(i);
+                let _ = worker.join();
+            } else {
+                i += 1;
+            }
+        }
+    };
     for conn in listener.incoming() {
         if crate::runtime::closing() || stop.load(Ordering::Relaxed) {
             break;
         }
         match conn {
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                reap(&mut workers);
                 std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
             Ok(stream) => {
-                let mut i = 0;
-                while i < workers.len() {
-                    if workers[i].0.is_finished() {
-                        let (worker, _) = workers.swap_remove(i);
-                        let _ = worker.join();
-                    } else {
-                        i += 1;
-                    }
-                }
+                reap(&mut workers);
                 if workers.len() >= 8 {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    continue;
+                }
+                // Disabled listener still accepts TCP but must not handshake
+                // or record contact: close early without Noise/hello work.
+                // Settings are re-read per accept so toggle-off applies now.
+                if !accept_store.load_settings().sync.enabled {
                     let _ = stream.shutdown(std::net::Shutdown::Both);
                     continue;
                 }
@@ -1135,6 +1169,15 @@ pub fn serve(
                 let authorization_epoch = accept_store.sync_epoch();
                 let worker = crate::runtime::spawn_dedicated("sync-connection", move || {
                     let res = (|| -> Result<SyncReport, String> {
+                        // Re-check toggle inside the worker: the accept-time
+                        // gate above races toggle-off, so never handshake or
+                        // record contact while disabled.
+                        let pre =
+                            Store::open_existing(&db_path).map_err(|e| format!("open db: {e}"))?;
+                        if !pre.load_settings().sync.enabled {
+                            let _ = stream.shutdown(std::net::Shutdown::Both);
+                            return Err("sync disabled".to_string());
+                        }
                         let (mut session, hash, _remote_static) =
                             NoiseStream::handshake(stream, &creds.noise_static, false)?;
                         session.authorization_epoch = Some(authorization_epoch);
@@ -1169,8 +1212,9 @@ pub fn serve(
                         }
                     }
                 });
-                if let Ok(worker) = worker {
-                    workers.push((worker, owned_socket));
+                match worker {
+                    Ok(worker) => workers.push((worker, owned_socket)),
+                    Err(error) => eprintln!("[sync] connection budget exhausted: {error}"),
                 }
             }
             Err(e) => eprintln!("[sync] accept: {e}"),
@@ -1801,6 +1845,18 @@ pub fn sync_on_startup(db: PathBuf, creds: SyncCreds) {
     }
 }
 
+/// mDNS may observe anyone on the LAN: only known non-revoked rows get
+/// address refreshes. Unknown/revoked ids never gain rows or writes here;
+/// trust stays an explicit pairing decision enforced by permitted().
+pub(crate) fn should_refresh_addresses(store: &Store, node_id: &str) -> bool {
+    if !crate::device::valid_node_id(node_id) {
+        return false;
+    }
+    let known = store.get_peer(node_id).unwrap_or(None).is_some();
+    let revoked = store.is_revoked(node_id).unwrap_or(true);
+    known && !revoked
+}
+
 /// Watch mDNS discovery: whenever a *trusted* peer newly appears on
 /// the LAN, sync immediately instead of waiting for the loop.
 pub fn watch_discovered(
@@ -1823,8 +1879,14 @@ pub fn watch_discovered(
                 Err(_) => continue,
             };
             let discovered = discovered.lock().unwrap().clone();
+            // Refresh addresses only for known non-revoked rows. Unknown or
+            // revoked ids must not gain rows or address writes from mDNS;
+            // trust is decided by explicit pairing, later enforced by
+            // permitted()/require_sync_authorized.
             for peer in discovered.values() {
-                let _ = store.set_peer_addresses(&peer.node_id, &peer.addresses);
+                if should_refresh_addresses(&store, &peer.node_id) {
+                    let _ = store.set_peer_addresses(&peer.node_id, &peer.addresses);
+                }
             }
             let trusted: std::collections::HashSet<String> = store
                 .list_peers()
@@ -3134,5 +3196,27 @@ mod tests {
 
         std::fs::remove_file(&db_v).ok();
         std::fs::remove_file(&db_x).ok();
+    }
+
+    #[test]
+    fn discovery_refresh_only_touches_known_non_revoked_peers() {
+        let db = temp_db("discovery-guard");
+        let store = Store::open(&db).unwrap();
+        let trusted = DeviceIdentity::ephemeral().creds();
+        let revoked = DeviceIdentity::ephemeral().creds();
+        let unknown = DeviceIdentity::ephemeral().creds();
+        store
+            .upsert_peer(&trusted.node_id, "synthetic trusted", "", true)
+            .unwrap();
+        store
+            .upsert_peer(&revoked.node_id, "synthetic revoked", "", true)
+            .unwrap();
+        store.remove_peer(&revoked.node_id).unwrap();
+        assert!(should_refresh_addresses(&store, &trusted.node_id));
+        assert!(!should_refresh_addresses(&store, &revoked.node_id));
+        assert!(!should_refresh_addresses(&store, &unknown.node_id));
+        assert!(!should_refresh_addresses(&store, "not-a-node-id"));
+        // Unknown ids gain no rows from address refresh alone.
+        assert!(store.get_peer(&unknown.node_id).unwrap().is_none());
     }
 }

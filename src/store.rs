@@ -257,6 +257,62 @@ fn key_pragma(key: &[u8; 32]) -> String {
     format!("PRAGMA key = \"x'{}'\"", hex_encode(key))
 }
 
+/// ENOSPC/SQLITE_FULL must surface as recoverable "storage full" instead of
+/// a generic conversion failure: the source database is preserved and the
+/// user can free space and retry. Raw OS 28 covers kernels without
+/// `ErrorKind::StorageFull` mapping.
+fn is_storage_full_io(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::StorageFull || error.raw_os_error() == Some(28)
+}
+
+fn map_persist_io(context: &str, error: std::io::Error) -> rusqlite::Error {
+    if is_storage_full_io(&error) {
+        rusqlite::Error::ToSqlConversionFailure(
+            format!("{context}: storage full; free space and retry; original database preserved")
+                .into(),
+        )
+    } else {
+        rusqlite::Error::ToSqlConversionFailure(format!("{context}: {error}").into())
+    }
+}
+
+fn is_sqlite_full(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(err, _) if err.code == rusqlite::ffi::ErrorCode::DiskFull
+    )
+}
+
+fn map_sqlite_full(context: &str, error: rusqlite::Error) -> rusqlite::Error {
+    if is_sqlite_full(&error) {
+        rusqlite::Error::ToSqlConversionFailure(
+            format!("{context}: storage full; free space and retry; original database preserved")
+                .into(),
+        )
+    } else {
+        error
+    }
+}
+
+/// Remove stale sidecars after an atomic replace: the old plaintext WAL
+/// and any backup/journal files must not survive next to the encrypted
+/// database. Missing files are fine; other removal failures are logged
+/// but do not fail migration (the main database is already durable).
+fn cleanup_migration_sidecars(path: &Path) {
+    let name = path.to_string_lossy().into_owned();
+    for suffix in ["-wal", "-shm", "-journal", "-bak", "-tmp"] {
+        let sidecar = std::path::PathBuf::from(format!("{name}{suffix}"));
+        match std::fs::remove_file(&sidecar) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => eprintln!(
+                "[store] stale sidecar {} not removed: {error}",
+                sidecar.display()
+            ),
+        }
+    }
+}
+
 /// Encrypt a legacy plaintext database in place via a temp file:
 /// attach fresh encrypted db, export, atomically replace.
 fn migrate_plaintext_to_encrypted(path: &Path, key: &[u8; 32]) -> rusqlite::Result<()> {
@@ -307,9 +363,11 @@ fn migrate_plaintext_to_encrypted(path: &Path, key: &[u8; 32]) -> rusqlite::Resu
             "database schema is newer than this build".into(),
         ));
     }
-    tx.query_row("SELECT sqlcipher_export('enc')", [], |_| Ok(()))?;
+    tx.query_row("SELECT sqlcipher_export('enc')", [], |_| Ok(()))
+        .map_err(|e| map_sqlite_full("export encrypted migration", e))?;
     tx.execute_batch(&format!("PRAGMA enc.user_version={version}"))?;
-    tx.commit()?;
+    tx.commit()
+        .map_err(|e| map_sqlite_full("commit encrypted migration", e))?;
     plain.execute_batch("DETACH enc")?;
     #[cfg(test)]
     crate::private_fs::replacement_fault::point("migration-exported", path);
@@ -328,18 +386,18 @@ fn migrate_plaintext_to_encrypted(path: &Path, key: &[u8; 32]) -> rusqlite::Resu
     staging
         .as_file()
         .sync_all()
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+        .map_err(|e| map_persist_io("fsync encrypted migration", e))?;
     #[cfg(test)]
     crate::private_fs::replacement_fault::point("migration-file-synced", path);
-    std::fs::rename(tmp, path)
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(format!("replace db: {e}").into()))?;
+    std::fs::rename(tmp, path).map_err(|e| map_persist_io("replace db", e))?;
     #[cfg(test)]
     crate::private_fs::replacement_fault::point("migration-renamed", path);
     std::fs::File::open(path.parent().unwrap_or(Path::new(".")))
         .and_then(|parent| parent.sync_all())
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+        .map_err(|e| map_persist_io("fsync database directory", e))?;
     #[cfg(test)]
     crate::private_fs::replacement_fault::point("migration-directory-synced", path);
+    cleanup_migration_sidecars(path);
     drop(plain);
     Ok(())
 }
@@ -1108,7 +1166,8 @@ impl Store {
         if changed > 0 {
             bump_data_gen();
         }
-        self.prune_audio_vault_at(now_ms() / 1000).map(|_| ())
+        self.prune_audio_best_effort();
+        Ok(())
     }
 
     /// Legacy cleanup must retain tombstones so peers cannot resurrect rows.
@@ -1128,7 +1187,8 @@ impl Store {
     ) -> rusqlite::Result<usize> {
         let now = now_ms() / 1000;
         let count = self.redact_history_where_at(predicate, params, now)?;
-        self.prune_audio_vault_at(now)?;
+        // Post-commit vault cleanup retries via idle maintenance.
+        self.prune_audio_best_effort();
         Ok(count)
     }
 
@@ -1667,6 +1727,16 @@ impl Store {
         Ok(removed)
     }
 
+    /// Post-commit audio cleanup is best-effort: the merge already committed,
+    /// so a vault IO failure must not report the sync as failed (retry would
+    /// only repeat committed work). Failures are logged for the next idle
+    /// maintenance pass, which retries them.
+    pub(crate) fn prune_audio_best_effort(&self) {
+        if let Err(error) = self.prune_audio_vault_at(now_ms() / 1000) {
+            eprintln!("[store] audio vault cleanup failed; will retry: {error}");
+        }
+    }
+
     // -- sync: export + LWW apply --------------------------------------------
 
     pub fn export_words(&self) -> rusqlite::Result<Vec<WordRecord>> {
@@ -1721,13 +1791,42 @@ impl Store {
     }
 
     fn next_version(conn: &Connection) -> rusqlite::Result<i64> {
+        // Monotonic LWW clock: MAX(now, words, snippets, stored) + 1.
+        // Saturating/checked arithmetic: SQLite +1 would wrap near i64::MAX
+        // and break convergence (rollback or resurrection). Surface overflow
+        // instead of wrapping; horizon rejection stays in validate_version.
+        let now = now_ms();
+        let max_words: i64 = conn
+            .query_row("SELECT COALESCE(MAX(updated_at),0) FROM words", [], |r| {
+                r.get(0)
+            })
+            .unwrap_or(0);
+        let max_snippets: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(updated_at),0) FROM snippets",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let stored: i64 = conn
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM sync_meta WHERE key='clock'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let base = now.max(max_words).max(max_snippets).max(stored);
+        let next = base.checked_add(1).ok_or_else(|| {
+            rusqlite::Error::ToSqlConversionFailure(
+                "monotonic sync clock overflow; reset required".into(),
+            )
+        })?;
         conn.query_row(
-            "INSERT INTO sync_meta(key,value) VALUES ('clock',
-                MAX(?1, COALESCE((SELECT MAX(updated_at) FROM words),0),
-                     COALESCE((SELECT MAX(updated_at) FROM snippets),0)) + 1)
-             ON CONFLICT(key) DO UPDATE SET value = MAX(CAST(value AS INTEGER),
-                 CAST(excluded.value AS INTEGER) - 1) + 1 RETURNING CAST(value AS INTEGER)",
-            [now_ms()],
+            "INSERT INTO sync_meta(key,value) VALUES ('clock',?1)
+              ON CONFLICT(key) DO UPDATE SET value=MAX(CAST(value AS INTEGER),?1)
+              RETURNING CAST(value AS INTEGER)",
+            [next],
             |r| r.get(0),
         )
     }
@@ -1824,7 +1923,8 @@ impl Store {
         if changed > 0 {
             bump_data_gen();
         }
-        self.prune_audio_vault_at(now_ms() / 1000).map(|_| ())
+        self.prune_audio_best_effort();
+        Ok(())
     }
 
     /// One content round either commits all tables or leaves all unchanged.
@@ -1845,7 +1945,8 @@ impl Store {
         if changed > 0 {
             bump_data_gen();
         }
-        self.prune_audio_vault_at(now_ms() / 1000).map(|_| ())
+        self.prune_audio_best_effort();
+        Ok(())
     }
 
     /// All exported tables share one authorized SQLite snapshot. No mixed
@@ -1953,7 +2054,7 @@ impl Store {
         if changed > 0 || added > 0 {
             bump_data_gen();
         }
-        self.prune_audio_vault_at(now_ms() / 1000)?;
+        self.prune_audio_best_effort();
         Ok(added)
     }
 
@@ -4244,5 +4345,97 @@ mod capture_privacy_regressions {
             Store::open(&saved).unwrap().load_words().unwrap(),
             vec!["synthetic"]
         );
+    }
+
+    #[test]
+    fn monotonic_clock_overflow_errors_without_wrapping() {
+        let store = Store::open_memory().unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO sync_meta(key,value) VALUES ('clock',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [i64::MAX - 1],
+            )
+            .unwrap();
+        // First advance saturates to MAX.
+        let at_max = Store::next_version(&store.conn).unwrap();
+        assert_eq!(at_max, i64::MAX);
+        // Further advances must error, never wrap negative or resurrect.
+        assert!(Store::next_version(&store.conn).is_err());
+        assert!(Store::next_version(&store.conn).is_err());
+    }
+
+    #[test]
+    fn migration_sidecars_are_removed_without_touching_the_database() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("state.db");
+        std::fs::write(&path, b"synthetic db").unwrap();
+        for suffix in ["-wal", "-shm", "-journal", "-bak", "-tmp"] {
+            std::fs::write(
+                root.path().join(format!("state.db{suffix}")),
+                b"synthetic stale",
+            )
+            .unwrap();
+        }
+        cleanup_migration_sidecars(&path);
+        assert_eq!(std::fs::read(&path).unwrap(), b"synthetic db");
+        for suffix in ["-wal", "-shm", "-journal", "-bak", "-tmp"] {
+            assert!(
+                !root.path().join(format!("state.db{suffix}")).exists(),
+                "stale {suffix} must be retired"
+            );
+        }
+    }
+
+    #[test]
+    fn storage_full_mapping_preserves_source_hint() {
+        let full = std::io::Error::new(std::io::ErrorKind::StorageFull, "synthetic full");
+        assert!(is_storage_full_io(&full));
+        let nospace = std::io::Error::from_raw_os_error(28);
+        assert!(is_storage_full_io(&nospace));
+        let mapped = map_persist_io("synthetic persist", full);
+        assert!(
+            format!("{mapped:?}").contains("storage full"),
+            "ENOSPC must surface as recoverable storage-full"
+        );
+        let sqlite_full = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+            None,
+        );
+        assert!(is_sqlite_full(&sqlite_full));
+        assert!(
+            format!("{:?}", map_sqlite_full("synthetic", sqlite_full)).contains("storage full")
+        );
+    }
+
+    #[test]
+    fn post_commit_audio_failure_does_not_fail_the_merge() {
+        // Break the vault directory (file in place of dir) so pruning fails;
+        // the merge already committed and must still report success for retry
+        // by idle maintenance instead of a misleading sync failure.
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("state.db");
+        let store = Store::open(&path).unwrap();
+        let vault = crate::audio::audio_vault_dir(root.path());
+        // Ensure a file blocks directory creation.
+        if vault.exists() {
+            std::fs::remove_dir_all(&vault).unwrap();
+        }
+        std::fs::write(&vault, b"synthetic blocker").unwrap();
+        store
+            .apply_history(&[HistoryRecord {
+                uuid: "synthetic-uuid".into(),
+                text: "synthetic".into(),
+                raw_text: "synthetic".into(),
+                words: 1,
+                duration_secs: 1,
+                deleted: false,
+                discarded: false,
+                recorded_at: now_ms() / 1000,
+            }])
+            .unwrap();
+        // Best-effort prune logs but does not fail; history merged.
+        assert_eq!(store.export_history().unwrap().len(), 1);
+        store.prune_audio_best_effort();
     }
 }

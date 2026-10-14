@@ -317,7 +317,7 @@ impl Store {
         if changed {
             bump_data_gen();
         }
-        self.prune_audio_vault_at(now_ms() / 1000)?;
+        self.prune_audio_best_effort();
         Ok(added)
     }
 

@@ -98,7 +98,8 @@ pub fn set_sync_port(port: u16) {
 
 /// Running sync stack. Drop stops everything: the listener loop
 /// polls the flag, the periodic threads exit within a second, the
-/// mDNS daemon unregisters. In-flight syncs finish on their own.
+/// mDNS daemon unregisters. In-flight syncs abort via their policy
+/// watcher when authorization changes; the sockets close on drop.
 pub struct SyncEngine {
     stop: Arc<AtomicBool>,
     mdns: Option<crate::net::MdnsHandles>,
@@ -145,9 +146,11 @@ pub fn start_sync_engine(
             }
             {
                 let stop = stop.clone();
-                std::thread::spawn(move || {
+                if let Err(error) = crate::runtime::spawn_dedicated("sync-listener", move || {
                     crate::net::serve(listener, db_path, creds, device_name, hello_addrs, &stop)
-                });
+                }) {
+                    eprintln!("[sync] listener off: {error}");
+                }
             }
             let mdns = match crate::net::start_mdns(
                 &identity.node_id,
@@ -176,7 +179,11 @@ pub fn start_sync_engine(
                 let db_path = paths.db_file();
                 let creds = identity.creds();
                 let stop = stop.clone();
-                std::thread::spawn(move || crate::net::auto_sync_loop(db_path, creds, stop));
+                if let Err(error) = crate::runtime::spawn_dedicated("sync-auto", move || {
+                    crate::net::auto_sync_loop(db_path, creds, stop)
+                }) {
+                    eprintln!("[sync] auto-sync off: {error}");
+                }
             }
             {
                 let db_path = paths.db_file();
@@ -185,7 +192,14 @@ pub fn start_sync_engine(
             {
                 let db_path = paths.db_file();
                 let stop = stop.clone();
-                crate::net::watch_discovered(db_path, identity.creds(), discovered.clone(), stop);
+                if let Err(error) = crate::net::watch_discovered(
+                    db_path,
+                    identity.creds(),
+                    discovered.clone(),
+                    stop,
+                ) {
+                    eprintln!("[sync] discovery watcher off: {error}");
+                }
             }
             *SYNC_ENGINE.lock().unwrap() = Some(SyncEngine { stop, mdns });
             port
@@ -215,7 +229,9 @@ pub fn spawn_sync_watcher(
     identity: DeviceIdentity,
     discovered: Arc<Mutex<HashMap<String, Discovered>>>,
 ) {
-    std::thread::spawn(move || {
+    // Fixed singleton watchers use the bounded runtime (Result, never panic)
+    // instead of std::thread::spawn: spawn failure is logged, not aborting.
+    if let Err(error) = crate::runtime::spawn_dedicated("sync-watcher", move || {
         let mut first = true;
         // Last applied (enabled, port, name, advertise): any move
         // restarts the engine, so all edits apply immediately.
@@ -262,7 +278,9 @@ pub fn spawn_sync_watcher(
                 applied = Some(want);
             }
         }
-    });
+    }) {
+        eprintln!("[sync] watcher off: {error}");
+    }
 }
 
 /// Watch the database for hotkey changes (written by any frontend)
@@ -273,7 +291,7 @@ pub fn spawn_hotkey_watcher(
     up: DictationHook,
     cancel: DictationHook,
 ) {
-    std::thread::spawn(move || {
+    if let Err(error) = crate::runtime::spawn_dedicated("hotkey-watcher", move || {
         let mut last: (Vec<(String, crate::settings::ActivationMode)>, u64) = (Vec::new(), 0);
         let mut first = true;
         // Stale GUI commands from before this boot die unrun.
@@ -353,7 +371,9 @@ pub fn spawn_hotkey_watcher(
                 );
             }
         }
-    });
+    }) {
+        eprintln!("[service] hotkey watcher off: {error}");
+    }
 }
 
 /// Commands from background threads to the service's GTK thread.
@@ -373,7 +393,7 @@ pub enum PillCmd {
 /// Watch the database for pill preference changes (written by any
 /// frontend) and forward snapshots to the GTK thread.
 pub fn spawn_pill_watcher(db_path: PathBuf, tx: std::sync::mpsc::Sender<PillCmd>) {
-    std::thread::spawn(move || {
+    if let Err(error) = crate::runtime::spawn_dedicated("pill-watcher", move || {
         let mut last: Option<crate::settings::PillPrefs> = None;
         loop {
             std::thread::sleep(Duration::from_secs(2));
@@ -389,7 +409,9 @@ pub fn spawn_pill_watcher(db_path: PathBuf, tx: std::sync::mpsc::Sender<PillCmd>
                 }
             }
         }
-    });
+    }) {
+        eprintln!("[service] pill watcher off: {error}");
+    }
 }
 
 /// Service heartbeat file for the home banner (`<state>/service.json`,
@@ -402,7 +424,7 @@ pub fn spawn_heartbeat(state_dir: PathBuf) {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let pid = std::process::id();
-    std::thread::spawn(move || {
+    if let Err(error) = crate::runtime::spawn_dedicated("service-heartbeat", move || {
         loop {
             std::thread::sleep(Duration::from_secs(5));
             let now = std::time::SystemTime::now()
@@ -423,7 +445,9 @@ pub fn spawn_heartbeat(state_dir: PathBuf) {
             }
             let _ = std::fs::write(&path, body.to_string());
         }
-    });
+    }) {
+        eprintln!("[service] heartbeat off: {error}");
+    }
 }
 
 /// Read someone else's heartbeat (GUI side). Ok only when fresh

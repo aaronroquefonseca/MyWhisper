@@ -325,12 +325,10 @@ pub fn audio_vault_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
 pub fn clear_audio(data_dir: &std::path::Path) -> std::io::Result<usize> {
     let dir = audio_vault_dir(data_dir);
     let entries = match std::fs::read_dir(&dir) {
-        Ok(mut entries) => entries.try_fold(0usize, |count, entry| {
-            entry?;
-            count
-                .checked_add(1)
-                .ok_or_else(|| std::io::Error::other("audio file count overflow"))
-        })?,
+        Ok(entries) => entries
+            .flatten()
+            .filter(|entry| entry.path().is_file())
+            .count(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
         Err(e) => return Err(e),
     };
@@ -338,6 +336,9 @@ pub fn clear_audio(data_dir: &std::path::Path) -> std::io::Result<usize> {
         std::fs::remove_dir_all(&dir)?;
     }
     crate::private_fs::directory(&dir)?;
+    // Count-then-delete races a concurrent writer; the vault snapshot in
+    // prune_audio_vault_at holds the writer lock instead. This best-effort
+    // count is only for UI feedback after an explicit clear.
     Ok(entries)
 }
 
