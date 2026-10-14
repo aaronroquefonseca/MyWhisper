@@ -3,24 +3,21 @@ pkgname=mywhisper
 pkgver=0.9.4
 pkgrel=1
 pkgdesc="Voice dictation with on-device transcription"
-arch=('x86_64' 'aarch64')
+arch=('x86_64')
 url="https://github.com/aaronroquefonseca/MyWhisper"
 license=('MIT')
 depends=('gtk4>=4.22' 'libadwaita>=1.5' 'gtk4-layer-shell' 'alsa-lib' 'hicolor-icon-theme' 'wl-clipboard' 'wtype' 'libpulse' 'ca-certificates')
 optdepends=('gnome-keyring: Secret Service for encrypted settings' 'ydotool: optional paste backend (requires ydotoold)')
 # Private release tarball: fetched by update.sh via `gh` (makepkg
-# cannot send GitHub tokens), then built from this directory. CARCH maps
-# 1:1 onto the Rust target triple ($CARCH-unknown-linux-gnu).
-source=("mywhisper-v${pkgver}-${CARCH}-unknown-linux-gnu.tar.gz")
-# Published v0.9.3 x86_64 asset digest, verified through authenticated
-# GitHub metadata. update.sh replaces these historical digests with the
-# selected release's verified per-arch digests in its temporary recipe.
-# Direct makepkg needs that release's digest too.
-sha256sums_x86_64=('443ce5d00a992bf1cca6c4cbadd5978216b9a7d62a7661cce23c6ada35a11046')
-sha256sums_aarch64=('SKIP')
+# cannot send GitHub tokens), then built from this directory.
+source=("mywhisper-v${pkgver}-x86_64-unknown-linux-gnu.tar.gz")
+# Published v0.9.3 asset digest, verified through authenticated GitHub metadata.
+# update.sh replaces this historical digest with the selected release's verified
+# digest in its temporary recipe. Direct makepkg needs that release's digest too.
+sha256sums=('443ce5d00a992bf1cca6c4cbadd5978216b9a7d62a7661cce23c6ada35a11046')
 
 package() {
-  local stage="mywhisper-v${pkgver}-${CARCH}-unknown-linux-gnu"
+  local stage="mywhisper-v${pkgver}-x86_64-unknown-linux-gnu"
   install -Dm755 "$stage/mywhisper" "$pkgdir/usr/bin/mywhisper"
   install -Dm644 "$stage/mywhisper.service" "$pkgdir/usr/lib/systemd/user/mywhisper.service"
   install -Dm644 "$stage/com.mywhisper.App.desktop" "$pkgdir/usr/share/applications/com.mywhisper.App.desktop"

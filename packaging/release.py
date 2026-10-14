@@ -294,17 +294,15 @@ def stage(root, output, tag):
     metadata["sha256"] = digest
     # The archive digest is known only after building. Generate the final Arch
     # recipe alongside it, without editing the immutable checked source tree.
-    # Release builds are x86_64; the aarch64 slot keeps its tooling-filled value.
     recipe = (root / "packaging/arch/PKGBUILD").read_text()
-    recipe, count = re.subn(r"^sha256sums_x86_64=.*$", f"sha256sums_x86_64=('{digest}')", recipe, flags=re.MULTILINE)
+    recipe, count = re.subn(r"^sha256sums=.*$", f"sha256sums=('{digest}')", recipe, flags=re.MULTILINE)
     if count != 1:
-        raise ValueError("Arch recipe needs exactly one x86_64 checksum field")
+        raise ValueError("Arch recipe needs exactly one checksum field")
+    recipe = re.sub(r"^# Published .* asset digest, verified through authenticated GitHub metadata\.$",
+                    "# Checked release artifact digest; generated with this release.", recipe, flags=re.MULTILINE)
     recipe = recipe.replace(
-        "# Published v0.9.3 x86_64 asset digest, verified through authenticated\n"
-        "# GitHub metadata. update.sh replaces these historical digests with the\n"
-        "# selected release's verified per-arch digests in its temporary recipe.\n"
-        "# Direct makepkg needs that release's digest too.\n",
-        "# Checked release artifact digest; generated with this release.\n"
+        "# update.sh replaces this historical digest with the selected release's verified\n"
+        "# digest in its temporary recipe. Direct makepkg needs that release's digest too.\n",
         "# Use with the archive attached to this release; its checksum is verified below.\n")
     (output / "PKGBUILD").write_text(recipe)
     recipe_digest = hashlib.sha256(recipe.encode()).hexdigest()

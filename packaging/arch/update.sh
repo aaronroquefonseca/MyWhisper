@@ -26,10 +26,14 @@ if [[ ! $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
   echo 'The Arch installer accepts stable versions in major.minor.patch form.' >&2
   exit 2
 fi
+# Fail closed on unvalidated targets: only x86_64 has published,
+# digest-authenticated release artifacts (no checksum bypass, no silent
+# wrong-arch fetch). aarch64 returns if/when a real validated artifact
+# exists, with its own verified digest handling.
 carch=$(uname -m)
 case $carch in
-  x86_64|aarch64) ;;
-  *) echo "Unsupported host architecture: $carch" >&2; exit 2 ;;
+  x86_64) ;;
+  *) echo "Unsupported host architecture for verified packaging: $carch (only x86_64 has authenticated release artifacts)" >&2; exit 2 ;;
 esac
 tarball="mywhisper-v${version}-${carch}-unknown-linux-gnu.tar.gz"
 metadata=$(gh release view "v${version}" --repo "$repo" --json isDraft,isPrerelease,assets)
@@ -52,7 +56,7 @@ if [[ ${actual%% *} != "$digest" ]]; then
 fi
 python3 "$script_dir/../validate-artifact.py" "$work/$tarball" "$version"
 sed -e "s/^pkgver=.*/pkgver=${version}/" -e 's/^pkgrel=.*/pkgrel=1/' \
-  -e "s/^sha256sums_${carch}=.*/sha256sums_${carch}=('${digest}')/" "$script_dir/PKGBUILD" > "$work/PKGBUILD"
+  -e "s/^sha256sums=.*/sha256sums=('${digest}')/" "$script_dir/PKGBUILD" > "$work/PKGBUILD"
 (cd -- "$work" && makepkg -si --noconfirm)
 systemctl --user daemon-reload
 systemctl --user enable mywhisper.service
