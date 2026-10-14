@@ -91,13 +91,16 @@ def load_model(model_dir, backend):
     if backend == "vllm":
         import os
 
-        # Shared-GPU operators can lower this (default 0.7) when the
-        # card is partly occupied; the Rust probe surfaces vLLM's own
-        # free-memory error when it still does not fit.
+        # Shared-GPU operators can raise this (default 0.5) when the
+        # card is mostly free; the Rust probe surfaces vLLM's own
+        # free-memory error when it still does not fit. 0.5 keeps a
+        # background dictation engine a good citizen on desktops
+        # (compositor/other apps share the card) while covering the
+        # weights plus a dictation-sized KV cache several times over.
         try:
-            mem_util = float(os.environ.get("QWEN_GPU_MEM_UTIL", "0.7"))
+            mem_util = float(os.environ.get("QWEN_GPU_MEM_UTIL", "0.5"))
         except ValueError:
-            mem_util = 0.7
+            mem_util = 0.5
         mem_util = min(max(mem_util, 0.1), 0.95)
         print(
             f"[qwen] loading {model_dir} (vllm backend, gpu_mem={mem_util})", flush=True
