@@ -47,11 +47,15 @@ re-exposes host-backed storage as TMPDIR. Measured fsync: tmpfs
 /tmp is overlay disk — same tests, radically different fsync bills.
 No speculative-counter redesign; no sharding; 120s budget unchanged.
 
-Implementation (one commit, #15-owned scripts/): explicit test-only
-MYWHISPER_AUDIT_TMPFS_TMP=1 overlays private tmpfs on root/tmp only
-(bwrap --tmpfs after the root bind; in-namespace UID stays euid,
-owner-writable; host-side 0700 stub + marker/HOME/XDG unchanged; var
-popped so child never inherits; any other value fails closed).
+Implementation (corrected commit, #15-owned scripts/): explicit
+test-only MYWHISPER_AUDIT_TMPFS_TMP=1 mounts private tmpfs on
+root/tmp with kernel-enforced 2 GiB cap (--size 2147483648) and mode
+0700 (--perms), owned by the mounting user; a 1 MiB probe mount on
+root/.limitprobe proves kernel size enforcement. Prior comments
+claiming a budget/0700 without code controls were wrong and are
+corrected here: the bound and mode are now mount-level, child-visible
+(statvfs totals 2.0 GiB / 1.0 MiB asserted in regressions) and
+fail-closed (unknown bwrap options abort the gate).
 Preserved: real SQLCipher files/locks/transactions/fsync, SIGKILL/
 reopen semantics. No synchronous=OFF, no mocks. No in-scope test
 relies on host-reboot persistence (SIGKILL refs are process-reaping
@@ -59,20 +63,53 @@ semantics); if a future power-loss test appears it must opt out
 explicitly with evidence. Filesystem/power-loss/package/upgrade
 gates keep physical/VM filesystems — flag forbidden there.
 
-Evidence: 4 new runner regressions (overlay+ownership+roundtrip,
-default-no-overlay, invalid-rejected, host-invisibility of tmpfs
-contents) — test-disposable.py 9/9 pass. Full rusttests fixture
-under flag: exit 0, 109/0/5. In-namespace peak TMPDIR usage 658 KB
-vs 2 GiB investigation budget. Wiring commit 69a4eea scopes the flag
-to the release.yml rusttests invocation only (verified in wired
-form); native/package/Nix/physical gates excluded. #18 adopts
-843e0d4 + 69a4eea exactly and runs hosted suite; #19 waits for #18
-green then adopts sequentially.
+Evidence: 5 new runner regressions (overlay+cap+mode, default-
+no-overlay, invalid-rejected, host-invisibility of tmpfs+probe
+contents, 1 MiB ENOSPC at ~1.1 MB without gigabyte allocs) —
+test-disposable.py 10/10 pass. Full rusttests fixture under flag in
+exact wired form: exit 0, 109/0/5, 3 consecutive runs wall
+1.44/1.24/1.24s (runner deterministic on this scope; scope suite is
+~1s, unlike #18's). In-namespace peak TMPDIR usage 658 KB vs the
+enforced 2 GiB cap. Wiring commit 69a4eea scopes the flag to the
+release.yml rusttests invocation only (verified in wired form);
+native/package/Nix/physical gates excluded. #18 adopts the corrected
+runner commit + 69a4eea exactly and runs hosted suite; #19
+(bfd7ce0, still draft, stacked on storage-sync) waits for #18 green
+then adopts sequentially.
 - main: `Store::checkpoint()` defined, unwired in production.
 - #18 tip: called in legacy migration path + tests.
 - #22 tip: wired in `shutdown_app` with failure reporting.
 - Asks posted on #18/#22 for gate evidence; wiring recorded as
   present-but-ungated until owner evidence lands.
+
+## 120s fixture failure analysis (#18 run 38586390971, tip 1c121c9)
+
+Flag WAS active in CI (bwrap cmdline shows the tmpfs overlay), so
+backing is not the whole story. Counts: 200 expected, 194 ok +
+5 ignored, 0 failed, exactly 1 unfinished (set-diff vs green run
+38584899972): store::segments::tests::
+reset_revocation_and_untrust_remove_both_directions_and_deny_old_work.
+Final completions flowed until 5s before the kill — budget exhaustion,
+not a silent deadlock.
+
+Unfinished-test inspection (read-only, 1c121c9 src/sync_segments.rs):
+pure synchronous SQLite ops (stores/apply/sync/reset/export), no
+sockets, children, channels, sleeps or watchdogs — CPU-bound tail
+victim, and also-last in the green run. 1c121c9 is docs-only vs
+b20df2b (storage.md 1 line), so behavior is identical; outcome
+variance is environmental.
+
+Slow-test wall deltas, green vs failed (same code+fixture):
+oversized_record 10s vs 66s+ (60s warning fired, then passed);
+large_encrypted_history ~25s vs ~44s; corrupt_final_part ~10s vs
+~22s; idle_and_backward ~0s vs ~20s. Suite totals 75s green vs
+120s-killed. Pattern: up to 6x per-test CPU variance on shared CI
+runners compounds across many heavy encrypted-loopback tests past
+the fixed 120s budget. No OOM/allocation failure in the log. Reaper
+behaved: TimeoutExpired at 120s, killpg SIGTERM→SIGKILL path, exit 1,
+no suppression. b20 green is genuine but NOT a stable gate. No
+timeout/worker/assertion changes made. #19 stays pinned (bfd7ce0,
+draft).
 
 ## Publication hold
 
