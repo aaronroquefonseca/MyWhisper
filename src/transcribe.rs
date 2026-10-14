@@ -3250,12 +3250,9 @@ fn llm_cleanup(
             };
             let url = format!("{}/api/chat", entry.url.trim_end_matches('/'));
             let text = http_post_json(&url, headers, &body)?;
-            let v: serde_json::Value =
-                serde_json::from_str(&text).map_err(|e| format!("ollama json: {e}"))?;
-            v.pointer("/message/content")
-                .and_then(|t| t.as_str())
-                .map(|t| t.to_string())
-                .ok_or_else(|| "ollama reply has no message.content".to_string())
+            let v: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|e| format!("ollama json: {}", crate::diagnostics::json(&e)))?;
+            crate::provider_contract::ollama_answer(&v)
         }
         LlmKind::Cloud => match entry.provider {
             CloudLlm::Google => {
@@ -3281,32 +3278,17 @@ fn llm_cleanup(
                 );
                 let text =
                     http_post_json(&url, &[("x-goog-api-key", entry.api_key.as_str())], &body)?;
-                let v: serde_json::Value =
-                    serde_json::from_str(&text).map_err(|e| format!("gemini json: {e}"))?;
-                Ok(v.pointer("/candidates/0/content/parts")
-                    .and_then(|p| p.as_array())
-                    .map(|parts| {
-                        parts
-                            .iter()
-                            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-                            .collect::<Vec<_>>()
-                            .join("")
-                    })
-                    .unwrap_or_default())
+                let v: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|e| format!("gemini json: {}", crate::diagnostics::json(&e)))?;
+                crate::provider_contract::gemini_answer(&v)
             }
             CloudLlm::Claude => {
-                let mut body = serde_json::json!({
-                    "model": entry.model,
-                    "max_tokens": 1024,
-                    "system": system,
-                    "messages": [{"role": "user", "content": user}],
-                });
-                // Extended thinking is opt-in with a fixed budget;
-                // None/False omit it (API default off).
-                if entry.thinking == Some(true) {
-                    body["thinking"] =
-                        serde_json::json!({"type": "enabled", "budget_tokens": 10000});
-                }
+                let body = crate::provider_contract::claude_request(
+                    &entry.model,
+                    entry.thinking,
+                    system,
+                    &user,
+                )?;
                 let text = http_post_json(
                     "https://api.anthropic.com/v1/messages",
                     &[
@@ -3315,12 +3297,9 @@ fn llm_cleanup(
                     ],
                     &body,
                 )?;
-                let v: serde_json::Value =
-                    serde_json::from_str(&text).map_err(|e| format!("claude json: {e}"))?;
-                Ok(v.pointer("/content/0/text")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or_default()
-                    .to_string())
+                let v: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|e| format!("claude json: {}", crate::diagnostics::json(&e)))?;
+                crate::provider_contract::claude_answer(&v)
             }
             _ => {
                 // OpenAI-compatible (OpenAI/Groq/OpenRouter/Mistral):
@@ -3339,12 +3318,9 @@ fn llm_cleanup(
                     &[("authorization-bearer", entry.api_key.as_str())],
                     &body,
                 )?;
-                let v: serde_json::Value =
-                    serde_json::from_str(&text).map_err(|e| format!("chat json: {e}"))?;
-                v.pointer("/choices/0/message/content")
-                    .and_then(|t| t.as_str())
-                    .map(|t| t.to_string())
-                    .ok_or_else(|| "chat reply has no content".to_string())
+                let v: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|e| format!("chat json: {}", crate::diagnostics::json(&e)))?;
+                crate::provider_contract::chat_answer(&v)
             }
         },
     }
