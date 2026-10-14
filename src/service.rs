@@ -333,6 +333,9 @@ pub fn spawn_hotkey_watcher(
     up: DictationHook,
     cancel: DictationHook,
 ) {
+    if let Some(data) = db_path.parent() {
+        crate::hotkey::configure_capture_suspend(data);
+    }
     if let Err(error) = crate::runtime::spawn_dedicated("hotkey-watcher", move || {
         let mut last: (Vec<(String, crate::settings::ActivationMode)>, u64) = (Vec::new(), 0);
         let mut first = true;
@@ -386,10 +389,8 @@ pub fn spawn_hotkey_watcher(
                 }
             }
             let settings = store.load_settings();
+            apply_input_preferences(&settings);
             let hotkeys = settings.hotkeys;
-            crate::transcribe::set_hotkeys_listening(hotkeys.hotkeys_enabled);
-            crate::sound::set_enabled(settings.preferences.dictation_sounds);
-            crate::media::set_enabled(settings.preferences.pause_media_on_dictation);
             let current = (
                 hotkeys
                     .effective_hotkeys()
@@ -466,27 +467,25 @@ pub fn spawn_heartbeat(state_dir: PathBuf) {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let pid = std::process::id();
-    if let Err(error) = crate::runtime::spawn_dedicated("service-heartbeat", move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(5));
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            let body = serde_json::json!({
-                "pid": pid,
-                "version": crate::APP_VERSION,
-                "boot": boot,
-                "beat": now,
-                    "engine_failures": crate::transcribe::engine_failures(),
-                    "hotkeys_listening": crate::transcribe::hotkeys_listening(),
-                    "sync_port": SYNC_PORT.load(std::sync::atomic::Ordering::SeqCst),
-            });
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(&path, body.to_string());
+    if let Err(error) = crate::runtime::spawn_dedicated("service-heartbeat", move || loop {
+        std::thread::sleep(Duration::from_secs(5));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let body = serde_json::json!({
+            "pid": pid,
+            "version": crate::APP_VERSION,
+            "boot": boot,
+            "beat": now,
+                "engine_failures": crate::transcribe::engine_failures(),
+                "hotkeys_listening": crate::transcribe::hotkeys_listening(),
+                "sync_port": SYNC_PORT.load(std::sync::atomic::Ordering::SeqCst),
+        });
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
+        let _ = std::fs::write(&path, body.to_string());
     }) {
         eprintln!("[service] heartbeat off: {error}");
     }

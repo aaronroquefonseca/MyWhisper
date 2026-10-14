@@ -156,10 +156,13 @@ fn run_headless(
     // the same hooks whenever the DB changes.
     let db_path = paths.db_file();
     let store = mywhisper::store::Store::open(&db_path).expect("open state.db");
-    let initial = store.load_settings().hotkeys;
+    let initial = store.load_settings();
+    // A persisted mute and feedback preferences govern the very first
+    // accepted input, before any listener or watcher can publish an edge.
+    mywhisper::service::apply_input_preferences(&initial);
     mywhisper::hotkey::start_dictation(
-        initial.effective_hotkeys(),
-        initial.smart_tap_ms,
+        initial.hotkeys.effective_hotkeys(),
+        initial.hotkeys.smart_tap_ms,
         down.clone(),
         up.clone(),
         cancel.clone(),
