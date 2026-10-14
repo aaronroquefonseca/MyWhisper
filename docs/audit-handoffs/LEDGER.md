@@ -38,8 +38,34 @@ main-based twin (identical IDs/patch, no storage-scope deps) so
 #15/#16/#17 root CI gates pass. #16/#17 reuse it via cherry-pick;
 later rebases after owner merge drop the duplicate naturally.
 
-## Checkpoint finding (source evidence, read-only)
+## Tmpfs scratch investigation (supervisor decision, #15 implements)
 
+Mismatch confirmed, not assumed: disposable.py creates the gate root
+on the host /tmp, then bwrap --tmpfs /tmp hides it but --bind root
+re-exposes host-backed storage as TMPDIR. Measured fsync: tmpfs
+0.002ms vs btrfs 8.7ms (~4000x). Local /tmp is tmpfs; CI container
+/tmp is overlay disk — same tests, radically different fsync bills.
+No speculative-counter redesign; no sharding; 120s budget unchanged.
+
+Implementation (one commit, #15-owned scripts/): explicit test-only
+MYWHISPER_AUDIT_TMPFS_TMP=1 overlays private tmpfs on root/tmp only
+(bwrap --tmpfs after the root bind; in-namespace UID stays euid,
+owner-writable; host-side 0700 stub + marker/HOME/XDG unchanged; var
+popped so child never inherits; any other value fails closed).
+Preserved: real SQLCipher files/locks/transactions/fsync, SIGKILL/
+reopen semantics. No synchronous=OFF, no mocks. No in-scope test
+relies on host-reboot persistence (SIGKILL refs are process-reaping
+semantics); if a future power-loss test appears it must opt out
+explicitly with evidence. Filesystem/power-loss/package/upgrade
+gates keep physical/VM filesystems — flag forbidden there.
+
+Evidence: 4 new runner regressions (overlay+ownership+roundtrip,
+default-no-overlay, invalid-rejected, host-invisibility of tmpfs
+contents) — test-disposable.py 9/9 pass. Full rusttests fixture
+under flag: exit 0, 109/0/5. In-namespace peak TMPDIR usage 658 KB
+vs 2 GiB investigation budget. #18 owes: their-scope peak
+measurement (oversized sync suite) + full fixture validation under
+the flag; sharding stays an evidence-backed fallback only.
 - main: `Store::checkpoint()` defined, unwired in production.
 - #18 tip: called in legacy migration path + tests.
 - #22 tip: wired in `shutdown_app` with failure reporting.
