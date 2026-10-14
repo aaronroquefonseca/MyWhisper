@@ -590,13 +590,46 @@ static STOPPED_FP: Mutex<String> = Mutex::new(String::new());
 /// deliberate toggle that suppression-expiry would serve: a Stop
 /// recorded after the last observed disable is newer than any toggle
 /// observation predating it, so the older transition must settle cold.
-/// A bare tick-top generation cannot express this (it postdates both an
-/// enable-save and a Stop in either order); the disable observation can.
+/// A bare tick-top generation cannot express this (it postdates an
+/// enable-save and a Stop in either order); the disable observation
+/// can — but only when captured alongside the observation itself, never
+/// sampled when a delayed update runs.
 static LAST_DISABLE_OBSERVED_GEN: AtomicU64 = AtomicU64::new(0);
 
 /// Record an observed autostart disable (service watcher only).
-pub(crate) fn note_disable_observed() {
-    LAST_DISABLE_OBSERVED_GEN.store(server_generation(), Ordering::Release);
+/// `gen_at_observe` must be the generation sampled with the settings
+/// snapshot being recorded: sampling it here instead would let a
+/// delayed update acquire a newer Stop's authority and incorrectly
+/// authorize restart.
+pub(crate) fn note_disable_observed(gen_at_observe: u64) {
+    // Test seam (cfg(test) only): park before recording, so a test can
+    // land an explicit Stop between observation and update and prove the
+    // stale update settles instead of authorizing restart.
+    #[cfg(test)]
+    if let Some((entered, proceed_)) = NOTE_PAUSE.lock().ok().and_then(|mut g| g.take()) {
+        let _ = entered.send(());
+        let _ = proceed_.recv_timeout(Duration::from_secs(10));
+    }
+    LAST_DISABLE_OBSERVED_GEN.store(gen_at_observe, Ordering::Release);
+}
+
+/// Test-only barrier parked at disable-observation entry, so a test can
+/// land an explicit Stop between a tick's observation and its marker
+/// update and prove the older transition settles instead of acquiring
+/// the Stop's authority. Production builds contain no hook.
+#[cfg(test)]
+static NOTE_PAUSE: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> = Mutex::new(None);
+
+/// Install the disable-observation barrier (single-shot).
+#[cfg(test)]
+pub(crate) fn set_note_pause(tx: mpsc::Sender<()>, rx: mpsc::Receiver<()>) {
+    *NOTE_PAUSE.lock().unwrap() = Some((tx, rx));
+}
+
+/// Clear a parked (never reached) barrier so later tests never block.
+#[cfg(test)]
+pub(crate) fn clear_note_pause() {
+    NOTE_PAUSE.lock().unwrap().take();
 }
 
 /// Expire Stop suppression for a deliberate control transition (service
@@ -7735,6 +7768,116 @@ mod tests {
         assert!(port_open(port_a), "genuine later enable did not start A");
         let pid_on = servers().lock().unwrap()["whisper"].child.id();
         assert!(!proc_gone(pid_on));
+        clear_expiry_pause();
+        clear_reconcile_ensure_pause();
+        drop_servers(root.path());
+        wait_gone(pid_on);
+        assert_eq!(active_count(), 0);
+    }
+
+    #[test]
+    fn delayed_disable_tick_cannot_authorize_restart() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        clear_reconcile_ensure_pause();
+        clear_expiry_pause();
+        clear_note_pause();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let pack = stt::GPU_PACKS
+            .iter()
+            .find(|p| p.id == "whisper-cpu")
+            .unwrap();
+        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(
+            bin_dir.join("whisper-server"),
+            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = bin_dir.join("whisper-server");
+            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin, perms).unwrap();
+        }
+        let writer = seed_whisper_tiny(root.path());
+        // Local A starts through reconciliation.
+        let port_a = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let stt = writer.load_settings().stt;
+        let data_dir = root.path().to_path_buf();
+        let db_path = root.path().join("state.db");
+        let stt_now = writer.load_settings().stt;
+        let mut last_primary = stt_primary_id(&stt_now, &data_dir);
+        let mut last_auto = true;
+        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(port_open(port_a));
+        let pid_a = servers().lock().unwrap()["whisper"].child.id();
+        // Disable, then park the older disabled tick at its marker update
+        // (it has already read auto=false): save enable and Stop while it
+        // is parked, then resume it.
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = false;
+        writer.save_settings(&settings).unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        set_note_pause(entered_tx, proceed_rx);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                crate::service::stt_watcher_tick(
+                    &db_path,
+                    &data_dir,
+                    &mut last_primary,
+                    &mut last_auto,
+                );
+                let _ = done_tx.send(());
+            });
+            entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+            let mut settings = writer.load_settings();
+            settings.stt.auto_start_server = true;
+            writer.save_settings(&settings).unwrap();
+            drop_servers(root.path());
+            wait_gone(pid_a);
+            assert!(proc_gone(pid_a));
+            assert!(!port_open(port_a));
+            proceed_tx.send(()).unwrap();
+            done_rx.recv_timeout(Duration::from_secs(25)).unwrap();
+        });
+        // The stale marker update kept the observation's authority, so
+        // the toggle observation settled without authorizing restart.
+        assert!(!last_auto, "stale disable tick mis-recorded state");
+        assert!(!port_open(port_a), "stale disable authorized restart");
+        assert!(servers().lock().unwrap().is_empty());
+        // Unchanged ticks stay cold.
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(!port_open(port_a));
+        // A genuinely later deliberate transition still starts: observe
+        // a fresh disable (marker past the Stop), then enable.
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = false;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(!last_auto);
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(last_auto);
+        assert!(port_open(port_a), "genuine later enable did not start A");
+        let pid_on = servers().lock().unwrap()["whisper"].child.id();
+        assert!(!proc_gone(pid_on));
+        clear_note_pause();
         clear_expiry_pause();
         clear_reconcile_ensure_pause();
         drop_servers(root.path());

@@ -412,6 +412,10 @@ pub fn stt_watcher_tick(
     let stt = store.load_settings().stt;
     let curr_primary = crate::transcribe::stt_primary_id(&stt, data_dir);
     let curr_auto = stt.auto_start_server;
+    // Observation authority: sampled with the snapshot above, so a
+    // delayed disable update below cannot acquire a later Stop's
+    // generation as its own.
+    let gen_at_observe = crate::transcribe::server_generation();
     if curr_primary == *last_primary && curr_auto == *last_auto {
         return;
     }
@@ -471,9 +475,10 @@ pub fn stt_watcher_tick(
             }
         } else {
             // Disable keeps the running server (no bounce), but
-            // records the observation so a later Stop is ordered
-            // strictly after it for suppression-expiry purposes.
-            crate::transcribe::note_disable_observed();
+            // records the observation (with the authority sampled
+            // above) so a later Stop is ordered strictly after it
+            // for suppression-expiry purposes.
+            crate::transcribe::note_disable_observed(gen_at_observe);
             *last_auto = curr_auto;
         }
     }
