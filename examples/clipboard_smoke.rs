@@ -80,10 +80,17 @@ fn main() {
     let (done, result) = mpsc::channel();
     let worker = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(700));
+        // Live-gate override without changing the default gate: the scripted
+        // default stays wtype/CtrlV; `MYWHISPER_CLIPBOARD_PASTE_BACKEND=ydotool`
+        // certifies the second supported paste backend on the same assertions.
+        let backend = match std::env::var("MYWHISPER_CLIPBOARD_PASTE_BACKEND").as_deref() {
+            Ok("ydotool") => PasteBackend::Ydotool,
+            _ => PasteBackend::Wtype,
+        };
         let prefs = Preferences {
             auto_paste: true,
             keep_transcription_in_clipboard: false,
-            paste_backend: PasteBackend::Wtype,
+            paste_backend: backend,
             paste_combo: PasteCombo::CtrlV,
             ..Default::default()
         };
@@ -221,6 +228,7 @@ fn main() {
     worker.join().unwrap();
     mywhisper::runtime::finish_shutdown().expect("clipboard probe owned shutdown");
     println!(
-        "Real nested niri/wtype passed: delayed consumption; empty/text/binary/multiple-MIME restoration; user replacement; cancellation; copy-only/no-op."
+        "Real nested niri/{} passed: delayed consumption; empty/text/binary/multiple-MIME restoration; user replacement; cancellation; copy-only/no-op.",
+        std::env::var("MYWHISPER_CLIPBOARD_PASTE_BACKEND").unwrap_or_else(|_| "wtype".into())
     );
 }

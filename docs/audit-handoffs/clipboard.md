@@ -26,15 +26,28 @@ not distinguished. `wl-copy --foreground` fallback covers copy-only/Keep-on
 delivery where data-control is missing and fails closed otherwise.
 
 Live gate (`scripts/clipboard-smoke.sh` + `examples/clipboard_smoke.rs`,
-disposable nested niri only): delayed consumption, queued
-cancellation/reset, empty/text/binary/multiple-MIME offers, user replacement,
-copy-only/no-op, fallback failure and supported compositor/paste variants.
-The example now includes a multiple-MIME roundtrip; an earlier private niri
-run does not certify every compositor, paste backend/combo, or this head.
-Locked `--locked --all-targets` check and the clipboard/selection/child/
-operation/runtime unit subset pass on this head; strict lint, full regression
-and live gates remain pending. Capture-edge authorization/completion is
-coordinated with #22 (which replaces the legacy `transcribe::deliver`
-adapter) and user feedback with #23.
+disposable nested niri only, synthetic data): wtype/CtrlV passes 3x on this
+head — delayed consumption (650 ms floor vs 700 ms delayed target read),
+empty/text/binary/multiple-MIME restoration, user replacement aborts without
+touching fresh content, mid-pipeline cancellation restores the predecessor,
+copy-only keeps the transcript, no-op leaves the selection untouched. The
+example keeps wtype/CtrlV as the default and adds a
+`MYWHISPER_CLIPBOARD_PASTE_BACKEND=ydotool` override for manual runs.
+A ydotool attempt in the disposable nest fails closed at paste
+(`exit status: 2`, daemon socket isolated by the disposable XDG_RUNTIME_DIR)
+and the pipeline reports the error instead of success; the socket must not be
+bridged into the nest (uinput keys would leak to the host session), so live
+ydotool injection, other combos (the synthetic target is CtrlV-only),
+compositors without data-control (fallback path), and manager-heavy sessions
+remain pending and are not certified by the niri runs.
+Locked `--locked --all-targets` check, `cargo fmt --check`, and the full
+`cargo test --locked` suite pass on this head (251 passed, 0 failed;
+5 ignored are pre-existing live-model tests). `cargo clippy -- -D warnings`
+still fails only on pre-existing cross-scope dead code owned downstream
+(session/process-launch, store/net APIs completed by #22/#18); nothing in the
+touched clipboard/selection/deliver/smoke lines warns, and no suppression or
+deletion was added. Capture-edge authorization/completion is coordinated with
+#22 (which replaces the legacy `transcribe::deliver` adapter) and user
+feedback with #23. Parent #20 must satisfy its own scope before any merge.
 
 Original report, full matrix, source map and historical evidence are owned by the audit tracking PR. The final source snapshot preserves every pre-split correction. Intermediate layers may expose interfaces completed downstream; document every actual compiler/test failure rather than hiding it.
