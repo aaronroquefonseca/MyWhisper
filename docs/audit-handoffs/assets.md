@@ -136,7 +136,6 @@ Original report, full matrix, source map and historical evidence are owned by th
   the current stable SHA now (APIs below are frozen for consumers).
 
 ## Ownership relocation table (exact symbols, no waivers)
-
 | Symbol (location at `367f54a`) | Disposition | Owner | Preserving patch/commit |
 |---|---|---|---|
 | `stt::model_present` (`src/stt.rs:456-464`) | **Moved** (removed from #20, zero consumers) | #23 | Verbatim 9-line body in PR23 comment `6174231919`; restore above `model_status` |
@@ -146,3 +145,28 @@ Original report, full matrix, source map and historical evidence are owned by th
 | `operation::{Operation, Denial}` + all items (`:6-206`), `selection::Guard` (`:14`) | **Kept** (live contract, tested) | #21 adopts `guard()` for policy-gated IO; #22 session ops | Binding: PR22 comment `6174231878` |
 - `model_present` removal leaves test profile at zero and lib at 7;
   hunk is GUI-pure (presence probe, no installer semantics).
+
+## Full source manifest, regenerated on merged tree (never parent counts)
+
+- Parent adopted by merge: `d4a82a8` (docs over code-tested `48a03a7`;
+  code hosted run `38611165477` SUCCESS independently confirmed; doc/pin
+  head run `38612411803` still pending at merge time — not claimed
+  green). Conflicts resolved to parent side (input lane only).
+- Own manifest, disposable resources, full logs in run outputs:
+  `cargo fmt --check` clean; `cargo check --locked --all-targets`
+  passes; `cargo test --locked --all-targets` **268 passed / 0 failed /
+  5 ignored** on second full pass (first pass: 267/1/5 with
+  `net::disable_and_reenable_during_handshake` Broken-pipe flake under
+  parallel load — passes solo in 0.04 s; net lane, matches #18's stated
+  1-in-4 environmental caveat; fail-path log preserved, not waived).
+  `installer-fs-smoke.sh` passes on merged tree; `cargo audit` clean.
+- Strict clippy: 7 lib diagnostics (owner-bound table above), test
+  profile zero. #15 `e2751d2` nested-harness fail-path logic is absent
+  from this branch and its harness lane (no cherry-pick across lanes);
+  fail-path evidence is carried in the full run logs instead
+  (sqlcipher negative-test errors, ENOSPC/SIGKILL probe output,
+  contention-flake record above).
+- #21 newer fixes noted and preserved untouched (`5f2f6b9` child-API
+  follow plus paste certifications on `fix/audit-clipboard-ownership`,
+  already restacked onto `367f54a`); later integration takes their side
+  wholesale for clipboard files. Their branch is never reset here.
