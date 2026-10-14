@@ -762,6 +762,45 @@ pub(crate) fn clear_reconcile_ensure_pause() {
     RECONCILE_ENSURE_PAUSE.lock().unwrap().take();
 }
 
+/// Test-only barrier parked at reconcile admission entries, before any
+/// lock is taken, so a test can land a transition strictly between a
+/// queued call's arrival and its authoritative checks. Production builds
+/// contain no hook: the parked worker holds nothing, so the main test
+/// thread acts freely.
+#[cfg(test)]
+static RECONCILE_OUTER_PAUSE: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> =
+    Mutex::new(None);
+
+/// Install the outer-admission barrier (single-shot).
+#[cfg(test)]
+pub(crate) fn set_reconcile_outer_pause(tx: mpsc::Sender<()>, rx: mpsc::Receiver<()>) {
+    *RECONCILE_OUTER_PAUSE.lock().unwrap() = Some((tx, rx));
+}
+
+/// Clear a parked (never reached) barrier so later tests never block.
+#[cfg(test)]
+pub(crate) fn clear_reconcile_outer_pause() {
+    RECONCILE_OUTER_PAUSE.lock().unwrap().take();
+}
+
+/// Test-only barrier parked at leaving-destroy admission entry, before
+/// any lock is taken (same rationale as above, for the leaving path).
+#[cfg(test)]
+static RECONCILE_LEAVING_PAUSE: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> =
+    Mutex::new(None);
+
+/// Install the leaving-admission barrier (single-shot).
+#[cfg(test)]
+pub(crate) fn set_reconcile_leaving_pause(tx: mpsc::Sender<()>, rx: mpsc::Receiver<()>) {
+    *RECONCILE_LEAVING_PAUSE.lock().unwrap() = Some((tx, rx));
+}
+
+/// Clear a parked (never reached) barrier so later tests never block.
+#[cfg(test)]
+pub(crate) fn clear_reconcile_leaving_pause() {
+    RECONCILE_LEAVING_PAUSE.lock().unwrap().take();
+}
+
 /// Startup admission: serializes the quick check/spawn/insert section
 /// so generation validation cannot race a concurrent Stop bump. The
 /// long listen/probe wait runs without it (revoked via instance).
@@ -1320,6 +1359,7 @@ fn ensure_server(
     probe: impl FnOnce() -> Result<(), String>,
     expected_gen: Option<u64>,
     defer: ActiveDefer,
+    expected_fp: Option<String>,
 ) -> Result<(), String> {
     // Port is part of identity: a custom-port switch must replace,
     // not reuse, the old listener. (Bind host is folded into the
@@ -1338,6 +1378,19 @@ fn ensure_server(
             && exp != server_generation()
         {
             return Err("obsolete generation, skipping".to_string());
+        }
+        // Settings-identity check: a queued call for superseded settings
+        // aborts here, inside admission, before any removal/spawn. Pure
+        // settings saves move no generation, so the counter alone cannot
+        // detect them; the fingerprint recompute below (millisecond Store
+        // read, same scale as the kill/wait sections) closes that gap.
+        // Callers without an observed snapshot (`None`: warmups bound by
+        // owner/generation, authority paths executing accepted plans)
+        // skip it, each covered by its own authority rule.
+        if let Some(ref expected) = expected_fp
+            && current_fingerprint(data_dir) != *expected
+        {
+            return Err("superseded configuration, skipping".to_string());
         }
         // Authoritative idle/ownership revalidation: no capture admitted
         // ahead of us is killed by the removals below.
@@ -1692,6 +1745,7 @@ pub fn needle_engine_path(data_dir: &Path) -> PathBuf {
     data_dir.join("bin").join("needle").join("needle")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ensure_whisper(
     data_dir: &Path,
     backend: GpuBackendSetting,
@@ -1700,6 +1754,7 @@ fn ensure_whisper(
     net: &ServerNet,
     expected_gen: Option<u64>,
     defer: ActiveDefer,
+    expected_fp: Option<String>,
 ) -> Result<(), String> {
     let bin = whisper_binary(data_dir, backend)?;
     // Bind host is launch identity: toggling LAN exposure must rebind.
@@ -1745,6 +1800,7 @@ fn ensure_whisper(
         || Ok(()), // model loads before listen: TCP-ready ≈ serving
         expected_gen,
         defer,
+        expected_fp,
     )?;
     // /load when the running server holds another model. The instance
     // is pinned across the HTTP round-trip so a concurrent replacement
@@ -1880,6 +1936,7 @@ fn load_hint_words(data_dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ensure_sherpa_offline(
     data_dir: &Path,
     backend: SherpaBackendSetting,
@@ -1888,6 +1945,7 @@ fn ensure_sherpa_offline(
     net: &ServerNet,
     expected_gen: Option<u64>,
     defer: ActiveDefer,
+    expected_fp: Option<String>,
 ) -> Result<(), String> {
     let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-offline-websocket-server")?;
     // Cohere is the only offline model taking a language (required:
@@ -1975,6 +2033,7 @@ fn ensure_sherpa_offline(
         move || probe_sherpa_offline(offline_port),
         expected_gen,
         defer,
+        expected_fp,
     )
 }
 
@@ -1985,6 +2044,7 @@ fn ensure_sherpa_online(
     net: &ServerNet,
     expected_gen: Option<u64>,
     defer: ActiveDefer,
+    expected_fp: Option<String>,
 ) -> Result<(), String> {
     let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-online-websocket-server")?;
     let words = load_hint_words(data_dir);
@@ -2041,6 +2101,7 @@ fn ensure_sherpa_online(
         move || probe_sherpa_online(online_port),
         expected_gen,
         defer,
+        expected_fp,
     )
 }
 
@@ -3699,6 +3760,9 @@ fn finish_session(
         &sess.net,
         None,
         ActiveDefer::Never,
+        // Accepted session plan: executes even if watcher settings moved
+        // meanwhile (authority separation); generation/lease still apply.
+        None,
     )
     .ok();
     for (name, plan) in &sess.fallbacks {
@@ -3710,6 +3774,7 @@ fn finish_session(
             &sess.net,
             None,
             ActiveDefer::Never,
+            None,
         ) {
             eprintln!("[stt] fallback {name} not ready: {e}");
         }
@@ -3939,6 +4004,9 @@ pub fn ensure_for_plan(
         net,
         None,
         ActiveDefer::Never,
+        // Authority paths execute accepted plans (release worker,
+        // cold start): no snapshot gate; generation/ownership still apply.
+        None,
     )
 }
 
@@ -3967,9 +4035,13 @@ pub fn ensure_for_plan_at_gen(
         owner
             .map(ActiveDefer::Owned)
             .unwrap_or(ActiveDefer::IfAnyActive),
+        // Warmups are covered by owner/generation checks; startup work
+        // has no snapshot to attest. See `ensure_server`.
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ensure_servers(
     plan: &Plan,
     data_dir: &Path,
@@ -3978,6 +4050,7 @@ fn ensure_servers(
     net: &ServerNet,
     expected_gen: Option<u64>,
     defer: ActiveDefer,
+    expected_fp: Option<String>,
 ) -> Result<(), String> {
     match plan {
         Plan::WhisperHttp { model_bin, lang } => ensure_whisper(
@@ -3988,6 +4061,7 @@ fn ensure_servers(
             net,
             expected_gen,
             defer,
+            expected_fp,
         ),
         Plan::SherpaOnline { model_dir } => ensure_sherpa_online(
             data_dir,
@@ -3996,6 +4070,7 @@ fn ensure_servers(
             net,
             expected_gen,
             defer,
+            expected_fp,
         ),
         Plan::SherpaOffline { model_dir, lang } => ensure_sherpa_offline(
             data_dir,
@@ -4005,6 +4080,7 @@ fn ensure_servers(
             net,
             expected_gen,
             defer,
+            expected_fp,
         ),
         // CLI per utterance: nothing to keep running.
         // Self-hosted WS: foreign by definition, never spawned.
@@ -4161,11 +4237,26 @@ pub fn reconcile_servers(
         // suppression (freshness-gated, still holding admission so no
         // Stop can slip between the decision and the expiry).
         // Attested identity when carried, locally derived otherwise.
+        // This frozen claim is validated below against current truth
+        // re-read under admission.
         let fp = match &authority {
             Some(auth) => auth.snapshot_fp.clone(),
             None => stt_fingerprint(stt, data_dir),
         };
-        let cur_fp = current_fingerprint(data_dir);
+        // Test seam (cfg(test) only): park before touching any lock, so
+        // a test can land a transition strictly between this queued
+        // call's arrival and its authoritative checks. Production builds
+        // contain no hook: the parked worker holds nothing, so the main
+        // test thread acts freely.
+        #[cfg(test)]
+        if let Some((entered, proceed_)) = RECONCILE_LEAVING_PAUSE
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take())
+        {
+            let _ = entered.send(());
+            let _ = proceed_.recv_timeout(Duration::from_secs(10));
+        }
         let _lease = match EngineLease::acquire(false) {
             Ok(l) => l,
             Err(_) => return Ok(true),
@@ -4187,11 +4278,16 @@ pub fn reconcile_servers(
         {
             return Ok(true);
         }
-        // Acting on a superseded snapshot is never correct here,
-        // regardless of how the call was issued: destroying owned
-        // servers for settings that are no longer current can only kill
-        // the right engine. Direct callers deliberate on current
-        // settings (save-then-load in tests, fresh loads in prod).
+        // Current truth recomputed INSIDE admission (the linearization
+        // point): checking a cached pre-lock fingerprint while holding
+        // the lock is insufficient — a transition landing between that
+        // read and this holding would be missed. Acting on a superseded
+        // snapshot is never correct here, regardless of how the call was
+        // issued: destroying owned servers for settings that are no
+        // longer current can only kill the right engine. Direct callers
+        // deliberate on current settings (save-then-load in tests, fresh
+        // loads in prod).
+        let cur_fp = current_fingerprint(data_dir);
         if cur_fp != fp {
             return Ok(true);
         }
@@ -4232,19 +4328,31 @@ pub fn reconcile_servers(
     // Later deliberate settings changes (new fingerprint) and user
     // presses (authoritative release worker) still start normally.
     // Attested identity when carried, locally derived otherwise; every
-    // decision below keys off this one value.
+    // decision below keys off this one value. `fp` is frozen at call
+    // time (the claim being validated); current truth is always
+    // re-read fresh, under admission where a mutation follows.
     let fp = match &authority {
         Some(auth) => auth.snapshot_fp.clone(),
         None => stt_fingerprint(stt, data_dir),
     };
-    // Freshness witness for the suppression-lifetime update below: only
-    // a call deliberating on current settings may expire an older Stop.
-    let cur_fp = current_fingerprint(data_dir);
     // Authority handoff: the watcher passes its validated witness so a
     // queued call can never re-sample a fresh post-Stop generation and
     // authorize stale work again. Direct callers pass `None` and sample
     // fresh here (synchronous, no window), exactly as before.
     let gen_at_check = {
+        // Test seam (cfg(test) only): park before touching any lock, so
+        // a test can land a transition strictly between this queued
+        // call's arrival and its authoritative checks, proving cached
+        // pre-lock reads can never authorize suppression mutation.
+        // Production builds contain no hook: the parked worker holds
+        // nothing, so the main test thread acts freely.
+        #[cfg(test)]
+        if let Some((entered, proceed_)) =
+            RECONCILE_OUTER_PAUSE.lock().ok().and_then(|mut g| g.take())
+        {
+            let _ = entered.send(());
+            let _ = proceed_.recv_timeout(Duration::from_secs(10));
+        }
         let _lease = match EngineLease::acquire(false) {
             Ok(l) => l,
             Err(_) => return Ok(true),
@@ -4257,16 +4365,36 @@ pub fn reconcile_servers(
         {
             return Ok(true);
         }
+        // A Stop-suppressed outcome also records an application decision
+        // (the watcher settles instead of retrying), so it needs the same
+        // admission validation: a stale call must never settle the
+        // bookkeeping on behalf of a superseded snapshot, even when a
+        // stale Stop record still names its fingerprint. Freshness is
+        // checked for every caller; carried witnesses must also match.
         if !fp.is_empty() && STOPPED_FP.lock().map(|g| g.as_str() == fp).unwrap_or(false) {
+            if let Some(ref auth) = authority
+                && server_generation() != auth.witness
+            {
+                return Ok(true);
+            }
+            if current_fingerprint(data_dir) != fp {
+                return Ok(true);
+            }
             return Ok(false);
         }
+        // Current truth recomputed INSIDE admission (the linearization
+        // point): a fingerprint cached before acquiring the lock must
+        // never authorize suppression mutation — a transition landing
+        // between that read and this holding would otherwise be missed.
+        // Store read of milliseconds, same scale as the sections below.
+        let cur_now = current_fingerprint(data_dir);
         // This tick deliberately applies `fp`: an older Stop no longer
         // suppresses anything once a newer configuration takes effect.
         // Gated on freshness so stale queued work can never clear a
         // newer Stop, and still holding admission so no Stop can slip
         // between this expiry and the ensure below without tripping the
         // generation check there.
-        if !fp.is_empty() && cur_fp == fp {
+        if !fp.is_empty() && cur_now == fp {
             *STOPPED_FP.lock().unwrap_or_else(|p| p.into_inner()) = String::new();
         }
         match authority {
@@ -4275,10 +4403,24 @@ pub fn reconcile_servers(
         }
     };
     let net = server_net(stt);
-    // Test seam (cfg(test) only): park here — after the outer idle
-    // check captured `gen_at_check`, before startup admission — so a
-    // test can land an explicit Stop inside the window and prove the
-    // queued start settles instead of resurrecting.
+    // Snapshot-freshness recheck: a call whose settings no longer match
+    // current truth defers instead of starting a superseded
+    // configuration. This holds for carried authority and for direct
+    // callers alike — acting on a superseded snapshot is never correct
+    // here. Engine preparation below still performs runtime, hint and
+    // filesystem work, and admission itself can wait on the lock, so
+    // this early check is deliberately NOT the last word: the same
+    // identity travels into startup admission (`expected_fp`), which
+    // revalidates under its own holding before any destructive step.
+    if current_fingerprint(data_dir) != fp {
+        return Ok(true);
+    }
+    // Test seam (cfg(test) only): park here — after the final freshness
+    // comparison above, immediately before startup admission acquires
+    // its lock — so a test can land a pure settings save strictly inside
+    // that window and prove the mutation admission itself rejects the
+    // superseded snapshot. Production builds contain no hook: the parked
+    // worker holds no locks, so the main test thread acts freely.
     #[cfg(test)]
     if let Some((entered, proceed_)) = RECONCILE_ENSURE_PAUSE
         .lock()
@@ -4288,15 +4430,6 @@ pub fn reconcile_servers(
         let _ = entered.send(());
         let _ = proceed_.recv_timeout(Duration::from_secs(10));
     }
-    // Snapshot-freshness recheck: a call whose settings no longer match
-    // current truth defers instead of starting a superseded
-    // configuration. This holds for carried authority and for direct
-    // callers alike — acting on a superseded snapshot is never correct
-    // here. The remaining check-to-mutation gap holds no blocking
-    // operations.
-    if current_fingerprint(data_dir) != fp {
-        return Ok(true);
-    }
     match ensure_servers(
         &plan,
         data_dir,
@@ -4305,9 +4438,11 @@ pub fn reconcile_servers(
         &net,
         Some(gen_at_check),
         ActiveDefer::IfAnyActive,
+        Some(fp.clone()),
     ) {
         Ok(()) => Ok(false),
         Err(e) if e.starts_with("deferred:") => Ok(true),
+        Err(e) if e.starts_with("superseded configuration") => Ok(true),
         Err(e) if e.starts_with("obsolete generation") => {
             // Revoked work never advances a stale fingerprint: settle
             // only when our snapshot is still current (a newer Stop
@@ -4345,9 +4480,19 @@ fn owned_listening(data_dir: &Path) -> bool {
 /// it either wins first (we defer) or loses (it re-read the already-new
 /// settings). Explicit Stop aside, nothing kills an admitted capture.
 pub fn reconcile_lazy_switch(
+    stt: &SttSettings,
     data_dir: &Path,
     authority: Option<ReconcileAuthority>,
 ) -> Result<bool, String> {
+    // Attested identity when carried, locally derived from the passed
+    // snapshot otherwise; every decision below keys off this one value.
+    // (`fp` is frozen at call time — the claim being validated; current
+    // truth is always re-read fresh, under admission where a mutation
+    // follows.)
+    let fp = match &authority {
+        Some(auth) => auth.snapshot_fp.clone(),
+        None => stt_fingerprint(stt, data_dir),
+    };
     let _lease = match EngineLease::acquire(false) {
         Ok(l) => l,
         Err(_) => return Ok(true),
@@ -4361,23 +4506,24 @@ pub fn reconcile_lazy_switch(
         return Ok(true);
     }
     // Carried authority revalidated under admission: a queued call whose
-    // witness predates a control transition, or whose observed snapshot
-    // no longer matches current settings, defers instead of destroying
-    // on stale intent. A bare generation check is insufficient — pure
-    // settings saves move no generation — so the configuration identity
-    // travels with the witness and is rechecked here, under the same
-    // holding that serializes the destroy below. `None` (synchronous
-    // direct callers with no window) skips both checks exactly as before.
-    if let Some(ref auth) = authority {
-        if server_generation() != auth.witness {
-            return Ok(true);
-        }
-        // Store read of milliseconds, same scale as the kill/wait sections
-        // this guards (and as the Store reads `begin_utterance` already
-        // performs under admission).
-        if current_fingerprint(data_dir) != auth.snapshot_fp {
-            return Ok(true);
-        }
+    // witness predates a control transition defers instead of destroying
+    // on stale intent. `None` (synchronous direct callers) skips the
+    // witness check exactly as before.
+    if let Some(ref auth) = authority
+        && server_generation() != auth.witness
+    {
+        return Ok(true);
+    }
+    // Current truth recomputed INSIDE admission (the linearization
+    // point): acting on a superseded snapshot is never correct here,
+    // regardless of how the call was issued — a bare generation check
+    // is insufficient since pure settings saves move no generation.
+    // Direct callers deliberate on current settings (save-then-load in
+    // tests, fresh loads in prod). Store read of milliseconds, same
+    // scale as the kill/wait sections this guards (and as the Store
+    // reads `begin_utterance` already performs under admission).
+    if current_fingerprint(data_dir) != fp {
+        return Ok(true);
     }
     drop(live_guard);
     drop_servers_locked(data_dir);
@@ -6118,6 +6264,7 @@ mod tests {
             &net,
             None,
             ActiveDefer::Never,
+            None,
         )
         .expect("spawn+probe");
         let text =
@@ -6188,6 +6335,7 @@ mod tests {
             || Ok(()),
             None,
             ActiveDefer::Never,
+            None,
         )?;
         Ok(servers()
             .lock()
@@ -6311,6 +6459,7 @@ mod tests {
             || panic!("foreign port must not probe"),
             None,
             ActiveDefer::Never,
+            None,
         )
         .unwrap_err();
         assert!(err.contains("owned by another process"), "{err}");
@@ -6440,6 +6589,7 @@ mod tests {
                 || Ok(()),
                 None,
                 ActiveDefer::Never,
+                None,
             )
             .unwrap();
             servers().lock().unwrap()["sherpa-online"].child.id()
@@ -6568,6 +6718,7 @@ mod tests {
             || Ok(()),
             None,
             ActiveDefer::Never,
+            None,
         )
         .unwrap();
         assert_ne!(gen2, server_generation());
@@ -6608,7 +6759,8 @@ mod tests {
         assert!(reconcile_servers(&stt, root.path(), None).unwrap());
         assert!(port_open(port));
         assert!(!proc_gone(pid));
-        assert!(reconcile_lazy_switch(root.path(), None).unwrap());
+        // Defers while busy regardless of snapshot (idle check first).
+        assert!(reconcile_lazy_switch(&stt, root.path(), None).unwrap());
         assert!(port_open(port));
         // Idle: the pending switch applies. Stored first: reconcile only
         // deliberates on current settings.
@@ -6654,11 +6806,17 @@ mod tests {
             stt_primary_id(&a, root.path()),
             stt_primary_id(&b, root.path())
         );
-        // Lazy switch stops old without starting new.
+        // Lazy switch stops old without starting new. Stored first:
+        // reconcile only deliberates on current settings.
+        let writer = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = false;
+        writer.save_settings(&settings).unwrap();
+        let stt_switch = writer.load_settings().stt;
         let port = free_port();
         let pid = spawn_owned(root.path(), "whisper", "old", port).unwrap();
         assert!(port_open(port));
-        assert!(!reconcile_lazy_switch(root.path(), None).unwrap());
+        assert!(!reconcile_lazy_switch(&stt_switch, root.path(), None).unwrap());
         wait_gone(pid);
         assert!(proc_gone(pid));
         assert!(!port_open(port));
@@ -6666,7 +6824,6 @@ mod tests {
         // Use an isolated closed port: default ports may be held by
         // the installed service on this host (never touch it).
         // Stored first: reconcile only deliberates on current settings.
-        let writer = crate::store::Store::open(&root.path().join("state.db")).unwrap();
         let mut settings = writer.load_settings();
         settings.stt = SttSettings {
             auto_start_server: false,
@@ -6736,6 +6893,7 @@ mod tests {
                 || panic!("obsolete warmup must not probe"),
                 Some(gen_old),
                 ActiveDefer::Never,
+                None,
             );
             let _ = done_tx.send(out);
         })
@@ -6805,6 +6963,7 @@ mod tests {
             &net_wild,
             None,
             ActiveDefer::Never,
+            None,
         )
         .unwrap();
         let pid_wild = servers().lock().unwrap()["whisper"].child.id();
@@ -6827,6 +6986,7 @@ mod tests {
             &net_loop,
             None,
             ActiveDefer::Never,
+            None,
         )
         .unwrap();
         let pid_loop = servers().lock().unwrap()["whisper"].child.id();
@@ -6848,6 +7008,7 @@ mod tests {
             &net_wild,
             None,
             ActiveDefer::Never,
+            None,
         )
         .unwrap();
         let pid_wild2 = servers().lock().unwrap()["whisper"].child.id();
@@ -6894,6 +7055,7 @@ mod tests {
                 || Ok(()),
                 None,
                 ActiveDefer::Never,
+                None,
             )
             .unwrap();
             servers().lock().unwrap()["sherpa-online"].child.id()
@@ -6909,6 +7071,7 @@ mod tests {
             || panic!("sherpa host toggle must not probe"),
             None,
             ActiveDefer::Never,
+            None,
         )
         .unwrap();
         let pid_b = servers().lock().unwrap()["sherpa-online"].child.id();
@@ -7041,6 +7204,7 @@ mod tests {
                 || Ok(()),
                 Some(gen_old),
                 ActiveDefer::Never,
+                None,
             );
             let _ = done_tx.send(out);
         })
@@ -7188,6 +7352,31 @@ mod tests {
         rx.recv_timeout(Duration::from_secs(10)).unwrap();
     }
 
+    /// Startable synthetic whisper HTTP server (answers `/load` like the
+    /// real binary), so a test can observe an actual launch when
+    /// protection is (temporarily) removed. Respects `--host`/`--port`.
+    fn install_fake_whisper_http(root: &Path) {
+        let pack = stt::GPU_PACKS
+            .iter()
+            .find(|p| p.id == "whisper-cpu")
+            .unwrap();
+        let bin_dir = stt::gpu_bin_dir(root, pack);
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(
+            bin_dir.join("whisper-server"),
+            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = bin_dir.join("whisper-server");
+            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin, perms).unwrap();
+        }
+    }
+
     /// Synthetic listener like `spawn_owned`, but reaching startup
     /// admission with an explicit caller-chosen policy instead of
     /// authority. Panicking spawn/probe prove nothing launches.
@@ -7215,6 +7404,9 @@ mod tests {
                 || panic!("stale warmup must not probe"),
                 Some(gen_at_submit),
                 defer,
+                // Parked-work helper: generation/ownership admission is
+                // what these tests exercise, not snapshot identity.
+                None,
             );
             let _ = done_tx.send(out);
         })
@@ -7627,7 +7819,10 @@ mod tests {
         let mut settings = writer.load_settings();
         settings.stt.server_port = port_c.to_string();
         writer.save_settings(&settings).unwrap();
-        assert!(!reconcile_lazy_switch(root.path(), None).unwrap());
+        // Loaded fresh like a synchronous direct caller: the snapshot
+        // trivially matches current truth.
+        let stt_cur = writer.load_settings().stt;
+        assert!(!reconcile_lazy_switch(&stt_cur, root.path(), None).unwrap());
         assert!(!port_open(port_a));
         assert!(!port_open(port_c), "lazy switch warmed while autostart off");
         let mut settings = writer.load_settings();
@@ -8574,7 +8769,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let _ = entered_tx.send(());
             let _ = proceed_rx.recv_timeout(Duration::from_secs(15));
-            let out = reconcile_lazy_switch(&data_dir, Some(auth_lazy));
+            // Snapshot unused here: `Some` authority carries the attested
+            // identity; the parameter only serves legacy `None` calls.
+            let out = reconcile_lazy_switch(&SttSettings::default(), &data_dir, Some(auth_lazy));
             let _ = done_tx.send(out);
             let _ = finished_rx.recv_timeout(Duration::from_secs(15));
         });
@@ -8655,10 +8852,11 @@ mod tests {
         let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
         let (done_tx, done_rx) = mpsc::channel::<Result<bool, String>>();
         let (finished_tx, finished_rx) = mpsc::channel::<()>();
+        let worker_dir = data_dir.clone();
         let worker = std::thread::spawn(move || {
             let _ = entered_tx.send(());
             let _ = proceed_rx.recv_timeout(Duration::from_secs(15));
-            let out = reconcile_lazy_switch(&data_dir, Some(auth_b));
+            let out = reconcile_lazy_switch(&stt_b, &worker_dir, Some(auth_b));
             let _ = done_tx.send(out);
             let _ = finished_rx.recv_timeout(Duration::from_secs(15));
         });
@@ -8697,6 +8895,358 @@ mod tests {
         clear_reconcile_ensure_pause();
     }
 
+    /// Queued autostart work parked strictly between the final freshness
+    /// comparison and startup admission's lock must still reject a
+    /// superseded snapshot at the mutation admission itself: the parked
+    /// call carries a stale B identity while only A is current, with no
+    /// generation move to trip the counter check.
+    #[test]
+    fn stale_ensure_aborts_at_mutation_admission() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        clear_reconcile_ensure_pause();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        install_fake_whisper_http(root.path());
+        let writer = seed_whisper_tiny(root.path());
+        // Owned configuration A on a private port, autostart on.
+        let port_a = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let data_dir = root.path().to_path_buf();
+        let pid_a = spawn_owned(root.path(), "whisper", "a-server", port_a).unwrap();
+        assert!(port_open(port_a));
+        // Save configuration B (different port, autostart on) and mirror
+        // the watcher observation: validated witness plus attested
+        // snapshot identity, bound before parking.
+        let port_b = free_port();
+        assert_ne!(port_a, port_b);
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_b.to_string();
+        writer.save_settings(&settings).unwrap();
+        let gen_valid = server_generation();
+        let stt_b = writer.load_settings().stt;
+        assert_eq!(
+            server_generation(),
+            gen_valid,
+            "test setup raced control state"
+        );
+        let auth_b = ReconcileAuthority {
+            witness: gen_valid,
+            snapshot_fp: stt_fingerprint(&stt_b, &data_dir),
+        };
+        // Park after the final freshness comparison (hook sits
+        // post-recheck), then restore A with a pure save. Channels are
+        // created inline below; the hook is armed first so the worker
+        // deterministically parks there.
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<Result<bool, String>>();
+        let (finished_tx, finished_rx) = mpsc::channel::<()>();
+        set_reconcile_ensure_pause(entered_tx, proceed_rx);
+        let worker = std::thread::spawn(move || {
+            let out = reconcile_servers(&stt_b, &data_dir, Some(auth_b));
+            let _ = done_tx.send(out);
+            let _ = finished_rx.recv_timeout(Duration::from_secs(15));
+        });
+        entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        assert_eq!(
+            server_generation(),
+            gen_valid,
+            "restore must not move generation (that is the point)"
+        );
+        proceed_tx.send(()).unwrap();
+        // The mutation admission itself rejects the superseded snapshot:
+        // nothing is destroyed, spawned or replaced.
+        let deferred = done_rx
+            .recv_timeout(Duration::from_secs(25))
+            .unwrap()
+            .unwrap();
+        assert!(deferred, "superseded startup was not rejected");
+        assert!(port_open(port_a), "original A did not survive");
+        assert!(!proc_gone(pid_a));
+        assert_eq!(
+            servers().lock().unwrap()["whisper"].child.id(),
+            pid_a,
+            "supervisor entry is not the original"
+        );
+        assert!(!port_open(port_b), "stale startup launched B");
+        assert_eq!(active_count(), 0);
+        drop_servers(root.path());
+        wait_gone(pid_a);
+        let _ = finished_tx.send(());
+        worker.join().expect("worker thread panicked");
+        clear_reconcile_ensure_pause();
+    }
+
+    /// A transition landing strictly between a queued call's arrival and
+    /// its outer admission must not authorize suppression mutation: the
+    /// parked call revalidates witness and freshness under admission.
+    #[test]
+    fn outer_admission_revalidates_before_clearing() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        clear_reconcile_outer_pause();
+        clear_reconcile_ensure_pause();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        install_fake_whisper_http(root.path());
+        let writer = seed_whisper_tiny(root.path());
+        // Owned configuration A on a private port, autostart on.
+        let port_a = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let data_dir = root.path().to_path_buf();
+        let db_path = root.path().join("state.db");
+        assert!(!reconcile_servers(&writer.load_settings().stt, root.path(), None).unwrap());
+        assert!(port_open(port_a));
+        let pid_a = servers().lock().unwrap()["whisper"].child.id();
+        // Save configuration B and validate the observation exactly like
+        // the watcher tick does, then park the call at outer admission.
+        let port_b = free_port();
+        assert_ne!(port_a, port_b);
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_b.to_string();
+        writer.save_settings(&settings).unwrap();
+        let gen_valid = server_generation();
+        let stt_b = writer.load_settings().stt;
+        assert_eq!(
+            server_generation(),
+            gen_valid,
+            "test setup raced control state"
+        );
+        let auth_b = ReconcileAuthority {
+            witness: gen_valid,
+            snapshot_fp: stt_fingerprint(&stt_b, &data_dir),
+        };
+        // Channels are created inline below; the hook is armed first so
+        // the worker deterministically parks there.
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<Result<bool, String>>();
+        let (finished_tx, finished_rx) = mpsc::channel::<()>();
+        set_reconcile_outer_pause(entered_tx, proceed_rx);
+        let worker_data = data_dir.clone();
+        let worker_stt = stt_b.clone();
+        let worker = std::thread::spawn(move || {
+            let out = reconcile_servers(&worker_stt, &worker_data, Some(auth_b));
+            let _ = done_tx.send(out);
+            let _ = finished_rx.recv_timeout(Duration::from_secs(15));
+        });
+        entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        // Save C and Stop while queued: A is reaped, all ports close,
+        // and C's Stop record is the current suppression truth.
+        let port_c = free_port();
+        assert_ne!(port_b, port_c);
+        assert_ne!(port_a, port_c);
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_c.to_string();
+        writer.save_settings(&settings).unwrap();
+        drop_servers(root.path());
+        wait_gone(pid_a);
+        assert!(proc_gone(pid_a));
+        assert!(!port_open(port_a));
+        assert!(!port_open(port_b));
+        let stt_c = writer.load_settings().stt;
+        let stop_fp = stt_fingerprint(&stt_c, &data_dir);
+        assert!(!stop_fp.is_empty());
+        proceed_tx.send(()).unwrap();
+        // The queued B call revalidates under admission: witness mismatch
+        // (Stop bumped) and snapshot mismatch (Store holds C) both abort
+        // before any suppression mutation — C's Stop record survives.
+        let deferred = done_rx
+            .recv_timeout(Duration::from_secs(25))
+            .unwrap()
+            .unwrap();
+        assert!(deferred, "stale outer call was not deferred");
+        assert_eq!(
+            STOPPED_FP.lock().unwrap().as_str(),
+            stop_fp.as_str(),
+            "stale outer call cleared a newer Stop"
+        );
+        assert!(servers().lock().unwrap().is_empty());
+        assert!(!port_open(port_a));
+        assert!(!port_open(port_b));
+        assert!(!port_open(port_c));
+        // Three unchanged watcher polls stay cold: C was never applied,
+        // so the fingerprint is settled on C and suppression holds.
+        let mut last_primary = stt_primary_id(&stt_c, &data_dir);
+        let mut last_auto = stt_c.auto_start_server;
+        for _ in 0..3 {
+            crate::service::stt_watcher_tick(
+                &db_path,
+                &data_dir,
+                &mut last_primary,
+                &mut last_auto,
+            );
+            assert!(!port_open(port_a));
+            assert!(!port_open(port_b));
+            assert!(!port_open(port_c));
+            assert!(servers().lock().unwrap().is_empty());
+        }
+        // A genuinely later deliberate transition still starts normally.
+        let port_d = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_d.to_string();
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(port_open(port_d), "deliberate transition did not start");
+        let pid_d = servers().lock().unwrap()["whisper"].child.id();
+        assert!(!proc_gone(pid_d));
+        drop_servers(root.path());
+        wait_gone(pid_d);
+        assert_eq!(active_count(), 0);
+        let _ = finished_tx.send(());
+        worker.join().expect("worker thread panicked");
+        clear_reconcile_outer_pause();
+        clear_reconcile_ensure_pause();
+    }
+
+    /// A transition landing strictly between a queued leaving call's
+    /// arrival and its destruction admission must not authorize the
+    /// destroy: current truth is recomputed under the holding, so a
+    /// superseded cloud snapshot defers with the original local server
+    /// untouched even though no generation moved.
+    #[test]
+    fn superseded_leaving_defers_preserving_current() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        clear_reconcile_leaving_pause();
+        clear_reconcile_ensure_pause();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        install_fake_whisper_http(root.path());
+        let writer = seed_whisper_tiny(root.path());
+        // Owned local configuration A on a private port.
+        let port_a = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let data_dir = root.path().to_path_buf();
+        let db_path = root.path().join("state.db");
+        let pid_a = spawn_owned(root.path(), "whisper", "a-server", port_a).unwrap();
+        assert!(port_open(port_a));
+        // Cloud-primary B validated like a watcher observation (witness,
+        // snapshot, stability — no transition may interleave here).
+        use crate::settings::{SttChainEntry, SttEntryKind};
+        let mut settings = writer.load_settings();
+        settings.stt.entries = vec![SttChainEntry {
+            id: "b".into(),
+            name: "remote-b".into(),
+            kind: SttEntryKind::Cloud,
+            enabled: true,
+            provider: "OpenAI".into(),
+            url: String::new(),
+            model: "whisper-1".into(),
+            api_key: "k".into(),
+            streaming: true,
+        }];
+        writer.save_settings(&settings).unwrap();
+        let gen_valid = server_generation();
+        let stt_b = writer.load_settings().stt;
+        assert_eq!(
+            server_generation(),
+            gen_valid,
+            "test setup raced control state"
+        );
+        let auth_b = ReconcileAuthority {
+            witness: gen_valid,
+            snapshot_fp: stt_fingerprint(&stt_b, &data_dir),
+        };
+        // Park the superseded B call at destruction admission entry,
+        // then restore A with a pure save (no bump) and resume it.
+        // Channels are created inline below; the hook is armed first so
+        // the worker deterministically parks there.
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<Result<bool, String>>();
+        let (finished_tx, finished_rx) = mpsc::channel::<()>();
+        set_reconcile_leaving_pause(entered_tx, proceed_rx);
+        let worker_data = data_dir.clone();
+        let worker_stt = stt_b.clone();
+        let worker = std::thread::spawn(move || {
+            let out = reconcile_servers(&worker_stt, &worker_data, Some(auth_b));
+            let _ = done_tx.send(out);
+            let _ = finished_rx.recv_timeout(Duration::from_secs(15));
+        });
+        entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.server_port = port_a.to_string();
+        settings.stt.entries = crate::settings::SttSettings::default().entries;
+        writer.save_settings(&settings).unwrap();
+        assert_eq!(
+            server_generation(),
+            gen_valid,
+            "restore must not move generation (that is the point)"
+        );
+        proceed_tx.send(()).unwrap();
+        let deferred = done_rx
+            .recv_timeout(Duration::from_secs(25))
+            .unwrap()
+            .unwrap();
+        assert!(deferred, "superseded leaving call was not deferred");
+        // Original A survives untouched: PID, listener, supervisor entry.
+        assert!(port_open(port_a), "stale leaving killed the right engine");
+        assert!(!proc_gone(pid_a));
+        assert_eq!(
+            servers().lock().unwrap()["whisper"].child.id(),
+            pid_a,
+            "supervisor entry is not the original"
+        );
+        assert_eq!(active_count(), 0);
+        // Unchanged watcher polls keep A running: last already matches.
+        let stt_cur = writer.load_settings().stt;
+        let mut last_primary = stt_primary_id(&stt_cur, &data_dir);
+        let mut last_auto = stt_cur.auto_start_server;
+        for _ in 0..3 {
+            crate::service::stt_watcher_tick(
+                &db_path,
+                &data_dir,
+                &mut last_primary,
+                &mut last_auto,
+            );
+            assert!(port_open(port_a), "steady poll disturbed A");
+        }
+        // A genuinely later deliberate transition still starts normally.
+        let port_d = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_d.to_string();
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(port_open(port_d), "deliberate transition did not start");
+        let pid_d = servers().lock().unwrap()["whisper"].child.id();
+        assert!(!proc_gone(pid_d));
+        assert!(!port_open(port_a), "replaced A was not reaped");
+        drop_servers(root.path());
+        wait_gone(pid_d);
+        assert_eq!(active_count(), 0);
+        let _ = finished_tx.send(());
+        worker.join().expect("worker thread panicked");
+        clear_reconcile_leaving_pause();
+        clear_reconcile_ensure_pause();
+    }
+
     #[test]
     fn lazy_switch_cannot_kill_admitted_capture() {
         let _guard = serial();
@@ -8717,7 +9267,10 @@ mod tests {
             begin_utterance(stt_param, false, root.path(), 0);
             assert!(has_live());
             assert_eq!(active_count(), 1);
-            let deferred = reconcile_lazy_switch(root.path(), None).unwrap();
+            // Defers on the admitted capture before reaching identity;
+            // any snapshot deliberates identically here.
+            let stt_idle = writer.load_settings().stt;
+            let deferred = reconcile_lazy_switch(&stt_idle, root.path(), None).unwrap();
             assert!(deferred, "switch destroyed an admitted capture");
             assert!(has_live());
             assert!(port_open(port), "admitted capture lost its server");
@@ -8737,10 +9290,15 @@ mod tests {
             let pid = spawn_owned(root.path(), "whisper", "old", port).unwrap();
             let (done_tx, done_rx) = mpsc::channel::<Result<bool, String>>();
             let data = root.path().to_path_buf();
+            // Loaded from the Store so the call deliberates on current
+            // settings once admitted.
+            let stt_lock = crate::store::Store::open(&root.path().join("state.db"))
+                .map(|s| s.load_settings().stt)
+                .unwrap_or_default();
             let held = SERVER_START_LOCK.lock().unwrap();
             std::thread::scope(|s| {
                 s.spawn(|| {
-                    let out = reconcile_lazy_switch(&data, None);
+                    let out = reconcile_lazy_switch(&stt_lock, &data, None);
                     let _ = done_tx.send(out);
                 });
                 // The switch is parked on admission: nothing destroyed.
@@ -8773,16 +9331,19 @@ mod tests {
             let data = root.path().to_path_buf();
             let (lazy_tx, lazy_rx) = mpsc::channel::<Result<bool, String>>();
             let (press_tx, press_rx) = mpsc::channel::<()>();
+            // Store read here is only a fallback: admission re-reads.
+            // The lazy side deliberately uses the same snapshot so both
+            // racers deliberate on current settings when admitted.
+            let stt_param = writer.load_settings().stt;
+            let stt_lazy = stt_param.clone();
             let b1 = barrier.clone();
             std::thread::spawn(move || {
                 b1.wait();
-                let out = reconcile_lazy_switch(&data, None);
+                let out = reconcile_lazy_switch(&stt_lazy, &data, None);
                 let _ = lazy_tx.send(out);
             });
             let b2 = barrier.clone();
             let data2 = root.path().to_path_buf();
-            // Store read here is only a fallback: admission re-reads.
-            let stt_param = writer.load_settings().stt;
             std::thread::spawn(move || {
                 b2.wait();
                 begin_utterance(stt_param, false, &data2, 0);
@@ -8857,6 +9418,7 @@ mod tests {
             || Ok(()),
             Some(gen_now),
             ActiveDefer::Never,
+            None,
         )
         .expect("valid current-generation replacement must complete");
         let pid_b = servers().lock().unwrap()["sherpa-online"].child.id();
@@ -8876,6 +9438,7 @@ mod tests {
             || panic!("stale warmup must not probe"),
             Some(gen_now),
             ActiveDefer::Never,
+            None,
         );
         assert!(stale.is_err(), "stale request was not rejected");
         assert!(!port_open(port_a));
@@ -8913,6 +9476,7 @@ mod tests {
             || Ok(()),
             Some(gen_now2),
             ActiveDefer::Never,
+            None,
         )
         .expect("valid same-engine replacement must complete");
         let pid_c = servers().lock().unwrap()["sherpa-online"].child.id();
@@ -8930,6 +9494,7 @@ mod tests {
             || panic!("stale warmup must not probe"),
             Some(gen_now2),
             ActiveDefer::Never,
+            None,
         );
         assert!(
             stale2.is_err(),

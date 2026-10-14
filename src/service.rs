@@ -480,7 +480,8 @@ pub fn stt_watcher_tick(
                 }
             }
         } else {
-            match crate::transcribe::reconcile_lazy_switch(data_dir, Some(authority.clone())) {
+            match crate::transcribe::reconcile_lazy_switch(&stt, data_dir, Some(authority.clone()))
+            {
                 Ok(deferred) => !deferred,
                 Err(e) => {
                     eprintln!("[service] STT lazy stop failed, retrying: {e}");
