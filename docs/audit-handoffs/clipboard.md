@@ -2,7 +2,32 @@
 
 Draft scope: R32, R45, R39 clipboard boundary.
 Source snapshot: `08d2f6ae1295cf088cb8bb9fc12ea38fd97a4186`; current main baseline: `092cd80626b71396c71ef5f275e34495d75301ad`.
-Parent: `fix/audit-verified-installers`.
+Parent: `fix/audit-verified-installers` at `367f54a56d674de7ffefabb790c2e497fd763af0`
+(merge `04cce9f` adopts #19 `7cb5fec`; six clipboard commits rebased onto it,
+single conflict in `src/selection.rs` resolved to this layer's implementation
+body per the parent relocation contract).
+
+Relocation executed: the parent keeps only the real
+`selection::Guard` type (byte-identical, consumed by
+`crate::operation::Operation::guard`); the full owned-selection
+implementation lives in this layer. Wayland client deps stay on the shared
+#18 foundation. `CopyTask`/`copy_text_async` are reserved for #22's
+capture-edge wiring (unused here by construction, neither stubbed nor
+deleted); `Operation`'s wider contract stays shared with #22.
+
+Restack onto `367f54a` (merge `04cce9f`): one content conflict
+(`src/selection.rs` vs the parent relocation stub) resolved to this layer's
+implementation body with the frozen `Guard` verified byte-identical; the
+parent's `transcribe.rs` input/retention rework (atomic `capture_settings`,
+idle-capable `maintain_retention_at`) merges cleanly around the preserved
+same-store-epoch deliver tail. The parent moved production `child::run`
+behind `#[cfg(test)]`, so the ydotool key-release cleanup now uses
+`child::run_guarded` with the live delivery guard (no cleanup fork after
+cancellation). Reconciled gates: check/fmt clean, full suite 270 passed /
+0 failed, live nest wtype CtrlV/CtrlShiftV/ShiftInsert green, ydotool still
+fails closed (`exit status: 2`, no hang). #18's partition runner + manifest
+(`scripts/partition-*.py`, `scripts/test-manifest.txt`) touch no scope file
+and are not required by these gates; nothing carried, nothing replaced.
 
 Actual compositor variants and final privacy review pending. This is an extraction, not a completed or independently certified audit fix. Preserve all regressions and functionality. Shared API integration and current validation are reviewed before ready-for-review. No merge/tag/release/deployment.
 

@@ -467,12 +467,14 @@ fn paste_guarded(
             .map(|_| ());
             if result.is_err() {
                 // uinput persists key state beyond an aborted tool process.
-                // Release every key this operation could have pressed.
-                let _ = crate::child::run(
+                // Release every key this operation could have pressed. Guarded
+                // like the paste itself: no cleanup fork after cancellation.
+                let _ = crate::child::run_guarded(
                     Command::new("ydotool").args(["key", "47:0", "110:0", "42:0", "29:0"]),
                     &[],
                     Duration::from_millis(500),
                     1024,
+                    || guard(),
                 );
             }
             result
