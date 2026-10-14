@@ -188,6 +188,23 @@ Original report, full matrix, source map and historical evidence are owned by th
   panics on Broken pipe. Fix belongs to #18 (barrier/test-hook and/or
   fail-closed test server); assertions preserved, zero `src/net.rs`
   changes here (byte-identical to parent — verified empty diff).
+
+## Adopted storage-lane fixture patch + own-load validation
+
+- Adopted `b842a0d9` (storage lane, hosted-green upstream): cfg-gated
+  `sync-client-parked` hook in `exchange()` + bounded/loud fixture
+  accepts/rendezvous/joins. Cherry-pick verified hunk-identical,
+  `src/net.rs` only; installer scope, APIs and inventory untouched.
+  No foundation restack, no new runner (predecessor `631fe0e` runner
+  correction stays in its lane).
+- Own-source validation: **3 consecutive full parallel
+  `cargo test --locked --all-targets` runs, 268/0/5 each**, plus
+  targeted handshake pass. Failure stays open only pending hosted
+  confirmation, not local evidence.
+- Hosted run `38616713788` (source `f9c790b`) inspected: fails at the
+  strict-clippy step with exactly the 7 owner-bound diagnostics above
+  — zero assertion failures, race fix not contradicted. Hosted lint
+  greens when consumers wire (merge order), as recorded.
 - Runner: partition scripts inherited via parent merge; local runs use
   `cargo test` directly. #15 `e2751d2` nested-harness logic stays in its
   harness lane (no cross-lane cherry-pick); fail-path logs captured in
