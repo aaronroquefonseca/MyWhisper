@@ -170,3 +170,30 @@ Original report, full matrix, source map and historical evidence are owned by th
   follow plus paste certifications on `fix/audit-clipboard-ownership`,
   already restacked onto `367f54a`); later integration takes their side
   wholesale for clipboard files. Their branch is never reset here.
+
+## Net handshake flake: root cause + evidence to #18 (PR18 `6175238052`)
+
+- Failing test `net::tests::disable_and_reenable_during_handshake_never_exports_the_queued_snapshot`
+  (`src/net.rs:2210`) under `cargo test --locked --all-targets` only:
+  2 failures in 5 full runs; 20/20 solo and 8/8 concurrent isolated
+  runs pass. Server panics at `:2257` (Verdict write, Broken pipe);
+  client assertion at `:2280` fails (wrong error string).
+- Root cause: missing client-parked barrier. The toggle fires when the
+  *server* finishes Hello (`:2250`), but the *client* may not have
+  passed its post-Hello `sync.enabled` gate (`exchange()`, ~`:686`).
+  `save_settings` always bumps `policy_epoch` (`store.rs:936`), so the
+  intended epoch-detection path only runs if the client is already
+  parked in the exchange; otherwise it fails closed with
+  `sync disabled`, drops the socket, and the test server's `unwrap()`
+  panics on Broken pipe. Fix belongs to #18 (barrier/test-hook and/or
+  fail-closed test server); assertions preserved, zero `src/net.rs`
+  changes here (byte-identical to parent — verified empty diff).
+- Runner: partition scripts inherited via parent merge; local runs use
+  `cargo test` directly. #15 `e2751d2` nested-harness logic stays in its
+  harness lane (no cross-lane cherry-pick); fail-path logs captured in
+  run outputs instead.
+- Inventories retained: branch HEAD recorded per push comment;
+  `scripts/test-manifest.txt` as merged from parent (unmodified);
+  original source inventory owned by the tracking PR (immutable).
+- The 7 lib lint diagnostics stay OPEN (owner-bound table above);
+  layer acceptance is NOT claimed passing until consumers wire.
