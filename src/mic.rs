@@ -402,6 +402,10 @@ struct CpalFeed {
     failure: Arc<AtomicU8>,
     ready: Arc<AtomicBool>,
     level_bits: Arc<AtomicU32>,
+    /// Slices skipped while the tap slot was briefly contended. Diagnostic
+    /// only: each skip drops milliseconds of ambiguous audio at an
+    /// ownership boundary instead of failing the session.
+    skipped: Arc<AtomicU32>,
     rate: u32,
 }
 fn queue_capture(
@@ -470,10 +474,18 @@ impl CpalFeed {
         if !self.health.load(Ordering::Acquire) {
             return;
         }
-        let Ok(owner) = crate::audio::callback_recorder() else {
-            self.failure.store(3, Ordering::Release);
-            self.health.store(false, Ordering::Release);
-            return;
+        // A briefly contended tap slot (set/clear racing this callback)
+        // skips this slice with a counted diagnostic: dropping
+        // milliseconds of ambiguous audio is correct, killing the whole
+        // capture over a microsecond race is not. Ownership is
+        // re-established on the next successful read.
+        let owner = match crate::audio::callback_recorder() {
+            crate::audio::TapSnapshot::Ready(owner) => owner,
+            crate::audio::TapSnapshot::Contended => {
+                self.skipped
+                    .store(self.skipped.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+                return;
+            }
         };
         self.input_target(data, stamp, owner);
     }
@@ -627,6 +639,7 @@ impl CpalMic {
             failure: failure.clone(),
             ready: ready.clone(),
             level_bits: level_bits.clone(),
+            skipped: Arc::new(AtomicU32::new(0)),
             rate,
         };
         let stream = match cfg.sample_format() {
@@ -708,7 +721,6 @@ impl CpalMic {
             2 => {
                 "Microphone supplied invalid capture timestamps. Check the input device and retry."
             }
-            3 => "Microphone capture ownership could not be read. Retry dictation.",
             4 => {
                 "Microphone capture exceeded its processing budget. Retry with the selected input device."
             }
@@ -1273,6 +1285,7 @@ mod format_regressions {
             failure: Arc::new(AtomicU8::new(0)),
             ready: ready.clone(),
             level_bits: Arc::new(AtomicU32::new(0)),
+            skipped: Arc::new(AtomicU32::new(0)),
             rate: 44_100,
         };
         // Holding the inference-side mutex must not block the callback.
@@ -1336,6 +1349,52 @@ mod format_regressions {
     }
 
     #[test]
+    fn contended_tap_slot_skips_slices_without_killing_capture() {
+        // Hosted cpal-smoke run 38608553414 follow-up: on real hardware the
+        // first audio callback can race set/clear_recorder's brief slot
+        // hold. The callback must drop that ambiguous slice (counted) and
+        // keep the session healthy; ownership re-establishes next read.
+        let (producer, consumer) = rtrb::RingBuffer::new(CALLBACK_QUEUE);
+        let recorder = Arc::new(std::sync::Mutex::new(crate::audio::Recorder::default()));
+        recorder.lock().unwrap().start(44_100);
+        crate::audio::set_recorder(Some(recorder.clone()));
+        let health = Arc::new(AtomicBool::new(true));
+        let skipped = Arc::new(AtomicU32::new(0));
+        let mut feed = CpalFeed {
+            frames: MonoFrames {
+                channels: 1,
+                sum: 0.0,
+                count: 0,
+            },
+            producer,
+            owner: None,
+            pending: [0; CALLBACK_CHUNK],
+            pending_len: 0,
+            pending_stamp: Instant::now(),
+            health: health.clone(),
+            failure: Arc::new(AtomicU8::new(0)),
+            ready: Arc::new(AtomicBool::new(false)),
+            level_bits: Arc::new(AtomicU32::new(0)),
+            skipped: skipped.clone(),
+            rate: 44_100,
+        };
+        let stamp = Instant::now();
+        let _hold = crate::audio::hold_tap_slot_for_test();
+        feed.input_at(&[1000i16; 256], stamp);
+        assert_eq!(skipped.load(Ordering::Relaxed), 1);
+        assert!(
+            health.load(Ordering::Acquire),
+            "a contended slice must not fail the session"
+        );
+        assert_eq!(consumer.slots(), 0, "skipped slices must not queue");
+        drop(_hold);
+        feed.input_at(&[1000i16; 256], stamp);
+        assert_eq!(skipped.load(Ordering::Relaxed), 1);
+        assert!(health.load(Ordering::Acquire));
+        crate::audio::set_recorder(None);
+    }
+
+    #[test]
     fn tiny_callbacks_coalesce_and_pending_batches_survive_owner_change_and_drop() {
         let (producer, mut consumer) = rtrb::RingBuffer::new(CALLBACK_QUEUE);
         let old = Arc::new(std::sync::Mutex::new(crate::audio::Recorder::default()));
@@ -1355,6 +1414,7 @@ mod format_regressions {
             failure: Arc::new(AtomicU8::new(0)),
             ready: Arc::new(AtomicBool::new(false)),
             level_bits: Arc::new(AtomicU32::new(0)),
+            skipped: Arc::new(AtomicU32::new(0)),
             rate: 44_100,
         };
         let stamp = Instant::now();
