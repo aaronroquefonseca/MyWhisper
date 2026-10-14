@@ -13,7 +13,7 @@
 //! service's settings watcher the same way.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -367,85 +367,107 @@ pub fn spawn_hotkey_watcher(
 ///
 /// Engine owner only: call from the service.
 pub fn spawn_stt_watcher(db_path: PathBuf) {
+    // Boot state already warmed (or deliberately lazy) by
+    // run_headless; track it so the first tick is a no-op.
+    let (mut last_primary, mut last_auto) = match Store::open(&db_path) {
+        Ok(store) => {
+            let data_dir = db_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            let stt = store.load_settings().stt;
+            (
+                crate::transcribe::stt_primary_id(&stt, &data_dir),
+                stt.auto_start_server,
+            )
+        }
+        Err(_) => (String::new(), true),
+    };
     std::thread::spawn(move || {
         let data_dir = db_path
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_default();
-        // Boot state already warmed (or deliberately lazy) by
-        // run_headless; track it so the first tick is a no-op.
-        let (mut last_primary, mut last_auto) = match Store::open(&db_path) {
-            Ok(store) => {
-                let stt = store.load_settings().stt;
-                (
-                    crate::transcribe::stt_primary_id(&stt, &data_dir),
-                    stt.auto_start_server,
-                )
-            }
-            Err(_) => (String::new(), true),
-        };
         loop {
             std::thread::sleep(Duration::from_secs(2));
-            let Ok(store) = Store::open(&db_path) else {
-                continue;
-            };
-            let stt = store.load_settings().stt;
-            let curr_primary = crate::transcribe::stt_primary_id(&stt, &data_dir);
-            let curr_auto = stt.auto_start_server;
-            if curr_primary == last_primary && curr_auto == last_auto {
-                continue;
-            }
-            if crate::transcribe::inference_active() {
-                eprintln!("[service] STT switch deferred (active utterance)");
-                continue;
-            }
-            if curr_primary != last_primary {
-                // Configuration moved. Transient failures (foreign port,
-                // missing runtime, admission contention) retry on the
-                // next tick; only success advances the fingerprint.
-                // Active captures/inference defer the same way.
-                let applied = if curr_auto {
-                    match crate::transcribe::reconcile_servers(&stt, &data_dir) {
-                        Ok(deferred) => !deferred,
-                        Err(e) => {
-                            eprintln!("[service] STT reconcile failed, retrying: {e}");
-                            false
-                        }
-                    }
-                } else {
-                    match crate::transcribe::reconcile_lazy_switch(&data_dir) {
-                        Ok(deferred) => !deferred,
-                        Err(e) => {
-                            eprintln!("[service] STT lazy stop failed, retrying: {e}");
-                            false
-                        }
-                    }
-                };
-                if applied {
-                    eprintln!("[service] STT config reconciled");
-                    last_primary = curr_primary;
-                    last_auto = curr_auto;
-                }
-            } else {
-                // Only the autostart toggle moved.
-                if curr_auto {
-                    match crate::transcribe::reconcile_servers(&stt, &data_dir) {
-                        Ok(deferred) => {
-                            if !deferred {
-                                last_auto = curr_auto;
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("[service] STT autostart warm failed, retrying: {e}");
-                        }
-                    }
-                } else {
-                    // Disable keeps the running server (no bounce).
-                    last_auto = curr_auto;
-                }
-            }
+            stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
         }
     });
+}
+
+/// One STT watcher poll: compare the stored settings against the last
+/// applied `(primary, autostart)` pair and reconcile once on change.
+/// Deferred/failed ticks leave the pair untouched so the next poll
+/// retries. Split from the spawn loop so tests can drive the exact
+/// production path deterministically (no sleeps, no threads).
+pub fn stt_watcher_tick(
+    db_path: &Path,
+    data_dir: &Path,
+    last_primary: &mut String,
+    last_auto: &mut bool,
+) {
+    let Ok(store) = Store::open(db_path) else {
+        return;
+    };
+    let stt = store.load_settings().stt;
+    let curr_primary = crate::transcribe::stt_primary_id(&stt, data_dir);
+    let curr_auto = stt.auto_start_server;
+    if curr_primary == *last_primary && curr_auto == *last_auto {
+        return;
+    }
+    if crate::transcribe::inference_active() {
+        eprintln!("[service] STT switch deferred (active utterance)");
+        return;
+    }
+    if curr_primary != *last_primary {
+        // Configuration moved. Transient failures (foreign port,
+        // missing runtime, admission contention) retry on the next
+        // tick; only success advances the fingerprint. Active
+        // captures/inference defer the same way.
+        let applied = if curr_auto {
+            match crate::transcribe::reconcile_servers(&stt, data_dir) {
+                Ok(deferred) => !deferred,
+                Err(e) => {
+                    eprintln!("[service] STT reconcile failed, retrying: {e}");
+                    false
+                }
+            }
+        } else {
+            match crate::transcribe::reconcile_lazy_switch(data_dir) {
+                Ok(deferred) => !deferred,
+                Err(e) => {
+                    eprintln!("[service] STT lazy stop failed, retrying: {e}");
+                    false
+                }
+            }
+        };
+        if applied {
+            eprintln!("[service] STT config reconciled");
+            *last_primary = curr_primary;
+            *last_auto = curr_auto;
+        }
+    } else {
+        // Only the autostart toggle moved.
+        if curr_auto {
+            // Re-enabling is itself deliberate: expire any Stop
+            // suppression of this fingerprint before warming, so
+            // the current local configuration starts.
+            crate::transcribe::expire_stop_suppression();
+            match crate::transcribe::reconcile_servers(&stt, data_dir) {
+                Ok(deferred) => {
+                    if !deferred {
+                        *last_auto = curr_auto;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[service] STT autostart warm failed, retrying: {e}");
+                }
+            }
+        } else {
+            // Disable keeps the running server (no bounce).
+            *last_auto = curr_auto;
+        }
+    }
 }
 
 /// Commands from background threads to the service's GTK thread.

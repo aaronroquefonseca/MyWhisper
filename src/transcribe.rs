@@ -575,11 +575,24 @@ fn revoke_owner(id: u64) {
 /// Explicit-Stop authority. Public `drop_servers` (user Stop only —
 /// never config-driven drops) records the post-bump generation and the
 /// fingerprint it stopped whenever it actually stopped something. A
-/// queued autostart that observes a newer Stop settles instead of
+/// queued autostart observes the newer Stop and settles instead of
 /// resurrecting, on its own tick and all later ones, until a deliberate
 /// settings change or a user press starts normally again.
+/// Suppression lifetime: applying a newer deliberate configuration
+/// (autostart-ensure success, leaving-local or lazy handling of a moved
+/// fingerprint, autostart re-enable) expires it, so returning to a
+/// previously stopped config restarts; stale queued work must never
+/// clear a newer Stop (freshness-gated below).
 static LAST_STOP_GEN: AtomicU64 = AtomicU64::new(0);
 static STOPPED_FP: Mutex<String> = Mutex::new(String::new());
+
+/// Expire Stop suppression (service watcher: autostart re-enable is
+/// itself a deliberate control transition). Clears the fingerprint
+/// only; `LAST_STOP_GEN` is left intact so in-flight stale work still
+/// settles against it rather than resurrecting.
+pub fn expire_stop_suppression() {
+    *STOPPED_FP.lock().unwrap_or_else(|p| p.into_inner()) = String::new();
+}
 
 #[cfg(test)]
 pub(crate) fn active_count() -> usize {
@@ -3983,6 +3996,11 @@ pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, Str
         // non-blocking lease is retained across the kill/clear (never
         // dropped-then-reused), so inference cannot begin mid-destroy
         // and an admitted capture cannot slip between check and stop.
+        // Applying this configuration expires any older Stop
+        // suppression (freshness-gated, still holding admission so no
+        // Stop can slip between the decision and the expiry).
+        let fp = stt_fingerprint(stt, data_dir);
+        let cur_fp = current_fingerprint(data_dir);
         let _lease = match EngineLease::acquire(false) {
             Ok(l) => l,
             Err(_) => return Ok(true),
@@ -4003,6 +4021,9 @@ pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, Str
             for name in ["whisper", "sherpa-offline", "sherpa-online"] {
                 pidfile_remove(data_dir, name);
             }
+        }
+        if !fp.is_empty() && cur_fp == fp {
+            *STOPPED_FP.lock().unwrap_or_else(|p| p.into_inner()) = String::new();
         }
         return Ok(false);
     }
@@ -4029,6 +4050,9 @@ pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, Str
     // Later deliberate settings changes (new fingerprint) and user
     // presses (authoritative release worker) still start normally.
     let fp = stt_fingerprint(stt, data_dir);
+    // Freshness witness for the suppression-lifetime update below: only
+    // a call deliberating on current settings may expire an older Stop.
+    let cur_fp = current_fingerprint(data_dir);
     let gen_at_check = {
         let _lease = match EngineLease::acquire(false) {
             Ok(l) => l,
@@ -4044,6 +4068,15 @@ pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, Str
         }
         if !fp.is_empty() && STOPPED_FP.lock().map(|g| g.as_str() == fp).unwrap_or(false) {
             return Ok(false);
+        }
+        // This tick deliberately applies `fp`: an older Stop no longer
+        // suppresses anything once a newer configuration takes effect.
+        // Gated on freshness so stale queued work can never clear a
+        // newer Stop, and still holding admission so no Stop can slip
+        // between this expiry and the ensure below without tripping the
+        // generation check there.
+        if !fp.is_empty() && cur_fp == fp {
+            *STOPPED_FP.lock().unwrap_or_else(|p| p.into_inner()) = String::new();
         }
         server_generation()
     };
@@ -4070,16 +4103,7 @@ pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, Str
         Some(gen_at_check),
         ActiveDefer::IfAnyActive,
     ) {
-        Ok(()) => {
-            // A deliberate configuration took effect: an older Stop no
-            // longer suppresses anything. Clear only when what we
-            // applied is still current, so stale queued work can never
-            // clear a newer Stop.
-            if current_fingerprint(data_dir) == fp {
-                *STOPPED_FP.lock().unwrap_or_else(|p| p.into_inner()) = String::new();
-            }
-            Ok(false)
-        }
+        Ok(()) => Ok(false),
         Err(e) if e.starts_with("deferred:") => Ok(true),
         Err(e)
             if e.starts_with("obsolete generation")
@@ -4126,6 +4150,13 @@ pub fn reconcile_lazy_switch(data_dir: &Path) -> Result<bool, String> {
     }
     drop(live_guard);
     drop_servers_locked(data_dir);
+    // The watcher invokes this only for an observed fingerprint move, so
+    // applying it expires any older Stop suppression; returning to a
+    // previously stopped config later is a new deliberate transition.
+    // Still holding admission, so no Stop can slip between the destroy
+    // and this expiry and get wiped (a concurrent Stop serializes after
+    // us and records afresh).
+    *STOPPED_FP.lock().unwrap_or_else(|p| p.into_inner()) = String::new();
     Ok(false)
 }
 
@@ -7359,6 +7390,173 @@ mod tests {
         assert!(port_open(port_c), "re-enabled autostart did not warm C");
         clear_reconcile_ensure_pause();
         drop_servers(root.path());
+        assert_eq!(active_count(), 0);
+    }
+
+    #[test]
+    fn watcher_toggle_on_restarts_after_stop() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        clear_reconcile_ensure_pause();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let pack = stt::GPU_PACKS
+            .iter()
+            .find(|p| p.id == "whisper-cpu")
+            .unwrap();
+        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(
+            bin_dir.join("whisper-server"),
+            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = bin_dir.join("whisper-server");
+            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin, perms).unwrap();
+        }
+        let writer = seed_whisper_tiny(root.path());
+        let port_a = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        // Watcher-style state, initialized from current settings exactly
+        // like the service spawn path.
+        let stt0 = writer.load_settings().stt;
+        let data_dir = root.path().to_path_buf();
+        let db_path = root.path().join("state.db");
+        let mut last_primary = stt_primary_id(&stt0, &data_dir);
+        let mut last_auto = stt0.auto_start_server;
+        // Start A, then Stop it: unchanged ticks stay cold.
+        let stt = writer.load_settings().stt;
+        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(port_open(port_a));
+        let pid_a = servers().lock().unwrap()["whisper"].child.id();
+        drop_servers(root.path());
+        wait_gone(pid_a);
+        assert!(!port_open(port_a));
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(!port_open(port_a));
+        // Disable: the tick must observe the disabled state (not skip
+        // it) before we enable again.
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = false;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(!last_auto, "watcher did not observe the disable");
+        assert!(!port_open(port_a));
+        // Re-enable: the toggle itself is deliberate, so the current
+        // local configuration starts despite the earlier Stop.
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(last_auto);
+        assert!(port_open(port_a), "toggle-on did not restart A");
+        let pid_on = servers().lock().unwrap()["whisper"].child.id();
+        assert!(!proc_gone(pid_on));
+        // Steady tick after that: reuse, no bounce.
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(port_open(port_a));
+        assert_eq!(
+            servers().lock().unwrap()["whisper"].child.id(),
+            pid_on,
+            "steady tick bounced the server"
+        );
+        clear_reconcile_ensure_pause();
+        drop_servers(root.path());
+        wait_gone(pid_on);
+        assert_eq!(active_count(), 0);
+    }
+
+    #[test]
+    fn remote_interlude_expires_stop_suppression() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        clear_reconcile_ensure_pause();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let pack = stt::GPU_PACKS
+            .iter()
+            .find(|p| p.id == "whisper-cpu")
+            .unwrap();
+        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(
+            bin_dir.join("whisper-server"),
+            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = bin_dir.join("whisper-server");
+            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin, perms).unwrap();
+        }
+        let writer = seed_whisper_tiny(root.path());
+        // Local A starts through reconciliation.
+        let port_a = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let stt_a = writer.load_settings().stt;
+        assert!(!reconcile_servers(&stt_a, root.path()).unwrap());
+        assert!(port_open(port_a));
+        let pid_a = servers().lock().unwrap()["whisper"].child.id();
+        // Stop A: unchanged ticks stay cold.
+        drop_servers(root.path());
+        wait_gone(pid_a);
+        assert!(!port_open(port_a));
+        assert!(!reconcile_servers(&stt_a, root.path()).unwrap());
+        assert!(!port_open(port_a));
+        // Remote/self-hosted B needs no local process; applying it is
+        // still a deliberate transition that expires A's suppression.
+        let mut settings = writer.load_settings();
+        settings.stt.entries = vec![crate::settings::SttChainEntry {
+            id: "b".to_string(),
+            name: "remote-b".to_string(),
+            kind: crate::settings::SttEntryKind::Cloud,
+            enabled: true,
+            provider: "OpenAI".to_string(),
+            url: String::new(),
+            model: "whisper-1".to_string(),
+            api_key: "k".to_string(),
+            streaming: true,
+        }];
+        writer.save_settings(&settings).unwrap();
+        let stt_b = writer.load_settings().stt;
+        assert!(!reconcile_servers(&stt_b, root.path()).unwrap());
+        assert!(!port_open(port_a));
+        assert!(servers().lock().unwrap().is_empty());
+        // Restoring local A is deliberate again: it starts even though A
+        // was stopped before B was ever applied.
+        let mut settings = writer.load_settings();
+        settings.stt.entries = stt_a.entries.clone();
+        writer.save_settings(&settings).unwrap();
+        let stt_a2 = writer.load_settings().stt;
+        assert!(!reconcile_servers(&stt_a2, root.path()).unwrap());
+        assert!(port_open(port_a), "return to A did not restart it");
+        let pid_a2 = servers().lock().unwrap()["whisper"].child.id();
+        assert!(!proc_gone(pid_a2));
+        clear_reconcile_ensure_pause();
+        drop_servers(root.path());
+        wait_gone(pid_a2);
         assert_eq!(active_count(), 0);
     }
 
