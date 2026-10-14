@@ -551,3 +551,9 @@ pub fn ensure_unit_installed() -> Result<String, String> {
     systemctl(&["daemon-reload"])?;
     Ok(format!("unit installed ({})", exe.display()))
 }
+
+pub fn apply_input_preferences(settings: &crate::settings::AppSettings) {
+    crate::transcribe::set_hotkeys_listening(settings.hotkeys.hotkeys_enabled);
+    crate::sound::set_enabled(settings.preferences.dictation_sounds);
+    crate::media::set_enabled(settings.preferences.pause_media_on_dictation);
+}

@@ -38,6 +38,11 @@ pub fn set_enabled(on: bool) {
     ENABLED.store(on, std::sync::atomic::Ordering::SeqCst);
 }
 
+#[cfg(test)]
+pub(crate) fn enabled() -> bool {
+    ENABLED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Play asynchronously. Never blocks the caller; failures only log
 /// (a missing audio device must not break dictation). Pooled: a
 /// saturated system skips the cue instead of panicking on spawn.
