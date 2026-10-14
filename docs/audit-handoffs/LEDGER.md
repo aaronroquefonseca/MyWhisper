@@ -10,10 +10,10 @@ their tip) is distinct from final integrated release acceptance
 
 | PR | Branch (base) | Tip | Scope gate state |
 | --- | --- | --- | --- |
-| #15 | docs/audit-work-handoffs (main) | b23ff46 | GREEN this turn: fmt, strict Clippy, 109 tests, release 11, upgrade 5, CLI 2, audit 0 vulns, UI smoke both themes, Arch install+upgrade, Nix logo/desktop-VM/loader-VM |
+| #15 | docs/audit-work-handoffs (main) | (this push) | GREEN this turn: fmt, strict Clippy, 109 tests, release 11, upgrade 5, CLI 2, audit 0 vulns (rustls 0.23.46), UI smoke both themes, Arch install+upgrade, Nix logo/desktop-VM/loader-VM. Hosted run 38573390119: steps 1–9 passed; step 10 never ran cargo audit — cargo install exited 1 on cached exact binary under sh -e. Fixed by idempotent audit step (same file, below) |
 | #16 | fix/audit-ui-ownership (main) | da4f08e | GREEN reported (strict Clippy + checks) |
 | #17 | fix/audit-provider-contracts (main) | 8eabfaf | GREEN reported (strict Clippy + checks) |
-| #18 | fix/audit-storage-sync (main) | 0d1fa4b | strict lint FAIL from layering; checkpoint used in migration path, evidence asked |
+| #18 | fix/audit-storage-sync (main) | 8733bfe | BLOCKED, unresolved (not stable foundation): inspected GUI worker suppresses filesystem errors; boot blindly clears pending-reset marker; owner accepted relocation/removal of competing path, correction underway; hosted all-target 120s timeout still fails. Checkpoint migration-path use stands, gate evidence still owed |
 | #19 | fix/audit-input-ownership (#18) | c7479bc | strict lint FAIL from layering |
 | #20 | fix/audit-verified-installers (#19) | 169a1cf | strict lint FAIL from layering |
 | #21 | fix/audit-clipboard-ownership (#20) | c261f96 | strict lint FAIL from layering; 11 commits behind #20 tip |
@@ -29,8 +29,13 @@ with the owning agents; #15 does not restack or force-push them.
 
 ## API changes by #15
 
-None. Docs/README only. No API relocation; nothing to coordinate
-with consuming PRs.
+None in code APIs. Workflow change (R51, main-based, no sibling
+owns it): audit step installs cargo-audit 0.22.2 only when the exact
+binary is absent; `cargo audit --deny warnings` still always runs.
+Dependency change: `rustls` 0.23.45 → 0.23.46 in Cargo.lock
+(patch bump, no API change) resolving fresh RUSTSEC-2026-0346–0349;
+audit green, fmt/strict-Clippy/109-tests green on bumped tree.
+Siblings rebasing onto main will inherit both via merge.
 
 ## Checkpoint finding (source evidence, read-only)
 

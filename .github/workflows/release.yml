@@ -88,7 +88,12 @@ jobs:
           python3 scripts/test-pr-test.py
       - name: Current dependency security audit
         run: |
-          cargo install --locked cargo-audit --version 0.22.2
+          # The toolchain cache may already provide this exact binary;
+          # reinstalling it is an error there and must not abort the gate.
+          # The audit below still always runs with --deny warnings.
+          if ! cargo audit --version 2>/dev/null | grep -q '0\.22\.2'; then
+            cargo install --locked cargo-audit --version 0.22.2
+          fi
           cargo audit --deny warnings --json > security-audit.json
       - name: Release binary and native UI configurations
         run: |

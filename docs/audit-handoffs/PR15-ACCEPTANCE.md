@@ -74,6 +74,13 @@ behavior unchanged, License section preserved:
 - `packaging/release.py v0.9.4` preflight: pass, notes resolve.
 - `cargo audit --deny warnings` (cargo-audit 0.22.2, 470 locked
   crates, 1310 advisories): pass, zero vulnerabilities/warnings.
+  Follow-up: advisory DB later published RUSTSEC-2026-0346–0349
+  against rustls 0.23.45; bumped to 0.23.46 (`cargo update -p`),
+  audit green again, fmt/strict-Clippy/109-tests re-verified.
+  Workflow audit step made idempotent (skip reinstall when exact
+  binary cached; audit still always runs) after hosted run
+  38573390119 failed at `cargo install` under `sh -e` before audit
+  ever ran. See LEDGER.md.
 - `scripts/ui-smoke.sh` (xvfb, both light-en and dark-es): pass,
   including toast palette/close-hover/dismiss regression. Portal/fuse
   warnings are container noise, non-fatal.
