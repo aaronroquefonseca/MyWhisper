@@ -304,6 +304,48 @@ class PartitionContract(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     PARTITION.collect_tree()
 
+    def test_verify_batches_reports_nested_harness_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = synthetic_manifest(directory)
+            log = Path(directory) / "batch-0.log"
+            lines = [
+                "     Running unittests src/lib.rs (target/debug/deps/mywhisper-abcdef)",
+                "running 10 tests",
+            ]
+            for name in NAMES:
+                status = "ignored" if name in IGNORED else "ok"
+                lines.append(f"test {name} ... {status}")
+            # A test that re-executes the harness with inherited stdout leaves
+            # a second suite start and a duplicate result line behind.
+            lines.append("running 1 test")
+            lines.append("test mod::tests::case_00 ... ok")
+            lines.append(
+                "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"
+            )
+            for kind, name in HARNESSES:
+                lines.append(
+                    f"     Running unittests src/{name}.rs (target/debug/deps/{name}-123456)"
+                )
+                lines.append(
+                    "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+                )
+            log.write_text("\n".join(lines) + "\n")
+            try:
+                PARTITION.main(
+                    [
+                        "partition-tests.py",
+                        "verify-batches",
+                        "--manifest",
+                        str(manifest),
+                        "--logs",
+                        str(log),
+                    ]
+                )
+            except SystemExit as error:
+                self.assertIn("nested harness output", str(error))
+            else:
+                raise AssertionError("nested harness output passed verification")
+
 
 if __name__ == "__main__":
     unittest.main()

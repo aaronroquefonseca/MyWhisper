@@ -70,13 +70,24 @@ Still pending and not certified: compositors without data-control (fallback
 path; only niri is harnessed, mutter is present but unharnessed) and
 manager-heavy sessions (anonymous-reader limitation, documented above).
 Locked `--locked --all-targets` check, `cargo fmt --check`, and the full
-`cargo test --locked` suite pass on this head (251 passed, 0 failed;
-5 ignored are pre-existing live-model tests). `cargo clippy -- -D warnings`
-still fails only on pre-existing cross-scope dead code owned downstream
-(session/process-launch, store/net APIs completed by #22/#18); nothing in the
-touched clipboard/selection/deliver/smoke lines warns, and no suppression or
-deletion was added. Capture-edge authorization/completion is coordinated with
-#22 (which replaces the legacy `transcribe::deliver` adapter) and user
-feedback with #23. Parent #20 must satisfy its own scope before any merge.
+unpartitioned `cargo test --locked` suite pass on every head (latest
+reconciled: 272 passed, 0 failed; 5 ignored are pre-existing live-model
+tests). `cargo clippy -- -D warnings` fails only on the seven bound symbols
+(CopyTask trio → #22 async copy; `admit` + `operation` items → #22;
+`trust_local` + `model_present` → #23): tracked shared fate, no suppression
+or deletion. Capture-edge authorization/completion is coordinated with #22
+(which replaces the legacy `transcribe::deliver` adapter) and user feedback
+with #23. Parent #20 must satisfy its own scope before any merge.
+
+Restacks: onto `367f54a` (one selection-stub conflict → implementation body,
+frozen `Guard` identical; `child::run` gating → guarded cleanup) and onto
+`aebdbd4` (7/7 zero-conflict). Adopted #15 `e2751d2` verbatim
+(nested-harness detection, its unit test, batch-log artifact upload).
+Regenerated own manifest on the joined tree (277 lib tests: 272 run /
+5 ignored; parent's copy lacked 54 artifact tests now listed);
+`verify-manifest` current, `test-partition.py` 10/10 OK. Net-handshake Broken
+pipe under load stays OPEN (unobserved this round; a solo pass would not close
+it). Reconciled live nest: wtype CtrlV/CtrlShiftV/ShiftInsert green on a
+fresh binary; ydotool fails closed with no hang.
 
 Original report, full matrix, source map and historical evidence are owned by the audit tracking PR. The final source snapshot preserves every pre-split correction. Intermediate layers may expose interfaces completed downstream; document every actual compiler/test failure rather than hiding it.
