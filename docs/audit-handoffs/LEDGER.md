@@ -10,7 +10,7 @@ their tip) is distinct from final integrated release acceptance
 
 | PR | Branch (base) | Tip | Scope gate state |
 | --- | --- | --- | --- |
-| #15 | docs/audit-work-handoffs (main) | (this push) | Baseline source (rustls 0.23.45): fresh advisory DB reports RUSTSEC-2026-0346–0349 — RECORDED GAP, NOT WAIVED. Correction owned by #18 d09ce1d (verified identical IDs + 0.23.46 patch, audit clean reported); my duplicate lock bump reverted to baseline to avoid divergent code changes. Integration pending chain merge or owner manual merge. Retained: workflow audit-step idempotency fix (no owner conflict; required for hosted green regardless). Hosted run 38573390119 cause: steps 1–9 passed; step 10 never ran cargo audit — cargo install exited 1 on cached exact binary under sh -e |
+| #15 | docs/audit-work-handoffs (main) | (this push) | Shared security commit c1c42b0 (R51, supervisor-authorized): rustls 0.23.45→0.23.46 for RUSTSEC-2026-0346–0349, adapted to main lock graph (tempfile→getrandom 0.3.4 per manifest; none of #18's storage-scope deps). Audit 0 vulns/warnings; fmt, strict Clippy (rustls .46 rebuilt from source, crate re-linted), 109 tests, release 11, upgrade 5 green. #16/#17 reuse SAME commit via cherry-pick; later rebases after owner merge drop it naturally. Hosted run 38573390119 cause recorded: steps 1–9 passed; step 10 never ran cargo audit — cargo install exited 1 on cached exact binary under sh -e (workflow idempotency fix retained, no owner conflict) |
 | #16 | fix/audit-ui-ownership (main) | da4f08e | GREEN reported (strict Clippy + checks) |
 | #17 | fix/audit-provider-contracts (main) | 8eabfaf | GREEN reported (strict Clippy + checks) |
 | #18 | fix/audit-storage-sync (main) | 8733bfe→d09ce1d | d09ce1d: reset-barrier correction (competing GUI worker removed, relocation contract to #22/#23) + rustls 0.23.45→0.23.46 for RUSTSEC-2026-0346..0349, audit clean reported (IDs + patch verified identical to independent check). Still BLOCKED/unresolved: hosted all-target 120s timeout fails; gate evidence still owed. Owns the dependency correction; #15 reverted its duplicate bump |
@@ -32,10 +32,11 @@ with the owning agents; #15 does not restack or force-push them.
 None in code APIs. Workflow change (R51, main-based, no sibling
 owns it): audit step installs cargo-audit 0.22.2 only when the exact
 binary is absent; `cargo audit --deny warnings` still always runs.
-Dependency correction (rustls 0.23.46) owned by #18 d09ce1d; #15
-carries no lock delta vs baseline. Siblings rebasing onto main will
-inherit the workflow fix via merge; the lock correction arrives via
-the #18 chain or owner manual merge.
+Dependency correction (rustls 0.23.46) shared: #18 d09ce1d owns
+the chain copy; #15 commit c1c42b0 is the supervisor-authorized
+main-based twin (identical IDs/patch, no storage-scope deps) so
+#15/#16/#17 root CI gates pass. #16/#17 reuse it via cherry-pick;
+later rebases after owner merge drop the duplicate naturally.
 
 ## Checkpoint finding (source evidence, read-only)
 

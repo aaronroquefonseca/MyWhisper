@@ -72,15 +72,15 @@ behavior unchanged, License section preserved:
 - `packaging/test-release.py`: 11 passed. `test-upgrade.py`:
   5 passed. `test-cli.py` (no-keyring/no-data CLI): 2 passed.
 - `packaging/release.py v0.9.4` preflight: pass, notes resolve.
-- `cargo audit --deny warnings` (cargo-audit 0.22.2): BASELINE GAP,
-  RECORDED NOT WAIVED. Fresh advisory DB publishes
-  RUSTSEC-2026-0346–0349 against the baseline rustls 0.23.45, so the
-  unmodified baseline tree fails audit. Correction (0.23.46, audit
-  clean) owned by #18 d09ce1d — IDs and patch verified identical to
-  the independent check; #15's duplicate lock bump reverted, tree is
-  byte-identical to baseline on Cargo.lock. Integration pending chain
-  merge or owner manual merge. An earlier green audit on the bumped
-  tree is superseded and not claimed as baseline evidence.
+- `cargo audit --deny warnings` (cargo-audit 0.22.2): CORRECTED via
+  shared security commit c1c42b0 (supervisor-authorized, R51 scope):
+  rustls 0.23.45→0.23.46 for RUSTSEC-2026-0346–0349, adapted to the
+  main lock graph with no unrelated deps (diff vs #18 d09ce1d lock is
+  exactly their storage-scope extras). Fresh audit exit 0, zero
+  vulns/warnings; fmt, strict Clippy (rustls .46 rebuilt from source,
+  crate re-linted), 109 tests, release 11, upgrade 5 green.
+  #16/#17 reuse the same commit. Historical evidence preserved:
+  baseline failed with exactly those 4 IDs; #18 owns the chain copy.
   Workflow audit step made idempotent (skip reinstall when exact
   binary cached; audit still always runs) after hosted run
   38573390119 failed at `cargo install` under `sh -e` before audit
