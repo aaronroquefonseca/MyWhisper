@@ -119,3 +119,18 @@ Original report, full matrix, source map and historical evidence are owned by th
   carry pinned SHA-256 + authenticated specs (unit-proven); remaining
   large downloads (CUDA 219 MB, Sherpa 255/25 MB, needle, 0.5–3 GB
   models) are external bandwidth/hardware prerequisites, not code gaps.
+
+## Strict-gate ledger (hosted `release checks` runs `clippy -D warnings`)
+
+- Hosted run `38578623513` tested `3756cb1`: fails at strict clippy only
+  (dead-code-as-error), as expected while consumer restacks are pending.
+  No assertion failures; fmt/check/tests/smoke/audit green there.
+- Test profile: **zero** diagnostics after genuine `Operation` contract
+  tests (`guard/cancel_flag/with_cancel/with_permission` share fate).
+- Lib profile: 8 diagnostics, each with a downstream owner, none
+  suppressible without stubs or deletion — `stt::model_present` (1,
+  supervisor to assign, candidate #23), `installed_asset::{admit,
+  trust_local}` (2, #23 wrappers restore callers), `operation.rs`
+  contract + retained `Guard` (5, wired by #21/#22 provider integration).
+  Hosted lint goes green as the stack restacks bottom-up; #21 can adopt
+  the current stable SHA now (APIs below are frozen for consumers).

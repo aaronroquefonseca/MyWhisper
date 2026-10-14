@@ -269,4 +269,26 @@ mod tests {
         let another_phase = released.next_phase(Arc::new(AtomicBool::new(false)));
         assert!(!another_phase.permitted());
     }
+
+    #[test]
+    fn guard_cancel_and_permission_chain_share_fate() {
+        let base = Operation::unrestricted();
+        assert!(base.check().is_ok());
+        assert!(base.guard()());
+        // A child observes its parent's cancellation through both check
+        // and the shared guard closure.
+        let flag = Arc::new(AtomicBool::new(false));
+        let child = base.with_cancel(flag.clone());
+        base.cancel_flag().store(true, Ordering::Release);
+        assert!(child.check().unwrap_err().contains("cancelled"));
+        assert!(!child.guard()());
+        // Permission chains compose: the previous authority runs first,
+        // then the appended guard decides.
+        let gated = Operation::unrestricted().with_permission(|| false);
+        assert!(!gated.guard()());
+        assert!(gated.check().unwrap_err().contains("policy changed"));
+        let open = Operation::unrestricted().with_permission(|| true);
+        assert!(open.guard()());
+        assert!(open.check().is_ok());
+    }
 }
