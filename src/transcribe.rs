@@ -8553,6 +8553,9 @@ while True:
 
     #[test]
     fn empty_transducer_files_are_not_an_installed_or_resolvable_model() {
+        // Asset verification runs on the shared pool: require it here so
+        // this test is hermetic under any batch grouping or order.
+        crate::runtime::init().unwrap();
         let root = tempfile::tempdir().unwrap();
         let entry = stt::find_model("parakeet-tdt-0.6b-v3").unwrap();
         let model = stt::model_dir(root.path(), entry);
