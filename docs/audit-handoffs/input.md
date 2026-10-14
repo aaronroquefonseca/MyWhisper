@@ -2,7 +2,7 @@
 
 Draft scope: R14, R23, R24, R26, R27, R33.
 Source snapshot: `08d2f6ae1295cf088cb8bb9fc12ea38fd97a4186`; current main baseline: `092cd80626b71396c71ef5f275e34495d75301ad`.
-Parent: `fix/audit-storage-sync`, pinned stable tested SHA `0d1fa4b` (no restack while parent repairs layering/CI).
+Parent: `fix/audit-storage-sync`, pinned stable SHA `3ea96b4` (code-identical to hosted-green `8603be1` plus green-record doc; integrated after FULL hosted success `38589669408`).
 
 Depends on owned runtime/storage APIs; physical/layout acceptance pending. This is an extraction, not a completed or independently certified audit fix. Preserve all regressions and functionality. Shared API integration and current validation are reviewed before ready-for-review. No merge/tag/release/deployment.
 
