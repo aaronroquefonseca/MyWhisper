@@ -5192,36 +5192,152 @@ pub fn resume_pending_reset(state: &Rc<AppState>) {
     }
 }
 
-fn begin_reset(state: Rc<AppState>, _resume_only: bool) {
+/// True for transient write-lock failures (another process holds the
+/// database write lock): the reset command post must be retried, never
+/// treated as a terminal failure and never run blocking on GTK.
+fn db_write_locked(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, _)
+            if matches!(
+                failure.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            )
+    )
+}
+
+/// Fresh service-presence read for reset entry selection: a live service
+/// owns the single worker (command post); an absent service leaves this
+/// process the sole worker. Never cached: staleness here would double-drive.
+fn service_running(state_dir: &std::path::Path) -> bool {
+    crate::service::read_heartbeat(state_dir).is_some()
+}
+
+fn begin_reset(state: Rc<AppState>, resume_only: bool) {
     if state.reset_busy.replace(true) {
         return;
     }
-    // Service-driven interactive reset: post a `reset` server command
-    // (same pattern as stop/start) and poll the barrier below. The service
+    crate::transcribe::invalidate_all_capture();
+    // Entry selection, read fresh: a live service owns the single worker
+    // (command post + barrier poll); an absent service leaves this process
+    // the sole worker (direct drive). The operation lock serializes a
+    // service that starts mid-run, so work is never parallel either way.
+    let service_up = crate::paths::AppPaths::create()
+        .map(|paths| service_running(&paths.state_dir))
+        .unwrap_or(false);
+    if service_up {
+        post_reset_command(state);
+    } else {
+        drive_reset_worker(state, resume_only);
+    }
+}
+
+fn post_reset_command(state: Rc<AppState>) {
+    // Service-driven interactive reset: the GUI posts a `reset` server
+    // command (same pattern as stop/start) and polls below. The service
     // runs the single owned worker and withholds admission while pending;
     // a second request is refused by the operation lock, so re-posting is
     // always safe. Never drive a parallel worker here.
-    if let Err(error) = state.store.set_server_cmd("reset") {
-        state.reset_busy.set(false);
-        eprintln!("[reset] command: {error}");
-        super::app::notify(tr("settings.reset.failed"));
-        return;
-    }
     crate::transcribe::invalidate_all_capture();
+    let data_dir = state
+        .db_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    let lock_path = data_dir.join(".reset-operation.lock");
+    // Fail-closed helpers: an unreadable barrier reads as still pending;
+    // an unreadable lock reads as still held (the deadline bounds us).
+    let worker_active = {
+        let lock_path = lock_path.clone();
+        move || {
+            crate::private_fs::try_lock(&lock_path)
+                .map(|_owner| false)
+                .unwrap_or(true)
+        }
+    };
     let started = std::time::Instant::now();
+    let posted = std::cell::Cell::new(false);
+    let posted_at = std::cell::Cell::new(None::<std::time::Instant>);
+    let latched = std::cell::Cell::new(false);
+    let mut shown_incomplete = false;
     gtk4::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-        // Fail-closed: an unreadable barrier reads as still pending.
-        if state.store.reset_pending().unwrap_or(true) {
-            // Bounded poll: after two minutes hand control back with the
-            // retry state visible instead of pinning the page forever.
-            // A slow worker is unaffected; retry re-posts and re-polls.
-            if started.elapsed() < std::time::Duration::from_secs(120) {
-                return gtk4::glib::ControlFlow::Continue;
+        // Post phase: a write-locked database (installer/second process)
+        // refuses the command write; keep busy and retry, never block GTK.
+        if !posted.get() {
+            match state.store.set_server_cmd("reset") {
+                Ok(()) => {
+                    posted.set(true);
+                    posted_at.set(Some(std::time::Instant::now()));
+                }
+                Err(error) if db_write_locked(&error) => {
+                    return gtk4::glib::ControlFlow::Continue;
+                }
+                Err(error) => {
+                    state.reset_busy.set(false);
+                    eprintln!("[reset] command: {error}");
+                    super::app::notify(tr("settings.reset.failed"));
+                    crate::i18n::rebuild_ui();
+                    return gtk4::glib::ControlFlow::Break;
+                }
             }
+        }
+        // Barrier phase, fail-closed while unreadable.
+        if !state.store.reset_pending().unwrap_or(true) {
+            // Barrier cleared: refresh the GUI from committed state.
             state.reset_busy.set(false);
-            if state.store.try_load_settings().is_err() {
-                eprintln!("[reset] reload after wait failed");
+            match state.store.try_load_settings() {
+                Ok(settings) => {
+                    if let Err(error) = state
+                        .store
+                        .adopt_settings_baseline(&settings, state.store.settings_warning())
+                    {
+                        eprintln!("[reset] snapshot: {error}");
+                    }
+                    crate::i18n::set_lang(crate::i18n::UiLang::parse(
+                        &settings.preferences.ui_language,
+                    ));
+                    apply_theme(settings.preferences.theme);
+                    *state.settings.borrow_mut() = settings;
+                }
+                Err(error) => eprintln!("[reset] reload: {error}"),
             }
+            crate::i18n::rebuild_ui();
+            super::app::notify(tr("feedback.cleared"));
+            return gtk4::glib::ControlFlow::Break;
+        }
+        latched.set(true);
+        // While pending, track the committed state so the page observes
+        // exactly what the worker committed (muted hotkeys/sync, fresh
+        // defaults, incomplete warning) without racing it.
+        match state.store.try_load_settings() {
+            Ok(settings) => {
+                if let Err(error) = state
+                    .store
+                    .adopt_settings_baseline(&settings, state.store.settings_warning())
+                {
+                    eprintln!("[reset] snapshot: {error}");
+                }
+                *state.settings.borrow_mut() = settings;
+                if state.store.settings_warning() == Some("settings.reset.incomplete")
+                    && !shown_incomplete
+                {
+                    shown_incomplete = true;
+                    crate::i18n::rebuild_ui();
+                }
+            }
+            Err(error) => eprintln!("[reset] reload: {error}"),
+        }
+        // Failure is observable, never assumed: pending past the pickup
+        // grace with no worker holding the operation lock means the run
+        // finished without clearing the barrier. The deadline bounds a
+        // missing service the same way (retry stays available).
+        let awaiting = posted_at
+            .get()
+            .is_some_and(|at| at.elapsed() > std::time::Duration::from_secs(5));
+        let expired = started.elapsed() > std::time::Duration::from_secs(120)
+            || (!latched.get() && started.elapsed() > std::time::Duration::from_secs(15));
+        if (awaiting && !worker_active()) || expired {
+            state.reset_busy.set(false);
             crate::i18n::rebuild_ui();
             super::app::notify(tr(
                 if state.store.settings_warning() == Some("settings.reset.incomplete") {
@@ -5232,27 +5348,78 @@ fn begin_reset(state: Rc<AppState>, _resume_only: bool) {
             ));
             return gtk4::glib::ControlFlow::Break;
         }
-        // Barrier cleared: refresh the GUI from committed state.
-        state.reset_busy.set(false);
-        match state.store.try_load_settings() {
-            Ok(settings) => {
-                if let Err(error) = state
-                    .store
-                    .adopt_settings_baseline(&settings, state.store.settings_warning())
-                {
-                    eprintln!("[reset] snapshot: {error}");
-                }
-                crate::i18n::set_lang(crate::i18n::UiLang::parse(
-                    &settings.preferences.ui_language,
-                ));
-                apply_theme(settings.preferences.theme);
-                *state.settings.borrow_mut() = settings;
-            }
-            Err(error) => eprintln!("[reset] reload: {error}"),
+        gtk4::glib::ControlFlow::Continue
+    });
+}
+
+fn drive_reset_worker(state: Rc<AppState>, resume_only: bool) {
+    // Sole-worker fallback: only when the service is absent (fresh
+    // heartbeat check in begin_reset). The operation lock serializes
+    // against a service that starts mid-run, so work is never parallel.
+    let job = match crate::reset::start(state.db_path.clone(), resume_only) {
+        Ok(job) => job,
+        Err(error) => {
+            state.reset_busy.set(false);
+            eprintln!("[reset] admission: {error}");
+            super::app::notify(tr("settings.reset.failed"));
+            crate::i18n::rebuild_ui();
+            return;
         }
-        crate::i18n::rebuild_ui();
-        super::app::notify(tr("feedback.cleared"));
-        gtk4::glib::ControlFlow::Break
+    };
+    gtk4::glib::timeout_add_local(std::time::Duration::from_millis(20), move || {
+        let mut rebuild = false;
+        let mut finished = None;
+        loop {
+            match job.events.try_recv() {
+                Ok(crate::reset::Event::Snapshot(settings, warning)) => {
+                    if let Err(error) = state.store.adopt_settings_baseline(&settings, warning) {
+                        eprintln!("[reset] snapshot: {error}");
+                    }
+                    crate::i18n::set_lang(crate::i18n::UiLang::parse(
+                        &settings.preferences.ui_language,
+                    ));
+                    apply_theme(settings.preferences.theme);
+                    *state.settings.borrow_mut() = *settings;
+                    rebuild = true;
+                }
+                Ok(crate::reset::Event::Finished(result)) => {
+                    finished = Some(result);
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    finished = Some(Err(
+                        "reset worker disconnected; recovery remains available".into()
+                    ));
+                    break;
+                }
+            }
+        }
+        if finished.is_some() {
+            state.reset_busy.set(false);
+            rebuild = true;
+        }
+        if rebuild {
+            crate::i18n::rebuild_ui();
+        }
+        match finished {
+            Some(Ok(())) => {
+                super::app::notify(tr("feedback.cleared"));
+                gtk4::glib::ControlFlow::Break
+            }
+            Some(Err(error)) => {
+                eprintln!("[reset] {error}");
+                super::app::notify(tr(
+                    if state.store.settings_warning() == Some("settings.reset.incomplete") {
+                        "settings.reset.incomplete"
+                    } else {
+                        "settings.reset.failed"
+                    },
+                ));
+                gtk4::glib::ControlFlow::Break
+            }
+            None => gtk4::glib::ControlFlow::Continue,
+        }
     });
 }
 
@@ -5395,6 +5562,30 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_entry_follows_fresh_service_presence() {
+        let dir = tempfile::tempdir().unwrap();
+        // No heartbeat file: service absent.
+        assert!(!service_running(dir.path()));
+        // Corrupt heartbeat: service absent.
+        std::fs::write(dir.path().join("service.json"), b"not-json").unwrap();
+        assert!(!service_running(dir.path()));
+        // Stale beat: service absent.
+        std::fs::write(dir.path().join("service.json"), br#"{"beat": 1, "pid": 1}"#).unwrap();
+        assert!(!service_running(dir.path()));
+        // Fresh beat: service present.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        std::fs::write(
+            dir.path().join("service.json"),
+            format!(r#"{{"beat": {now}, "pid": 1}}"#),
+        )
+        .unwrap();
+        assert!(service_running(dir.path()));
+    }
 
     #[test]
     fn shortcut_conflicts_use_parsed_keys_instead_of_spelling() {
