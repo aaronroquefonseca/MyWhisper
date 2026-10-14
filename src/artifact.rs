@@ -2384,4 +2384,260 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn malformed_tar_and_zip_archives_fail_closed_without_publishing_partial_content() {
+        let data = tempfile::tempdir().unwrap();
+        let valid_tar = data.path().join("valid.tar.bz2");
+        archive(&valid_tar, &[("model", None)]);
+        let valid_bytes = std::fs::read(&valid_tar).unwrap();
+        let mut valid_zip = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut valid_zip));
+            writer
+                .start_file("model", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"data").unwrap();
+            writer.finish().unwrap();
+        }
+        // Valid bzip2 payload that is not a tar archive at all.
+        let mut not_tar = Vec::new();
+        bzip2::write::BzEncoder::new(&mut not_tar, bzip2::Compression::fast())
+            .write_all(b"this is compressed but it is not a tar archive")
+            .unwrap();
+        let mut cases: Vec<(&str, Vec<u8>, bool)> = Vec::new();
+        cases.push(("tar-random", vec![0x55u8; 256], false));
+        cases.push(("tar-not-tar", not_tar, false));
+        cases.push((
+            "tar-truncated",
+            valid_bytes[..valid_bytes.len() / 2].to_vec(),
+            false,
+        ));
+        cases.push(("zip-empty", Vec::new(), false));
+        cases.push(("zip-random", vec![0xA5u8; 256], false));
+        cases.push((
+            "zip-truncated",
+            valid_zip[..valid_zip.len() / 2].to_vec(),
+            true,
+        ));
+        for (name, bytes, zipped) in &cases {
+            let root = tempfile::tempdir().unwrap();
+            let destination = root.path().join("models/test");
+            crate::private_fs::directory(&destination).unwrap();
+            std::fs::write(destination.join("model"), b"previous complete model").unwrap();
+            let stage = Stage::new(root.path(), "model-test", destination.clone()).unwrap();
+            let temporary = stage.path().to_owned();
+            let member = stage.path().join("download.part");
+            std::fs::write(&member, bytes).unwrap();
+            let result = if *zipped {
+                unpack_zip(&member, stage.path(), || {
+                    stage.check(&AtomicBool::new(false))
+                })
+            } else {
+                unpack_tar(&member, stage.path(), || {
+                    stage.check(&AtomicBool::new(false))
+                })
+            };
+            assert!(result.is_err(), "malformed archive accepted: {name}");
+            drop(stage);
+            assert!(!temporary.exists(), "malformed stage survived: {name}");
+            assert!(
+                !StagingDirectory::journal(root.path(), "model-test").exists(),
+                "malformed journal survived: {name}"
+            );
+            assert_eq!(
+                std::fs::read(destination.join("model")).unwrap(),
+                b"previous complete model",
+                "previous installation disturbed: {name}"
+            );
+        }
+        // A truncated member inside an otherwise well-formed flow must also
+        // fail closed: the declared size outlives the available bytes.
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("models/test");
+        crate::private_fs::directory(&destination).unwrap();
+        std::fs::write(destination.join("model"), b"previous complete model").unwrap();
+        let stage = Stage::new(root.path(), "model-test", destination.clone()).unwrap();
+        let temporary = stage.path().to_owned();
+        let member = stage.path().join("member");
+        let mut total = 0u64;
+        assert!(
+            copy_member(&mut &b"data"[..], &member, 1024, &mut total, &|| stage
+                .check(&AtomicBool::new(false)),)
+            .is_err()
+        );
+        drop(stage);
+        assert!(!temporary.exists());
+        assert!(!StagingDirectory::journal(root.path(), "model-test").exists());
+        assert_eq!(
+            std::fs::read(destination.join("model")).unwrap(),
+            b"previous complete model"
+        );
+        // The retry path after malformed input stays usable.
+        let retry = Stage::new(root.path(), "model-test", destination.clone()).unwrap();
+        unpack_tar(&valid_tar, retry.path(), || {
+            retry.check(&AtomicBool::new(false))
+        })
+        .unwrap();
+        retry.promote(&AtomicBool::new(false)).unwrap();
+        assert_eq!(std::fs::read(destination.join("model")).unwrap(), b"data");
+    }
+
+    #[test]
+    fn repeated_cancellation_preserves_previous_installation_and_allows_authenticated_retry() {
+        let data = tempfile::tempdir().unwrap();
+        let destination = data.path().join("models/test");
+        crate::private_fs::directory(&destination).unwrap();
+        std::fs::write(destination.join("model"), b"previous complete model").unwrap();
+        for round in 0..4 {
+            let zipped = round % 2 == 1;
+            let archive_path = data.path().join(format!("round-{round}"));
+            let payload = vec![71u8; 512 * 1024];
+            if zipped {
+                let mut writer = zip::ZipWriter::new(File::create(&archive_path).unwrap());
+                writer
+                    .start_file("model", zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                writer.write_all(&payload).unwrap();
+                writer.finish().unwrap();
+            } else {
+                let encoder = bzip2::write::BzEncoder::new(
+                    File::create(&archive_path).unwrap(),
+                    bzip2::Compression::fast(),
+                );
+                let mut writer = tar::Builder::new(encoder);
+                let mut header = tar::Header::new_gnu();
+                header.set_mode(0o600);
+                header.set_size(payload.len() as u64);
+                header.set_cksum();
+                writer
+                    .append_data(&mut header, "model", &payload[..])
+                    .unwrap();
+                writer.into_inner().unwrap().finish().unwrap();
+            }
+            let stage = Stage::new(data.path(), "model-test", destination.clone()).unwrap();
+            let temporary = stage.path().to_owned();
+            let cancel = AtomicBool::new(false);
+            let begun = AtomicBool::new(false);
+            let check = || {
+                if stage
+                    .path()
+                    .join("model")
+                    .metadata()
+                    .is_ok_and(|meta| meta.len() >= 32 * 1024)
+                    && !begun.swap(true, Ordering::AcqRel)
+                {
+                    cancel.store(true, Ordering::Release);
+                }
+                stage.check(&cancel)
+            };
+            let result = if zipped {
+                unpack_zip(&archive_path, stage.path(), check)
+            } else {
+                unpack_tar(&archive_path, stage.path(), check)
+            };
+            assert!(result.is_err(), "cancelled round succeeded: {round}");
+            assert!(
+                begun.load(Ordering::Acquire),
+                "round never started: {round}"
+            );
+            assert!(
+                stage.promote(&cancel).is_err(),
+                "cancelled promote: {round}"
+            );
+            assert!(!temporary.exists(), "cancelled stage survived: {round}");
+            assert!(
+                !StagingDirectory::journal(data.path(), "model-test").exists(),
+                "cancelled journal survived: {round}"
+            );
+            assert_eq!(
+                std::fs::read(destination.join("model")).unwrap(),
+                b"previous complete model",
+                "previous disturbed by round {round}"
+            );
+        }
+        // An authenticated complete retry after repeated cancellation promotes.
+        let archive_path = data.path().join("final.tar.bz2");
+        let payload = vec![71u8; 64 * 1024];
+        let encoder = bzip2::write::BzEncoder::new(
+            File::create(&archive_path).unwrap(),
+            bzip2::Compression::fast(),
+        );
+        let mut writer = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_mode(0o600);
+        header.set_size(payload.len() as u64);
+        header.set_cksum();
+        writer
+            .append_data(&mut header, "model", &payload[..])
+            .unwrap();
+        writer.into_inner().unwrap().finish().unwrap();
+        let retry = Stage::new(data.path(), "model-test", destination.clone()).unwrap();
+        unpack_tar(&archive_path, retry.path(), || {
+            retry.check(&AtomicBool::new(false))
+        })
+        .unwrap();
+        retry.promote(&AtomicBool::new(false)).unwrap();
+        assert_eq!(std::fs::read(destination.join("model")).unwrap(), payload);
+    }
+
+    #[test]
+    fn stale_observed_authority_cannot_authorize_new_work_after_delete_or_reset() {
+        for reset_all in [false, true] {
+            let data = tempfile::tempdir().unwrap();
+            let destination = data.path().join("models/test");
+            let setup = Stage::new(data.path(), "model-test", destination.clone()).unwrap();
+            std::fs::write(setup.path().join("model"), b"previous complete model").unwrap();
+            setup.promote(&AtomicBool::new(false)).unwrap();
+            let stale = observe_authority(data.path(), "model-test").unwrap();
+            stale.check(&AtomicBool::new(false)).unwrap();
+            if reset_all {
+                drop(reset(data.path()).unwrap());
+            } else {
+                delete(data.path(), "model-test", &destination).unwrap();
+            }
+            assert!(
+                stale.check(&AtomicBool::new(false)).is_err(),
+                "stale authority survived mutation"
+            );
+            assert!(
+                Stage::new_requested(
+                    data.path(),
+                    "model-test",
+                    destination.clone(),
+                    &stale,
+                    &AtomicBool::new(false),
+                )
+                .is_err(),
+                "stale authority authorized new staging"
+            );
+            let fresh = observe_authority(data.path(), "model-test").unwrap();
+            fresh.check(&AtomicBool::new(false)).unwrap();
+            let retry = Stage::new_requested(
+                data.path(),
+                "model-test",
+                destination.clone(),
+                &fresh,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            std::fs::write(retry.path().join("model"), b"authorized retry").unwrap();
+            retry.promote(&AtomicBool::new(false)).unwrap();
+            assert_eq!(
+                std::fs::read(destination.join("model")).unwrap(),
+                b"authorized retry"
+            );
+        }
+        // A tampered installation epoch fails closed and preserves content.
+        let data = tempfile::tempdir().unwrap();
+        let destination = data.path().join("models/test");
+        let setup = Stage::new(data.path(), "model-test", destination.clone()).unwrap();
+        std::fs::write(setup.path().join("model"), b"previous complete model").unwrap();
+        setup.promote(&AtomicBool::new(false)).unwrap();
+        std::fs::write(data.path().join(".install/model-test.epoch"), b"bad").unwrap();
+        assert!(observe_authority(data.path(), "model-test").is_err());
+        assert_eq!(
+            std::fs::read(destination.join("model")).unwrap(),
+            b"previous complete model"
+        );
+    }
 }

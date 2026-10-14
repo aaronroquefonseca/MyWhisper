@@ -827,10 +827,22 @@ mod tests {
     fn registry_is_complete_and_consistent() {
         assert_eq!(WHISPER_MODELS.len(), 6);
         assert_eq!(PARAKEET_MODELS.len(), 6);
+        assert_eq!(WHISTLE_MODELS.len(), 1);
+        assert_eq!(GPU_PACKS.len(), 3);
+        assert_eq!(SHERPA_PACKS.len(), 2);
+        fn pinned(sha256: &str, id: &str) {
+            assert_eq!(sha256.len(), 64, "{id}");
+            assert!(sha256.bytes().all(|byte| byte.is_ascii_hexdigit()), "{id}");
+        }
         let mut recommended = 0;
-        for m in WHISPER_MODELS.iter().chain(PARAKEET_MODELS.iter()) {
+        for m in WHISPER_MODELS
+            .iter()
+            .chain(PARAKEET_MODELS.iter())
+            .chain(WHISTLE_MODELS.iter())
+        {
             assert!(m.download_url.starts_with("https://"), "{}", m.id);
             assert!(m.size_mb > 0, "{}", m.id);
+            pinned(m.sha256, m.id);
             if m.recommended {
                 recommended += 1;
             }
@@ -840,7 +852,80 @@ mod tests {
             }
         }
         // Exactly one recommended default per family.
-        assert_eq!(recommended, 2);
+        assert_eq!(recommended, 3);
+        for pack in GPU_PACKS {
+            pinned(pack.sha256, pack.id);
+            assert!(pack.size_bytes > 0, "{}", pack.id);
+        }
+        for pack in SHERPA_PACKS {
+            pinned(pack.sha256, pack.id);
+            assert!(pack.size_bytes > 0, "{}", pack.id);
+            assert!(!pack.binaries.is_empty(), "{}", pack.id);
+        }
+    }
+
+    #[test]
+    fn every_advertised_asset_has_an_authenticated_spec() {
+        let data = tempfile::tempdir().unwrap();
+        let mut keys = std::collections::HashSet::new();
+        for entry in WHISPER_MODELS
+            .iter()
+            .chain(PARAKEET_MODELS.iter())
+            .chain(WHISTLE_MODELS.iter())
+        {
+            let spec = model_spec(data.path(), entry);
+            assert!(!spec.key.is_empty(), "{}", entry.id);
+            assert_eq!(spec.source.len(), 64, "{}", entry.id);
+            assert!(!spec.required.is_empty(), "{}", entry.id);
+            assert!(spec.root.starts_with(data.path()), "{}", entry.id);
+            assert!(keys.insert(spec.key.clone()), "duplicate key {}", spec.key);
+        }
+        for pack in GPU_PACKS {
+            let spec = gpu_spec(data.path(), pack);
+            assert_eq!(spec.source, pack.sha256);
+            assert!(!spec.required.is_empty(), "{}", pack.id);
+            assert!(keys.insert(spec.key.clone()), "duplicate key {}", spec.key);
+        }
+        for pack in SHERPA_PACKS {
+            let spec = sherpa_spec(data.path(), pack);
+            assert_eq!(spec.source, pack.sha256);
+            assert!(!spec.required.is_empty(), "{}", pack.id);
+            assert!(keys.insert(spec.key.clone()), "duplicate key {}", spec.key);
+        }
+        match needle_spec(data.path()) {
+            Ok(spec) => {
+                assert_eq!(spec.source.len(), 64);
+                assert!(!spec.required.is_empty());
+                assert!(keys.insert(spec.key.clone()));
+            }
+            Err(message) => panic!("needle has no build for this arch: {message}"),
+        }
+    }
+
+    #[test]
+    fn repeated_cancelled_downloads_preserve_existing_files() {
+        for id in ["tiny", "cohere-transcribe-03-2026"] {
+            let directory = tempfile::tempdir().unwrap();
+            let entry = find_model(id).unwrap();
+            let existing = model_dir(directory.path(), entry);
+            std::fs::create_dir_all(&existing).unwrap();
+            std::fs::write(existing.join("tokens.txt"), "preserved user model").unwrap();
+            let callback: DownloadCallback =
+                Arc::new(|_| panic!("cancelled download must not make progress"));
+            for _ in 0..3 {
+                assert!(
+                    download_model(directory.path(), entry, &AtomicBool::new(true), &callback)
+                        .unwrap_err()
+                        .contains("cancel"),
+                    "{id}"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(existing.join("tokens.txt")).unwrap(),
+                    "preserved user model",
+                    "{id}"
+                );
+            }
+        }
     }
 
     #[test]

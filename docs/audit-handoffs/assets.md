@@ -13,7 +13,9 @@ Original report, full matrix, source map and historical evidence are owned by th
 - `cargo check --locked --all-targets`: passes (warnings only; `-D warnings`
   still fails on dead-code shims owned downstream, e.g. `operation::guard`,
   `selection::Offer::receive`, `store` reset methods completed in #22).
-- `cargo test --locked --lib`: 253 passed, 0 failed; 5 ignored are
+- `cargo test --locked --lib`: 253 passed, 0 failed on the flatten/chmod
+  hardening session (259 passed, 0 failed combined with the follow-up
+  coverage below); 5 ignored are
   pre-existing live gates (network/hardware: `downloads_tiny_model`,
   `downloads_cpu_pack`, `live_oruk_offline_roundtrip`,
   `spec_thread_roundtrip`, `whistle_stream_roundtrip`).
@@ -36,6 +38,16 @@ Original report, full matrix, source map and historical evidence are owned by th
   errors, and only renames regular files; GPU/sherpa chmod paths use
   `symlink_metadata` so an archive link can never redirect chmod onto
   unowned files (GPU zip path rejects symlinks outright; belt and braces).
+- Follow-up installer-side coverage (same disposable constraints):
+  `artifact` malformed TAR/ZIP fail closed with staging/journal removed and
+  previous install preserved plus authenticated retry; repeated cancellation
+  over 4 TAR/ZIP rounds preserves previous content; stale observed
+  authorities cannot authorize new staging after delete/reset and tampered
+  epoch files fail closed; `installed_asset` delete/reset retires active
+  verified content during use (`Operation::check` fails with
+  "deleted, reset or changed"); `stt` every advertised model/runtime asserts
+  pinned SHA-256 and authenticated specs with unique keys, and repeated
+  cancelled downloads preserve existing files.
 - Still deferred, unchanged: automatic startup sweep (recovery on next
   locked retry/delete/cache-clear only), physical power loss, resource/
   admission and complete provider/UI acceptance. Active engine-retirement

@@ -1329,4 +1329,43 @@ mod tests {
             b"previous complete model"
         );
     }
+
+    /// Installer-side active-use guarantee: content admitted for use must
+    /// observe a later delete/reset before its next boundary. Engine
+    /// retirement call sites live in the session layer (#22); this test
+    /// pins the installer half of the joint review.
+    #[test]
+    fn delete_and_reset_retire_active_verified_content_during_use() {
+        for reset_all in [false, true] {
+            let (_root, spec) = fixture();
+            let proof = admit(&spec, || Ok(())).unwrap();
+            assert!(proof.unchanged());
+            let operation =
+                crate::operation::Operation::unrestricted().with_assets(vec![proof.clone()]);
+            operation.check().unwrap();
+            if reset_all {
+                drop(crate::artifact::reset(&spec.data).unwrap());
+            } else {
+                crate::artifact::delete(&spec.data, &spec.key, &spec.root).unwrap();
+            }
+            assert!(!proof.unchanged(), "active proof survived mutation");
+            assert!(
+                operation
+                    .check()
+                    .unwrap_err()
+                    .contains("deleted, reset or changed"),
+                "active use was not revoked"
+            );
+            if reset_all {
+                // Reset revokes authority without deleting bytes; a stale
+                // proof must still fail even though files remain, while a
+                // fresh admission re-verifies the preserved content.
+                assert!(spec.root.join("model").exists());
+                assert!(admit(&spec, || Ok(())).is_ok());
+            } else {
+                assert!(admit(&spec, || Ok(())).is_err());
+                assert!(!spec.root.exists());
+            }
+        }
+    }
 }
