@@ -141,7 +141,7 @@ fn main() -> gtk4::glib::ExitCode {
             log_theme_state();
             let win = build_app_window(app, &state, &page, &section);
             win.present();
-            // GUI reset-recovery presentation is wired in the settings/native layer.
+            mywhisper::app_settings::resume_pending_reset(&state);
         });
         app.run_with_args::<&str>(&[])
     };
