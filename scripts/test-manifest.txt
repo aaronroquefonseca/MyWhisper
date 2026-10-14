@@ -8,6 +8,7 @@ test|lib|app_dictionary::tests::duplicate_validation_respects_aliases_case_and_t
 test|lib|app_insights::tests::calendar_cells_fit_wide_cards_and_keep_a_readable_minimum|run
 test|lib|app_settings::tests::capture_maps_keys_to_combo_tokens|run
 test|lib|app_settings::tests::provider_urls_require_a_host_and_supported_transport|run
+test|lib|app_settings::tests::reset_entry_follows_fresh_service_presence|run
 test|lib|app_settings::tests::shortcut_conflicts_use_parsed_keys_instead_of_spelling|run
 test|lib|app_sync::tests::manual_addresses_require_a_host_and_nonzero_port|run
 test|lib|app_sync::tests::pairing_requires_a_full_hex_id|run
