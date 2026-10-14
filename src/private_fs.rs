@@ -34,6 +34,7 @@ fn lock_file(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+#[cfg(test)]
 pub fn try_lock(path: &Path) -> io::Result<File> {
     let file = lock_file(path)?;
     file.try_lock_exclusive()?;
@@ -67,6 +68,7 @@ pub(crate) fn lock_guarded(
     }
 }
 
+#[cfg(test)]
 pub fn read_bounded(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
     read_file(path, limit, false)
 }

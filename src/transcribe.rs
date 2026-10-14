@@ -1006,6 +1006,7 @@ fn multipart_body(
 
 fn http_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
+        .dns_resolver(std::sync::Arc::new(crate::address::HttpResolver))
         .timeout(INFERENCE_TIMEOUT)
         .build()
         .map_err(|e| format!("http client: {e}"))
@@ -2865,7 +2866,12 @@ fn finish_session(
             }
         }
     }
+    let overflowed = sess.recorder.lock().unwrap().overflowed();
     let (pcm, rate) = sess.recorder.lock().unwrap().finish();
+    if overflowed || crate::audio::capture_failed() {
+        eprintln!("[stt] release: capture overflowed its bound; dropping truncated utterance");
+        return Err("capture overflowed its bound".to_string());
+    }
     if rate == 0 || pcm.is_empty() {
         eprintln!("[stt] release: no audio captured (mic unavailable or sim source)");
         return Ok(None);

@@ -103,6 +103,8 @@ pub fn set_sync_port(port: u16) {
 pub struct SyncEngine {
     stop: Arc<AtomicBool>,
     mdns: Option<crate::net::MdnsHandles>,
+    discovery: Option<crate::runtime::OwnedThread>,
+    retention: Option<crate::maintenance::RetentionMaintenance>,
 }
 
 impl Drop for SyncEngine {
@@ -111,6 +113,10 @@ impl Drop for SyncEngine {
         if let Some(m) = self.mdns.take() {
             m.shutdown();
         }
+        if let Some(handle) = self.discovery.take() {
+            let _ = handle.join();
+        }
+        self.retention.take();
         set_sync_port(0);
         eprintln!("[sync] engine stopped");
     }
@@ -187,21 +193,42 @@ pub fn start_sync_engine(
             }
             {
                 let db_path = paths.db_file();
-                crate::net::sync_on_startup(db_path, identity.creds());
+                crate::net::sync_on_startup_owned(
+                    db_path,
+                    identity.creds(),
+                    store.sync_epoch(),
+                    stop.clone(),
+                );
             }
             {
                 let db_path = paths.db_file();
                 let stop = stop.clone();
-                if let Err(error) = crate::net::watch_discovered(
-                    db_path,
+                let discovery = match crate::net::watch_discovered(
+                    db_path.clone(),
                     identity.creds(),
                     discovered.clone(),
-                    stop,
+                    stop.clone(),
                 ) {
-                    eprintln!("[sync] discovery watcher off: {error}");
-                }
+                    Ok(handle) => Some(handle),
+                    Err(error) => {
+                        eprintln!("[sync] discovery watcher off: {error}");
+                        None
+                    }
+                };
+                let retention = match crate::maintenance::RetentionMaintenance::start(db_path) {
+                    Ok(worker) => Some(worker),
+                    Err(error) => {
+                        eprintln!("[retention] idle maintenance off: {error}");
+                        None
+                    }
+                };
+                *SYNC_ENGINE.lock().unwrap() = Some(SyncEngine {
+                    stop,
+                    mdns,
+                    discovery,
+                    retention,
+                });
             }
-            *SYNC_ENGINE.lock().unwrap() = Some(SyncEngine { stop, mdns });
             port
         }
         Ok(None) => 0,

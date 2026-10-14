@@ -149,10 +149,10 @@ pub fn clear_recorder(expected: &Arc<Mutex<Recorder>>) {
 /// (no-op when disarmed). Mic threads call this, never block: a
 /// poisoned mutex just drops the slice.
 pub fn tap_samples(samples: &[i16], rate: u32) {
-    let guard = tap_slot().lock();
-    let Ok(slot) = guard else { return };
-    let Some(rec) = slot.as_ref() else { return };
-    if let Ok(mut r) = rec.lock() {
+    let Some(rec) = callback_recorder().ok().flatten() else {
+        return;
+    };
+    if let Ok(mut r) = rec.try_lock() {
         push_capture(&mut r, samples, rate, std::time::Instant::now());
     }
 }

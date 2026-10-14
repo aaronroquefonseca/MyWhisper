@@ -3683,6 +3683,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
                         };
                     }
                     let success = reqwest::blocking::Client::builder()
+                        .dns_resolver(std::sync::Arc::new(crate::address::HttpResolver))
                         .timeout(std::time::Duration::from_secs(60))
                         .build()
                         .and_then(|client| {

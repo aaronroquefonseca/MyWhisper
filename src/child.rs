@@ -88,6 +88,7 @@ impl Drop for OwnedChild {
 
 /// Communicate without a writer/reader thread. Both pipes make progress in the
 /// same deadline loop, with a hard limit on output from an untrusted child.
+#[cfg(test)]
 pub(crate) fn run(
     cmd: &mut Command,
     input: &[u8],

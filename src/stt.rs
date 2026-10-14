@@ -459,6 +459,7 @@ pub fn download_model(
     let mut file = std::fs::File::create(&tmp).map_err(|e| format!("create: {e}"))?;
 
     let client = reqwest::blocking::Client::builder()
+        .dns_resolver(std::sync::Arc::new(crate::address::HttpResolver))
         .timeout(None)
         .build()
         .map_err(|e| format!("http client: {e}"))?;
@@ -905,6 +906,7 @@ pub fn download_gpu_pack(
     let _ = std::fs::remove_file(&tmp);
 
     let client = reqwest::blocking::Client::builder()
+        .dns_resolver(std::sync::Arc::new(crate::address::HttpResolver))
         .timeout(None)
         .build()
         .map_err(|e| format!("http client: {e}"))?;
@@ -1173,6 +1175,7 @@ pub fn download_sherpa_pack(
     let _ = std::fs::remove_file(&tmp);
 
     let client = reqwest::blocking::Client::builder()
+        .dns_resolver(std::sync::Arc::new(crate::address::HttpResolver))
         .timeout(None)
         .build()
         .map_err(|e| format!("http client: {e}"))?;
@@ -1335,6 +1338,7 @@ pub fn download_needle_pack(
     let _ = std::fs::remove_file(&tmp);
 
     let client = reqwest::blocking::Client::builder()
+        .dns_resolver(std::sync::Arc::new(crate::address::HttpResolver))
         .timeout(None)
         .build()
         .map_err(|e| format!("http client: {e}"))?;
