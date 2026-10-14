@@ -401,7 +401,7 @@ pub fn register_capture_suspend(hook: impl Fn([u8; 16]) + Send + Sync + 'static)
 
 fn capture_request() -> Option<[u8; 16]> {
     let path = CAPTURE_PATH.get()?;
-    crate::private_fs::read_bounded(&path.with_extension("request"), 16)
+    crate::private_fs::read_private(&path.with_extension("request"), 16)
         .ok()?
         .try_into()
         .ok()
