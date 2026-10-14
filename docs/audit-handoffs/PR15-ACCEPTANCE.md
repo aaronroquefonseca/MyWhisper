@@ -90,11 +90,19 @@ behavior unchanged, License section preserved:
 ## Not run — exact prerequisites (no success assumed)
 
 - Nix source build + NixOS module/desktop/loader/logo checks:
-  `nix build ./packaging/nixos#checks.x86_64-linux.{desktop,
-  symbolic-logo,whisper-vulkan-loader}`. Blocked here: nix 2.35.3
-  present but `/nix/var/nix/db` permission denied (no daemon
-  access). Needs Nix with daemon/disposable-store rights; VM checks
-  additionally need KVM + network for locked nixpkgs fetch.
+  PASS FRESH this turn via the owned-store runner (verified identical
+  to the archived #7 runner; store UID 1000/mode 0700/`.disposable`;
+  own gate root + own `target/nix-audit-build`; NIX_REMOTE=local in
+  bwrap; /dev/kvm bound; no host daemon change):
+  `symbolic-logo`, `desktop` (scoped-package VM: System dark, GUI
+  close, encrypted storage, repeated user-service start/stop) and
+  `whisper-vulkan-loader` (pinned upstream starts via nix-ld as a
+  normal VM user) all exit 0 on this branch source, 40 derivations
+  including a fresh `mywhisper-0.9.4` source build with its
+  `cargoCheckHook` encrypted-fixture suite. Logs:
+  /tmp/mw15-nix-logo.log, /tmp/mw15-nix-desktop.log. This proves the
+  main-based source only; integrated-tip (#23) Nix acceptance stays
+  open until that source is gated.
 - Running Arch desktop/service upgrade and recovery: booted Arch
   desktop with user systemd, real service instance, GUI session.
 - Downloaded-runtime GPU inference: NVIDIA driver + CUDA/cuDNN
@@ -108,9 +116,7 @@ behavior unchanged, License section preserved:
 
 ## Sibling draft status (2026-10-14, coordination snapshot)
 
-All still draft and unmerged: #16 `da4f08e1`, #17 `b2d30ff4`,
-#18 `0d1fa4b5`, #19→#18 `c7479bc8`, #20→#19 `169a1cff`,
-#21→#20 `d1a15edc`, #22→#21 `a3ccf74a`, #23→#22 `feb531ee`.
+Superseded by LEDGER.md (fresh tips, verified stack lag 11/2/2).
 #11 open and ready for review (`7c066b16`); #4 open (`4c7f3873`).
 
 ## Merge-readiness verdict: NOT READY
@@ -118,13 +124,12 @@ All still draft and unmerged: #16 `da4f08e1`, #17 `b2d30ff4`,
 Blocking, per the handoff's own rule to keep this PR draft until its
 scope and required checks are actually complete:
 
-1. #16–#23 code scopes unfinished; final acceptance per group needs
-   each owner's regression/live evidence first.
-2. Nix source build + NixOS VM checks never executed here (no daemon
-   access); R48 packaged acceptance incomplete.
-3. Running desktop/service upgrade + recovery, GPU inference,
+1. #16–#23 code scopes unfinished (#18–#21 strict lint fails from
+   layering; #22 new head ungated; #23 CI failure open); final
+   acceptance per group needs each owner's regression/live evidence.
+2. Running desktop/service upgrade + recovery, GPU inference,
    trusted WSS/paid providers, physical mic, cross-host LAN and
    compositor variants: no evidence, prerequisites only.
-4. R49 remaining advertised assets and installer stress open.
-5. PR description head pointer (`4cb536c`) predates this work; update
-   it to the merge commit before final review.
+3. R49 remaining advertised assets and installer stress open.
+4. Integrated-tip (future #23) full gate battery, including Nix,
+   still to run; this turn's Nix evidence covers main-based source.
