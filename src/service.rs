@@ -446,6 +446,15 @@ pub fn stt_watcher_tick(
     // queued tick cannot authorize stale work with a fresh generation.
     // The fingerprint travels with it: apply paths compare current truth
     // against this attested identity, not a re-derived one.
+    //
+    // Disabled-state observations refresh the disable marker here —
+    // before the skip check, so even unchanged disabled ticks keep it
+    // current. A refusal below therefore never strands later toggles:
+    // the next disable observation refreshes past any Stop, and only a
+    // Stop strictly newer than that refresh can revoke again.
+    if !curr_auto {
+        crate::transcribe::note_disable_observed(gen_snap);
+    }
     let authority = crate::transcribe::ReconcileAuthority {
         witness: gen_snap,
         snapshot_fp: crate::transcribe::stt_fingerprint(&stt, data_dir),
@@ -491,10 +500,11 @@ pub fn stt_watcher_tick(
             // suppression of this fingerprint before warming, so
             // the current local configuration starts — unless a newer
             // Stop (past the last observed disable) revoked this
-            // observation, in which case settle cold (recording the
-            // toggle as seen so later ticks stay cold).
+            // observation, in which case defer without touching
+            // bookkeeping: the toggle was never validly applied, and the
+            // next observations (including a fresh disable, whose marker
+            // refresh above keeps working) retry correctly.
             if !crate::transcribe::expire_stop_suppression_at(data_dir, &authority) {
-                *last_auto = curr_auto;
                 return;
             }
             match crate::transcribe::reconcile_servers(&stt, data_dir, Some(authority)) {
@@ -508,11 +518,8 @@ pub fn stt_watcher_tick(
                 }
             }
         } else {
-            // Disable keeps the running server (no bounce), but
-            // records the observation with the validated witness
-            // above, so a later Stop is ordered strictly after it
-            // for suppression-expiry purposes.
-            crate::transcribe::note_disable_observed(gen_snap);
+            // Disable keeps the running server (no bounce). The marker
+            // was already refreshed above for every disabled observation.
             *last_auto = curr_auto;
         }
     }

@@ -7893,15 +7893,19 @@ mod tests {
             proceed_tx.send(()).unwrap();
             done_rx.recv_timeout(Duration::from_secs(25)).unwrap();
         });
-        // The older tick settled cold without launching a replacement,
-        // yet recorded the toggle as seen.
-        assert!(last_auto, "revoked toggle was not settled");
+        // The older tick deferred without launching a replacement and
+        // without advancing bookkeeping: the toggle was never validly
+        // applied, so the last valid state (disabled) is preserved for
+        // fresh observations to retry against.
+        assert!(!last_auto, "revoked toggle must not advance bookkeeping");
         assert!(!port_open(port_a), "older tick resurrected after Stop");
         assert!(servers().lock().unwrap().is_empty());
-        // Subsequent unchanged ticks remain cold (no postponed
-        // resurrection on the next poll).
+        // Subsequent unchanged ticks remain cold, re-refusing on the
+        // same grounds without ever marking the stale toggle applied.
         crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(!last_auto, "cold retry advanced bookkeeping");
         crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(!last_auto, "cold retry advanced bookkeeping");
         assert!(!port_open(port_a));
         assert!(servers().lock().unwrap().is_empty());
         // A genuinely later deliberate transition still starts: observe
@@ -8131,10 +8135,10 @@ mod tests {
         assert!(!port_open(port_a), "torn tick resurrected after Stop");
         assert!(servers().lock().unwrap().is_empty());
         // Retry with a clean window: the pending re-enable is observed
-        // against post-Stop authority and settles cold (the Stop is
-        // newer than the disable observation, settings unchanged).
+        // against post-Stop authority and refuses again — deferred work
+        // preserves bookkeeping instead of marking stale toggles applied.
         crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
-        assert!(last_auto);
+        assert!(!last_auto, "refused toggle must not advance bookkeeping");
         assert!(!port_open(port_a));
         assert!(servers().lock().unwrap().is_empty());
         // Unchanged ticks stay cold.
