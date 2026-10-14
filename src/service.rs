@@ -441,7 +441,9 @@ pub fn stt_watcher_tick(
         return;
     }
     // From here `gen_snap` is validated authority for this observation:
-    // it predates every input above and no transition interleaved.
+    // it predates every input above and no transition interleaved. It is
+    // carried into every apply branch below (never re-sampled), so a
+    // queued tick cannot authorize stale work with a fresh generation.
     if curr_primary == *last_primary && curr_auto == *last_auto {
         return;
     }
@@ -455,7 +457,7 @@ pub fn stt_watcher_tick(
         // tick; only success advances the fingerprint. Active
         // captures/inference defer the same way.
         let applied = if curr_auto {
-            match crate::transcribe::reconcile_servers(&stt, data_dir) {
+            match crate::transcribe::reconcile_servers(&stt, data_dir, Some(gen_snap)) {
                 Ok(deferred) => !deferred,
                 Err(e) => {
                     eprintln!("[service] STT reconcile failed, retrying: {e}");
@@ -463,7 +465,7 @@ pub fn stt_watcher_tick(
                 }
             }
         } else {
-            match crate::transcribe::reconcile_lazy_switch(data_dir) {
+            match crate::transcribe::reconcile_lazy_switch(data_dir, Some(gen_snap)) {
                 Ok(deferred) => !deferred,
                 Err(e) => {
                     eprintln!("[service] STT lazy stop failed, retrying: {e}");
@@ -489,7 +491,7 @@ pub fn stt_watcher_tick(
                 *last_auto = curr_auto;
                 return;
             }
-            match crate::transcribe::reconcile_servers(&stt, data_dir) {
+            match crate::transcribe::reconcile_servers(&stt, data_dir, Some(gen_snap)) {
                 Ok(deferred) => {
                     if !deferred {
                         *last_auto = curr_auto;

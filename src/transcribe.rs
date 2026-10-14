@@ -1419,6 +1419,10 @@ fn ensure_server(
                         ready: false,
                     },
                 );
+                // Every map mutation bumps: a fresh spawn into an empty
+                // map still invalidates authority captured before it, so
+                // a parked control decision cannot miss it.
+                bump_generation();
                 startup.ready = false;
                 baseline = server_generation();
                 drop(map);
@@ -1459,6 +1463,8 @@ fn ensure_server(
                 ready: false,
             },
         );
+        // See above: every map mutation bumps, including fresh spawns.
+        bump_generation();
         baseline = server_generation();
         drop(map);
         drop(_admission);
@@ -4093,7 +4099,19 @@ pub fn owned_servers_running(data_dir: &Path) -> bool {
 ///   by `server_status` but never touched.
 ///
 /// Returns `Ok(true)` when deferred, `Ok(false)` when applied.
-pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, String> {
+///
+/// `authority` carries the watcher's validated control-generation
+/// witness (`Some`) into every destructive or constructive decision,
+/// verified under admission before mutating anything. `None` samples
+/// fresh inside (synchronous direct callers with no window). A stale
+/// witness (generation moved, or snapshot no longer current) defers
+/// instead of acting, so queued work can never start, stop, or clear
+/// on behalf of superseded settings.
+pub fn reconcile_servers(
+    stt: &SttSettings,
+    data_dir: &Path,
+    authority: Option<u64>,
+) -> Result<bool, String> {
     // Derive first (file/DB reads, no locks): pure function of the
     // passed settings, so staleness here only delays a tick.
     let local_on = stt
@@ -4126,6 +4144,19 @@ pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, Str
             || BUSY.load(Ordering::SeqCst)
             || ACTIVE_UTTERANCES.load(Ordering::Acquire) > 0
         {
+            return Ok(true);
+        }
+        // Carried authority revalidated under admission: a queued call
+        // whose witness predates a control transition (or whose snapshot
+        // no longer matches current settings) defers instead of
+        // destroying on stale intent. `None` (synchronous direct
+        // callers) skips both checks exactly as before.
+        if let Some(expected) = authority
+            && server_generation() != expected
+        {
+            return Ok(true);
+        }
+        if authority.is_some() && cur_fp != fp {
             return Ok(true);
         }
         drop(live_guard);
@@ -4168,6 +4199,10 @@ pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, Str
     // Freshness witness for the suppression-lifetime update below: only
     // a call deliberating on current settings may expire an older Stop.
     let cur_fp = current_fingerprint(data_dir);
+    // Authority handoff: the watcher passes its validated witness so a
+    // queued call can never re-sample a fresh post-Stop generation and
+    // authorize stale work again. Direct callers pass `None` and sample
+    // fresh here (synchronous, no window), exactly as before.
     let gen_at_check = {
         let _lease = match EngineLease::acquire(false) {
             Ok(l) => l,
@@ -4193,7 +4228,10 @@ pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, Str
         if !fp.is_empty() && cur_fp == fp {
             *STOPPED_FP.lock().unwrap_or_else(|p| p.into_inner()) = String::new();
         }
-        server_generation()
+        match authority {
+            Some(g) => g,
+            None => server_generation(),
+        }
     };
     let net = server_net(stt);
     // Test seam (cfg(test) only): park here — after the outer idle
@@ -4209,6 +4247,14 @@ pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, Str
         let _ = entered.send(());
         let _ = proceed_.recv_timeout(Duration::from_secs(10));
     }
+    // Snapshot-freshness recheck for carried authority: a queued call
+    // whose settings no longer match current truth defers instead of
+    // starting a superseded configuration. Direct (`None`) callers own
+    // their snapshot timing and keep legacy behavior. The remaining
+    // check-to-mutation gap holds no blocking operations.
+    if authority.is_some() && current_fingerprint(data_dir) != fp {
+        return Ok(true);
+    }
     match ensure_servers(
         &plan,
         data_dir,
@@ -4220,13 +4266,19 @@ pub fn reconcile_servers(stt: &SttSettings, data_dir: &Path) -> Result<bool, Str
     ) {
         Ok(()) => Ok(false),
         Err(e) if e.starts_with("deferred:") => Ok(true),
-        Err(e)
-            if e.starts_with("obsolete generation")
-                && LAST_STOP_GEN.load(Ordering::Acquire) > gen_at_check =>
-        {
-            // A newer explicit Stop revoked this queued start: settle
-            // the fingerprint instead of retrying into resurrection.
-            Ok(false)
+        Err(e) if e.starts_with("obsolete generation") => {
+            // Revoked work never advances a stale fingerprint: settle
+            // only when our snapshot is still current (a newer Stop
+            // revoked a fresh observation, as in the parked-startup
+            // case); otherwise defer so the next tick observes truth.
+            // Either way nothing launches and nothing is resurrected.
+            if LAST_STOP_GEN.load(Ordering::Acquire) > gen_at_check
+                && current_fingerprint(data_dir) == fp
+            {
+                Ok(false)
+            } else {
+                Ok(true)
+            }
         }
         Err(e) => Err(e),
     }
@@ -4250,7 +4302,7 @@ fn owned_listening(data_dir: &Path) -> bool {
 /// capture admitted between checking and shutting down is impossible:
 /// it either wins first (we defer) or loses (it re-read the already-new
 /// settings). Explicit Stop aside, nothing kills an admitted capture.
-pub fn reconcile_lazy_switch(data_dir: &Path) -> Result<bool, String> {
+pub fn reconcile_lazy_switch(data_dir: &Path, authority: Option<u64>) -> Result<bool, String> {
     let _lease = match EngineLease::acquire(false) {
         Ok(l) => l,
         Err(_) => return Ok(true),
@@ -4260,6 +4312,15 @@ pub fn reconcile_lazy_switch(data_dir: &Path) -> Result<bool, String> {
     if live_guard.is_some()
         || BUSY.load(Ordering::SeqCst)
         || ACTIVE_UTTERANCES.load(Ordering::Acquire) > 0
+    {
+        return Ok(true);
+    }
+    // Carried authority revalidated under admission: a queued call whose
+    // witness predates a control transition (Stop, replace, cold start)
+    // defers instead of destroying on stale intent. `None` (synchronous
+    // direct callers) skips the check exactly as before.
+    if let Some(g) = authority
+        && server_generation() != g
     {
         return Ok(true);
     }
@@ -6366,7 +6427,7 @@ mod tests {
             auto_start_server: true,
             ..Default::default()
         };
-        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt, root.path(), None).unwrap());
         wait_gone(pid);
         wait_port_closed(port);
         assert!(proc_gone(pid));
@@ -6385,7 +6446,7 @@ mod tests {
         let pid2 = spawn_owned(root.path(), "whisper", "k2", port).unwrap();
         let mut stt2 = SttSettings::default();
         stt2.entries[0].enabled = false;
-        assert!(!reconcile_servers(&stt2, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt2, root.path(), None).unwrap());
         wait_gone(pid2);
         assert!(proc_gone(pid2));
     }
@@ -6483,15 +6544,15 @@ mod tests {
             auto_start_server: true,
             ..Default::default()
         };
-        assert!(reconcile_servers(&stt, root.path()).unwrap());
+        assert!(reconcile_servers(&stt, root.path(), None).unwrap());
         assert!(port_open(port));
         assert!(!proc_gone(pid));
-        assert!(reconcile_lazy_switch(root.path()).unwrap());
+        assert!(reconcile_lazy_switch(root.path(), None).unwrap());
         assert!(port_open(port));
         // Idle: the pending switch applies.
         test_set_busy(false);
         assert!(!inference_active());
-        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt, root.path(), None).unwrap());
         wait_gone(pid);
         assert!(proc_gone(pid));
         assert!(!port_open(port));
@@ -6530,7 +6591,7 @@ mod tests {
         let port = free_port();
         let pid = spawn_owned(root.path(), "whisper", "old", port).unwrap();
         assert!(port_open(port));
-        assert!(!reconcile_lazy_switch(root.path()).unwrap());
+        assert!(!reconcile_lazy_switch(root.path(), None).unwrap());
         wait_gone(pid);
         assert!(proc_gone(pid));
         assert!(!port_open(port));
@@ -6541,7 +6602,7 @@ mod tests {
             auto_start_server: false,
             ..Default::default()
         };
-        assert!(!reconcile_servers(&stt_lazy, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt_lazy, root.path(), None).unwrap());
         let closed = free_port();
         let isolated = ServerNet {
             host: "127.0.0.1",
@@ -6989,7 +7050,7 @@ mod tests {
             let reader = crate::store::Store::open(&data.join("state.db")).unwrap();
             let stt = reader.load_settings().stt;
             let _ = probe_tx.send(());
-            let out = reconcile_servers(&stt, &data);
+            let out = reconcile_servers(&stt, &data, None);
             let _ = done_tx.send(out);
             let _ = release_rx.recv_timeout(Duration::from_secs(5));
         });
@@ -7258,7 +7319,7 @@ mod tests {
         writer.save_settings(&settings).unwrap();
         let stt = writer.load_settings().stt;
         // First observation warms the new config normally.
-        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt, root.path(), None).unwrap());
         assert!(port_open(port_a));
         let pid_a = servers().lock().unwrap()["whisper"].child.id();
         // Park the next reconciliation between its outer idle check and
@@ -7270,7 +7331,7 @@ mod tests {
         let data = root.path().to_path_buf();
         let stt_next = stt.clone();
         std::thread::spawn(move || {
-            let out = reconcile_servers(&stt_next, &data);
+            let out = reconcile_servers(&stt_next, &data, None);
             let _ = done_tx.send(out);
         });
         entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
@@ -7293,8 +7354,8 @@ mod tests {
         assert!(servers().lock().unwrap().is_empty());
         // Later ticks for the same fingerprint settle too (no resurrection
         // postponed to the next poll).
-        assert!(!reconcile_servers(&stt, root.path()).unwrap());
-        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt, root.path(), None).unwrap());
+        assert!(!reconcile_servers(&stt, root.path(), None).unwrap());
         assert!(!port_open(port_a));
         assert!(servers().lock().unwrap().is_empty());
         // A deliberate later change still starts normally.
@@ -7303,7 +7364,7 @@ mod tests {
         settings.stt.server_port = port_b.to_string();
         writer.save_settings(&settings).unwrap();
         let stt_new = writer.load_settings().stt;
-        assert!(!reconcile_servers(&stt_new, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt_new, root.path(), None).unwrap());
         assert!(port_open(port_b));
         let pid_b = servers().lock().unwrap()["whisper"].child.id();
         assert!(!proc_gone(pid_b));
@@ -7361,7 +7422,7 @@ mod tests {
         let data = root.path().to_path_buf();
         let stt_next = stt.clone();
         std::thread::spawn(move || {
-            let out = reconcile_servers(&stt_next, &data);
+            let out = reconcile_servers(&stt_next, &data, None);
             let _ = done_tx.send(out);
         });
         entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
@@ -7377,8 +7438,8 @@ mod tests {
         assert!(!port_open(port_a), "empty-map Stop did not cancel startup");
         assert!(servers().lock().unwrap().is_empty());
         // Unchanged watcher ticks stay cold too.
-        assert!(!reconcile_servers(&stt, root.path()).unwrap());
-        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt, root.path(), None).unwrap());
+        assert!(!reconcile_servers(&stt, root.path(), None).unwrap());
         assert!(!port_open(port_a));
         assert!(servers().lock().unwrap().is_empty());
         // A user press still starts normally through the real paths
@@ -7403,7 +7464,7 @@ mod tests {
         settings.stt.server_port = port_b.to_string();
         writer.save_settings(&settings).unwrap();
         let stt_new = writer.load_settings().stt;
-        assert!(!reconcile_servers(&stt_new, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt_new, root.path(), None).unwrap());
         assert!(port_open(port_b));
         clear_reconcile_ensure_pause();
         drop_servers(root.path());
@@ -7448,14 +7509,14 @@ mod tests {
         settings.stt.server_port = port_a.to_string();
         writer.save_settings(&settings).unwrap();
         let stt_a = writer.load_settings().stt;
-        assert!(!reconcile_servers(&stt_a, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt_a, root.path(), None).unwrap());
         assert!(port_open(port_a));
         let pid_a = servers().lock().unwrap()["whisper"].child.id();
         // Stop A: unchanged ticks stay cold.
         drop_servers(root.path());
         wait_gone(pid_a);
         assert!(!port_open(port_a));
-        assert!(!reconcile_servers(&stt_a, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt_a, root.path(), None).unwrap());
         assert!(!port_open(port_a));
         // Configuration B is a deliberate new transition: it starts,
         // and applying it expires A's Stop suppression.
@@ -7464,7 +7525,7 @@ mod tests {
         settings.stt.server_port = port_b.to_string();
         writer.save_settings(&settings).unwrap();
         let stt_b = writer.load_settings().stt;
-        assert!(!reconcile_servers(&stt_b, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt_b, root.path(), None).unwrap());
         assert!(port_open(port_b));
         assert!(!port_open(port_a));
         // Returning to A is deliberate again: it restarts even though A
@@ -7473,7 +7534,7 @@ mod tests {
         settings.stt.server_port = port_a.to_string();
         writer.save_settings(&settings).unwrap();
         let stt_a2 = writer.load_settings().stt;
-        assert!(!reconcile_servers(&stt_a2, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt_a2, root.path(), None).unwrap());
         assert!(port_open(port_a), "return to A did not restart it");
         let pid_a2 = servers().lock().unwrap()["whisper"].child.id();
         assert!(!proc_gone(pid_a2));
@@ -7485,7 +7546,7 @@ mod tests {
         settings.stt.auto_start_server = false;
         writer.save_settings(&settings).unwrap();
         let stt_lazy = writer.load_settings().stt;
-        assert!(!reconcile_servers(&stt_lazy, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt_lazy, root.path(), None).unwrap());
         assert!(
             port_open(port_a),
             "autostart-off tick bounced a running server"
@@ -7494,14 +7555,14 @@ mod tests {
         let mut settings = writer.load_settings();
         settings.stt.server_port = port_c.to_string();
         writer.save_settings(&settings).unwrap();
-        assert!(!reconcile_lazy_switch(root.path()).unwrap());
+        assert!(!reconcile_lazy_switch(root.path(), None).unwrap());
         assert!(!port_open(port_a));
         assert!(!port_open(port_c), "lazy switch warmed while autostart off");
         let mut settings = writer.load_settings();
         settings.stt.auto_start_server = true;
         writer.save_settings(&settings).unwrap();
         let stt_re = writer.load_settings().stt;
-        assert!(!reconcile_servers(&stt_re, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt_re, root.path(), None).unwrap());
         assert!(port_open(port_c), "re-enabled autostart did not warm C");
         clear_reconcile_ensure_pause();
         drop_servers(root.path());
@@ -7553,7 +7614,7 @@ mod tests {
         let mut last_auto = stt0.auto_start_server;
         // Start A, then Stop it: unchanged ticks stay cold.
         let stt = writer.load_settings().stt;
-        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt, root.path(), None).unwrap());
         assert!(port_open(port_a));
         let pid_a = servers().lock().unwrap()["whisper"].child.id();
         drop_servers(root.path());
@@ -7631,14 +7692,14 @@ mod tests {
         settings.stt.server_port = port_a.to_string();
         writer.save_settings(&settings).unwrap();
         let stt_a = writer.load_settings().stt;
-        assert!(!reconcile_servers(&stt_a, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt_a, root.path(), None).unwrap());
         assert!(port_open(port_a));
         let pid_a = servers().lock().unwrap()["whisper"].child.id();
         // Stop A: unchanged ticks stay cold.
         drop_servers(root.path());
         wait_gone(pid_a);
         assert!(!port_open(port_a));
-        assert!(!reconcile_servers(&stt_a, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt_a, root.path(), None).unwrap());
         assert!(!port_open(port_a));
         // Remote/self-hosted B needs no local process; applying it is
         // still a deliberate transition that expires A's suppression.
@@ -7656,7 +7717,7 @@ mod tests {
         }];
         writer.save_settings(&settings).unwrap();
         let stt_b = writer.load_settings().stt;
-        assert!(!reconcile_servers(&stt_b, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt_b, root.path(), None).unwrap());
         assert!(!port_open(port_a));
         assert!(servers().lock().unwrap().is_empty());
         // Restoring local A is deliberate again: it starts even though A
@@ -7665,7 +7726,7 @@ mod tests {
         settings.stt.entries = stt_a.entries.clone();
         writer.save_settings(&settings).unwrap();
         let stt_a2 = writer.load_settings().stt;
-        assert!(!reconcile_servers(&stt_a2, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt_a2, root.path(), None).unwrap());
         assert!(port_open(port_a), "return to A did not restart it");
         let pid_a2 = servers().lock().unwrap()["whisper"].child.id();
         assert!(!proc_gone(pid_a2));
@@ -7723,7 +7784,7 @@ mod tests {
         let stt_now = writer.load_settings().stt;
         let mut last_primary = stt_primary_id(&stt_now, &data_dir);
         let mut last_auto = true;
-        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt, root.path(), None).unwrap());
         assert!(port_open(port_a));
         let pid_a = servers().lock().unwrap()["whisper"].child.id();
         let mut settings = writer.load_settings();
@@ -7841,7 +7902,7 @@ mod tests {
         let stt_now = writer.load_settings().stt;
         let mut last_primary = stt_primary_id(&stt_now, &data_dir);
         let mut last_auto = true;
-        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt, root.path(), None).unwrap());
         assert!(port_open(port_a));
         let pid_a = servers().lock().unwrap()["whisper"].child.id();
         // Disable, then park the older disabled tick at its marker update
@@ -7951,7 +8012,7 @@ mod tests {
         let stt = writer.load_settings().stt;
         let mut last_primary = stt_primary_id(&stt, &data_dir);
         let mut last_auto = true;
-        assert!(!reconcile_servers(&stt, root.path()).unwrap());
+        assert!(!reconcile_servers(&stt, root.path(), None).unwrap());
         assert!(port_open(port_a));
         let pid_a = servers().lock().unwrap()["whisper"].child.id();
         // Disable through a real tick so the marker is genuinely fresh
@@ -8032,6 +8093,419 @@ mod tests {
     }
 
     #[test]
+    fn stale_watcher_tick_cannot_launch() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        clear_reconcile_ensure_pause();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        // Startable synthetic whisper HTTP server (answers `/load`).
+        let pack = stt::GPU_PACKS
+            .iter()
+            .find(|p| p.id == "whisper-cpu")
+            .unwrap();
+        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(
+            bin_dir.join("whisper-server"),
+            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = bin_dir.join("whisper-server");
+            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin, perms).unwrap();
+        }
+        let writer = seed_whisper_tiny(root.path());
+        // Configuration A starts through reconciliation on private port A.
+        let port_a = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let stt_a = writer.load_settings().stt;
+        let data_dir = root.path().to_path_buf();
+        let db_path = root.path().join("state.db");
+        assert!(!reconcile_servers(&stt_a, root.path(), None).unwrap());
+        assert!(port_open(port_a));
+        let pid_a = servers().lock().unwrap()["whisper"].child.id();
+        // Save configuration B (different port) and validate the
+        // observation exactly like the watcher tick does: witness,
+        // snapshot, revalidate. No transition may interleave here, so
+        // the witness is clean by construction.
+        let port_b = free_port();
+        assert_ne!(port_a, port_b);
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_b.to_string();
+        writer.save_settings(&settings).unwrap();
+        let gen_valid = server_generation();
+        let stt_b = writer.load_settings().stt;
+        assert_eq!(
+            server_generation(),
+            gen_valid,
+            "test setup raced control state"
+        );
+        // Park the validated B tick before its primary reconciliation
+        // call — the barrier the production seam cannot provide, forcing
+        // the vulnerable scheduling window deterministically.
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<Result<bool, String>>();
+        let (finished_tx, finished_rx) = mpsc::channel::<()>();
+        // The worker thread stays alive through assertions and cleanup,
+        // matching the production loop: a child must never observe its
+        // creating thread exit mid-test. Moved (not borrowed) channels:
+        // `Receiver` is `Send` but not `Sync`, so scoped borrows do not
+        // compile here.
+        let worker_data = data_dir.clone();
+        let worker = std::thread::spawn(move || {
+            let _ = entered_tx.send(());
+            let _ = proceed_rx.recv_timeout(Duration::from_secs(15));
+            let out = reconcile_servers(&stt_b, &worker_data, Some(gen_valid));
+            let _ = done_tx.send(out);
+            let _ = finished_rx.recv_timeout(Duration::from_secs(15));
+        });
+        {
+            entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+            // Restore A and Stop while B is queued: the Stop reaps A,
+            // closes its socket and records newer authority.
+            let mut settings = writer.load_settings();
+            settings.stt.server_port = port_a.to_string();
+            writer.save_settings(&settings).unwrap();
+            drop_servers(root.path());
+            wait_gone(pid_a);
+            assert!(proc_gone(pid_a));
+            assert!(!port_open(port_a));
+            proceed_tx.send(()).unwrap();
+            // The queued B call observes the newer Stop (generation
+            // moved) and its superseded snapshot, and defers instead of
+            // launching B: applied is false in the deferred sense.
+            let deferred = done_rx
+                .recv_timeout(Duration::from_secs(25))
+                .unwrap()
+                .unwrap();
+            assert!(deferred, "stale queued tick was not deferred");
+            assert!(
+                servers().lock().unwrap().is_empty(),
+                "stale tick left a server behind"
+            );
+            assert!(!port_open(port_a), "port A changed under test");
+            assert!(!port_open(port_b), "stale tick launched B");
+            // Three unchanged watcher polls stay cold: the fingerprint is
+            // already settled on A, so they skip without touching anything.
+            let stt_cur = writer.load_settings().stt;
+            let mut last_primary = stt_primary_id(&stt_cur, &data_dir);
+            let mut last_auto = stt_cur.auto_start_server;
+            for _ in 0..3 {
+                crate::service::stt_watcher_tick(
+                    &db_path,
+                    &data_dir,
+                    &mut last_primary,
+                    &mut last_auto,
+                );
+                assert!(!port_open(port_a));
+                assert!(!port_open(port_b));
+                assert!(servers().lock().unwrap().is_empty());
+            }
+            // A genuinely later deliberate transition still starts
+            // normally through the real watcher path.
+            let port_c = free_port();
+            let mut settings = writer.load_settings();
+            settings.stt.server_port = port_c.to_string();
+            writer.save_settings(&settings).unwrap();
+            crate::service::stt_watcher_tick(
+                &db_path,
+                &data_dir,
+                &mut last_primary,
+                &mut last_auto,
+            );
+            assert!(port_open(port_c), "deliberate transition did not start");
+            let pid_c = servers().lock().unwrap()["whisper"].child.id();
+            assert!(!proc_gone(pid_c));
+            drop_servers(root.path());
+            wait_gone(pid_c);
+            assert_eq!(active_count(), 0);
+            let _ = finished_tx.send(());
+        }
+        worker.join().expect("leftover worker thread panicked");
+        clear_reconcile_ensure_pause();
+    }
+
+    /// Queued work whose snapshot no longer matches current settings must
+    /// defer even when no control transition moved the generation: pure
+    /// settings saves bump nothing, so only the snapshot-freshness gate
+    /// can stop it from killing the right engine and launching stale one.
+    #[test]
+    fn superseded_snapshot_defers_without_bump() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        clear_reconcile_ensure_pause();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        // Startable synthetic whisper HTTP server (answers `/load`).
+        let pack = stt::GPU_PACKS
+            .iter()
+            .find(|p| p.id == "whisper-cpu")
+            .unwrap();
+        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(
+            bin_dir.join("whisper-server"),
+            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = bin_dir.join("whisper-server");
+            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin, perms).unwrap();
+        }
+        let writer = seed_whisper_tiny(root.path());
+        // Configuration A starts through reconciliation on private port A.
+        let port_a = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let stt_a = writer.load_settings().stt;
+        let data_dir = root.path().to_path_buf();
+        assert!(!reconcile_servers(&stt_a, root.path(), None).unwrap());
+        assert!(port_open(port_a));
+        let pid_a = servers().lock().unwrap()["whisper"].child.id();
+        // Save configuration B (different port) with no Stop and no
+        // other bump anywhere: the generation check alone cannot save us.
+        let port_b = free_port();
+        assert_ne!(port_a, port_b);
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_b.to_string();
+        writer.save_settings(&settings).unwrap();
+        let gen_valid = server_generation();
+        let stt_b = writer.load_settings().stt;
+        assert_eq!(
+            server_generation(),
+            gen_valid,
+            "test setup raced control state"
+        );
+        // Park the superseded B call before its reconciliation, then
+        // restore A (save only — still no bump) and resume it.
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<Result<bool, String>>();
+        let (finished_tx, finished_rx) = mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            let _ = entered_tx.send(());
+            let _ = proceed_rx.recv_timeout(Duration::from_secs(15));
+            let out = reconcile_servers(&stt_b, &data_dir, Some(gen_valid));
+            let _ = done_tx.send(out);
+            let _ = finished_rx.recv_timeout(Duration::from_secs(15));
+        });
+        entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        proceed_tx.send(()).unwrap();
+        let deferred = done_rx
+            .recv_timeout(Duration::from_secs(25))
+            .unwrap()
+            .unwrap();
+        assert!(deferred, "superseded snapshot was not deferred");
+        assert!(port_open(port_a), "stale call killed the right engine");
+        assert!(!proc_gone(pid_a));
+        assert!(
+            servers().lock().unwrap().len() == 1,
+            "stale call changed the server map"
+        );
+        assert!(!port_open(port_b), "stale call launched B");
+        drop_servers(root.path());
+        wait_gone(pid_a);
+        assert_eq!(active_count(), 0);
+        let _ = finished_tx.send(());
+        worker.join().expect("leftover worker thread panicked");
+        clear_reconcile_ensure_pause();
+    }
+
+    /// A carried witness that predates a Stop must revoke the queued
+    /// start at mutation admission even when the snapshot is fresh
+    /// again: the newer Stop wins over the older observation.
+    #[test]
+    fn revoked_authority_settles_without_relaunch() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        clear_reconcile_ensure_pause();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        // Startable synthetic whisper HTTP server (answers `/load`).
+        let pack = stt::GPU_PACKS
+            .iter()
+            .find(|p| p.id == "whisper-cpu")
+            .unwrap();
+        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(
+            bin_dir.join("whisper-server"),
+            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = bin_dir.join("whisper-server");
+            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin, perms).unwrap();
+        }
+        let writer = seed_whisper_tiny(root.path());
+        // Configuration A starts through reconciliation on private port A.
+        let port_a = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let stt_a = writer.load_settings().stt;
+        let data_dir = root.path().to_path_buf();
+        assert!(!reconcile_servers(&stt_a, root.path(), None).unwrap());
+        assert!(port_open(port_a));
+        let pid_a = servers().lock().unwrap()["whisper"].child.id();
+        // Validate a B observation, then park it: save C, Stop (which
+        // reaps A and records C authority), restore B.
+        let port_b = free_port();
+        assert_ne!(port_a, port_b);
+        let port_c = free_port();
+        assert_ne!(port_b, port_c);
+        assert_ne!(port_a, port_c);
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_b.to_string();
+        writer.save_settings(&settings).unwrap();
+        let gen_valid = server_generation();
+        let stt_b = writer.load_settings().stt;
+        assert_eq!(
+            server_generation(),
+            gen_valid,
+            "test setup raced control state"
+        );
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<Result<bool, String>>();
+        let (finished_tx, finished_rx) = mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            let _ = entered_tx.send(());
+            let _ = proceed_rx.recv_timeout(Duration::from_secs(15));
+            let out = reconcile_servers(&stt_b, &data_dir, Some(gen_valid));
+            let _ = done_tx.send(out);
+            let _ = finished_rx.recv_timeout(Duration::from_secs(15));
+        });
+        entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_c.to_string();
+        writer.save_settings(&settings).unwrap();
+        drop_servers(root.path());
+        wait_gone(pid_a);
+        assert!(proc_gone(pid_a));
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_b.to_string();
+        writer.save_settings(&settings).unwrap();
+        proceed_tx.send(()).unwrap();
+        // The snapshot is fresh again (B is current) but its witness
+        // predates the Stop: settle without launching anything.
+        let settled = done_rx
+            .recv_timeout(Duration::from_secs(25))
+            .unwrap()
+            .unwrap();
+        assert!(!settled, "revoked start was not settled");
+        assert!(
+            servers().lock().unwrap().is_empty(),
+            "revoked start left a server behind"
+        );
+        assert!(!port_open(port_a));
+        assert!(!port_open(port_b));
+        assert!(!port_open(port_c));
+        // A genuinely later deliberate transition still starts normally.
+        let port_d = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_d.to_string();
+        writer.save_settings(&settings).unwrap();
+        let stt_d = writer.load_settings().stt;
+        assert!(!reconcile_servers(&stt_d, root.path(), None).unwrap());
+        assert!(port_open(port_d), "deliberate transition did not start");
+        let pid_d = servers().lock().unwrap()["whisper"].child.id();
+        assert!(!proc_gone(pid_d));
+        drop_servers(root.path());
+        wait_gone(pid_d);
+        assert_eq!(active_count(), 0);
+        let _ = finished_tx.send(());
+        worker.join().expect("leftover worker thread panicked");
+        clear_reconcile_ensure_pause();
+    }
+
+    /// A queued lazy switch must yield to a cold start that committed
+    /// first: fresh spawns bump the generation precisely so parked
+    /// control decisions cannot miss them.
+    #[test]
+    fn queued_lazy_yields_to_fresh_cold_start() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let data_dir = root.path().to_path_buf();
+        // Nothing is running: capture authority, then park the lazy call
+        // before its admission.
+        let gen_valid = server_generation();
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<Result<bool, String>>();
+        let (finished_tx, finished_rx) = mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            let _ = entered_tx.send(());
+            let _ = proceed_rx.recv_timeout(Duration::from_secs(15));
+            let out = reconcile_lazy_switch(&data_dir, Some(gen_valid));
+            let _ = done_tx.send(out);
+            let _ = finished_rx.recv_timeout(Duration::from_secs(15));
+        });
+        entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        // Cold-start a fresh server while the lazy call is queued: the
+        // insert bumps the generation even though the map was empty.
+        let port_c = free_port();
+        let pid_c = spawn_owned(root.path(), "whisper", "cold", port_c).unwrap();
+        assert!(port_open(port_c));
+        proceed_tx.send(()).unwrap();
+        // The queued switch observes the newer spawn and defers instead
+        // of destroying the just-started server.
+        let deferred = done_rx
+            .recv_timeout(Duration::from_secs(25))
+            .unwrap()
+            .unwrap();
+        assert!(deferred, "queued lazy switch did not defer");
+        assert!(port_open(port_c), "queued switch killed a fresh server");
+        assert!(!proc_gone(pid_c));
+        drop_servers(root.path());
+        wait_gone(pid_c);
+        assert_eq!(active_count(), 0);
+        let _ = finished_tx.send(());
+        worker.join().expect("leftover worker thread panicked");
+    }
+
+    #[test]
     fn lazy_switch_cannot_kill_admitted_capture() {
         let _guard = serial();
         if !python_available() {
@@ -8051,7 +8525,7 @@ mod tests {
             begin_utterance(stt_param, false, root.path(), 0);
             assert!(has_live());
             assert_eq!(active_count(), 1);
-            let deferred = reconcile_lazy_switch(root.path()).unwrap();
+            let deferred = reconcile_lazy_switch(root.path(), None).unwrap();
             assert!(deferred, "switch destroyed an admitted capture");
             assert!(has_live());
             assert!(port_open(port), "admitted capture lost its server");
@@ -8074,7 +8548,7 @@ mod tests {
             let held = SERVER_START_LOCK.lock().unwrap();
             std::thread::scope(|s| {
                 s.spawn(|| {
-                    let out = reconcile_lazy_switch(&data);
+                    let out = reconcile_lazy_switch(&data, None);
                     let _ = done_tx.send(out);
                 });
                 // The switch is parked on admission: nothing destroyed.
@@ -8110,7 +8584,7 @@ mod tests {
             let b1 = barrier.clone();
             std::thread::spawn(move || {
                 b1.wait();
-                let out = reconcile_lazy_switch(&data);
+                let out = reconcile_lazy_switch(&data, None);
                 let _ = lazy_tx.send(out);
             });
             let b2 = barrier.clone();
