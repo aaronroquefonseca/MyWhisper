@@ -210,9 +210,12 @@ fn shutdown_cancels_stalled_http_children_and_asset_authority() {
         ..Default::default()
     };
     assert!(crate::clipboard::run_pipeline("synthetic", &prefs, Arc::new(|| false)).is_err());
-    assert!(crate::clipboard::copy_text_async("late synthetic", true).is_err());
     let began = std::time::Instant::now();
     begin_shutdown();
+    // Async-copy denial under the rewired keep-mode leg: admission is
+    // refused once closing (worker() errors); pre-shutdown admission
+    // succeeds by design, so the denial assert lives here, not above.
+    assert!(crate::clipboard::copy_text_async("late synthetic", true).is_err());
     assert!(!operation.permitted());
     assert!(authority.check(&AtomicBool::new(false)).is_err());
     finish_shutdown().unwrap();
