@@ -1397,7 +1397,9 @@ pub fn start_mdns(
     };
     let daemon = &handles._daemon;
     if advertise {
-        let short_id = &node_id[..node_id.len().min(8)];
+        // R12: node IDs are hex, but be char-boundary safe (unauthenticated
+        // input must never panic mDNS setup).
+        let short_id: String = node_id.chars().take(8).collect();
         let mut txt = std::collections::HashMap::new();
         txt.insert("node".to_string(), node_id.to_string());
         txt.insert("name".to_string(), name.to_string());
@@ -1407,7 +1409,7 @@ pub fn start_mdns(
             addrs.push(ip);
         }
         let info =
-            mdns_sd::ServiceInfo::new(MDNS_SERVICE, short_id, &host, &addrs[..], port, Some(txt))
+            mdns_sd::ServiceInfo::new(MDNS_SERVICE, &short_id, &host, &addrs[..], port, Some(txt))
                 .map_err(|e| format!("mdns service: {e}"))?;
         daemon
             .register(info)

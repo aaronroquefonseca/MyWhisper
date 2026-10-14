@@ -8,13 +8,15 @@ import tarfile
 def validate(path, version):
     if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?", version):
         raise ValueError("invalid release version")
-    root = f"mywhisper-v{version}-x86_64-unknown-linux-gnu"
-    required = {f"{root}/{name}" for name in (
+    # Release archives are per-host-arch; accept exactly one supported triple.
+    roots = {f"mywhisper-v{version}-{arch}-unknown-linux-gnu" for arch in ("x86_64", "aarch64")}
+    required_names = (
         "mywhisper", "mywhisper.service", "com.mywhisper.App.desktop",
         "com.mywhisper.App.svg", "com.mywhisper.App-symbolic.svg",
-    )}
+    )
     seen = set()
     total = 0
+    root = None
     with tarfile.open(path, "r:gz") as archive:
         for index, member in enumerate(archive):
             if index >= 128:
@@ -22,8 +24,14 @@ def validate(path, version):
             name = member.name.removeprefix("./").rstrip("/")
             if any(part in ("", ".", "..") for part in name.split("/")):
                 raise ValueError("invalid archive path")
-            if name != root and not name.startswith(root + "/"):
+            match = next((c for c in roots if name == c or name.startswith(c + "/")), None)
+            if match is None:
                 raise ValueError("archive member escapes release directory")
+            if root is None:
+                root = match
+            elif root != match:
+                raise ValueError("archive mixes release architectures")
+            wanted = {f"{root}/{entry}" for entry in required_names}
             if name in seen:
                 raise ValueError("duplicate archive member")
             if not member.isfile() and not member.isdir():
@@ -31,12 +39,14 @@ def validate(path, version):
             total += member.size
             if total > 256 * 1024 * 1024:
                 raise ValueError("release expansion limit exceeded")
-            if name in required and (not member.isfile() or member.size == 0):
+            if name in wanted and (not member.isfile() or member.size == 0):
                 raise ValueError("required artifact is empty or not a file")
             if name == f"{root}/mywhisper" and not member.mode & 0o111:
                 raise ValueError("binary is not executable")
             seen.add(name)
-    if required - seen:
+    if root is None:
+        raise ValueError("release is missing required artifacts")
+    if {f"{root}/{entry}" for entry in required_names} - seen:
         raise ValueError("release is missing required artifacts")
 
 

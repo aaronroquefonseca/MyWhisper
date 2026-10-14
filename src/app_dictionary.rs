@@ -155,7 +155,9 @@ fn word_card(state: &Rc<AppState>, card: &GtkBox, word: &str, editing: bool) {
                                 return;
                             }
                             toast(&button, tr("feedback.deleted"));
-                            card.set_visible(false);
+                            // Detach instead of hiding: the list drops its
+                            // reference so a removed card can finalize (R46).
+                            card.unparent();
                             changed(&state);
                         },
                     );
@@ -376,7 +378,9 @@ fn snippet_card(
                                 return;
                             }
                             toast(&button, tr("feedback.deleted"));
-                            card.set_visible(false);
+                            // Detach instead of hiding: the list drops its
+                            // reference so a removed card can finalize (R46).
+                            card.unparent();
                             changed(&state);
                         },
                     );

@@ -4,11 +4,14 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs = { self, nixpkgs }: let
-    system = "x86_64-linux";
-    pkgs = import nixpkgs { inherit system; };
+    systems = [ "x86_64-linux" "aarch64-linux" ];
+    mkPkgs = system: import nixpkgs { inherit system; };
     manifest = builtins.fromTOML (builtins.readFile ../../Cargo.toml);
-    runtimeLibraries = with pkgs; [ stdenv.cc.cc alsa-lib zlib openssl vulkan-loader ];
-    mywhisper = pkgs.rustPlatform.buildRustPackage {
+    runtimeLibrariesFor = pkgs: with pkgs; [ stdenv.cc.cc alsa-lib zlib openssl vulkan-loader ];
+    buildFor = system: let
+      pkgs = mkPkgs system;
+      runtimeLibraries = runtimeLibrariesFor pkgs;
+      mywhisper = pkgs.rustPlatform.buildRustPackage {
       pname = "mywhisper";
       version = manifest.package.version;
       meta.license = pkgs.lib.licenses.mit;
@@ -74,22 +77,24 @@
         gappsWrapperArgs+=(--prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibraries})
         gappsWrapperArgs+=(--set-default SSL_CERT_FILE ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt)
       '';
-    };
-  in {
-    packages.${system}.default = mywhisper;
-    nixosModules.default = import ./module.nix { inherit mywhisper runtimeLibraries; };
-    checks.${system} = {
+      };
+    in { inherit pkgs mywhisper runtimeLibraries; };
+    moduleFor = mywhisper: runtimeLibraries:
+      import ./module.nix { inherit mywhisper runtimeLibraries; };
+    perSystem = nixpkgs.lib.genAttrs systems (system: buildFor system);
+    checksFor = system: let
+      pkgs = perSystem.${system}.pkgs;
+      mywhisper = perSystem.${system}.mywhisper;
+      module = moduleFor mywhisper perSystem.${system}.runtimeLibraries;
+    in {
       audit-desktop = import ./desktop-test.nix {
-        inherit pkgs mywhisper;
-        module = self.nixosModules.default;
+        inherit pkgs mywhisper module;
       };
       desktop = import ./package-smoke.nix {
-        inherit pkgs mywhisper;
-        module = self.nixosModules.default;
+        inherit pkgs mywhisper module;
       };
       whisper-vulkan-loader = import ./runtime-loader-test.nix {
-        inherit pkgs mywhisper;
-        module = self.nixosModules.default;
+        inherit pkgs mywhisper module;
       };
       symbolic-logo = let
         probe = import ./svg-probe.nix { inherit pkgs; };
@@ -104,5 +109,13 @@
         touch $out
       '';
     };
+  in {
+    packages = nixpkgs.lib.mapAttrs (system: v: { default = v.mywhisper; }) perSystem;
+    # The module closes over a built package: keep the historical
+    # x86_64 default; aarch64 hosts override services.mywhisper.package
+    # with packages.aarch64-linux.default for a clean upgrade.
+    nixosModules.default =
+      moduleFor perSystem."x86_64-linux".mywhisper perSystem."x86_64-linux".runtimeLibraries;
+    checks = nixpkgs.lib.mapAttrs (system: _: checksFor system) perSystem;
   };
 }

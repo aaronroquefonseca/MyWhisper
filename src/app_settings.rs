@@ -4806,6 +4806,17 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
             sw.connect_state_set(move |_, active| {
                 state.settings.borrow_mut().privacy.keep_audio_recordings = active;
                 persist_prefs(state.clone())();
+                // R39: the vault must honor the toggle now, not on the next
+                // service retention pass. Turning off purges everything.
+                if !active {
+                    let db_path = state.db_path.clone();
+                    match crate::store::Store::open(&db_path).and_then(|store| store.clear_audio())
+                    {
+                        Ok(0) => {}
+                        Ok(n) => eprintln!("[privacy] keep-audio off, purged {n} audio files"),
+                        Err(e) => eprintln!("[privacy] keep-audio purge: {e}"),
+                    }
+                }
                 gtk4::glib::Propagation::Proceed
             });
         }
