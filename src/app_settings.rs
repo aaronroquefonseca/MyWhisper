@@ -5222,9 +5222,7 @@ fn begin_reset(state: Rc<AppState>, resume_only: bool) {
     // (command post + barrier poll); an absent service leaves this process
     // the sole worker (direct drive). The operation lock serializes a
     // service that starts mid-run, so work is never parallel either way.
-    let service_up = crate::paths::AppPaths::create()
-        .map(|paths| service_running(&paths.state_dir))
-        .unwrap_or(false);
+    let service_up = service_running(&crate::paths::AppPaths::state_dir_path());
     if service_up {
         post_reset_command(state);
     } else {
