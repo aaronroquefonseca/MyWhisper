@@ -82,6 +82,35 @@ then adopts sequentially.
 - Asks posted on #18/#22 for gate evidence; wiring recorded as
   present-but-ungated until owner evidence lands.
 
+## Hosted batch partitioning (supervisor decision, #15 implements)
+
+No timeout/worker increase. Hosted Rust tests run as 4 explicit
+sequential batches sharing checked-in scripts/test-manifest.txt
+(4-way stride over sorted lib tests). Each batch gets its own 120s
+disposable+tmpfs invocation with unchanged libtest concurrency,
+production deadlines and assertions; global 45min job bound and no
+retries-to-green unchanged. Whole suite stays REQUIRED locally for
+cross-case interference. libtest --exact full paths (no substring
+leak); empty bin/example harnesses run whole via --all-targets.
+
+Fail-closed coverage contract: manifest drift vs compiled --list
+(missing/extra test/target/ignored change), batch union/disjointness
+from logs (exactly once, no unrecognized, identical 5-ignored set),
+any batch exit failure or timeout. No test removal, payload shrink,
+output suppression or producer-count change.
+
+Evidence on this scope: manifest 114 tests + 4 empty harnesses,
+verify-manifest current; 4 local batches exit 0 (27+2, 28+1, 28+0,
+26+2 = 109 run + 5 ignored); verify-batches proves exactly-once.
+test-partition.py 6/6 synthetic regressions (stride, rejection,
+malformed/duplicate, 6 fail-closed log mutations, drift incl.
+ignored change).
+
+#18 owes: precise testcase/target inventory (their 195 + ignored
+manifest on their branch) + validation of original scope and joined
+scope under this mechanism; report concrete constraint if coverage
+cannot be preserved faithfully. #19 stays pinned until then.
+
 ## 120s fixture failure analysis (#18 run 38586390971, tip 1c121c9)
 
 Flag WAS active in CI (bwrap cmdline shows the tmpfs overlay), so
