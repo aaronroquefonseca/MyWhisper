@@ -60,3 +60,38 @@ Original report, full matrix, source map and historical evidence are owned by th
   locked retry/delete/cache-clear only), physical power loss, resource/
   admission and complete provider/UI acceptance. Active engine-retirement
   call sites remain integrated in #22 and must be reviewed together.
+
+## API relocation ledger (strict-clippy path, no suppressions)
+
+- Baseline strict clippy: 44 warnings. After the cuts below: 16, none new.
+  Remaining owners: `operation.rs` contract (5, consumers #21/#22),
+  retained `selection::Guard` (1, consumed by `Operation::guard`),
+  `stt::model_present` (1, GUI status reader, supervisor to assign —
+  candidate #23), `installed_asset::{trust_local, admit}` (2, semantics
+  stay here; job-wrapper callers restore in #23), `store.rs` (3, #18),
+  `runtime.rs` process-launch (4, session layer).
+- `selection.rs` clipboard backend → #21 (agreed, PR21 comment
+  6169568528). #20 retains the real `Guard` contract only
+  (`pub(crate) type Guard = Arc<dyn Fn() -> bool + Send + Sync>`,
+  constructed live in `Operation::guard`). Full implementation blob
+  `0dfdf7a64a012d2f64ad8560cbb5bf8e3711db34` (907 lines incl. 4
+  regression tests, which relocate with it — no assertions lost).
+  #21 restack instruction: on conflict in `src/selection.rs`, take the
+  #21 side wholesale; it must keep the `Guard` alias line byte-identical
+  so `operation.rs:165` compiles. #21 base already contains the file;
+  their `+40/-2` delta is preserved on their branch.
+- `stt::{start_verification, start_local_trust}` GUI job wrappers → #23
+  (no installer-side production consumers; verified by grep). Underlying
+  `verify_spec/admit/trust_local/install/seal/adopt_reference` semantics
+  and tests stay in #20. Exact removed block for #23 to restore verbatim
+  (was `src/stt.rs` lines 674–704 at `169a1cf`):
+  `start_verification(data, id)` builds the `model-/gpu-/sherpa-` key,
+  observes authority, and dispatches `prepare_{model,gpu,sherpa}_pack`
+  with `verification_only=true` via `start_artifact_download`;
+  `start_local_trust(spec, id)` observes authority for `spec.key` and
+  dispatches `installed_asset::trust_local` after emitting
+  `DownloadEvent::Installing`. Both keep the `request?` early-return
+  shape so revoked authorities never start work.
+- Stable tested parent recorded: `c7479bc` (265-pass base at restack).
+  No restack taken awaiting #19's published stable parent; new commits
+  are fast-forward only.

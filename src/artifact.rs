@@ -2404,21 +2404,22 @@ mod tests {
         bzip2::write::BzEncoder::new(&mut not_tar, bzip2::Compression::fast())
             .write_all(b"this is compressed but it is not a tar archive")
             .unwrap();
-        let mut cases: Vec<(&str, Vec<u8>, bool)> = Vec::new();
-        cases.push(("tar-random", vec![0x55u8; 256], false));
-        cases.push(("tar-not-tar", not_tar, false));
-        cases.push((
-            "tar-truncated",
-            valid_bytes[..valid_bytes.len() / 2].to_vec(),
-            false,
-        ));
-        cases.push(("zip-empty", Vec::new(), false));
-        cases.push(("zip-random", vec![0xA5u8; 256], false));
-        cases.push((
-            "zip-truncated",
-            valid_zip[..valid_zip.len() / 2].to_vec(),
-            true,
-        ));
+        let cases: Vec<(&str, Vec<u8>, bool)> = vec![
+            ("tar-random", vec![0x55u8; 256], false),
+            ("tar-not-tar", not_tar, false),
+            (
+                "tar-truncated",
+                valid_bytes[..valid_bytes.len() / 2].to_vec(),
+                false,
+            ),
+            ("zip-empty", Vec::new(), false),
+            ("zip-random", vec![0xA5u8; 256], false),
+            (
+                "zip-truncated",
+                valid_zip[..valid_zip.len() / 2].to_vec(),
+                true,
+            ),
+        ];
         for (name, bytes, zipped) in &cases {
             let root = tempfile::tempdir().unwrap();
             let destination = root.path().join("models/test");
