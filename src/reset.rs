@@ -814,35 +814,29 @@ mod tests {
 
     #[test]
     fn interactive_reset_runs_one_owned_worker_to_completion() {
-        // Service-driven interactive reset: the first request owns the
-        // worker, a second request while active is refused, and the single
-        // worker runs to Finished with the barrier cleared.
+        // Service-driven interactive reset through the production
+        // controller: the first request owns the worker, a second request
+        // while active is refused synchronously (no second worker can
+        // exist), and ticks drain the single worker to completion. The
+        // barrier (pending flag + intent file) is the ground truth — the
+        // test never consumes worker events past the controller.
         let (data, db, store) = fixture();
         drop(store);
         let mut recovery = Recovery::default();
         recovery.start_interactive(&db);
         assert!(recovery.job.is_some());
         recovery.start_interactive(&db);
-        let job = recovery.job.as_ref().unwrap();
-        let mut finished = 0;
+        assert!(recovery.job.is_some());
+        let store = Store::open_existing(&db).unwrap();
         let until = Instant::now() + Duration::from_secs(10);
-        loop {
-            match job.events.recv_timeout(Duration::from_millis(100)) {
-                Ok(Event::Finished(result)) => {
-                    result.unwrap();
-                    finished += 1;
-                    break;
-                }
-                Ok(Event::Snapshot(_, _)) => {}
-                Err(_) => assert!(Instant::now() < until, "interactive reset stalled"),
-            }
+        while store.reset_pending().unwrap() || recovery.job.is_some() {
+            assert!(Instant::now() < until, "interactive reset did not complete");
+            recovery.tick(&db, &store);
+            std::thread::sleep(Duration::from_millis(5));
         }
-        assert_eq!(finished, 1);
-        recovery.drain();
-        assert!(recovery.job.is_none());
+        assert!(!requested(data.path()).unwrap());
         let fresh = Store::open_existing(&db).unwrap();
         assert!(!fresh.reset_pending().unwrap());
-        assert!(!requested(data.path()).unwrap());
         assert!(fresh.load_words().unwrap().is_empty());
     }
 
