@@ -1,0 +1,77 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "baseline": "7f6e76e7bd10ea7ab243c3a44d8afca5d7cc953a",
+  "correction": "F07 bounded resumable individual-record segmentation, transactional publication and policy cleanup",
+  "tests": {
+    "passed": 242,
+    "failed": 0,
+    "original_ignored": 5,
+    "new_store_groups": 10,
+    "new_signed_noise_throttled_test": 1
+  },
+  "passed": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo test --locked --all-targets",
+    "cargo build --release --locked --bin mywhisper",
+    "Both native UI configurations: all eight smoke/recovery/reset invocations",
+    "14 packaging/upgrade tests",
+    "Disposable real Secret Service/keyring/sync lifecycle including eight concurrent creators and mutual mDNS discovery",
+    "Actual schema-7/current signed Noise interoperability in both directions, killed schema-8 migration rollback, preserved upgrade/reopen data, old-build refusal without file changes",
+    "Current RustSec: 1296 advisories; zero vulnerabilities/warnings"
+  ],
+  "network_evidence": "The real production Noise exchange transfers one >16 MiB Unicode/control-byte record through a throttled TCP proxy. The receiver first commits a fragment and loses the ACK, then reopens. A fixture-only two-second responder deadline repeatedly interrupts subsequent rounds; durable offsets resume and both directions converge with exact data and zero staged chunks. The full parallel suite completes in 47.22 seconds. TCP_NODELAY fixes delayed-ACK buffering rather than raising frame/time/worker budgets.",
+  "migration_compatibility": "Schema 8 atomically adds encrypted staging state/chunks and lifecycle triggers. Paged schema-7 peers negotiate existing pages; peers without pages retain existing small-snapshot exchange. Oversized records need a segmentation-capable peer. SIGKILL after real migration SQL/before COMMIT leaves schema 7 usable; successful migration preserves existing settings, history, dictionary and change ledger. The actual schema-7 build refuses schema 8 without changing the encrypted database. No key, identity, peer or signing rotation.",
+  "limits": {
+    "part_bytes": 65536,
+    "decoded_record_text_bytes": 67108864,
+    "encoded_record_bytes": 402657280,
+    "aggregate_staging_bytes": 536870912,
+    "transfer_states": 16,
+    "idle_stage_seconds": 3600,
+    "production_frame_cap_bytes": 16777216,
+    "production_round_deadline_seconds": 60,
+    "production_packet_pair_budget": 1024
+  },
+  "privacy_cleanup": "Incoming/outgoing bytes are staged only inside the encrypted disposable/application database, not plaintext temporary files. Receive offsets ACK only committed chunks; full hash/one-record shape/key/timestamp validation and ordinary merge/cursor advancement commit atomically. Source mutation, settings/policy change, untrust, revocation, peer removal and reset clear staged state and chunks. Clear/reset/retention preserve pending deletion identities; deleted/discarded identities retire transfers without restaging speech. Idle expiry/backward clocks restart safely while preserving source data. SHA-valid malformed content and corrupt final bytes roll back publication and cursor; valid retry succeeds.",
+  "remaining": [
+    "Manual/inbound/cross-process scheduling fairness and very large aggregate-history scale/resource review",
+    "Behavior above the explicit 64 MiB individual-record budget retains local data and reports an error; universal unbounded record synchronization is intentionally unsupported",
+    "WAL/checkpoint/backup deletion guarantees, disk-full/partial-write and final resource/privacy review",
+    "Tombstone retirement needs a safe distributed acknowledgement policy; identities remain retained",
+    "F09 dedicated native verification/trust-dialog acceptance and remaining installer/runtime obligations",
+    "Final packaged artifact/live cloud/authenticated WSS/physical microphone/device-change/other supported compositor gates and the remaining original audit requirements; no PR submitted"
+  ],
+  "harness_history": [
+    "Initial fake lost-ACK responder erroneously waited for an initiator verdict that this signed Noise protocol never sends; corrected to authenticate the actual Hello signature before receiving the manifest.",
+    "Small alternating TCP frames suffered delayed-ACK latency; durable offsets advanced but bounded slow rounds did not finish. Production TCP_NODELAY removes this latency; original convergence and cleanup assertions are retained.",
+    "The first full parallel suite exposed a fixture-only three-second setup deadline while a large sender snapshot was initially staged. Setup now uses the production budget; the actual forced-interruption phase remains two seconds. No production timeouts are increased and no test assertions are weakened.",
+    "Strict Clippy identified cloned_ref_to_slice_refs in the added network assertion; corrected with a borrowed slice, without lint suppression."
+  ],
+  "source_sha256": {
+    "src/net.rs": "5cedd9bc2915ce682b0154591bee365ae19332665c88a2f5e7969722174012f0",
+    "src/store.rs": "7a87b9be4129e6dd66b969b07f7b0d5c1ae7c74eee8bd6bbda1560f1f3b0f777",
+    "src/sync_pages.rs": "c38618fedf8c5af776d978e3c4b6f9a11390241042494363df149f0291e86032",
+    "src/sync_segments.rs": "d4504489cc7f8e609261eeea9cbe31121096a2be9c3c9a3df3a5b9d16595a7e7",
+    "src/reset.rs": "0c1c886469189cbdd45cf7dadc907990984751a924ea6c9ad1ac8ac3045dea2d"
+  },
+  "logs_sha256": {
+    "fmt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "clippy": "0d12ce1fcdbdcddd095adb7b9a6ab8681edd3c356b009459abc89e60b16db27f",
+    "tests": "191f7d09f1925cbce9c1333586574bfc8e882586210f3275998912c654222059",
+    "release": "5500ae8646b33d2b7b979d39d8cf37432e5ef9811d9350b1c14a04f107f259d4",
+    "ui": "d06a1264a9d167e375bdcc260bd7a494bed47fc937e9da63d20128dad3cc1fd2",
+    "keyring": "df1f4bff05febb961088e8562fc1db1caeefbac1e88de970788ae9a5e158ad2b",
+    "keyring-build": "84d7c6b646ec69442d49f6fa1c2e25a616e77040250d09f1e2e070041350d28d",
+    "packaging": "0816065fe0d5a82ace2cd6e57c13acf798ab7e69d339f516b2e112daecf68ee0",
+    "upgrade": "1d3a711c6980032454098c68d4bab121c63747da9dcb5e590a04b100d5063fcf",
+    "targeted": "382b5f458bb5149bd3d835fe0a3616355605431bb278ebe29a1011fd6d65b469",
+    "network": "ff0ec98a08b31058722a314a8acf4252fe361d6dc8026cf8b16180125cd69142",
+    "compat": "9cfa358d1d5e0425fba7035607d3998cbff6878adb177a6191469fd07f4d93a8",
+    "compatibility-detail": "bae1be17d4cdc183d39de47ed350de5ac06a6cd9593ca927a1cd23dfc28eaf87",
+    "initial-full-fixture-failure": "5f816ad0eaf31eb0d54167fd8c72ae68bb3583a3aa03f15beb2a810569e97bc8"
+  },
+  "security_sha256": "c1fd5aed7215276b64781f0b19750419b3d763d31c3484b1b3eee5b80470a151",
+  "compatibility_provenance": "The compatibility script snapshots baseline 7f6e76e and the implementation worktree into distinct Cargo packages/examples, preserving synthetic key 2a and private HOME/XDG roots. Snapshot-only kill hooks never ship. The final network change after that snapshot only removes the artificial setup deadline from its test; production protocol source is unchanged. Source hashes identify the final tested implementation."
+}

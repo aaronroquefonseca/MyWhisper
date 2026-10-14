@@ -1,0 +1,3 @@
+Discarded row after merge: [HistoryRecord { uuid: "same", text: "synthetic private text", raw_text: "synthetic private raw", words: 3, duration_secs: 1, deleted: false, discarded: true, recorded_at: 1791640391 }]
+Reversed merge order: [HistoryRecord { uuid: "same", text: "", raw_text: "", words: 0, duration_secs: 1, deleted: false, discarded: true, recorded_at: 1791640391 }]
+Converged: false

@@ -1,0 +1,109 @@
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-modelload-audit.p0_3zeoh/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:11:42.891: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:11:42.897: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 18:11:42.897: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 18:11:42.939: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+
+thread 'main' (20) panicked at examples/ui_preview/ollama_load_smoke.rs:110:17:
+removing the originating page must close active provider IO within 500 ms
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (20) panicked at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/panicking.rs:225:5:
+panic in a function that cannot unwind
+stack backtrace:
+   0:     0x55d5bcfb44f1 - std[c29fa2d9dbea2b0e]::backtrace_rs::backtrace::libunwind::trace
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9
+   1:     0x55d5bcfb44f1 - std[c29fa2d9dbea2b0e]::backtrace_rs::backtrace::trace_unsynchronized::<std[c29fa2d9dbea2b0e]::sys::backtrace::_print_fmt::{closure#1}>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/../../backtrace/src/backtrace/mod.rs:66:14
+   2:     0x55d5bcfb44f1 - std[c29fa2d9dbea2b0e]::sys::backtrace::_print_fmt
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/backtrace.rs:74:9
+   3:     0x55d5bcfb44f1 - <<std[c29fa2d9dbea2b0e]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[a9090a07a7fa7517]::fmt::Display>::fmt
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/backtrace.rs:44:26
+   4:     0x55d5bcfcdf8a - <core[a9090a07a7fa7517]::fmt::rt::Argument>::fmt
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/fmt/rt.rs:152:76
+   5:     0x55d5bcfcdf8a - core[a9090a07a7fa7517]::fmt::write
+   6:     0x55d5bcfbaa6c - core[a9090a07a7fa7517]::io::write::default_write_fmt::<std[c29fa2d9dbea2b0e]::sys::stdio::unix::Stderr>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/io/write.rs:402:11
+   7:     0x55d5bcfbaa6c - <std[c29fa2d9dbea2b0e]::sys::stdio::unix::Stderr as core[a9090a07a7fa7517]::io::write::Write>::write_fmt
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/io/write.rs:335:13
+   8:     0x55d5bcf8dcf6 - <std[c29fa2d9dbea2b0e]::sys::backtrace::BacktraceLock>::print
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/backtrace.rs:47:9
+   9:     0x55d5bcf8dcf6 - std[c29fa2d9dbea2b0e]::panicking::default_hook::{closure#0}
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:292:27
+  10:     0x55d5bcfabe31 - std[c29fa2d9dbea2b0e]::panicking::default_hook
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:319:9
+  11:     0x55d5bcfac15b - std[c29fa2d9dbea2b0e]::panicking::panic_with_hook
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:815:13
+  12:     0x55d5bcf8ddd4 - std[c29fa2d9dbea2b0e]::panicking::panic_handler::{closure#0}
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:681:13
+  13:     0x55d5bcf863b9 - std[c29fa2d9dbea2b0e]::sys::backtrace::__rust_end_short_backtrace::<std[c29fa2d9dbea2b0e]::panicking::panic_handler::{closure#0}, !>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/backtrace.rs:182:18
+  14:     0x55d5bcf8ec5d - __rustc[9d087a5ab36ea756]::rust_begin_unwind
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:679:5
+  15:     0x55d5bcfce5ad - core[a9090a07a7fa7517]::panicking::panic_nounwind_fmt::runtime
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/panicking.rs:122:22
+  16:     0x55d5bcfce5ad - core[a9090a07a7fa7517]::panicking::panic_nounwind_fmt
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/intrinsics/mod.rs:2636:9
+  17:     0x55d5bcfce52b - core[a9090a07a7fa7517]::panicking::panic_nounwind
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/panicking.rs:225:5
+  18:     0x55d5bcfce6b7 - core[a9090a07a7fa7517]::panicking::panic_cannot_unwind
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/panicking.rs:350:5
+  19:     0x55d5bb84a573 - glib[c30c21a7c745d72c]::source::trampoline_local::<ui_preview[7b4faa703cdca5ab]::ollama_load_smoke::run::{closure#1}>
+                               at /home/aaronroque/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/glib-0.22.10/src/source.rs:87:1
+  20:     0x7f49994e8cf1 - <unknown>
+  21:     0x7f49994e6ffd - <unknown>
+  22:     0x7f49994e8438 - <unknown>
+  23:     0x7f49994e8592 - g_main_context_iteration
+  24:     0x7f49996f521e - g_application_run
+  25:     0x55d5bb86af85 - <gtk4[16020661e161a291]::auto::application::Application as gio[cdfd4b251c71caab]::application::ApplicationExtManual>::run_with_args::<&str>
+                               at /home/aaronroque/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gio-0.22.10/src/application.rs:31:13
+  26:     0x55d5bb836f16 - ui_preview[7b4faa703cdca5ab]::main
+                               at /home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1/examples/ui_preview.rs:153:9
+  27:     0x55d5bb88199b - <fn() -> glib[c30c21a7c745d72c]::exit_code::ExitCode as core[a9090a07a7fa7517]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/ops/function.rs:250:5
+  28:     0x55d5bb86c92e - std[c29fa2d9dbea2b0e]::sys::backtrace::__rust_begin_short_backtrace::<fn() -> glib[c30c21a7c745d72c]::exit_code::ExitCode, glib[c30c21a7c745d72c]::exit_code::ExitCode>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/backtrace.rs:166:18
+  29:     0x55d5bb86b491 - std[c29fa2d9dbea2b0e]::rt::lang_start::<glib[c30c21a7c745d72c]::exit_code::ExitCode>::{closure#0}
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/rt.rs:206:18
+  30:     0x55d5bcfaaf39 - <&dyn core[a9090a07a7fa7517]::ops::function::Fn<(), Output = i32> + core[a9090a07a7fa7517]::marker::Sync + core[a9090a07a7fa7517]::panic::unwind_safe::RefUnwindSafe as core[a9090a07a7fa7517]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/ops/function.rs:287:21
+  31:     0x55d5bcfaaf39 - std[c29fa2d9dbea2b0e]::panicking::catch_unwind::do_call::<&dyn core[a9090a07a7fa7517]::ops::function::Fn<(), Output = i32> + core[a9090a07a7fa7517]::marker::Sync + core[a9090a07a7fa7517]::panic::unwind_safe::RefUnwindSafe, i32>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:576:43
+  32:     0x55d5bcfaaf39 - std[c29fa2d9dbea2b0e]::panicking::catch_unwind::<i32, &dyn core[a9090a07a7fa7517]::ops::function::Fn<(), Output = i32> + core[a9090a07a7fa7517]::marker::Sync + core[a9090a07a7fa7517]::panic::unwind_safe::RefUnwindSafe>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:544:19
+  33:     0x55d5bcfaaf39 - std[c29fa2d9dbea2b0e]::panic::catch_unwind::<&dyn core[a9090a07a7fa7517]::ops::function::Fn<(), Output = i32> + core[a9090a07a7fa7517]::marker::Sync + core[a9090a07a7fa7517]::panic::unwind_safe::RefUnwindSafe, i32>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panic.rs:359:14
+  34:     0x55d5bcfaaf39 - std[c29fa2d9dbea2b0e]::rt::lang_start_internal::{closure#0}
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/rt.rs:175:24
+  35:     0x55d5bcfaaf39 - std[c29fa2d9dbea2b0e]::panicking::catch_unwind::do_call::<std[c29fa2d9dbea2b0e]::rt::lang_start_internal::{closure#0}, isize>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:576:43
+  36:     0x55d5bcfaaf39 - std[c29fa2d9dbea2b0e]::panicking::catch_unwind::<isize, std[c29fa2d9dbea2b0e]::rt::lang_start_internal::{closure#0}>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:544:19
+  37:     0x55d5bcfaaf39 - std[c29fa2d9dbea2b0e]::panic::catch_unwind::<std[c29fa2d9dbea2b0e]::rt::lang_start_internal::{closure#0}, isize>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panic.rs:359:14
+  38:     0x55d5bcfaaf39 - std[c29fa2d9dbea2b0e]::rt::lang_start_internal
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/rt.rs:171:5
+  39:     0x55d5bb86b477 - std[c29fa2d9dbea2b0e]::rt::lang_start::<glib[c30c21a7c745d72c]::exit_code::ExitCode>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/rt.rs:205:5
+  40:     0x55d5bb836fde - main
+  41:     0x7f4999027d0e - <unknown>
+  42:     0x7f4999027e4b - __libc_start_main
+  43:     0x55d5bb834f65 - _start
+  44:                0x0 - <unknown>
+thread caused non-unwinding panic. aborting.
+timeout: the monitored command dumped core
+/usr/bin/xvfb-run: line 180:    19 Aborted                    DISPLAY=:$SERVERNUM XAUTHORITY=$AUTHFILE "$@"

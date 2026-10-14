@@ -1,0 +1,66 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "baseline": "32d0918",
+  "correction": "F09 installation-state verification primitives and fresh install receipts; provider admission/legacy compatibility still incomplete",
+  "rust_tests": {
+    "passed": 224,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "passed": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo test --locked --all-targets",
+    "cargo build --release --locked --bin mywhisper",
+    "both native UI configurations: all eight existing smoke/recovery/reset invocations",
+    "current RustSec: 1296 advisories, zero vulnerabilities and warnings",
+    "real pinned Tiny Whisper CPU model and runtime download, signed installation, synthetic speech inference and owned cleanup: 6.9 seconds",
+    "14 packaging and upgrade tests (9 release, 5 upgrade); final running-desktop/artifact gates still open"
+  ],
+  "compatibility": "No database/peer/keyring/network-identity format change. A dedicated private installation-content key is provisioned under its cross-process lock; corrupt existing key material is preserved and refused. Fresh archive receipts record normalized entries, exact file hashes and executable bits. Raw assets use the registry digest directly. Existing archives without receipts are preserved and shown as needing verification; manual and legacy provider admission is not yet complete. Generic private-file reads no longer chmod on read; legacy identity protection is explicit. Complete staged verification now precedes atomic promotion; empty/missing files, malformed receipts, lost executable permissions and cancellation preserve the previous installation. The real runtime fixture also isolates HOME before creating threads.",
+  "resource_limits": {
+    "receipt_bytes": 8388608,
+    "tree_entries": 4096,
+    "tree_depth": 32,
+    "content_bytes": 12884901888,
+    "cache_entries": 64,
+    "hash_chunk_bytes": 65536,
+    "new_worker_threads": 0,
+    "content_scan_seconds": 180
+  },
+  "privacy": "Receipt authority is separate from network identity; no transcript/audio/settings/real keyring secrets are in these fixtures or logs. Signing seed is private to its data directory. Receipts establish the trusted local installer history, not resistance to an attacker already controlling the same OS account.",
+  "outstanding": [
+    "Enforce verified admission and asset authority through queued/active providers, including loaded-server replacement",
+    "Verify compatible existing archives without replacement; explicit supported manual-install behavior",
+    "Interrupted repair/promotion, disk-full and extraction cleanup",
+    "Owned download DNS cancellation and queued cross-process admission/reset barriers",
+    "Oversized individual sync records and slow-link acceptance",
+    "Every remaining original grouped audit obligation, required live integrations and final packaged artifact review; no PR submitted"
+  ],
+  "logs_sha256": {
+    "tests": "63bf25c1665b8176e4d084a9d68d10dd89e9c0384465a64eff77a70e93429980",
+    "clippy": "1fbcc0471d835837c574c2b6cb40f0c89ab17e0f1b1c5eaa734cf93d2230d307",
+    "fmt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "release": "241f5256de313070f0b31751c3988bae60b2fd8348964a2c933665b31ca0e974",
+    "runtime": "4eb398504294a785bbdc15cad5ba2702e3ccc3509e19fc77b7f212e23b9f8b08",
+    "ui": "03ff09951d751bbbce770e508f0989eae8e8b73571f0505271f172c3d1905e67",
+    "packaging": "b5f0ecb30936e07a824a1b0bb85cf9c5017438bd025d5660ed20001cb71972f0",
+    "upgrade": "c109109f437c59fb6c9d76c6985412845839582fea3c04644c4a01fee8d0cdbb"
+  },
+  "security_sha256": "c1fd5aed7215276b64781f0b19750419b3d763d31c3484b1b3eee5b80470a151",
+  "source_sha256": {
+    "src/installed_asset.rs": "f44eb7d361aae0fce30dbdddc711cd63608819b19774fcc7dabaa306e294e9d0",
+    "src/artifact.rs": "4ac28f7a812cb16a044693958604719c4927a54fe121bf0f0c4e7b81d3bdcb44",
+    "src/stt.rs": "7ad8afdfde32bd24df6ae6c4fb4ef6407219ab489fe4cb12b995028dc7434f1d",
+    "src/transcribe.rs": "472c7a829870e20d3e88cd3f436c5489fb0520a725fe611977a11c375aa37c0e",
+    "src/private_fs.rs": "d3b895de539495cdb9096dfb1f47191015003469fba4fb9d5847b1682d88986d",
+    "src/device.rs": "eff824990cbbe6be0b1931f248fc71068da1128a386c4ca66ec0f168bf2e838f",
+    "src/app_settings.rs": "232f62276f20f814dee2125f912277b1163b87444b51610f7321efa89b61ce3a",
+    "src/i18n.rs": "1834c267ad3f676f78d501426666c42211e6c419a93ec3344e3b6baf6038ef07",
+    "examples/runtime_smoke.rs": "66ddf5adde8dd57a4fe6dfebcfa1705c5fc253070eb0dfefb2309382c427beef"
+  },
+  "harness_notes": [
+    "Full 224-test, formatting, strict Clippy, release and real Tiny gates pass on the recorded source, including staging-destination ownership and isolated HOME. Both UI configurations/all eight invocations pass after the final feedback text change; the only later library change validates staging destination, covered by the full suite and the real download/installation run. These remain component checks; final all-source/artifact gates are open. No assertions or existing opt-in ignores were weakened."
+  ]
+}

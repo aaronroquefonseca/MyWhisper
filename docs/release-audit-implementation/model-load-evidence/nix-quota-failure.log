@@ -1,0 +1,35 @@
+this derivation will be built:
+  /nix/store/9b58g7ag0zjvbyjj3g8bi1nv5qaw5dw7-mywhisper-0.9.3.drv
+building '/nix/store/9b58g7ag0zjvbyjj3g8bi1nv5qaw5dw7-mywhisper-0.9.3.drv'...
+error: Cannot build '/nix/store/9b58g7ag0zjvbyjj3g8bi1nv5qaw5dw7-mywhisper-0.9.3.drv'.
+       Reason: builder failed with exit code 101.
+       Output paths:
+         /nix/store/4b9ndivzsi1qn5z1hg452g856vxnyqxc-mywhisper-0.9.3
+       Last 25 log lines:
+       >
+       > error: could not compile `winnow` (lib) due to 1 previous error
+       > rustc-LLVM ERROR: IO failure on output stream: Disk quota exceeded
+       > error: could not compile `encoding_rs` (lib)
+       >
+       > Caused by:
+       >   Disk quota exceeded (os error 122)
+       >
+       > Caused by:
+       >   failed to parse process output: `rustc --crate-name encoding_rs --edition=2024 /build/cargo-vendor-dir/encoding_rs-0.8.42/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=3 -C embed-bitcode=no --warn=unexpected_cfgs --check-cfg 'cfg(fuzzing)' --cfg 'feature="alloc"' --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "any_all_workaround", "default", "fast-big5-hanzi-encode", "fast-gb-hanzi-encode", "fast-hangul-encode", "fast-hanja-encode", "fast-kanji-encode", "fast-legacy-encode", "less-slow-big5-hanzi-encode", "less-slow-gb-hanzi-encode", "less-slow-kanji-encode", "rustversion", "serde", "simd-accel", "std"))' -C metadata=81f33d69e73dfb98 -C extra-filename=-d20d33d0a6025d56 --out-dir /build/source/target/x86_64-unknown-linux-gnu/release/deps --target x86_64-unknown-linux-gnu -C linker=/nix/store/j1938gsbvbhkyz4kbmvjk56r479mkw3s-gcc-wrapper-16.2.0/bin/cc -L dependency=/build/source/target/x86_64-unknown-linux-gnu/release/deps -L dependency=/build/source/target/release/deps --extern cfg_if=/build/source/target/x86_64-unknown-linux-gnu/release/deps/libcfg_if-1d93c72fea4e7dba.rmeta --extern core_detect=/build/source/target/x86_64-unknown-linux-gnu/release/deps/libcore_detect-cd2387ae46d25b52.rmeta --extern multiversion_no_op=/build/source/target/release/deps/libmultiversion_no_op-6705f5193d346551.so --extern scopeguard=/build/source/target/x86_64-unknown-linux-gnu/release/deps/libscopeguard-0d47e2f831a9663b.rmeta --extern simdutf8=/build/source/target/x86_64-unknown-linux-gnu/release/deps/libsimdutf8-889cc2a9455770b0.rmeta --cap-lints allow -Cforce-frame-pointers=yes --cfg slow_mm_packus_epi16 --check-cfg 'cfg(slow_mm_packus_epi16)'` (exit status: 101)
+       > error: failed to write to `/build/source/target/x86_64-unknown-linux-gnu/release/deps/rmetaUVJs6Z/full.rmeta`: Disk quota exceeded (os error 122)
+       >
+       > error: could not compile `sha2` (lib) due to 1 previous error
+       > error: failed to write to `/build/source/target/x86_64-unknown-linux-gnu/release/deps/rmetaeJkA1Z/full.rmeta`: Disk quota exceeded (os error 122)
+       >
+       > error: could not compile `indexmap` (lib) due to 1 previous error
+       > error: failed to write to `/build/source/target/release/deps/rmetasPluCD/full.rmeta`: Disk quota exceeded (os error 122)
+       >
+       > error: could not compile `syn` (lib) due to 1 previous error
+       > error: failed to write /build/source/target/release/deps/rustcnlsaag/lib.rmeta-link: Disk quota exceeded (os error 122)
+       >
+       > error: failed to write to `/build/source/target/x86_64-unknown-linux-gnu/release/deps/rmetaWACiLo/full.rmeta`: Disk quota exceeded (os error 122)
+       >
+       > error: could not compile `syn` (lib) due to 1 previous error
+       > error: could not compile `syn` (lib) due to 1 previous error
+       For full logs, run:
+         nix log /nix/store/9b58g7ag0zjvbyjj3g8bi1nv5qaw5dw7-mywhisper-0.9.3.drv

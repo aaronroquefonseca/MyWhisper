@@ -1,0 +1,68 @@
+warning: Git tree '/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1' is dirty
+these 17 derivations will be built:
+  /nix/store/c6vhmwg3n0y4ppppd1c6s07il97pdhdk-unit-mywhisper.service.drv
+  /nix/store/f1xjz2k64709v0daj15idi6bjl03bz82-system-path.drv
+  /nix/store/d6xigk10512dyxlhm2yzjr0axizfga8a-dbus-1.drv
+  /nix/store/hahcldx3m4lx2bmbzcc6z7pl80dhc053-X-Restart-Triggers-dbus-broker.drv
+  /nix/store/rg636k7xsbp0jhdi81sqy28f9x5xis1f-unit-dbus-broker.service.drv
+  /nix/store/166f1fl5zdyzwdf1igqf922iijr4p3i5-user-units.drv
+  /nix/store/9x7xjzlbas7635zpc1jc2h96if27xax8-unit-dbus-broker.service.drv
+  /nix/store/234dp1wwllnm7dqw21zr9xv34cc97kn3-system-units.drv
+  /nix/store/jf479psg71smsn9ah988y0fpjf6vrn0s-etc.drv
+  /nix/store/v2prq01yai0pfym52a4h6n89r41bq5xi-activate.drv
+  /nix/store/253xmc39d0wkyj324pbpxrazra762q29-nixos-system-desktop-test.drv
+  /nix/store/z2zv4807ir2xa1yp14vij5nq86hcxj3p-closure-info.drv
+  /nix/store/3yngigzg99mkbk6c6w6sjpw78j63zhz0-run-nixos-vm.drv
+  /nix/store/3iif9bg0knz88iqdd2z2q92ga9bfqhc2-nixos-vm.drv
+  /nix/store/kdb8bhydvbslp2rxjdgjx221a0zz5czf-driverConfiguration.json.drv
+  /nix/store/jf90v0fyas8pmhbgwxfkxcbmhcnki368-nixos-test-driver-mywhisper-downloaded-loader.drv
+  /nix/store/3wbg9wfaas5jf9bis7m5rf3y73rpxzpy-vm-test-run-mywhisper-downloaded-loader.drv
+building '/nix/store/f1xjz2k64709v0daj15idi6bjl03bz82-system-path.drv'...
+building '/nix/store/c6vhmwg3n0y4ppppd1c6s07il97pdhdk-unit-mywhisper.service.drv'...
+building '/nix/store/d6xigk10512dyxlhm2yzjr0axizfga8a-dbus-1.drv'...
+building '/nix/store/hahcldx3m4lx2bmbzcc6z7pl80dhc053-X-Restart-Triggers-dbus-broker.drv'...
+building '/nix/store/9x7xjzlbas7635zpc1jc2h96if27xax8-unit-dbus-broker.service.drv'...
+building '/nix/store/rg636k7xsbp0jhdi81sqy28f9x5xis1f-unit-dbus-broker.service.drv'...
+building '/nix/store/234dp1wwllnm7dqw21zr9xv34cc97kn3-system-units.drv'...
+building '/nix/store/166f1fl5zdyzwdf1igqf922iijr4p3i5-user-units.drv'...
+building '/nix/store/jf479psg71smsn9ah988y0fpjf6vrn0s-etc.drv'...
+building '/nix/store/v2prq01yai0pfym52a4h6n89r41bq5xi-activate.drv'...
+building '/nix/store/253xmc39d0wkyj324pbpxrazra762q29-nixos-system-desktop-test.drv'...
+building '/nix/store/z2zv4807ir2xa1yp14vij5nq86hcxj3p-closure-info.drv'...
+building '/nix/store/3yngigzg99mkbk6c6w6sjpw78j63zhz0-run-nixos-vm.drv'...
+building '/nix/store/3iif9bg0knz88iqdd2z2q92ga9bfqhc2-nixos-vm.drv'...
+building '/nix/store/kdb8bhydvbslp2rxjdgjx221a0zz5czf-driverConfiguration.json.drv'...
+building '/nix/store/jf90v0fyas8pmhbgwxfkxcbmhcnki368-nixos-test-driver-mywhisper-downloaded-loader.drv'...
+building '/nix/store/3wbg9wfaas5jf9bis7m5rf3y73rpxzpy-vm-test-run-mywhisper-downloaded-loader.drv'...
+error: Cannot build '/nix/store/3wbg9wfaas5jf9bis7m5rf3y73rpxzpy-vm-test-run-mywhisper-downloaded-loader.drv'.
+       Reason: builder failed with exit code 1.
+       Output paths:
+         /nix/store/lj7k9z0qqrqv256xna31rc8fvx6mngl6-vm-test-run-mywhisper-downloaded-loader
+       Last 25 log lines:
+       > desktop # [   12.788633] dhcpcd[688]: eth0: adding default route via 10.0.2.2
+       > desktop # [   12.815199] systemd[1]: Started DHCP Client.
+       > desktop # [   12.815549] systemd[1]: Reached target Multi-User System.
+       > desktop # [   12.816236] systemd[1]: Startup finished in 441ms (kernel) + 3.018s (initrd) + 9.356s (userspace) = 12.816s.
+       > desktop: (finished: waiting for unit multi-user.target, in 14.13 seconds)
+       > desktop: must succeed: install -o audit -g users -m700 /nix/store/0svanvbj990cji77lw3wik8z93nxfsnn-verified-whisper-vulkan /home/audit/whisper-server
+       > desktop: (finished: must succeed: install -o audit -g users -m700 /nix/store/0svanvbj990cji77lw3wik8z93nxfsnn-verified-whisper-vulkan /home/audit/whisper-server, in 0.11 seconds)
+       > desktop: must succeed: su - audit -c '/home/audit/whisper-server --help'
+       > desktop # [   13.808421] su[843]: Successful su for audit by root
+       > desktop # [   13.810926] su[843]: pam_unix(su:session): session opened for user audit(uid=1000) by (uid=0)
+       > desktop # /home/audit/whisper-server: error while loading shared libraries: libvulkan.so.1: cannot open shared object file: No such file or directory
+       > desktop # [   13.818595] su[843]: pam_unix(su:session): session closed for user audit
+       > desktop: output:
+       > !!! Traceback (most recent call last):
+       > !!!   File "<string>", line 4, in <module>
+       > !!!     result = desktop.succeed("su - audit -c '/home/audit/whisper-server --help'")
+       > !!! 
+       > !!! RequestedAssertionFailed: command `su - audit -c '/home/audit/whisper-server --help'` failed (exit code 127)
+       > cleanup
+       > kill QemuMachine (pid 1351)
+       > desktop # qemu-system-x86_64: terminating on signal 15 from pid 1344 (/nix/store/lb41b0anx1f98y9y5s9mdv97gjgsq740-python3-3.14.7/bin/python3.14)
+       > desktop # [2026-10-11T21:37:58Z INFO  virtiofsd] Client disconnected, shutting down
+       > desktop # [2026-10-11T21:37:58Z INFO  virtiofsd] Client disconnected, shutting down
+       > desktop # [2026-10-11T21:37:58Z INFO  virtiofsd] Client disconnected, shutting down
+       > (finished: cleanup, in 0.07 seconds)
+       For full logs, run:
+         nix log /nix/store/3wbg9wfaas5jf9bis7m5rf3y73rpxzpy-vm-test-run-mywhisper-downloaded-loader.drv

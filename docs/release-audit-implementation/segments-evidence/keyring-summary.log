@@ -1,0 +1,2 @@
+Disposable real Secret Service: eight concurrent processes, shared identity/key, missing-key refusal and recovery passed.
+Native sync: fixed-port replacement, stalled-socket cleanup, watcher joins, outbound-only encrypted catch-up, mutual mDNS discovery and goodbye removal passed.

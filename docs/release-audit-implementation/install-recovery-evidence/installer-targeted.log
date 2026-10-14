@@ -1,0 +1,27 @@
+   Compiling mywhisper v0.9.3 (/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.69s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 19 tests
+test artifact::tests::expansion_and_cancellation_limits_precede_member_writes ... ok
+test artifact::tests::managed_delete_paths_cannot_traverse_a_symlink_into_unowned_files ... ok
+test artifact::tests::managed_installer_paths_cannot_traverse_a_symlink_into_unowned_files ... ok
+test artifact::tests::replaced_managed_parent_cannot_redirect_an_active_promotion ... ok
+test artifact::tests::failed_promotion_parent_sync_restores_complete_previous_installation ... ok
+test artifact::tests::empty_reservations_and_deleted_assets_recover_without_restoring_old_content ... ok
+test artifact::tests::payload_and_nested_directory_sync_failures_preserve_previous_installation ... ok
+test artifact::tests::registry_ids_with_decimal_versions_are_valid_but_path_components_are_not ... ok
+test artifact::tests::extraction_preserves_safe_runtime_links_but_rejects_escape_graphs ... ok
+test artifact::tests::recovery_preserves_unidentified_or_replaced_staging_and_cache_clear_recovers ... ok
+test artifact::tests::delete_and_reset_invalidate_active_installers_before_waiting_for_cleanup ... ok
+test artifact::tests::interrupted_staging_is_recovered_without_deleting_installed_or_foreign_files ... ok
+test artifact::tests::installer_wait_promotion_cancellation_preserves_previous_installation ... ok
+test artifact::tests::verified_bytes_only_replace_a_complete_installation ... ok
+test artifact::tests::killed_promotion_preserves_a_complete_installation_and_recovers_its_owned_backup ... ok
+test artifact::tests::installer_wait_cancellation_and_revocation_do_not_wait_for_another_process ... ok
+test artifact::tests::truncated_oversized_and_unknown_length_bodies_fail_closed ... ok
+test artifact::tests::cancellation_interrupts_stalled_headers_and_body_without_server_progress ... ok
+test artifact::tests::cancellation_delete_and_reset_interrupt_partial_tar_and_zip_extraction ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 246 filtered out; finished in 0.48s
+

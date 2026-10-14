@@ -1,0 +1,6 @@
+Copying only the known task-owned Nix test store to /home/aaronroque/.cache/mywhisper-nix-owned-store.p3jfxm4a
+Traceback (most recent call last):
+  File "/tmp/mywhisper-relocate-owned-nix.py", line 13, in <module>
+    original=db.execute('SELECT path,narHash,narSize FROM ValidPaths ORDER BY path').fetchall()
+             ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.OperationalError: no such column: narHash

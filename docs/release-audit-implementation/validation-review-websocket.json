@@ -1,0 +1,44 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "correction": "F08: own resolver, setup, socket cancellation and progress deadlines",
+  "before_fix_regression_failed": true,
+  "before_fix_nss_seconds": 11.000465215,
+  "resolver_budget_seconds": 3,
+  "cancellation_assertion_ms": 500,
+  "resolver_cancellation_rounds": 12,
+  "socket_cancellation_rounds": 12,
+  "existing_session_task_budget_recovered": 8,
+  "rust_tests": {
+    "passed": 181,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "native_ui": [
+    "light/en",
+    "dark/es"
+  ],
+  "verified": [
+    "stalled actual NSS through private LD_PRELOAD shim",
+    "owned resolver cancellation barriers",
+    "pre-cancelled and expired startup",
+    "multiple resolved addresses and actual bearer-authenticated WS protocol",
+    "TLS ClientHello cancellation",
+    "plain upgrade cancellation",
+    "blocked upload cancellation",
+    "completion cancellation",
+    "bounded task admission/recovery"
+  ],
+  "compatibility": "Public existing session constructors remain available. Streaming session owners supply their cancellation token. No network budgets or worker counts increased. Resolution uses the existing owned getent mechanism; each connection candidate has a bounded share of the total startup deadline.",
+  "logs_sha256": {
+    "before": "88923ec477426710756a8beda77390ecd7f0cc5284152cf853abf12c11ffe1eb",
+    "after": "d38655c837997c384e4aae86f444fa9013a661437a3a409b36262cf87e22c865",
+    "resolver": "dc0ff50ad0f6d7fc1f7d1385497293cd465806d7130caff4d5f484305d44fd7e",
+    "cancel": "fb90f981d7389c2b33dfe1c0cbd77da1273d797bca9df765fe6e93ca73c642d0",
+    "tests": "a3b4ab835dcf7c970fbb6b2fd28267c2f6f493f75f47c52a263e3ad855667b94",
+    "clippy": "3261963e88e2bcf0c41c59163e7c2bb1b5ba4099348e7022f9bcbfe5da450b3e",
+    "ui": "04359576738a3388b336b7f941e2500022b39b883896a07d46f751633fab54f0"
+  },
+  "source_diff_sha256": "08596c73d4abc051b54e8e7add180dc4ae4a4fba839e193eabf40c67d42be112",
+  "outstanding": "Authenticated WSS success and live cloud contracts, F01 durable-policy/HTTP ownership, other findings and final artifact gates remain open."
+}

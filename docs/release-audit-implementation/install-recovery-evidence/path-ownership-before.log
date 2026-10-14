@@ -1,0 +1,29 @@
+   Compiling mywhisper v0.9.3 (/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.98s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 2 tests
+test artifact::tests::managed_delete_paths_cannot_traverse_a_symlink_into_unowned_files ... FAILED
+test artifact::tests::managed_installer_paths_cannot_traverse_a_symlink_into_unowned_files ... FAILED
+
+failures:
+
+---- artifact::tests::managed_delete_paths_cannot_traverse_a_symlink_into_unowned_files stdout ----
+
+thread 'artifact::tests::managed_delete_paths_cannot_traverse_a_symlink_into_unowned_files' (3358449) panicked at src/artifact.rs:1564:13:
+Delete crossed a managed ancestor symlink
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- artifact::tests::managed_installer_paths_cannot_traverse_a_symlink_into_unowned_files stdout ----
+
+thread 'artifact::tests::managed_installer_paths_cannot_traverse_a_symlink_into_unowned_files' (3358450) panicked at src/artifact.rs:1569:13:
+installer staged outside its owned data tree
+
+
+failures:
+    artifact::tests::managed_delete_paths_cannot_traverse_a_symlink_into_unowned_files
+    artifact::tests::managed_installer_paths_cannot_traverse_a_symlink_into_unowned_files
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 262 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

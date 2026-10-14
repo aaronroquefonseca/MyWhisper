@@ -1,0 +1,64 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "correction": "F01: preserve capture authority across owned provider IO and fallback/cleanup/delivery phases",
+  "regression_failed_before_fix": "24-case regression derives from the initial 20-case version, which fails on the completion deadline at baseline ae1f10d",
+  "rust_tests": {
+    "passed": 189,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "full_pipeline_cases": 24,
+  "http_dns_cancel_rounds": 12,
+  "cli_file_fifo_cancel_reset_cases": 4,
+  "authenticated_plain_ws_cases": 4,
+  "partial_http_upload_cases": 2,
+  "discard_marker_cases": 4,
+  "cancellation_assertion_ms": 500,
+  "native_ui": [
+    "light/en",
+    "dark/es"
+  ],
+  "native_recovery": [
+    "light/en",
+    "dark/es"
+  ],
+  "release_build_passed": true,
+  "current_rustsec_vulnerabilities": 0,
+  "current_rustsec_warnings": 0,
+  "advisory_database": {
+    "advisory-count": 1296,
+    "last-commit": "7eebec69c352c7191b1f13eb95dd510eeca5d1de",
+    "last-updated": "2026-10-09T10:12:02+02:00"
+  },
+  "real_runtime_passed": [
+    "Tiny Whisper CPU: verified upstream download, install, known synthetic word, inference and owned server cleanup"
+  ],
+  "failed_live_attempts": [
+    "Initial Tiny Whisper invocation used an incorrect expected word for an older fixture; fresh documented known synthetic text passes unchanged expected-word assertion.",
+    "Known phrase Needle file recognizes Hello; its stream loses Hello and fails.",
+    "Known phrase Nemotron stream returns Hell world and fails exact hello assertion; investigate separately rather than treating a nonempty transcript as success."
+  ],
+  "migration_compatibility": "No schema version change. Saving mute changes advances the existing capture generation, so off/on cannot reauthorize old captures. Current Store readers retain the identity observed when opening their database. Existing public runtime constructors and provider entry points remain available. Discard markers remain supported when explicitly enabled and still authorized. Unknown settings and user data are preserved.",
+  "logs_sha256": {
+    "before": "c653cd1a1ed3df97939529b2b3be657f4e7bca5a4d6af517c4d46b6dfb8b25aa",
+    "tests": "db7cc769c82b744b1485e505dacc1dcc7522495c263638b7a448688f71273662",
+    "clippy": "67f194c063bc5dee9f3c060e7a199f2d9639026cfc6c7ed2ef69b5123597a7fa",
+    "fmt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "ui": "aed8aebb3d0ebf2638993e71d4dc38fba1f72d2303420afa0e558c7028a832d1",
+    "release": "c7441a4a78865456b4ea67cf30ebe7719b597313ec6102c5615f74737807467d",
+    "policy": "bb275eec8e31045ec2bfd5c5a0b10d12acaacc772acafdd8dc39eeadb4fd741a",
+    "marker": "3e3fdfd4bbb5ae3c434ba4730f4235f965450efc14c4d3e54df3261e74d403e5",
+    "cli": "93e80debfa388cc6e3bed1255f1e1f286181fef01ef95ef15e1d949b8e4c255d",
+    "upload": "96608c08325f131bbe9d62e83f86a12b8ed943e583abc1ad7db7bbe7843e4513",
+    "dns": "0027cd12861ccc7be73dd0331b7770d7b51226646f3850b9aca5059e3b2587fe",
+    "ws": "b962f4f24cf0ce0adb4c4f0755a0e3ca93d903c27d1a8133ebe6ba6585ffb5e3",
+    "runtime": "6a9a244340f53201d061d3d6cda16a140078c9b8e20403a7bf685864d88a2dbc",
+    "runtime-known": "469297fd7e5150d08c06693785230e7cab183c426cbf5efde0038944d2780c9e",
+    "whistle": "e8bff8f6720231593788f5d02512bf97e6f273034673bac55c64e164fe53326d",
+    "nemotron": "72c21dfcf276a39322e9bc4285ba6112807fd2b84b4737d98021c9373739b969",
+    "security": "c1fd5aed7215276b64781f0b19750419b3d763d31c3484b1b3eee5b80470a151"
+  },
+  "source_files_sha256": "943270ce65fab336c85993723a0edf88bba270737a3283935737a747e9baf387",
+  "outstanding": "Local warmup/readiness ownership, queued input preparation, WSS success/live cloud contracts, real Needle first-word loss/Nemotron expected-word checks, other findings and final packaged gates remain open."
+}

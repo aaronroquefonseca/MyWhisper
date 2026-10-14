@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-7ad4458611a62635)
+
+running 3 tests
+test private_fs::tests::ordinary_reads_preserve_metadata_and_private_reads_protect_legacy_keys ... ok
+test private_fs::tests::bounded_read_rejects_oversized_files_and_symlinks_without_modifying_them ... ok
+test private_fs::tests::fifo_reads_and_locks_fail_without_waiting_for_a_writer ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 275 filtered out; finished in 0.00s
+

@@ -1,0 +1,99 @@
+{
+  "date": "2026-10-10",
+  "interim": true,
+  "submission_gate_passed": false,
+  "audit_baseline": "f018ab855af41759e275c80708d67973f2890587",
+  "implementation_branch": "t3code/release-audit-complete",
+  "progress": {
+    "finding_groups": 51,
+    "groups_with_partial_corrections": 51,
+    "fully_closed_groups": 0,
+    "additional_verified_toast_issue": 1
+  },
+  "source_diff_scope": [
+    "src",
+    "Cargo.toml",
+    "Cargo.lock",
+    "examples",
+    "packaging",
+    "scripts",
+    ".github",
+    "README.md",
+    "vendor"
+  ],
+  "uncommitted_source_diff_sha256": "2d7411b73e2a473f102fe1d60f9a0d7273a9a04487f16fbefa75e92110ffcd68",
+  "required_rust_checks": {
+    "fmt": "passed",
+    "strict_clippy_all_targets": "passed",
+    "locked_all_targets_tests": {
+      "passed": 165,
+      "failed": 0,
+      "existing_ignored": 5
+    },
+    "locked_release_mywhisper": "passed"
+  },
+  "native_ui": {
+    "configurations": [
+      "light/en",
+      "dark/es"
+    ],
+    "fatal_criticals": true,
+    "passed": true,
+    "server_status_regressions": [
+      "mapped real loopback query",
+      "configuration invalidates prior result",
+      "owned non-listening port produces no-server status",
+      "foreign listener never grants stop ownership",
+      "removed page releases all status controls"
+    ],
+    "fixture_cleanup": "The first new removal check retained its own window object; the test now releases that owner before asserting immediate control release. Assertions and deadlines remain unchanged."
+  },
+  "cancellation": "Real loopback regression proves pre-cancelled queries make no connections and cancellation between engines prevents the next connection.",
+  "security": {
+    "database": {
+      "advisory-count": 1296,
+      "last-commit": "7eebec69c352c7191b1f13eb95dd510eeca5d1de",
+      "last-updated": "2026-10-09T10:12:02+02:00"
+    },
+    "vulnerabilities": 0,
+    "warnings": {}
+  },
+  "log_artifacts": {
+    "format": {
+      "path": "/tmp/mywhisper-status-format-current.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "clippy": {
+      "path": "/tmp/mywhisper-status-probe-clippy-current.log",
+      "sha256": "ed002acf80bbe8a19c65da385ea2927c50fc626ac04bece0a44fd70922c37c37"
+    },
+    "rust_tests": {
+      "path": "/tmp/mywhisper-status-all-tests-current.log",
+      "sha256": "2db41b3ced4d1048bcf366101512f5b49a776e8166a1dcd52ce1d4cadb7beaad"
+    },
+    "release_build": {
+      "path": "/tmp/mywhisper-status-release-current.log",
+      "sha256": "58832f84b6f8f1c62398b776171cd5f562d9f5cd5e77695699f477b28206891c"
+    },
+    "native_ui": {
+      "path": "/tmp/mywhisper-native-ui-status-current.log",
+      "sha256": "ca836d73b44e77b5f7eac7f54500f7a777a87c2903def3b6ed66205ffdb13aaa"
+    },
+    "security": {
+      "path": "/tmp/mywhisper-status-security-current.json",
+      "sha256": "c1fd5aed7215276b64781f0b19750419b3d763d31c3484b1b3eee5b80470a151"
+    },
+    "cancellation_regression": {
+      "path": "/tmp/mywhisper-status-cancellation-current.log",
+      "sha256": "1be461cde1397de280caea0d958cfe87c0dcdd3a0df4d62217a1cc908042578b"
+    }
+  },
+  "outstanding": [
+    "Every finding remains open for grouped requirements, final compatibility/privacy/cleanup review and remaining validation listed in RELEASE_AUDIT_MATRIX.md.",
+    "The previously observed intermittent dictionary-dialog focus critical remains under investigation; this passing run does not establish its correction.",
+    "Live credentials, hardware/compositor/device changes, remaining runtime integrations and migration/recovery gates are not replaced by these checks.",
+    "Clean Arch/Nix artifacts must be rebuilt and rechecked against the completed implementation.",
+    "No project LICENSE per user instruction; distribution remains held.",
+    "No commit, push or PR has been submitted."
+  ]
+}

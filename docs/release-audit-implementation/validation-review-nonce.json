@@ -1,0 +1,36 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "correction": "R24: do not replay an old suspension nonce while the next frontend owns the lock but has not published its fresh request",
+  "baseline_forced_gap_regression_failed": true,
+  "baseline": "d6fbbd8",
+  "rust_tests": {
+    "passed": 191,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "repeated_owned_handshakes": 20,
+  "native_hotkey_checks": 7,
+  "native_ui": [
+    "light/en",
+    "dark/es"
+  ],
+  "native_recovery": [
+    "light/en",
+    "dark/es"
+  ],
+  "compatibility": "No persisted schema change. Fresh nonce requests still trigger suspension, including changes while the lock stays held. The last handled nonce survives availability gaps. Existing three-second assertions and production deadlines remain unchanged. Fixture publication uses a barrier, not a delayed guess.",
+  "logs_sha256": {
+    "before": "ef0432d638ec259723bc00ba4aeb476c4b3c38c3b73ea9f005a37b3fb7ba32de",
+    "after": "a0d4814e8fdcf7b84d8d31995710492e6369ef70fb813534601244494f99e635",
+    "tests": "f3b068c4e5e59e36e086a4a84ee64c1534204a780e2902024e47465b3fde47d8",
+    "clippy": "d50303d4ceedc39645f1bf7a1584bc9cb39a673f0d5868bc997e58b004d8fc8f",
+    "fmt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "release": "899d611c40f9f65bc7b3a7e194a446a8ee48cb318e6d02fc6cd6534cecd0bdf4",
+    "repeated": "81c8aca3d297d907a188e8607406885e041d86d75d1c9cab5c344fd94393281c",
+    "native": "662be276b1b177de7b5de25244e81bd5abb3d117f961559e3660f1a71ef51c15",
+    "ui": "65716c2785979521153b80b12df6d2cfe3b6ed68ff2db8393fe01a9e8a81c411"
+  },
+  "source_sha256": "d81adc82339393020d468d71bbfc393e971d85ac0081d4d4617dbe2e4cc5e608",
+  "outstanding": "Full service/microphone capture suspension, other findings and final release gates remain open."
+}

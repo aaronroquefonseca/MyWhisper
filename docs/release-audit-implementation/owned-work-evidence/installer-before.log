@@ -1,0 +1,24 @@
+   Compiling mywhisper v0.9.3 (/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.38s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 2 tests
+
+thread 'artifact::tests::installer_wait_promotion_cancellation_preserves_previous_installation' (2764588) panicked at src/artifact.rs:1018:9:
+promotion stayed blocked after cancellation
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test artifact::tests::installer_wait_promotion_cancellation_preserves_previous_installation ... FAILED
+
+thread 'artifact::tests::installer_wait_cancellation_and_revocation_do_not_wait_for_another_process' (2764587) panicked at src/artifact.rs:963:13:
+queued installer stayed blocked: mode=0
+test artifact::tests::installer_wait_cancellation_and_revocation_do_not_wait_for_another_process ... FAILED
+
+failures:
+
+failures:
+    artifact::tests::installer_wait_cancellation_and_revocation_do_not_wait_for_another_process
+    artifact::tests::installer_wait_promotion_cancellation_preserves_previous_installation
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 249 filtered out; finished in 0.54s
+
+error: test failed, to rerun pass `--lib`

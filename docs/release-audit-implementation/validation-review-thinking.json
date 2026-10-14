@@ -1,0 +1,31 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "correction": "F10: preserve explicit thinking preference",
+  "before_fix_regression_failed": true,
+  "rust_tests": {
+    "passed": 170,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "native_ui": [
+    "light/en",
+    "dark/es"
+  ],
+  "thinking_choices_verified": [
+    null,
+    true,
+    false
+  ],
+  "request_capture": "Actual cleanup HTTP request after save/load omits think for null/model default and sends the explicit boolean for the other choices.",
+  "compatibility": "Only missing thinking on a legacy Ollama entry migrates to false; explicit null and all other provider choices are preserved. Saving persists the new field; later loads do not force null to false.",
+  "logs_sha256": {
+    "before": "ba00c32175fc10da59f8dab94a7905b8aeb069c6eb79ee9f8447662f292a4b0d",
+    "after": "02595081d1f0edc496a48f1cf614654dbdf4db19358e2517ab7126f345464f99",
+    "clippy": "f7eb77dbe7868bfec580d9cbc21841b330dba081cd482b4d747807247f35f8fb",
+    "ui": "6ecee678094b29b1013ec201c75a48d880511c0aa2512dd332bfee06338ec950",
+    "tests": "bc5c47636189c7408a3e8a85167fd1a1f77f3ab7baa6c163b2f401a7a958c42a"
+  },
+  "source_diff_sha256": "2ca4d07d3601b8752fa63841b6a54e229e6778a7714dc6d6549f31569eec5a7c",
+  "outstanding": "Live provider contracts, other review issues and original grouped/final obligations remain open."
+}

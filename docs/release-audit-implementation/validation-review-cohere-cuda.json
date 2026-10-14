@@ -1,0 +1,66 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "source_commit": "d12d34fc307a303d957ad9fb5ed730b4474b4d00",
+  "groups": [
+    "R34",
+    "R35",
+    "R48",
+    "R49"
+  ],
+  "live_gate": "Actual Cohere Transcribe 2B int8, English, pinned advertised CUDA Sherpa 1.13.8 runtime on RTX 3090, real download/installation/readiness/GPU allocation/inference/cleanup.",
+  "prerequisites": {
+    "loaded_driver": "615.71.09",
+    "signed_driver_archive": "/var/cache/pacman/pkg/nvidia-utils-615.71.09-1-x86_64_v3.pkg.tar.zst",
+    "trusted_public_keyring": "/etc/pacman.d/gnupg/pubring.gpg",
+    "driver_key": "882DCFE48E2051D48E2562ABF3B607488DB35A47",
+    "host_cuda": "13.4.2-1",
+    "host_cudnn": "9.27.0.42-1.1",
+    "library_directories": "Private extracted matching driver first, then existing /opt/cuda/lib64 and /usr/lib; system libraries untouched."
+  },
+  "model": {
+    "id": "cohere-transcribe-03-2026",
+    "sha256": "bd582588d50685a795dcd2807ab77e11361b8312d96c53884682def45ab4206d",
+    "download_bytes": 1699791751,
+    "runtime": "sherpa-cuda",
+    "runtime_sha256": "7eddaee14a42d143ec995ed68e9ec3623dd6ca9d22076139d4c0879c3121c819",
+    "runtime_bytes": 254858007
+  },
+  "executed_validation": [
+    "Fresh cargo build --release --locked --example runtime_smoke succeeds; uses the release optimization profile.",
+    "Real pinned model and CUDA runtime downloads authenticate, extract and install atomically; actual readiness silence decode succeeds.",
+    "The unchanged probe requires the recorded server PID to own nonzero GPU memory; accepting only CPU fallback fails this assertion.",
+    "Synthetic 16 kHz mono speech recognizes the required hello word through actual Cohere/Sherpa WebSocket inference; elapsed 158.6 seconds.",
+    "Owned Sherpa process stops, disposable namespace exits zero and private driver/model/synthetic-audio directories are removed before final success."
+  ],
+  "retained_failures": [
+    "Debug probe does not reach runtime startup within the generic 120-second runner budget; its failure is retained.",
+    "A separately bounded 300-second debug scenario also exceeds the budget during installation. Its failure is retained; exact dominant installation cost is not independently profiled.",
+    "The optimized release probe passes with that same bounded 300-second large-asset test budget. This changes the test profile, not product limits: download/extraction/verification/startup/inference settings and speech/GPU assertions are unchanged."
+  ],
+  "compatibility": "No product code, worker counts, deadlines, data/schema/key/protocol/settings or installed-library changes. Matching driver prerequisites are extracted privately from a verified signed public archive. Existing CUDA 13/cuDNN 9 supply the advertised runtime dependencies.",
+  "limitations": [
+    "This verifies English Cohere CUDA, not every spoken language, CUDA model/backend combination or all GPU operators individually.",
+    "This is actual source-built release runtime acceptance on the local Arch host; clean booted NixOS and final packaged inference remain open.",
+    "Private-driver preparation avoids the existing mismatched host NVML; it does not install/repair system driver packages.",
+    "Authenticated WSS, paid cloud credentials/contracts and original shutdown/storage/sync/compositor/upgrade/final-review gates remain open. No PR submitted."
+  ],
+  "source_file_sha256": {
+    "examples/runtime_smoke.rs": "66ddf5adde8dd57a4fe6dfebcfa1705c5fc253070eb0dfefb2309382c427beef",
+    "src/stt.rs": "a7a54bdad91449fd63a08955af6628f55869bff9c4c4db69cc3ac9eff1f6425e",
+    "src/transcribe.rs": "de037374bb20d2609cf3d0e0fcf951488da0a65341064369c5ddd58dbac8f3b8",
+    "src/installed_asset.rs": "5d29b114e0ef937c1117c7663c0515584bc06e239a6e24616d074d31846c37ab",
+    "src/artifact.rs": "34c10df915353ac87ec597d2849a7328f06c728f25b40cd677a512afc6e5b0cc",
+    "scripts/disposable.py": "1d40ccc95f15516badb57c7cbb9df3bf1fd6d87c1821b902ffd1ba024e2b6b71"
+  },
+  "evidence_sha256": {
+    "debug-budget120-failure.log": "0eb3a23cff70293f47db3c49da31d7507e80fd8105e91b27b9ccc31f14bd06a9",
+    "debug-budget120.py": "4688e210e3e822d5e4e99d9e9672600cea9ff04b35cdf4ff6348b947383df20c",
+    "debug-budget300-failure.log": "75a020d17843df9e99c9c0a7094b7cfa944f34cdf1039c5b263560dcdaac6cef",
+    "debug-budget300.py": "008ede87645b0ca98a379d6231dca6590b0808ef5e12a50e7e9c3d1d055d51f4",
+    "debug-build.log": "ce752331408eb8a37a36c0b10b378c084f8121c9cd96959c743dc1a68b14203f",
+    "live-release.log": "4fa103917f36a28d0c3d675b6348b7d4fa19cd02dbb6c469ed92f89bfd51185d",
+    "live-release.py": "264eb3cfe3602fb23d81ec99c9cea907b96665bb70fcee847c8becebefd14560",
+    "release-build.log": "fc9d03a60cdc9e70b820ee1282f925548e2c45f0214c0e45e1b9b12293ed0f50"
+  }
+}

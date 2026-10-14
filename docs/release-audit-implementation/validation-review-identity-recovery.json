@@ -1,0 +1,33 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "source_commit": "e6047a734a62bcae9d702ea1e5be70589e585e7c",
+  "groups": [
+    "R06"
+  ],
+  "classification": "Acceptance coverage for the inspected/reproduced atomic provisioning defect; the cross-process lock and private atomic replacement were already implemented. No new demonstrated production defect was found in these interruption checks.",
+  "executed_validation": [
+    "Ten real SIGKILL cases: new keys and legacy 32-byte signing seed at creation, completed write, file fsync, rename and parent-directory fsync barriers.",
+    "For each case eight independent fresh processes are held behind the actual initialization lock until all eight opened its descriptor; then all converge on signing identity and SHA-256 fingerprint of the transport private key. A separate fresh process reopens the same identity.",
+    "Assertions require all interrupted material private before kill, no partial published key, legacy signing seed unchanged, and already-renamed 64-byte identity preserved byte-for-byte. All retained children have bounded deadlines and owner cleanup; only synthetic marked temporary roots are touched.",
+    "cargo fmt --all -- --check; cargo clippy --locked --all-targets -- -D warnings; cargo test --locked --all-targets: 264 passed, zero failed, five original opt-in ignores unchanged; cargo build --release --locked --bin mywhisper."
+  ],
+  "compatibility": "No key format, signing identity, transport identity, database, settings or protocol change. Test-only thread-local barriers are absent from production binaries; the production replacement sequence is unchanged.",
+  "limitations": [
+    "SIGKILL interruption does not establish physical power-loss durability or every filesystem/permission failure path.",
+    "Private orphan staging files are not adopted or claimed as published identities. Automatic orphan sweeping is not added; disposable roots clean up after all children are reaped.",
+    "Latest fresh Nix/native/live acceptance remains the ce6b000 production checkpoint with 263 tests, preserved separately. This checkpoint adds test-only fault barriers and one regression; the complete final candidate must rerun all required gates.",
+    "Full original shutdown, storage, sync, provider and release-acceptance obligations remain open; no PR submitted."
+  ],
+  "source_file_sha256": {
+    "src/device.rs": "6a634f855cdfdaa02575194114b86fd744c1a4882efb9e72723e4b5b9875527e",
+    "src/private_fs.rs": "633a0acebf3019ca2a572ca9bb6fc603506790b812005d80cee6265d85933973"
+  },
+  "evidence_sha256": {
+    "all-targets.log": "e0e73dd5f88748d97fe71cd3d73cded02ff6a68abd6e886127564eb8bbeea01a",
+    "clippy.log": "6380cd9524f0e982457637a52feb056417e7a0ef94b61a93cfb759a9a179f8fb",
+    "fmt-check.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "release.log": "1656a0f9c09af52eb78df436f6aaaf5dd65459d473f2e6c35deb5dce525edbc5",
+    "targeted.log": "26af24fa362df0b6c75cbda8839eb9c8288b65470dcd3a11fa395fb9adbedbd1"
+  }
+}

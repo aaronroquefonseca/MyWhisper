@@ -1,0 +1,41 @@
+FFF
+======================================================================
+FAIL: test_failure_cleans_detached_descendants (__main__.DisposableOwnership.test_failure_cleans_detached_descendants)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1/scripts/test-disposable.py", line 107, in test_failure_cleans_detached_descendants
+    self.run_case(7)
+    ~~~~~~~~~~~~~^^^
+  File "/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1/scripts/test-disposable.py", line 83, in run_case
+    self.assertTrue(select.select([pidfd], [], [], 1)[0], "gate left its detached, SIGTERM-ignoring grandchild alive")
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: [] is not true : gate left its detached, SIGTERM-ignoring grandchild alive
+
+======================================================================
+FAIL: test_killed_runner_cleans_detached_descendants (__main__.DisposableOwnership.test_killed_runner_cleans_detached_descendants)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1/scripts/test-disposable.py", line 110, in test_killed_runner_cleans_detached_descendants
+    self.run_case(0, kill_runner=True)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1/scripts/test-disposable.py", line 83, in run_case
+    self.assertTrue(select.select([pidfd], [], [], 1)[0], "gate left its detached, SIGTERM-ignoring grandchild alive")
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: [] is not true : gate left its detached, SIGTERM-ignoring grandchild alive
+
+======================================================================
+FAIL: test_success_cleans_detached_descendants (__main__.DisposableOwnership.test_success_cleans_detached_descendants)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1/scripts/test-disposable.py", line 104, in test_success_cleans_detached_descendants
+    self.run_case(0)
+    ~~~~~~~~~~~~~^^^
+  File "/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1/scripts/test-disposable.py", line 83, in run_case
+    self.assertTrue(select.select([pidfd], [], [], 1)[0], "gate left its detached, SIGTERM-ignoring grandchild alive")
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: [] is not true : gate left its detached, SIGTERM-ignoring grandchild alive
+
+----------------------------------------------------------------------
+Ran 3 tests in 3.305s
+
+FAILED (failures=3)

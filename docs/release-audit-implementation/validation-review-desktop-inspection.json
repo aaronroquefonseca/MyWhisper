@@ -1,0 +1,54 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "source_commit": "d12d34fc307a303d957ad9fb5ed730b4474b4d00",
+  "reported_issues": [
+    "System appearance uses light instead of the dark desktop preference",
+    "Microphone/dictionary/devices/settings icons show missing-image placeholders"
+  ],
+  "determination": "Both symptoms were introduced by the agent inspection launcher rather than changed application theme/icon code. No product workaround or system-theme change was made.",
+  "root_causes": [
+    "The first launcher used a private D-Bus session and private HOME/XDG directories, causing the separate portal to report a light preference. The real desktop portal reports uint32 1 and org.gnome.desktop.interface color-scheme prefer-dark.",
+    "The second launcher used the real portal but still hid the user-installed Tela-Apps index.theme. Without that index its Adwaita inheritance cannot be discovered; only the built-in view-list icon resolves."
+  ],
+  "correction": "Native inspection keeps disposable HOME/settings/database/identity/cache/state and the synthetic key, uses the actual desktop bus for appearance, and exposes only the existing public user icon directory through a symlink inside disposable data. The existing installed service and real data remain untouched.",
+  "regression_check": {
+    "result": "PASS: actual System-dark native inspection with Tela-Apps/Adwaita icon inheritance",
+    "before_isolated_icons": {
+      "theme": "Tela-Apps",
+      "icons": {
+        "audio-input-microphone-symbolic": false,
+        "view-list-symbolic": true,
+        "accessories-dictionary-symbolic": false,
+        "computer-symbolic": false,
+        "preferences-system-symbolic": false
+      }
+    },
+    "after_public_icon_access": {
+      "theme": "Tela-Apps",
+      "icons": {
+        "audio-input-microphone-symbolic": true,
+        "view-list-symbolic": true,
+        "accessories-dictionary-symbolic": true,
+        "computer-symbolic": true,
+        "preferences-system-symbolic": true
+      }
+    },
+    "theme_state": "[app] theme state: dark=true system-supports-color-schemes=true scheme=Default theme-name=Adwaita-empty",
+    "window_id": 11,
+    "application_pid": 24340,
+    "root": "/home/aaronroque/.cache/mywhisper-branch-preview.vb8t8dn8",
+    "application_code_changed": false,
+    "personal_settings_changed": false,
+    "public_icon_directory_only": "/home/aaronroque/.local/share/icons"
+  },
+  "limits": [
+    "Real host dark/System and five named icon-resolution checks; does not establish system-theme changes on every compositor or clean NixOS.",
+    "No personal transcripts/settings/keyring values or paid-provider credentials copied; the icon directory contains public graphical assets."
+  ],
+  "source_sha256": {
+    "src/app.rs": "f9c8b2589281fb6f7b4cfd51501b771fccfa81c5aa3fb0fcb77d98477e5c72bb",
+    "src/app_home.rs": "b1d9497c319d01a2b58546c94197ddf71f42d860270afbe79607f322b46f6d70",
+    "src/app.css": "92c13a4b9acfe814085ef6224eceff04d77a4ef2fbc99e6724325c7db9c14845"
+  }
+}

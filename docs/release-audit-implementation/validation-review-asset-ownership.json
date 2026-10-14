@@ -1,0 +1,60 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "baseline": "9f91e8d32fddabaa1895bae1c58dc897f902d63f",
+  "correction": "F09 provider admission and active-use ownership; safe legacy comparison and explicit local trust",
+  "tests": {
+    "passed": 231,
+    "failed": 0,
+    "original_ignored": 5
+  },
+  "passed": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo test --locked --all-targets",
+    "cargo build --release --locked --bin mywhisper",
+    "Both native UI configurations: all eight smoke/recovery/reset invocations",
+    "Fresh real pinned Tiny CPU model/runtime download, signed installation, verified provider admission, synthetic hello inference and owned cleanup: 8.4 seconds",
+    "14 packaging/upgrade tests",
+    "Current RustSec: 1296 advisories; zero vulnerabilities/warnings"
+  ],
+  "regressions": [
+    "A 96%-length managed Whisper file resolves as configuration but fails provider admission before server/subprocess use; rejected bytes are retained",
+    "Deleting the model during blocked inference revokes IO and kills the owned runtime; a stale use cannot kill a newer instance",
+    "Authentic legacy comparison preserves file contents and file/directory inodes; changed/extra files and cancellation preserve the installation without minting a receipt",
+    "Explicit local trust preserves intentional manual bytes and distinguishes local attestation from upstream authenticity; later corruption fails verification",
+    "Local trust refuses missing, empty or non-executable files",
+    "Replacement invalidates queued epochs and active proofs while retaining a valid new installation",
+    "Queued verification/trust cannot renew authority after delete/reset even at the same pathname"
+  ],
+  "migration_compatibility": "No database, network identity, keyring or peer format change. Existing upstream receipts serialize identically: the locally_trusted field defaults false and is omitted for authenticated receipts. Only an explicit application confirmation can create a local-trust receipt. Manual/quantized assets remain supported with local snapshot integrity rather than a claim of upstream authenticity. Legacy archive verification downloads and normalizes an authenticated reference, compares the complete tree, and adds only the receipt; mismatches retain every existing file. Asset epochs now advance before promotion; old queued/active uses retire. Failed promotion does not silently renew old authority.",
+  "privacy_cleanup": "Receipt signing still uses the separate private installation key. Verification does not inspect real user databases, keyrings, transcripts or recordings. Synthetic models/providers/PCM and disposable roots only. Every active provider scope holds its verified file snapshot; owned server instances keep their own asset proof and retire on deletion/reset/replacement, including forever-warm idle servers. No extra worker pool or time budget.",
+  "limitations": [
+    "Manual trust verifies a stable local snapshot, not upstream authenticity or model accuracy; the confirmation and installed-state label state this explicitly",
+    "The existing native UI suite passes but dedicated end-to-end clicks through the newly added verification/trust dialogs and broader manual/runtime acceptance remain required",
+    "Interrupted repair/promotion, disk-full/extraction, owned download DNS, remaining queued cross-process installer admission and full resource/privacy review remain R49 work",
+    "F07 oversized-record segmentation/slow-link acceptance and all remaining original audit obligations/final artifact/integration gates remain open; no PR submitted"
+  ],
+  "logs_sha256": {
+    "fmt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "clippy": "92885f4b49c0a4ea4833b16c9fa81e805c9c55a44796cce6fdaf41dbee22bc44",
+    "tests": "8050e45cac5d7b48174e1bd3be9a254bbc12e7cd1a2d51798ac7b7f0f25b1938",
+    "release": "765c11bbd967e8970e416aaa0b2965d0ffbbe90916709d0b6692ed8620761ab7",
+    "ui": "34530ce249856f09c1a5420e19b4240a0a0e0403882f621948ff1ddb7e946d16",
+    "runtime": "d2ae6c7dadce197871abcbd177b63684978bf23d4e65155e1c27a1cb8756ae2e",
+    "runtime-build": "5ca66cbfff2f6c73c55c33293408193d9ab97fe8e233d3563050b868e29d7cff",
+    "packaging": "1f6388f0e60b77f4d084b3b49dc4e30172ac14312e18d7e0e79b9c87f61f3ce6",
+    "upgrade": "bf4eab093d274e798776e9c5bd7691d3135efe33512f3c7036a5d0c5048e56b5"
+  },
+  "security_sha256": "c1fd5aed7215276b64781f0b19750419b3d763d31c3484b1b3eee5b80470a151",
+  "source_sha256": {
+    "src/installed_asset.rs": "5d29b114e0ef937c1117c7663c0515584bc06e239a6e24616d074d31846c37ab",
+    "src/artifact.rs": "fced201e27d7203ddbbcc6b97debffae7bd9b201ed9a27b33e8ab089956ee514",
+    "src/operation.rs": "ae5a5ef8ee6b318152eaf0e19900142913106ccdeafc3abe14e4ddbbbb333054",
+    "src/stt.rs": "cb03b8225b1dc8ee9d50830604758046b990fc479a81daa313b6d64bc75bb0cd",
+    "src/transcribe.rs": "ed279258d751b1df76eb4da15b03181de3b03a87c509588f0e2f239781fc177f",
+    "src/app_settings.rs": "9545559db1df623ebdd24704076f8defaa5d38068183868ca365987b67ad15cd",
+    "src/i18n.rs": "c0700fd0657f3c61ff5992329faf9bc26a3ea644e011a32cfcd1453d91e9a593"
+  },
+  "harness_note": "The cargo-audit executable is installed at /tmp/mywhisper-audit-tools/bin/cargo-audit, rather than on PATH. The initial cargo audit invocation did not run; the actual audit executable then completed successfully. No passing gate is inferred from that failed invocation."
+}

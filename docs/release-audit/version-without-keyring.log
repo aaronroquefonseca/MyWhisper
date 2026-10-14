@@ -1,0 +1,4 @@
+
+thread 'main' (3903701) panicked at src/bin/mywhisper.rs:22:74:
+open state.db: ToSqlConversionFailure("db key: keyring unavailable: No default store has been set, so cannot search or create entries (is a Secret Service running?)")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

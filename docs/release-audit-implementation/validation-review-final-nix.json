@@ -1,0 +1,46 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "source_commit": "cc0e7510489e4236cbd13c373670e4484eda346d",
+  "artifact": "/nix/store/47jcml2y5cl1hs0zjzkgdcp11sms56q1-mywhisper-0.9.3",
+  "build_store": "/tmp/mywhisper-nix-audit-store",
+  "build_directory": "target/nix-audit-build (private, on the larger disk; no host Nix daemon/sudo changes)",
+  "tests": {
+    "passed": 243,
+    "failed": 0,
+    "original_ignored": 5,
+    "sandbox_seconds": 23.92
+  },
+  "passed": [
+    "Actual committed-source Nix package build/check/install/fixup with its own Rust/GTK/libraries and complete unchanged assertions",
+    "370 dependency notices collected: dependency_notices_complete=true",
+    "Actual wrapped packaged binary version is mywhisper 0.9.3",
+    "Actual packaged GTK application becomes visible, responds to normal WM_DELETE_WINDOW, exits zero and creates encrypted disposable storage",
+    "Fresh real disposable Secret Service/keyring/sync lifecycle after the settings transaction correction: eight concurrent creators, missing/duplicate/locked/stalled keyring recovery and actual encrypted sync/mDNS lifecycle"
+  ],
+  "native_isolation": "A private D-Bus/Xvfb session and bubblewrap read-only host root map the disposable Nix store and allow writes only in private HOME/XDG roots. The private /dev contains no input/audio devices, and the application runs only as GUI, with no service, capture, microphone, provider credentials or host keyring. A synthetic environment database key is used only in this packaged GUI startup check; the separate keyring gate uses its owned real Secret Service and no environment key. The native probe requests normal GTK shutdown with WM_DELETE_WINDOW rather than destroying/killing the client.",
+  "compatibility": "Schema-8 source and current receipt/identity behavior are compiled and exercised by the sandbox tests. The compiled artifact matches Cargo version 0.9.3, includes desktop/icon/service metadata and third-party notices. No project LICENSE is added, per user deferral; distribution remains held. This local artifact is not published or tagged.",
+  "failure_history": [
+    "First attempt on /tmp exceeded the tmpfs disk quota; changed only the owned build directory, not test/production budgets.",
+    "Packaged-source test compilation lacked the historical C fixture; copied it byte-identically into src/test_fixtures and kept the original untouched. Fixed FHS-only fake-provider interpreter assumptions and declared getent as a check prerequisite.",
+    "The actual sandbox then reproduced a concurrent settings write snapshot-upgrade failure; correction and before/after regression are isolated in 2a3efc6. Final sandbox passes 243 tests.",
+    "Native timing checks retain their original assertions and pass after compilation load stops; no assertions, tests or opt-in ignores were weakened/removed."
+  ],
+  "limits": [
+    "This validates a Nix-built artifact and actual GTK startup/shutdown on the local Arch kernel/display stack, not a booted clean NixOS desktop or every packaged runtime/provider/compositor/upgrade path",
+    "The packaged startup fixture checks visibility, normal completion and encrypted storage; the separate native suites exercise UI behavior and trust dialogs",
+    "Clean final Arch install/upgrade, clean NixOS desktop/compositor, complete final packaged provider/runtime behavior, authenticated WSS/live cloud contracts, physical microphone/device changes and other supported compositor gates remain open",
+    "Original matrix still has implementation/scale/privacy/cleanup/documentation requirements; no PR submitted"
+  ],
+  "artifact_sha256": {
+    "bin/mywhisper": "aacb983739ac0c6e53b3d6e40c30690b87dfe888a97eeeaf03a62a2624d2b2e3",
+    "bin/.mywhisper-wrapped": "b562b9dc2225fe8b59b564f6c4b01347f8359bd1c148506abc6d8a99a705d4dc"
+  },
+  "logs_sha256": {
+    "build": "db6ce5a60e064461494be02c795e5684c145a8084bf1087a45367b1f6e02b636",
+    "version": "74f568e9cf97672590d8a0fbc2ca234d2ab7ae6322ae44c4ac92b9b45e2f2bda",
+    "native": "633870e5f8026d99897dff3fb149b8c1cb8cc173d932b2bed69831541bf3dbaa",
+    "keyring": "7cc0419fe97fa2c8708bbd2801cf7efa67c9d58201cd2b57773f5eca6c89b9ae"
+  },
+  "native_probe_sha256": "9d4d0dc7dfdeed7542902c2c57aa903c29c3891a4d796825e616bbf092cfdb96"
+}

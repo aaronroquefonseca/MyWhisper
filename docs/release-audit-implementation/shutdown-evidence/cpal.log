@@ -1,0 +1,73 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+
+running 1 test
+test mic::format_regressions::interleaved_frames_downmix_without_changing_duration_or_order ... [poc] real mic active: Default Audio Device (SupportedStreamConfig { channels: 1, sample_rate: 48000, buffer_size: Unknown, sample_format: F32 })
+Native CPAL f32/1 channels: synthetic source captured, downmixed and closed
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 272 filtered out; finished in 0.17s
+
+
+running 1 test
+test mic::format_regressions::interleaved_frames_downmix_without_changing_duration_or_order ... [poc] real mic active: Default Audio Device (SupportedStreamConfig { channels: 2, sample_rate: 48000, buffer_size: Unknown, sample_format: F32 })
+Native CPAL f32/2 channels: synthetic source captured, downmixed and closed
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 272 filtered out; finished in 0.17s
+
+
+running 1 test
+test mic::format_regressions::interleaved_frames_downmix_without_changing_duration_or_order ... [poc] real mic active: Default Audio Device (SupportedStreamConfig { channels: 6, sample_rate: 48000, buffer_size: Unknown, sample_format: F32 })
+Native CPAL f32/6 channels: synthetic source captured, downmixed and closed
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 272 filtered out; finished in 0.17s
+
+
+running 1 test
+test mic::format_regressions::interleaved_frames_downmix_without_changing_duration_or_order ... [poc] real mic active: Default Audio Device (SupportedStreamConfig { channels: 1, sample_rate: 48000, buffer_size: Unknown, sample_format: I16 })
+Native CPAL i16/1 channels: synthetic source captured, downmixed and closed
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 272 filtered out; finished in 0.17s
+
+
+running 1 test
+test mic::format_regressions::interleaved_frames_downmix_without_changing_duration_or_order ... [poc] real mic active: Default Audio Device (SupportedStreamConfig { channels: 2, sample_rate: 48000, buffer_size: Unknown, sample_format: I16 })
+Native CPAL i16/2 channels: synthetic source captured, downmixed and closed
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 272 filtered out; finished in 0.17s
+
+
+running 1 test
+test mic::format_regressions::interleaved_frames_downmix_without_changing_duration_or_order ... [poc] real mic active: Default Audio Device (SupportedStreamConfig { channels: 6, sample_rate: 48000, buffer_size: Unknown, sample_format: I16 })
+Native CPAL i16/6 channels: synthetic source captured, downmixed and closed
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 272 filtered out; finished in 0.17s
+
+
+running 1 test
+test mic::format_regressions::interleaved_frames_downmix_without_changing_duration_or_order ... [poc] real mic active: Default Audio Device (SupportedStreamConfig { channels: 1, sample_rate: 48000, buffer_size: Unknown, sample_format: U16 })
+Native CPAL u16/1 channels: synthetic source captured, downmixed and closed
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 272 filtered out; finished in 0.17s
+
+
+running 1 test
+test mic::format_regressions::interleaved_frames_downmix_without_changing_duration_or_order ... [poc] real mic active: Default Audio Device (SupportedStreamConfig { channels: 2, sample_rate: 48000, buffer_size: Unknown, sample_format: U16 })
+Native CPAL u16/2 channels: synthetic source captured, downmixed and closed
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 272 filtered out; finished in 0.17s
+
+
+running 1 test
+test mic::format_regressions::interleaved_frames_downmix_without_changing_duration_or_order ... [poc] real mic active: Default Audio Device (SupportedStreamConfig { channels: 6, sample_rate: 48000, buffer_size: Unknown, sample_format: U16 })
+Native CPAL u16/6 channels: synthetic source captured, downmixed and closed
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 272 filtered out; finished in 0.17s
+

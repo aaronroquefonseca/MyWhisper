@@ -1,0 +1,269 @@
+   Compiling mywhisper v0.9.3 (/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.31s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 205 tests
+test app_insights::tests::calendar_cells_fit_wide_cards_and_keep_a_readable_minimum ... ok
+test app_sync::tests::manual_addresses_require_a_host_and_nonzero_port ... ok
+test app_sync::tests::pairing_requires_a_full_hex_id ... ok
+test address::tests::dns_answers_are_typed_deduplicated_and_bounded ... ok
+test app_settings::tests::shortcut_conflicts_use_parsed_keys_instead_of_spelling ... ok
+test address::tests::ip_literals_and_numeric_or_named_ipv6_scopes_are_preserved ... ok
+test app_settings::tests::provider_urls_require_a_host_and_supported_transport ... ok
+test app_settings::tests::capture_maps_keys_to_combo_tokens ... ok
+test artifact::tests::expansion_and_cancellation_limits_precede_member_writes ... ok
+test audio::tests::recorder_drain_semantics ... ok
+test audio::tests::wav_header_shape ... ok
+test audio::tests::audio_vault_clear_and_purge ... ok
+test audio::tests::resample_passthrough_16k ... ok
+test clipboard::tests::backend_dep_strings_present ... ok
+test hotkey::device_held_regressions::release_and_disconnect_remove_only_the_owning_keyboard ... ok
+test artifact::tests::registry_ids_with_decimal_versions_are_valid_but_path_components_are_not ... ok
+test device::provisioning_tests::invalid_identity_is_preserved_and_display_is_unicode_safe ... ok
+test diagnostics::tests::typed_errors_keep_location_without_echoing_values ... ok
+test hotkey::ownership_regressions::cancellation_retires_every_mode_before_the_next_toggle ... ok
+test hotkey::ownership_regressions::mixed_bindings_cannot_release_a_session_they_did_not_open ... ok
+test hotkey::ownership_regressions::smart_timing_uses_its_own_monotonic_press_and_survives_backward_clock ... ok
+test hotkey::ownership_regressions::escape_retires_a_toggle_even_before_the_engine_processes_its_press ... ok
+test audio::tests::vad_trims_silence_and_detects_none ... ok
+test hotkey::ownership_regressions::overlapping_keyboards_keep_target_down_until_the_last_release ... ok
+test hotkey::ownership_regressions::unplug_only_cancels_the_binding_owned_by_that_keyboard ... ok
+test hotkey::ownership_regressions::unplug_a_required_modifier_cancels_only_after_its_last_owner_is_gone ... ok
+test hotkey::mapping_regressions::inverse_tokens_round_trip_and_nested_bindings_match_exactly ... ok
+test hotkey::ownership_regressions::escape_mute_repeats_and_rapid_cycles_do_not_emit_stale_releases ... ok
+test hotkey::mapping_regressions::punctuation_aliases_and_all_canonical_tokens_round_trip ... ok
+test hotkey::tests::parses_f13_and_combos ... ok
+test hotkey::suspend_handshake_tests::released_capture_nonce_cannot_replay_during_a_new_frontend_start ... ok
+test hotkey::tests::evdev_codes_roundtrip_through_parser ... ok
+test hotkey::tests::mods_gate_correctly ... ok
+test hotkey::tests::rescan_merge_keeps_fds ... ok
+test hotkey::tests::smart_tap_holds_toggle ... ok
+test audio::tests::resample_44k_to_16k_ratio ... ok
+test maintenance::tests::closing_owner_interrupts_a_long_idle_timer ... ok
+test hotkey::tests::virtual_keyboard_fires_down_up ... ok
+test mic::format_regressions::capture_shutdown_drains_queued_audio_into_its_original_recorder ... ok
+test mic::format_regressions::interleaved_frames_downmix_without_changing_duration_or_order ... ok
+test mic::format_regressions::partial_channel_frames_and_invalid_samples_are_handled_explicitly ... ok
+test mic::format_regressions::tiny_callbacks_coalesce_and_pending_batches_survive_owner_change_and_drop ... ok
+test i18n::tests::english_and_spanish_have_matching_placeholders ... ok
+test i18n::tests::desktop_ui_literal_translation_tags_exist ... ok
+test mic::lifecycle_regressions::unavailable_real_capture_has_no_simulated_feedback ... ok
+test mic::tests::builtin_picker_prefers_onboard ... ok
+test audio::tests::resample_chunked_matches_whole ... ok
+test mic::tests::mic_gated_on_dictation_active ... ok
+test mic::format_regressions::callback_queue_never_allocates_blocks_or_redirects_old_slices ... ok
+test app_dictionary::tests::duplicate_validation_respects_aliases_case_and_the_edited_record ... ok
+test audio::tests::capture_bounds_empty_slices_metadata_rate_changes_and_late_queued_audio ... ok
+test media::tests::no_players_is_empty_success ... ok
+test audio::tests::ten_minute_synthetic_capture_has_fixed_memory_and_linear_stream_copying ... ok
+
+running 1 test
+test audio::tests::settle_release_cuts_at_release_plus_straddler ... ok
+test hotkey::tests::saved_startup_mute_and_feedback_apply_before_first_input ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 204 filtered out; finished in 0.00s
+
+test hotkey::tests::saved_startup_mute_and_feedback_apply_before_first_input ... ok
+test artifact::tests::extraction_preserves_safe_runtime_links_but_rejects_escape_graphs ... ok
+test artifact::tests::delete_and_reset_invalidate_active_installers_before_waiting_for_cleanup ... ok
+test net::tests::queued_enumeration_cannot_gain_permission_after_disable_and_reenable ... ok
+test operation::tests::capture_authority_survives_phase_change_but_not_database_replacement ... ok
+test provider_contract::tests::claude_budget_and_adaptive_modes_match_model_capabilities ... ok
+test provider_contract::tests::completed_policy_empty_answers_are_successes ... ok
+test provider_contract::tests::thoughts_never_become_answers_and_partial_replies_are_rejected ... ok
+test operation::tests::unreadable_capture_policy_stays_denied_after_recovery ... ok
+test maintenance::tests::idle_worker_expires_existing_data_with_recording_off_and_stops_with_owner ... ok
+test process_status::tests::status_requires_the_same_process_and_its_actual_listening_socket ... ok
+test mic::lifecycle_regressions::startup_cancel_joins_reader_and_reaps_owned_process_without_waiting_for_audio ... ok
+test child::tests::communicates_large_input_without_pipe_deadlock ... ok
+test reset::tests::database_replacement_after_commit_denies_old_reset_filesystem_cleanup ... ok
+test reset::tests::cleanup_failure_reports_committed_settings_and_retry_preserves_new_edits ... ok
+test reset::tests::intent_revokes_active_capture_and_prevents_installer_promotion_before_commit ... ok
+test runtime::finalization_tests::slow_first_delivery_cannot_be_overtaken_and_panic_does_not_stop_queue ... ok
+test reset::tests::malformed_or_foreign_recovery_records_never_authorize_a_new_database_reset ... ok
+test child::tests::bounds_stalled_input_output_and_nonzero_exit ... ok
+test reset::tests::schema_five_upgrade_preserves_records_and_conservatively_restores_pending_reset ... ok
+test selection::regressions::clipboard_preloads_markers_and_old_sources_do_not_complete_current_paste ... ok
+test database_key::tests::create_item_prompt_is_dismissed_before_activation_and_its_future_is_cancelled ... ok
+test selection::regressions::partial_unicode_transfer_completes_only_after_all_bytes_and_eof ... ok
+test settings::legacy_shortcut_regressions::absent_new_list_preserves_legacy_but_explicit_new_and_empty_lists_win ... ok
+test settings::snippet_tests::triggers_split_commas ... ok
+test settings::tests::chain_respects_order_and_enabled ... ok
+test settings::tests::cloud_defaults_sane ... ok
+test settings::tests::ensure_seed_migrates_legacy ... ok
+test sound::tests::cues_render_expected_length_and_level ... ok
+test selection::regressions::stalled_closed_and_excessive_recipients_release_every_descriptor ... ok
+test speculative::tests::agreement_confirms_stable_prefix ... ok
+test speculative::tests::window_keeps_overlap ... ok
+test speculative::tests::merge_overlaps_or_concatenates ... ok
+test reset::tests::admission_and_state_notifications_do_not_wait_for_database_or_installer_locks ... ok
+test store::capture_privacy_regressions::background_open_does_not_recreate_a_removed_database_or_accept_a_symlink ... ok
+test store::capture_privacy_regressions::audio_and_text_commit_under_current_policy_and_cancel_never_keeps_payloads ... ok
+test store::capture_privacy_regressions::idle_retention_redacts_expired_text_removes_audio_and_recovers_orphaned_writes ... ok
+test reset::tests::interrupted_reset_recovers_each_durable_phase_without_wiping_later_edits ... ok
+test store::capture_privacy_regressions::zero_retention_keeps_history_but_bounds_audio_and_preserves_exact_boundary ... ok
+test store::release_regressions::content_round_is_atomic_and_repeated_snapshots_do_not_refresh_generation ... ok
+test store::release_regressions::atomic_sync_authorization_rejects_missing_and_unreadable_permissions ... ok
+test runtime::tests::pool_runs_jobs ... ok
+test store::capture_privacy_regressions::privacy_reset_clear_and_off_on_boundaries_reject_old_capture_payloads ... ok
+test net::tests::spoofed_node_id_rejected ... ok
+test selection::regressions::cancellation_interrupts_a_compositor_that_never_answers ... ok
+test store::release_regressions::missing_or_future_settings_cannot_be_treated_as_a_new_configuration ... ok
+test store::release_regressions::missing_retention_policy_preserves_data_until_explicit_recovery ... ok
+test store::release_regressions::old_missing_settings_recover_conservatively_without_losing_user_data ... ok
+test artifact::tests::verified_bytes_only_replace_a_complete_installation ... ok
+test store::release_regressions::discarded_only_merges_converge_without_retaining_speech ... ok
+test store::release_regressions::incomplete_existing_settings_never_restore_missing_permissions ... ok
+test store::release_regressions::settings_edits_preserve_unknown_root_nested_and_entry_fields ... ok
+test net::tests::trickled_frames_obey_whole_frame_deadline_and_reject_lengths ... ok
+test store::release_regressions::reset_clears_trust_preserves_tombstones_and_blocks_gossip_repair ... ok
+test store::release_regressions::schema_three_upgrade_redacts_discarded_rows_without_losing_marker_duration ... ok
+test store::release_regressions::settings_missing_fields_preserve_privacy_and_corrupt_blobs_cannot_be_overwritten ... ok
+test store::release_regressions::received_round_authorization_is_checked_inside_the_atomic_commit ... ok
+test net::tests::disable_and_reenable_during_handshake_never_exports_the_queued_snapshot ... ok
+test store::release_regressions::settings_read_failure_is_conservative_and_recoverable ... ok
+test net::tests::stopped_engine_cancels_queued_dials_and_an_active_noise_handshake ... ok
+test store::tests::auto_delete_keeps_tombstones ... ok
+test store::release_regressions::rapid_local_edits_advance_past_future_remote_versions ... ok
+test store::release_regressions::thinking_model_default_survives_reload_and_missing_legacy_field_migrates_once ... ok
+test store::tests::discarded_rows_filter_and_sync ... ok
+test store::release_regressions::two_frontend_snapshots_patch_changed_preferences_without_copying_dictionary ... ok
+test store::tests::older_write_does_not_resurrect ... ok
+test store::tests::bulk_deletion_survives_sync_with_an_older_peer ... ok
+2026-10-10 21:34:35.073: ERROR CORE sqlcipher_page_cipher: hmac check failed for pgno=1
+2026-10-10 21:34:35.073: ERROR CORE sqlite3Codec: error decrypting page 1 data: 1
+2026-10-10 21:34:35.073: ERROR CORE sqlcipher_codec_ctx_set_error 1
+2026-10-10 21:34:35.074: ERROR CORE sqlcipher_page_cipher: hmac check failed for pgno=1
+2026-10-10 21:34:35.074: ERROR CORE sqlite3Codec: error decrypting page 1 data: 1
+2026-10-10 21:34:35.074: ERROR CORE sqlcipher_codec_ctx_set_error 1
+2026-10-10 21:34:35.078: ERROR CORE sqlcipher_page_cipher: hmac check failed for pgno=1
+2026-10-10 21:34:35.078: ERROR CORE sqlite3Codec: error decrypting page 1 data: 1
+2026-10-10 21:34:35.078: ERROR CORE sqlcipher_codec_ctx_set_error 1
+test store::tests::shared_gen_moves_on_write ... ok
+test store::tests::server_cmd_is_one_shot ... ok
+test stt::lang_tests::cancelled_cohere_download_does_not_replace_existing_files ... ok
+test stt::lang_tests::every_model_has_languages ... ok
+2026-10-10 21:34:35.078: ERROR CORE sqlcipher_page_cipher: hmac check failed for pgno=1
+2026-10-10 21:34:35.078: ERROR CORE sqlite3Codec: error decrypting page 1 data: 1
+2026-10-10 21:34:35.078: ERROR CORE sqlcipher_codec_ctx_set_error 1
+test stt::lang_tests::whisper_list_is_complete ... ok
+test stt::tests::capability_matrix ... ok
+test stt::tests::downloads_cpu_pack ... ignored
+test stt::tests::downloads_tiny_model ... ignored
+test stt::tests::find_model_resolves_all_ids ... ok
+test stt::tests::registry_is_complete_and_consistent ... ok
+test stt::tests::whisper_stems_map_to_filenames ... ok
+test store::tests::interrupted_key_provision_candidates_recover_existing_data_without_replacement ... ok
+test sync_jobs::tests::resources_run_independently_and_panics_do_not_drop_pending_updates ... ok
+test store::tests::settings_engine_switch_roundtrip ... ok
+test textnorm::tests::prompt_joins_and_trims_at_comma ... ok
+test textnorm::tests::snippets_empty_is_passthrough ... ok
+test textnorm::tests::snippets_longest_first_and_boundaries ... ok
+test textnorm::tests::snippets_turkish_dot ... ok
+test textnorm::unicode_budget_tests::dictionary_utf8_never_exceeds_provider_byte_budget ... ok
+test address::tests::pending_connect_is_cancelled_without_waiting_for_its_dial_deadline ... ok
+test store::tests::retained_history_deletion_survives_sync ... ok
+test store::tests::shared_gen_visible_across_connections ... ok
+test transcribe::tests::cancelled_server_status_stops_before_connecting_or_advancing ... ok
+test transcribe::tests::chain_falls_back_past_broken_first ... ok
+test transcribe::tests::cloud_url_join ... ok
+test transcribe::tests::deepgram_pointer ... ok
+test store::release_regressions::stale_authorized_exports_reject_every_privacy_boundary ... ok
+test artifact::tests::cancellation_interrupts_stalled_headers_and_body_without_server_progress ... ok
+test transcribe::tests::incompatible_local_language_is_rejected_without_changing_remote_fallback ... ok
+test transcribe::tests::lang_param_auto_omits ... ok
+test transcribe::tests::live_oruk_offline_roundtrip ... ignored
+test transcribe::tests::multipart_shape ... ok
+2026-10-10 21:34:35.104: ERROR CORE sqlcipher_page_cipher: hmac check failed for pgno=1
+2026-10-10 21:34:35.104: ERROR CORE sqlite3Codec: error decrypting page 1 data: 1
+2026-10-10 21:34:35.104: ERROR CORE sqlcipher_codec_ctx_set_error 1
+test device::provisioning_tests::concurrent_create_and_legacy_migration_share_one_private_identity ... ok
+test transcribe::tests::online_segments_accumulate ... ok
+test store::release_regressions::migration_wrong_key_newer_schema_and_simultaneous_openers_preserve_data ... ok
+test transcribe::tests::plan_cloud_needs_key ... ok
+test store::tests::divergent_edits_converge_with_newest_winning ... ok
+test transcribe::tests::plan_routing_needs_files ... ok
+test transcribe::tests::plans_selfhosted_ws_and_bearer ... ok
+test transcribe::tests::plan_cohere_requires_complete_model_and_an_explicit_supported_language ... ok
+test transcribe::tests::prompt_defaults_and_suffix ... ok
+test transcribe::tests::needle_committed_deltas_preserve_every_word_and_reject_malformed_output ... ok
+test sync_jobs::tests::dirty_updates_replay_latest_after_active_round_without_starving_other_peers ... ok
+test transcribe::tests::foreign_server_markers_and_stale_pid_metadata_never_grant_ownership ... ok
+test mic::lifecycle_regressions::partial_sample_reads_and_device_exit_have_distinct_health_from_silence ... ok
+test transcribe::tests::repeated_speculative_cancellation_preserves_settled_tail_without_waiting_for_tick ... ok
+test transcribe::tests::server_net_defaults_and_overrides ... ok
+test transcribe::tests::sherpa_text_field ... ok
+test transcribe::tests::spec_thread_roundtrip ... ignored
+test store::release_regressions::deletion_clear_expiry_and_merge_never_export_content_or_resurrect ... ok
+test runtime::tests::panicking_job_does_not_kill_pool ... ok
+test store::tests::activity_counts_all_history_and_only_measured_speed ... ok
+test transcribe::tests::whisper_text_or_segments ... ok
+test artifact::tests::truncated_oversized_and_unknown_length_bodies_fail_closed ... ok
+test transcribe::tests::queued_discard_markers_keep_the_original_database_authority ... ok
+test transcribe::tests::whistle_output_text_or_json ... ok
+test transcribe::tests::whistle_plan_needs_files ... ok
+test transcribe::tests::whistle_staging_is_unique_private_and_removed_on_error ... ok
+test transcribe::tests::whistle_stdout_shapes ... ok
+test transcribe::tests::whistle_stream_roundtrip ... ignored
+test update::tests::stable_selection_ignores_publication_order_prereleases_drafts_and_bad_tags ... ok
+test reset::tests::reset_owns_cleanup_across_installer_processes_and_killed_coordinators ... ok
+test transcribe::tests::whistle_drains_last_line_and_rejects_partial_failure ... ok
+test hotkey::suspend_handshake_tests::capture_requires_fresh_ack_and_recovers_after_process_exit ... ok
+test transcribe::tests::revoked_cli_operations_reap_children_and_remove_owned_audio ... ok
+test transcribe::tests::an_authorized_recording_still_uses_its_http_fallback ... ok
+test store::release_regressions::concurrent_merges_and_local_edits_preserve_newest_version ... ok
+test net::tests::loopback_sync_converges_and_rejects_untrusted ... ok
+test transcribe::tests::finalization_and_completion_panics_release_ownership_once ... ok
+test transcribe::tests::persisted_ollama_thinking_choices_reach_the_actual_request ... ok
+test transcribe::tests::cancelled_http_partial_upload_closes_before_sending_the_whole_body ... ok
+test transcribe::tests::privacy_diagnostics_omit_speech_credentials_and_provider_content ... ok
+test transcribe::tests::provider_replies_are_bounded_complete_and_utf8 ... ok
+test net::tests::discarded_payloads_converge_over_encrypted_sync_and_later_deletion ... ok
+test transcribe::tests::whistle_fifo_start_and_backpressure_have_deadlines_and_reap ... ok
+test net::tests::edits_during_an_active_outgoing_job_replay_over_real_encrypted_loopback ... ok
+test net::tests::disabling_sync_interrupts_an_active_stalled_encrypted_export ... ok
+test transcribe::tests::revoked_websocket_authority_rejects_new_audio_and_interrupts_completion ... ok
+test transcribe::tests::websocket_resolver_cancellation_recovers_owned_task_budget ... ok
+test transcribe::tests::websocket_cancellation_interrupts_setup_write_and_completion ... ok
+test transcribe::tests::arming_database_stall_never_blocks_release_or_cancel ... ok
+test mic::lifecycle_regressions::exited_or_silent_capture_process_cannot_report_readiness ... ok
+test transcribe::tests::cancelled_or_reset_http_never_discloses_to_fallbacks ... ok
+test transcribe::tests::websocket_stalled_nss_cannot_escape_startup_deadline ... ok
+
+test result: ok. 200 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 6.47s
+
+     Running unittests src/bin/mywhisper.rs (target/debug/deps/mywhisper-dae779376b5a589f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/pill.rs (target/debug/deps/pill-00f4c97698747eeb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/clipboard_smoke.rs (target/debug/examples/clipboard_smoke-5f46e10574511077)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/runtime_smoke.rs (target/debug/examples/runtime_smoke-322e0882e3cf1fe8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/store_probe.rs (target/debug/examples/store_probe-e3b1876a86a647fe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/ui_preview.rs (target/debug/examples/ui_preview-88fe6eb3f3a4a7b3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

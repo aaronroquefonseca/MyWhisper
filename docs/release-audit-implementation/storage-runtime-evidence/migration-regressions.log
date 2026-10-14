@@ -1,0 +1,16 @@
+   Compiling mywhisper v0.9.3 (/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.24s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-7ad4458611a62635)
+
+running 3 tests
+test store::migration_tests::unsupported_plaintext_schema_preserves_its_original_file ... ok
+test store::migration_tests::legacy_writer_cannot_commit_between_export_and_replacement ... ok
+Killed migration recovered: migration-created; four competing processes; Unicode/settings preserved
+Killed migration recovered: migration-exported; four competing processes; Unicode/settings preserved
+Killed migration recovered: migration-file-synced; four competing processes; Unicode/settings preserved
+Killed migration recovered: migration-renamed; four competing processes; Unicode/settings preserved
+Killed migration recovered: migration-directory-synced; four competing processes; Unicode/settings preserved
+test store::migration_tests::killed_plaintext_migration_recovers_with_competing_fresh_processes ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 273 filtered out; finished in 0.38s
+

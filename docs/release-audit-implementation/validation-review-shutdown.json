@@ -1,0 +1,94 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "source_commit": "9b08ddb5409ebcd0a31b13cba0fe985169424012",
+  "baseline_commit": "2d442a2",
+  "groups": [
+    "R05",
+    "R08",
+    "R10",
+    "R13",
+    "R33",
+    "R34",
+    "R39",
+    "R41",
+    "R42",
+    "R45",
+    "R50"
+  ],
+  "classification": "Demonstrated SIGTERM termination without cleanup/checkpoint; inspected detached/static-owner and queued-work lifetime defects; regression reproduces work-counter completion before encrypted thread-local cleanup.",
+  "corrections": [
+    "Process admission and actual handle publication share a closing boundary. All owned threads remain joinable, including retained owners, until real join/TLS cleanup. Session capacity is returned exactly once after actual join. No join occurs on input/admission paths.",
+    "Closing wakes registered maintenance/service timer owners; active provider/socket/process/download/clipboard/microphone loops reject closing; outgoing sync queues are stopped and startup waits are interruptible. Queued pool/finalization/process-launch work drops captured resources without starting its body.",
+    "Normal GUI close and SIGINT/SIGTERM publish cancellation via GLib. Native teardown stops hotkeys, sync and actually owned servers, disconnects runtime producers, joins every registered actual handle and checkpoints encrypted storage outside GTK. Repeated signals remain handled during cleanup.",
+    "Headless service explicitly removes its poll source and releases its application hold rather than forgetting the hold and leaving capture/UI producers retained."
+  ],
+  "regression_coverage": [
+    "Three isolated fresh-process regressions: retained idle owner with delayed encrypted TLS destruction and late admission rejection; actual stalled partial HTTP response and subprocess cancellation/reaping plus denied clipboard/asset authority; all fixed workers and ordered finalization occupied while queued captured encrypted Stores are discarded/closed.",
+    "Catch-up wait starts with a passing permission check, then original-owner cancellation interrupts the three-second delay within 250 ms before database IO; expired delay and already-cancelled owner also checked.",
+    "Identical actual GUI SIGTERM gate fails against the baseline release binary and passes after; normal GUI close, GUI SIGTERM/SIGINT, service SIGTERM/SIGINT/repeated mixed signals all exit zero within original three-second gate and reopen encrypted synthetic data/settings."
+  ],
+  "executed_validation": [
+    "cargo fmt --all -- --check: pass",
+    "cargo clippy --locked --all-targets -- -D warnings: pass",
+    "cargo test --locked --all-targets: 268 passed, zero failed, five original opt-in ignores unchanged",
+    "cargo build --release --locked --bin mywhisper --example shutdown_fixture: pass",
+    "Current cargo-audit 0.22.2: 479 lockfile dependencies, zero vulnerabilities/warnings; current RustSec 7eebec69c352c7191b1f13eb95dd510eeca5d1de, 1296 advisories",
+    "Both native light/en and dark/es UI configurations: all 12 general/model-load/recovery/reset invocations and both real pinned-asset verification/trust dialogs pass",
+    "Native CPAL: all f32/i16/u16 x mono/stereo/6-channel software-device configurations pass",
+    "Native nested niri/wtype clipboard delayed consumption, restoration, replacement, cancellation and copy/no-op pass",
+    "Private real Secret Service: eight concurrent creators and missing/duplicate/locked/stalled recovery, cached capture provisioning, private encrypted sync listener replacement/outbound-only/mDNS teardown pass",
+    "Nine packaging release tests and five upgrade tests pass; all 372 resolved dependency notices collected"
+  ],
+  "migration_compatibility": "No schema, peer protocol, identity/key, settings, model or user-data change. Existing worker/queue/session limits and normal IO budgets preserved. Dedicated Rust thread helpers now return shared OwnedThread handles; all application callers retain compatible ownership. GLib Unix 0.22 bindings add two lockfile packages and complete notices without raising the existing GLib/Rust platform floor.",
+  "privacy_and_cleanup_review": "No host settings, keyring, transcript, clipboard, microphone or service state was modified. Live checks own their XDG/DBus/display/identities/keyrings and synthetic keys/audio/transcripts. Shutdown clears only its owned clipboard selection and terminates only its owned process groups/servers. Actual joins cover captured Stores and TLS before checkpoint; cleanup errors return failure and preserve the database.",
+  "failure_history": [
+    "Missing local cargo-audit executable corrected with a private task-only tool installation; original setup failure retained.",
+    "An intermediate implementation used is_finished to join under admission; delayed TLS cleanup demonstrated why this blocks admission. Corrected to prune only actually joined handles, with retained-owner admission regression."
+  ],
+  "limits": [
+    "This correction establishes the enumerated native/process shutdown cases and owned HTTP/child/TLS/queue cleanup. It does not certify every physical audio/backend syscall or full active-service/provider/resource stress case.",
+    "Fresh final Nix artifact, clean booted Arch/NixOS desktops, running upgrades, remaining live provider/compositor integrations and final complete diff/migration/privacy/cleanup acceptance remain open.",
+    "No disposable paid-provider credentials have been established; successful authenticated WSS and paid cloud contracts still need actual live acceptance.",
+    "All original grouped outstanding requirements remain tracked in the findings matrix; no PR/tag/release submitted. Project LICENSE remains deferred by user and distribution held."
+  ],
+  "source_file_sha256": {
+    "Cargo.lock": "e01d2c7edcc4a834a77748e15a926b274af732de6b4ad12e968ed16db4261951",
+    "Cargo.toml": "33ad64f214b18a1f9b1add9826a56ecd175b9eef8e968ba4a727ee1ba00e3387",
+    "examples/shutdown_fixture.rs": "6d58750372a7e88919182cc17491aa09603e23f8f512e2092d66ebbfd53925ec",
+    "scripts/shutdown-smoke.py": "d1231b9a54e9c85a8755a24dbc855e170f0e82b15828f60831beb24856f3c446",
+    "src/artifact.rs": "ca912748e59eafe1643f459c35ed129cffed2ad02d0b73fd081ae67f103131f8",
+    "src/bin/mywhisper.rs": "57380320368d4ec0d1e9f23169d4a7248a2c8ae19f694b2fa2a95a5db7d26459",
+    "src/child.rs": "59870f51a50e2436e630f591859cb4ec644821146f43f13fa73ea079841087a5",
+    "src/clipboard.rs": "26f724eb3b6edb611821afe5bcf3d98b3fb18f14fcae9bd50feecf0fca609edf",
+    "src/maintenance.rs": "8a3afb0c7bde6b35aac928a30d95add3a11bd5f17380d9531e7952ddd6f05104",
+    "src/mic.rs": "5f5facb152307233ca78b9458b6b28b17f67768d76a6ca254a45793453ae499e",
+    "src/net.rs": "9669633c2e3e160c3579e8ff15ab495cfdf4affa29c8ae7c48f12f5b8ed5ba79",
+    "src/operation.rs": "ad0a1ee36d447174aba3fef6473ba840939cc1fcad538e3cacd85f96e7b8a9cb",
+    "src/runtime.rs": "95a989e9305fd19dfd0e855a6606653b76fe1f37f07154c3d1a75eaeb9bd22aa",
+    "src/runtime/shutdown_tests.rs": "5d966b2cd4880fcb77710dd87d00020c7ce338495050b715291fe9a375b758e1",
+    "src/service.rs": "3020b8cd9193b46bf0db968684b56cb343c59a5a63034e8e3b881528c88f58a1",
+    "src/sync_jobs.rs": "09d5c9892d9de6de0f439d2bedafe2209ce6d0449616d16b821ae8215f8de987",
+    "src/transcribe.rs": "2a8e6952cf4416d46558c29d1596aeb270a1508b2f4a2030347ed047e5c50835"
+  },
+  "evidence_sha256": {
+    "all-targets.log": "a580a5e9937d85d56a0c4a146a5f0b4f58d6b8a2501fe1611758a11caa425623",
+    "audit-tool-missing.log": "cc66102068fe5a405328602ccf03ed7e0134a42ee26544fb0d4e1d399bc52c13",
+    "clipboard.log": "171e7ce3913e0d6867010bd044e79862733f629e900fe7f7426266cd10602ab6",
+    "clippy.log": "d0aa12d40bb36d6a05eed6b33f1bcb98129e2f4a9b839d8c3a3c63d0761d400e",
+    "cpal.log": "3fa06fbd1bada9df4fdf466ca7e13381958de185174da50d360acb88ed08269d",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "keyring-sync.log": "44a43a4dccf371c9a405d42b7adefa24c7063c4c992d0917b25c20f2148dd2e9",
+    "native-after.log": "c00ece4bdc7bc6b933d4a3713eb48b9b1e575ede8a0ca9ac069d01d037401d4b",
+    "native-assets.log": "3c53f6a65265dc9daf5cf309e1a385a425914a08d75bdbc5abce7ca8ad705469",
+    "native-before.log": "69eeeda0f81d099733ab26884a59b5ef1604480e188c307d4bf51bade7798500",
+    "native-ui.log": "db8d1419f8f8815fcc40e9881b2db7f967c943d903ca609ef5b8958ccd40a512",
+    "notices.log": "79016000fc42d10314cd7f7695688dd7457a4f817d8e17967accef2d5fbb092f",
+    "packaging-release.log": "8aed598952aeef4e742c2d551da0fd3d722cfc8a7f83f6389c2d60f7c9030dc7",
+    "packaging-upgrade.log": "fd0e06f8f069c1935aee711798d77b1eb3e5b08c60c0e11d6190c4d56898e6a2",
+    "release.log": "5af21b7ac0bd2d4d61afdcdd132f48abced1fa67ae2d6bdc1c7eae4e486742b0",
+    "rustsec-fetch.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "rustsec.json": "f0684e955e184b06e7bbbfd5ddce506c537802a1371133e091ffdc3c37d91c1d"
+  },
+  "validation_provenance": "The host full suite, strict Clippy, release binary, actual close/signal gate, CPAL, clipboard and keyring/sync reruns include the final source. The 12 general UI invocations ran before the final extraction of the equivalent sync-delay helper; both asset UI invocations ran after it. All required checks will be repeated on the final candidate after remaining changes."
+}
