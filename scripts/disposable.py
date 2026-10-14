@@ -9,6 +9,14 @@ import subprocess
 import sys
 import tempfile
 
+# Kernel-enforced tmpfs scratch bounds for MYWHISPER_AUDIT_TMPFS_TMP=1.
+# A plain `--tmpfs` mount has no size limit and mode 0755; these options
+# make the bound and permissions real at mount level. Unsupported bwrap
+# fails the whole gate (fail closed) since the option is rejected.
+TMPFS_SCRATCH_BYTES = 2147483648  # 2 GiB fixture scratch cap
+TMPFS_SCRATCH_MODE = "0700"
+LIMIT_PROBE_BYTES = 1048576  # 1 MiB ENOSPC enforcement probe
+
 
 def main(timeout=120):
     if len(sys.argv) < 4:
@@ -57,20 +65,25 @@ def main(timeout=120):
         # is created on the host filesystem, so TMPDIR-backed fixtures pay
         # whatever the host /tmp costs: tmpfs on dev machines, overlay disk
         # in CI containers (measured ~0.002ms vs ~8.7ms per fsync, ~4000x).
-        # MYWHISPER_AUDIT_TMPFS_TMP=1 overlays a private tmpfs on root/tmp
-        # only. Marker, HOME/XDG stubs, evidence ownership and the host-side
-        # 0700 stub stay unchanged. Real syscalls are preserved: files,
+        # MYWHISPER_AUDIT_TMPFS_TMP=1 mounts a private tmpfs on root/tmp
+        # with a kernel-enforced 2 GiB cap (--size) and mode 0700 (--perms),
+        # owned by the mounting user. Marker, HOME/XDG stubs and evidence
+        # ownership are unchanged. Real syscalls are preserved: files,
         # locks, transactions and fsync still execute with identical
         # process-visible semantics (SIGKILL/reopen verified by the suite);
         # only host-reboot persistence differs, which no in-scope test
         # relies on. Filesystem/power-loss/package/upgrade integration
-        # gates must NOT use this flag. Investigation budget for fixture
-        # tmp peak is 2 GiB; exceeding it fails the gate for review instead
-        # of silently growing storage. The variable is popped so the child
+        # gates must NOT use this flag. The variable is popped so the child
         # never inherits it.
+        # A 1 MiB probe mount on root/.limitprobe proves kernel size
+        # enforcement without allocating gigabytes; its host stub stays
+        # visible and empty while the child fills the overlaid mount.
         tmpfs_scratch = env.pop("MYWHISPER_AUDIT_TMPFS_TMP", "")
         if tmpfs_scratch not in ("", "1"):
             raise SystemExit("MYWHISPER_AUDIT_TMPFS_TMP must be unset or 1")
+        limit_probe = root / ".limitprobe"
+        if tmpfs_scratch == "1":
+            limit_probe.mkdir(mode=0o700)
         if shutil.which("bwrap") is None:
             raise SystemExit("bubblewrap is required for disposable process ownership")
         # A process group cannot contain setsid()/timeout/daemon descendants.
@@ -96,7 +109,24 @@ def main(timeout=120):
             str(root),
         ]
         if tmpfs_scratch == "1":
-            owned_command.extend(["--tmpfs", str(temporary)])
+            # --perms/--size apply only to the immediately following --tmpfs;
+            # unknown options make bwrap itself fail, failing the gate closed.
+            owned_command.extend(
+                [
+                    "--perms",
+                    TMPFS_SCRATCH_MODE,
+                    "--size",
+                    str(TMPFS_SCRATCH_BYTES),
+                    "--tmpfs",
+                    str(temporary),
+                    "--perms",
+                    TMPFS_SCRATCH_MODE,
+                    "--size",
+                    str(LIMIT_PROBE_BYTES),
+                    "--tmpfs",
+                    str(limit_probe),
+                ]
+            )
         owned_command.extend(["--die-with-parent", "--new-session"])
         # Explicit external /tmp inputs, such as the private Nix store or an
         # acceptance-test rendezvous socket, remain readable. All gate outputs
