@@ -79,6 +79,10 @@
     packages.${system}.default = mywhisper;
     nixosModules.default = import ./module.nix { inherit mywhisper runtimeLibraries; };
     checks.${system} = {
+      audit-desktop = import ./desktop-test.nix {
+        inherit pkgs mywhisper;
+        module = self.nixosModules.default;
+      };
       desktop = import ./package-smoke.nix {
         inherit pkgs mywhisper;
         module = self.nixosModules.default;

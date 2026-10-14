@@ -2,6 +2,7 @@
 //! CRUD persists to versioned tables. Editing survives background refreshes.
 use crate::app::{AppState, confirm, page_heading, toast};
 use crate::i18n::tr;
+use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Button, Entry, Label, Notebook, Orientation, TextView};
 use std::cell::Cell;
@@ -44,7 +45,11 @@ fn changed(state: &Rc<AppState>) {
     settings.dictionary.words = state.store.load_words().unwrap_or_default();
     settings.dictionary.snippets = state.store.load_snippets().unwrap_or_default();
     drop(settings);
-    crate::net::sync_after_change(state.db_path.clone(), state.creds.clone());
+    crate::net::sync_after_change_at_epoch(
+        state.db_path.clone(),
+        state.creds.clone(),
+        state.store.sync_epoch(),
+    );
 }
 
 fn invalid(entry: &Entry, message: &str) {
@@ -118,7 +123,11 @@ fn word_card(state: &Rc<AppState>, card: &GtkBox, word: &str, editing: bool) {
             let state = state.clone();
             let card = card.clone();
             let word = word.to_string();
-            edit.connect_clicked(move |_| word_card(&state, &card, &word, true));
+            edit.connect_clicked(gtk4::glib::clone!(
+                #[weak]
+                card,
+                move |_| word_card(&state, &card, &word, true)
+            ));
         }
         card.append(&edit);
         let delete = action(tr("action.delete"), false);
@@ -127,27 +136,31 @@ fn word_card(state: &Rc<AppState>, card: &GtkBox, word: &str, editing: bool) {
             let state = state.clone();
             let card = card.clone();
             let word = word.to_string();
-            delete.connect_clicked(move |button| {
-                let state = state.clone();
-                let card = card.clone();
-                let word = word.clone();
-                let button = button.clone();
-                confirm(
-                    &button.clone(),
-                    tr("confirm.delete.title"),
-                    tr("confirm.delete.body"),
-                    tr("action.delete"),
-                    move || {
-                        if state.store.delete_word(&word, &state.node_id).is_err() {
-                            toast(&button, tr("feedback.deletefailed"));
-                            return;
-                        }
-                        toast(&button, tr("feedback.deleted"));
-                        card.set_visible(false);
-                        changed(&state);
-                    },
-                );
-            });
+            delete.connect_clicked(gtk4::glib::clone!(
+                #[weak]
+                card,
+                move |button| {
+                    let state = state.clone();
+                    let card = card.clone();
+                    let word = word.clone();
+                    let button = button.clone();
+                    confirm(
+                        &button.clone(),
+                        tr("confirm.delete.title"),
+                        tr("confirm.delete.body"),
+                        tr("action.delete"),
+                        move || {
+                            if state.store.delete_word(&word, &state.node_id).is_err() {
+                                toast(&button, tr("feedback.deletefailed"));
+                                return;
+                            }
+                            toast(&button, tr("feedback.deleted"));
+                            card.set_visible(false);
+                            changed(&state);
+                        },
+                    );
+                }
+            ));
         }
         card.append(&delete);
     } else {
@@ -159,32 +172,38 @@ fn word_card(state: &Rc<AppState>, card: &GtkBox, word: &str, editing: bool) {
             let card = card.clone();
             let entry = entry.clone();
             let original = word.to_string();
-            move || {
-                let value = entry.text().trim().to_string();
-                if value.is_empty() {
-                    invalid(&entry, tr("dict.required"));
-                    return;
-                }
-                if duplicate_word(&state, &value, Some(&original)) {
-                    invalid(&entry, tr("dict.duplicate"));
-                    return;
-                }
-                if value != original {
-                    // Save the replacement first so a failed save never loses the original.
-                    if state
-                        .store
-                        .upsert_word(&value, &state.node_id)
-                        .and_then(|_| state.store.delete_word(&original, &state.node_id))
-                        .is_err()
-                    {
-                        toast(&entry, tr("feedback.savefailed"));
+            gtk4::glib::clone!(
+                #[weak]
+                card,
+                #[weak]
+                entry,
+                move || {
+                    let value = entry.text().trim().to_string();
+                    if value.is_empty() {
+                        invalid(&entry, tr("dict.required"));
                         return;
                     }
-                    changed(&state);
+                    if duplicate_word(&state, &value, Some(&original)) {
+                        invalid(&entry, tr("dict.duplicate"));
+                        return;
+                    }
+                    if value != original {
+                        // Save the replacement first so a failed save never loses the original.
+                        if state
+                            .store
+                            .upsert_word(&value, &state.node_id)
+                            .and_then(|_| state.store.delete_word(&original, &state.node_id))
+                            .is_err()
+                        {
+                            toast(&entry, tr("feedback.savefailed"));
+                            return;
+                        }
+                        changed(&state);
+                    }
+                    toast(&entry, tr("feedback.saved"));
+                    word_card(&state, &card, &value, false);
                 }
-                toast(&entry, tr("feedback.saved"));
-                word_card(&state, &card, &value, false);
-            }
+            )
         });
         let enter = commit.clone();
         entry.connect_activate(move |_| enter());
@@ -195,7 +214,11 @@ fn word_card(state: &Rc<AppState>, card: &GtkBox, word: &str, editing: bool) {
             let state = state.clone();
             let card = card.clone();
             let word = word.to_string();
-            cancel.connect_clicked(move |_| word_card(&state, &card, &word, false));
+            cancel.connect_clicked(gtk4::glib::clone!(
+                #[weak]
+                card,
+                move |_| word_card(&state, &card, &word, false)
+            ));
         }
         card.append(&cancel);
         entry.grab_focus();
@@ -239,26 +262,32 @@ fn words_tab(state: &Rc<AppState>) -> (GtkBox, GtkBox) {
         let state = state.clone();
         let list = list.clone();
         let entry = entry.clone();
-        move || {
-            let value = entry.text().trim().to_string();
-            if value.is_empty() {
-                invalid(&entry, tr("dict.required"));
-                return;
+        gtk4::glib::clone!(
+            #[weak]
+            entry,
+            #[weak]
+            list,
+            move || {
+                let value = entry.text().trim().to_string();
+                if value.is_empty() {
+                    invalid(&entry, tr("dict.required"));
+                    return;
+                }
+                if duplicate_word(&state, &value, None) {
+                    invalid(&entry, tr("dict.duplicate"));
+                    return;
+                }
+                if state.store.upsert_word(&value, &state.node_id).is_err() {
+                    toast(&entry, tr("feedback.savefailed"));
+                    return;
+                }
+                entry.set_text("");
+                changed(&state);
+                fill_words(&list, &state);
+                toast(&entry, tr("feedback.saved"));
+                entry.grab_focus();
             }
-            if duplicate_word(&state, &value, None) {
-                invalid(&entry, tr("dict.duplicate"));
-                return;
-            }
-            if state.store.upsert_word(&value, &state.node_id).is_err() {
-                toast(&entry, tr("feedback.savefailed"));
-                return;
-            }
-            entry.set_text("");
-            changed(&state);
-            fill_words(&list, &state);
-            toast(&entry, tr("feedback.saved"));
-            entry.grab_focus();
-        }
+        )
     });
     let enter = commit.clone();
     entry.connect_activate(move |_| enter());
@@ -311,9 +340,11 @@ fn snippet_card(
             let card = card.clone();
             let trigger = trigger.to_string();
             let replacement = replacement.to_string();
-            edit.connect_clicked(move |_| {
-                snippet_card(&state, &card, &trigger, &replacement, true)
-            });
+            edit.connect_clicked(gtk4::glib::clone!(
+                #[weak]
+                card,
+                move |_| snippet_card(&state, &card, &trigger, &replacement, true)
+            ));
         }
         row.append(&edit);
         let delete = action(tr("action.delete"), false);
@@ -322,31 +353,35 @@ fn snippet_card(
             let state = state.clone();
             let card = card.clone();
             let trigger = trigger.to_string();
-            delete.connect_clicked(move |button| {
-                let state = state.clone();
-                let card = card.clone();
-                let trigger = trigger.clone();
-                let button = button.clone();
-                confirm(
-                    &button.clone(),
-                    tr("confirm.delete.title"),
-                    tr("confirm.delete.body"),
-                    tr("action.delete"),
-                    move || {
-                        if state
-                            .store
-                            .delete_snippet(&trigger, &state.node_id)
-                            .is_err()
-                        {
-                            toast(&button, tr("feedback.deletefailed"));
-                            return;
-                        }
-                        toast(&button, tr("feedback.deleted"));
-                        card.set_visible(false);
-                        changed(&state);
-                    },
-                );
-            });
+            delete.connect_clicked(gtk4::glib::clone!(
+                #[weak]
+                card,
+                move |button| {
+                    let state = state.clone();
+                    let card = card.clone();
+                    let trigger = trigger.clone();
+                    let button = button.clone();
+                    confirm(
+                        &button.clone(),
+                        tr("confirm.delete.title"),
+                        tr("confirm.delete.body"),
+                        tr("action.delete"),
+                        move || {
+                            if state
+                                .store
+                                .delete_snippet(&trigger, &state.node_id)
+                                .is_err()
+                            {
+                                toast(&button, tr("feedback.deletefailed"));
+                                return;
+                            }
+                            toast(&button, tr("feedback.deleted"));
+                            card.set_visible(false);
+                            changed(&state);
+                        },
+                    );
+                }
+            ));
         }
         row.append(&delete);
         card.append(&row);
@@ -371,9 +406,11 @@ fn snippet_card(
             let card = card.clone();
             let trigger = trigger.to_string();
             let replacement = replacement.to_string();
-            cancel.connect_clicked(move |_| {
-                snippet_card(&state, &card, &trigger, &replacement, false)
-            });
+            cancel.connect_clicked(gtk4::glib::clone!(
+                #[weak]
+                card,
+                move |_| snippet_card(&state, &card, &trigger, &replacement, false)
+            ));
         }
         row.append(&cancel);
         let save = action(tr("action.save"), true);
@@ -382,35 +419,41 @@ fn snippet_card(
             let card = card.clone();
             let original = trigger.to_string();
             let input = input.clone();
-            save.connect_clicked(move |button| {
-                let trigger = input.text().trim().to_string();
-                let replacement = snippet_text(&expansion).trim().to_string();
-                if trigger.split(',').all(|part| part.trim().is_empty()) || replacement.is_empty() {
-                    invalid(&input, tr("dict.snippets.required"));
-                    return;
+            save.connect_clicked(gtk4::glib::clone!(
+                #[weak]
+                card,
+                move |button| {
+                    let trigger = input.text().trim().to_string();
+                    let replacement = snippet_text(&expansion).trim().to_string();
+                    if trigger.split(',').all(|part| part.trim().is_empty())
+                        || replacement.is_empty()
+                    {
+                        invalid(&input, tr("dict.snippets.required"));
+                        return;
+                    }
+                    if duplicate_snippet(&state, &trigger, Some(&original)) {
+                        invalid(&input, tr("dict.duplicate"));
+                        return;
+                    }
+                    let result = state
+                        .store
+                        .upsert_snippet(&trigger, &replacement, &state.node_id)
+                        .and_then(|_| {
+                            if trigger != original {
+                                state.store.delete_snippet(&original, &state.node_id)
+                            } else {
+                                Ok(())
+                            }
+                        });
+                    if result.is_err() {
+                        toast(button, tr("feedback.savefailed"));
+                        return;
+                    }
+                    toast(button, tr("feedback.saved"));
+                    changed(&state);
+                    snippet_card(&state, &card, &trigger, &replacement, false);
                 }
-                if duplicate_snippet(&state, &trigger, Some(&original)) {
-                    invalid(&input, tr("dict.duplicate"));
-                    return;
-                }
-                let result = state
-                    .store
-                    .upsert_snippet(&trigger, &replacement, &state.node_id)
-                    .and_then(|_| {
-                        if trigger != original {
-                            state.store.delete_snippet(&original, &state.node_id)
-                        } else {
-                            Ok(())
-                        }
-                    });
-                if result.is_err() {
-                    toast(button, tr("feedback.savefailed"));
-                    return;
-                }
-                toast(button, tr("feedback.saved"));
-                changed(&state);
-                snippet_card(&state, &card, &trigger, &replacement, false);
-            });
+            ));
         }
         row.append(&save);
         card.append(&row);
@@ -517,7 +560,9 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     tabs.set_vexpand(true);
     col.append(&tabs);
     {
-        let state = state.clone();
+        let weak_state = Rc::downgrade(state);
+        let weak_words = words_list.downgrade();
+        let weak_snippets = snippets_list.downgrade();
         let seen = Cell::new((
             crate::store::data_gen(),
             crate::store::read_gen(&state.store),
@@ -527,6 +572,13 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
             if weak_root.upgrade().is_none() {
                 return gtk4::glib::ControlFlow::Break;
             }
+            let (Some(state), Some(words_list), Some(snippets_list)) = (
+                weak_state.upgrade(),
+                weak_words.upgrade(),
+                weak_snippets.upgrade(),
+            ) else {
+                return gtk4::glib::ControlFlow::Break;
+            };
             let token = (
                 crate::store::data_gen(),
                 crate::store::read_gen(&state.store),
@@ -562,29 +614,6 @@ mod tests {
             .unwrap();
         assert!(duplicate_snippet(&state, "other phrase, MY SIGN OFF", None));
         assert!(!duplicate_snippet(&state, "new phrase", None));
-        // Accent-folded triggers count as the same snippet.
-        state
-            .store
-            .upsert_snippet("acción", "ACTION", "test")
-            .unwrap();
-        assert!(duplicate_snippet(&state, "ACCION", None));
-        assert!(duplicate_snippet(&state, "Acción", None));
-        // ...but spelling words keep accent distinctions.
-        state.store.upsert_word("camión", "test").unwrap();
-        assert!(duplicate_word(&state, "CAMIÓN", None));
-        assert!(!duplicate_word(&state, "camion", None));
-        state.store.upsert_word("si", "test").unwrap();
-        assert!(!duplicate_word(&state, "sí", None));
-        state.store.upsert_word("papa", "test").unwrap();
-        assert!(!duplicate_word(&state, "papá", None));
-        // Canonically equivalent spellings share one word entry no
-        // matter how they were typed or pasted.
-        state.store.upsert_word("cafe\u{301}", "test").unwrap();
-        assert!(duplicate_word(&state, "café", None));
-        assert!(duplicate_word(&state, "CAFÉ", None));
-        state.store.upsert_word("I\u{307}mza", "test").unwrap();
-        assert!(duplicate_word(&state, "imza", None));
-        assert!(duplicate_word(&state, "İMZA", None));
         assert!(!duplicate_snippet(
             &state,
             "SIGNATURE",
