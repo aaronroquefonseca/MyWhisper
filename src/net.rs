@@ -2660,13 +2660,12 @@ mod tests {
             // exhausted the round/timeout budgets without exercising
             // any new protocol path; a byte budget forces partial
             // progress and lost-ACK resume deterministically on any
-            // machine while keeping every assertion intact.
-            source
-                .set_read_timeout(Some(Duration::from_secs(3)))
-                .unwrap();
-            target
-                .set_write_timeout(Some(Duration::from_secs(3)))
-                .unwrap();
+            // machine while keeping every assertion intact. No read
+            // timeout: a healthy-but-computing peer (debug crypto of
+            // megabytes) must not look like a dead link — rounds end
+            // by budget cut, completion, or close, and the session
+            // deadline plus the production progress watchdog still
+            // bound genuinely stuck transfers.
             let mut buffer = [0u8; 8192];
             let mut relayed: u64 = 0;
             loop {
