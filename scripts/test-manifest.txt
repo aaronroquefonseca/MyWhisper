@@ -132,6 +132,7 @@ test|lib|provider_contract::tests::malformed_unsupported_and_refusal_replies_are
 test|lib|provider_contract::tests::ollama_and_gemini_tristate_omit_or_force|run
 test|lib|provider_contract::tests::refusals_tool_calls_and_malformed_blocks_are_rejected|run
 test|lib|provider_contract::tests::thoughts_never_become_answers_and_partial_replies_are_rejected|run
+test|lib|provider_io::tests::precancelled_post_fails_before_any_io|run
 test|lib|provider_io::tests::repeated_cancelled_transfers_finish_bounded_without_stalling|run
 test|lib|provider_io::tests::stalled_response_body_is_abandoned_on_cancel_within_deadline|run
 test|lib|reset::tests::admission_and_state_notifications_do_not_wait_for_database_or_installer_locks|run
