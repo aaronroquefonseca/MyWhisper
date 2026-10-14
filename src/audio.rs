@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub const ENGINE_RATE: u32 = 16_000;
 /// Utterances shorter than this are dropped (key taps, mic blips).
 pub const MIN_SAMPLES_16K: usize = 4_800; // 0.3 s
+const MAX_CAPTURE_CHUNKS: usize = 65_536;
+const MAX_CAPTURE_RATE: u32 = 384_000;
 
 /// One utterance being captured. Every pushed slice is stamped
 /// with its arrival time so release can truncate the buffer at the
@@ -27,6 +29,7 @@ pub struct Recorder {
     rate: u32,
     consumed: usize,
     active: bool,
+    overflow: bool,
 }
 
 impl Recorder {
@@ -36,13 +39,28 @@ impl Recorder {
         self.rate = rate;
         self.consumed = 0;
         self.active = true;
+        self.overflow = false;
     }
 
     pub fn push(&mut self, samples: &[i16]) {
-        if self.active {
+        self.push_at(samples, std::time::Instant::now());
+    }
+
+    pub(crate) fn push_at(&mut self, samples: &[i16], stamp: std::time::Instant) {
+        if self.active && !samples.is_empty() {
+            // Ten minutes of bounded mono capture. Refuse overflow instead
+            // of silently decoding a truncated utterance.
+            let limit = (self.rate.max(ENGINE_RATE) as usize * 600).min(32 * 1024 * 1024);
+            if self.rate > MAX_CAPTURE_RATE
+                || self.ends.len() >= MAX_CAPTURE_CHUNKS
+                || samples.len() > limit.saturating_sub(self.samples.len())
+            {
+                self.active = false;
+                self.overflow = true;
+                return;
+            }
             self.samples.extend_from_slice(samples);
-            self.ends
-                .push((self.samples.len(), std::time::Instant::now()));
+            self.ends.push((self.samples.len(), stamp));
         }
     }
 
@@ -75,6 +93,7 @@ impl Recorder {
     /// speech; its tail is milliseconds of room tone the VAD/file
     /// path trims and streaming ignores). Drops everything after.
     pub fn settle_release(&mut self, release: std::time::Instant) {
+        self.active = false;
         if let Some(pos) = self.ends.iter().position(|(_, t)| *t > release) {
             let end = self.ends[pos].0;
             self.samples.truncate(end);
@@ -82,12 +101,20 @@ impl Recorder {
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.samples.len()
+    pub fn overflowed(&self) -> bool {
+        self.overflow
+    }
+
+    pub fn samples_since(&self, consumed: usize) -> Vec<i16> {
+        self.samples.get(consumed..).unwrap_or_default().to_vec()
     }
 
     pub fn is_empty(&self) -> bool {
         self.samples.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.samples.len()
     }
 
     pub fn rate(&self) -> u32 {
@@ -107,6 +134,17 @@ pub fn set_recorder(rec: Option<Arc<Mutex<Recorder>>>) {
     *tap_slot().lock().unwrap() = rec;
 }
 
+/// Disarm only the tap belonging to this session.
+pub fn clear_recorder(expected: &Arc<Mutex<Recorder>>) {
+    let mut slot = tap_slot().lock().unwrap();
+    if slot
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, expected))
+    {
+        *slot = None;
+    }
+}
+
 /// Feed one slice of s16 mono at `rate` Hz into the armed recorder
 /// (no-op when disarmed). Mic threads call this, never block: a
 /// poisoned mutex just drops the slice.
@@ -115,11 +153,47 @@ pub fn tap_samples(samples: &[i16], rate: u32) {
     let Ok(slot) = guard else { return };
     let Some(rec) = slot.as_ref() else { return };
     if let Ok(mut r) = rec.lock() {
-        if r.rate == 0 {
-            r.rate = rate;
-        }
-        r.push(samples);
+        push_capture(&mut r, samples, rate, std::time::Instant::now());
     }
+}
+
+/// The callback retains the recorder owning this slice. A queued slice can
+/// therefore never be redirected into a later session's recorder.
+pub(crate) fn callback_recorder() -> Result<Option<Arc<Mutex<Recorder>>>, ()> {
+    tap_slot()
+        .try_lock()
+        .map(|slot| slot.clone())
+        .map_err(|_| ())
+}
+
+pub(crate) fn capture_failed() -> bool {
+    callback_recorder()
+        .ok()
+        .flatten()
+        .and_then(|recorder| {
+            recorder
+                .try_lock()
+                .ok()
+                .map(|recorder| recorder.overflowed())
+        })
+        .unwrap_or(false)
+}
+
+pub(crate) fn push_capture(
+    recorder: &mut Recorder,
+    samples: &[i16],
+    rate: u32,
+    stamp: std::time::Instant,
+) {
+    if recorder.rate == 0 {
+        recorder.rate = rate;
+    }
+    if rate == 0 || recorder.rate != rate {
+        recorder.active = false;
+        recorder.overflow = true;
+        return;
+    }
+    recorder.push_at(samples, stamp);
 }
 
 /// Incremental 16-bit mono resampler to [`ENGINE_RATE`].
@@ -242,21 +316,29 @@ pub fn apply_vad(samples: &[f32], gate: f32) -> VadResult {
     VadResult::Speech(samples[from..to].to_vec())
 }
 
-/// Audio vault dir (`<data>/audio`). The capture pipeline is
-/// RAM-only, so this stays empty until an audio-storing feature
-/// lands — but retention controls already manage it, which keeps
-/// the privacy story honest instead of stubbed.
+/// Private audio vault (`<data>/audio`), populated only by explicit retention.
 pub fn audio_vault_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.join("audio")
 }
 
 /// Delete every vault file. Returns files removed.
-pub fn clear_audio(data_dir: &std::path::Path) -> usize {
+pub fn clear_audio(data_dir: &std::path::Path) -> std::io::Result<usize> {
     let dir = audio_vault_dir(data_dir);
-    let entries = std::fs::read_dir(&dir).map(|r| r.count()).unwrap_or(0);
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::create_dir_all(&dir);
-    entries
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(mut entries) => entries.try_fold(0usize, |count, entry| {
+            entry?;
+            count
+                .checked_add(1)
+                .ok_or_else(|| std::io::Error::other("audio file count overflow"))
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(e) => return Err(e),
+    };
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)?;
+    }
+    crate::private_fs::directory(&dir)?;
+    Ok(entries)
 }
 
 /// Delete vault files older than `days`. Tombstone-free zone (audio
@@ -309,6 +391,66 @@ pub fn wav_bytes_16k(samples: &[i16]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ten_minute_synthetic_capture_has_fixed_memory_and_linear_stream_copying() {
+        let mut recorder = Recorder::default();
+        recorder.start(44_100);
+        let total = 44_100 * 600;
+        let began = std::time::Instant::now();
+        let chunk = [7; 1024];
+        let mut copied = 0;
+        while recorder.len() < total {
+            let count = (total - recorder.len()).min(chunk.len());
+            let stamp = began
+                + std::time::Duration::from_secs_f64((recorder.len() + count) as f64 / 44_100.0);
+            recorder.push_at(&chunk[..count], stamp);
+            copied += recorder.drain_new().len();
+        }
+        assert_eq!(copied, total, "streaming copies each sample only once");
+        assert_eq!(recorder.len(), total);
+        let memory = recorder.samples.capacity() * std::mem::size_of::<i16>()
+            + recorder.ends.capacity() * std::mem::size_of::<(usize, std::time::Instant)>();
+        assert!(
+            memory <= 68 * 1024 * 1024,
+            "capture allocation exceeded its bound: {memory}"
+        );
+        recorder.push(&[7]);
+        assert!(recorder.overflowed());
+        assert_eq!(recorder.len(), total);
+    }
+
+    #[test]
+    fn capture_bounds_empty_slices_metadata_rate_changes_and_late_queued_audio() {
+        let mut recorder = Recorder::default();
+        recorder.start(16_000);
+        for _ in 0..100_000 {
+            recorder.push(&[]);
+        }
+        assert!(recorder.ends.is_empty());
+        let stamp = std::time::Instant::now();
+        for _ in 0..MAX_CAPTURE_CHUNKS {
+            recorder.push_at(&[7], stamp);
+        }
+        assert_eq!(recorder.ends.len(), MAX_CAPTURE_CHUNKS);
+        recorder.push_at(&[8], stamp);
+        assert!(recorder.overflowed());
+        assert_eq!(recorder.len(), MAX_CAPTURE_CHUNKS);
+        recorder.start(16_000);
+        push_capture(&mut recorder, &[1, 2, 3], 16_000, stamp);
+        push_capture(&mut recorder, &[4, 5], 48_000, stamp);
+        assert!(recorder.overflowed());
+        assert_eq!(recorder.snapshot(), [1, 2, 3]);
+        recorder.start(16_000);
+        recorder.push_at(&[1, 2], stamp);
+        recorder.settle_release(stamp);
+        recorder.push_at(&[3, 4], stamp);
+        assert_eq!(
+            recorder.snapshot(),
+            [1, 2],
+            "queued callback audio cannot change a settled utterance"
+        );
+    }
 
     #[test]
     fn settle_release_cuts_at_release_plus_straddler() {
@@ -400,17 +542,16 @@ mod tests {
 
     #[test]
     fn audio_vault_clear_and_purge() {
-        let base = std::env::temp_dir().join(format!("mw-vault-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let dir = super::audio_vault_dir(&base);
+        let temporary = tempfile::tempdir().unwrap();
+        let base = temporary.path();
+        let dir = super::audio_vault_dir(base);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.wav"), [1, 2, 3]).unwrap();
         std::fs::write(dir.join("b.wav"), [4, 5]).unwrap();
         // Fresh files survive a 30-day purge, clear removes all.
-        assert_eq!(super::purge_old_audio(&base, 30), 0);
-        assert_eq!(super::clear_audio(&base), 2);
+        assert_eq!(super::purge_old_audio(base, 30), 0);
+        assert_eq!(super::clear_audio(base).unwrap(), 2);
         assert!(dir.is_dir());
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
