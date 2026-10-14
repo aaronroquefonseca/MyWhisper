@@ -15,12 +15,14 @@ acceptance across all groups. #16/#17 standalone; #18→#19→#20→#21→
 
 ## Overlap reconciliation (no overwrites)
 
-- #11 `fix/server-status-and-switching` (OPEN, based `092cd80`):
-  touches `src/service.rs`, `src/transcribe.rs`, `src/bin/mywhisper.rs`.
-  Overlaps #22 scope (R08–R10, R15, R28, R34). This turn changes no
-  code in those files, so nothing independently reviewed there is
-  overwritten. #22 must preserve #11 behavior on landing.
-- #4 Qwen3-ASR sidecar (OPEN, branch `t3code/be770be5`): adds
+- #11 `fix/server-status-and-switching` (open, ready for review, based
+  `092cd80`, head `7c066b16`): touches `src/service.rs`,
+  `src/transcribe.rs`, `src/bin/mywhisper.rs`. Overlaps #22 scope
+  (R08–R10, R15, R28, R34). This turn changes no code in those files,
+  so nothing independently reviewed there is overwritten. #22 must
+  preserve #11 behavior on landing; #11 leaving draft does not close
+  #22's server/capture acceptance.
+- #4 Qwen3-ASR sidecar (open, branch `t3code/be770be5`, head `4c7f3873`): adds
   `src/qwen_runtime.rs`, `src/qwen_server.py`, extends `stt.rs`/
   `transcribe.rs`/settings. Main has no Qwen files. No draft in the
   #15–#23 set may add competing Qwen files or claim that feature.
@@ -41,22 +43,25 @@ acceptance across all groups. #16/#17 standalone; #18→#19→#20→#21→
 
 ## R48 doc corrections (this turn)
 
-README fixes, code behavior unchanged:
+README Install/NixOS/System-deps sections aligned with the preserved
+reference snapshot (`reference/README.audit-snapshot.md`); code
+behavior unchanged, License section preserved:
 
-- System deps list was `gtk4, gtk4-layer-shell, libadwaita,
-  alsa-lib, pkgconf`. Now matches PKGBUILD: gtk4 ≥ 4.22,
-  gtk4-layer-shell, libadwaita ≥ 1.5, alsa-lib, hicolor-icon-theme,
-  wl-clipboard, wtype, libpulse, ca-certificates, pkgconf, plus
-  gnome-keyring/ydotool optdepends.
+- System deps split into Build vs Runtime; runtime names libpulse
+  (`parec`/`pactl`), Secret Service, input-device permissions and the
+  ydotool opt-in. Prior one-line list omitted all of these.
 - `parec`/`pactl` verified shipped by Arch `libpulse`
   (`pacman -Ql libpulse`); Nix wrapper already ships `pulseaudio`
   tools. Prior omission finding closed for current manifests.
 - Install section claimed `enable --now`; `update.sh` enables and
-  restarts the upgraded engine. README now says restart + status
-  check. `--version`/`--help` already precede DB/keyring init
+  restarts the upgraded engine. README now shows enable + restart.
+  `--version`/`--help` already precede DB/keyring init
   (`src/bin/mywhisper.rs`).
 - NixOS paragraph referenced a per-release `fetchzip` hash; the flake
-  builds locked source directly with no binary hash. Corrected.
+  builds locked source directly with no binary hash. Replaced with
+  source-build wording plus Secret Service deadline, keyring-restore,
+  wrapper/nix-ld/CUDA prerequisites and the three VM check commands
+  with their explicit limits.
 
 ## Gates executed (this turn, current source)
 
@@ -100,3 +105,26 @@ README fixes, code behavior unchanged:
   hardware configured in this environment; fixtures do not substitute.
 - Full R49 remaining-asset downloads and installer stress: explicit
   follow-up per FINDINGS.md owners.
+
+## Sibling draft status (2026-10-14, coordination snapshot)
+
+All still draft and unmerged: #16 `da4f08e1`, #17 `b2d30ff4`,
+#18 `0d1fa4b5`, #19→#18 `c7479bc8`, #20→#19 `169a1cff`,
+#21→#20 `d1a15edc`, #22→#21 `a3ccf74a`, #23→#22 `feb531ee`.
+#11 open and ready for review (`7c066b16`); #4 open (`4c7f3873`).
+
+## Merge-readiness verdict: NOT READY
+
+Blocking, per the handoff's own rule to keep this PR draft until its
+scope and required checks are actually complete:
+
+1. #16–#23 code scopes unfinished; final acceptance per group needs
+   each owner's regression/live evidence first.
+2. Nix source build + NixOS VM checks never executed here (no daemon
+   access); R48 packaged acceptance incomplete.
+3. Running desktop/service upgrade + recovery, GPU inference,
+   trusted WSS/paid providers, physical mic, cross-host LAN and
+   compositor variants: no evidence, prerequisites only.
+4. R49 remaining advertised assets and installer stress open.
+5. PR description head pointer (`4cb536c`) predates this work; update
+   it to the merge commit before final review.
