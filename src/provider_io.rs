@@ -137,17 +137,35 @@ mod tests {
         (root, operation)
     }
 
-    fn read_request_headers(stream: &mut std::net::TcpStream) {
+    /// Exact phase of a synthetic request read. EOF before the header
+    /// terminator is a legitimate early-cancel outcome (client went away
+    /// before sending a full request): callers observe it explicitly and
+    /// never mistake it for stalled-body cancellation coverage.
+    #[derive(Debug, PartialEq, Eq)]
+    enum HeaderRead {
+        Complete,
+        ClientGone,
+    }
+
+    fn read_request_headers(stream: &mut std::net::TcpStream) -> HeaderRead {
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let mut head = Vec::new();
         let mut byte = [0u8];
-        while !head.ends_with(b"\r\n\r\n") {
+        loop {
+            if head.ends_with(b"\r\n\r\n") {
+                return HeaderRead::Complete;
+            }
             assert!(head.len() < 64 * 1024);
             use std::io::Read as _;
-            stream.read_exact(&mut byte).unwrap();
-            head.push(byte[0]);
+            match stream.read_exact(&mut byte) {
+                Ok(()) => head.push(byte[0]),
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return HeaderRead::ClientGone;
+                }
+                Err(error) => panic!("synthetic server IO failure: {error:?}"),
+            }
         }
     }
 
@@ -176,21 +194,31 @@ mod tests {
     fn stalled_response_body_is_abandoned_on_cancel_within_deadline() {
         // Server sends headers plus one partial chunk, then stalls forever.
         // Cancelling must abandon the transfer promptly (not after the
-        // inference timeout) and close the connection.
+        // inference timeout) and close the connection. The cancel fires
+        // only after the server observes the complete request: rendezvous,
+        // not sleep, establishes the stalled-body phase.
+        use std::sync::mpsc;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/synthetic", listener.local_addr().unwrap());
+        let (headers_seen, headers_signal) = mpsc::channel();
         let server = std::thread::spawn(move || {
             let Some(mut stream) =
                 accept_within(&listener, Instant::now() + Duration::from_secs(10))
             else {
-                return;
+                return HeaderRead::ClientGone;
             };
-            read_request_headers(&mut stream);
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 1000000\r\nconnection: close\r\n\r\npartial")
-                .unwrap();
+            // Full headers observed before the test may cancel: this is the
+            // stalled-body phase under test, established by rendezvous.
+            let phase = read_request_headers(&mut stream);
+            let _ = headers_seen.send(());
+            // The client may already be gone (cancel wins instantly):
+            // a failed write is that legitimate outcome, not a stall.
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-length: 1000000\r\nconnection: close\r\n\r\npartial",
+            );
             let mut buf = [0u8; 64];
             let _ = stream.read(&mut buf);
+            phase
         });
         let cancel = Arc::new(AtomicBool::new(false));
         let (_held_root, held_operation) = capture_operation(&cancel);
@@ -203,7 +231,9 @@ mod tests {
                 "synthetic stall",
             )
         });
-        std::thread::sleep(Duration::from_millis(500));
+        headers_signal
+            .recv_timeout(Duration::from_secs(10))
+            .expect("server never observed the request headers");
         let began = Instant::now();
         cancel.store(true, Ordering::Release);
         assert!(worker.join().unwrap().is_err());
@@ -212,18 +242,24 @@ mod tests {
             "cancel took {:?}",
             began.elapsed()
         );
-        server.join().unwrap();
+        assert_eq!(server.join().unwrap(), HeaderRead::Complete);
     }
 
     #[test]
     fn repeated_cancelled_transfers_finish_bounded_without_stalling() {
         // Twenty stalled transfers, each cancelled mid-flight, must all
         // return promptly: no hang, no accumulated stall, bounded total.
+        // Every iteration rendezvous on the server observing complete
+        // headers before cancelling, so each one covers the intended
+        // active-transfer phase (never an early exit mistaken for it).
+        use std::sync::mpsc;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/synthetic", listener.local_addr().unwrap());
+        let (headers_seen, headers_signal) = mpsc::channel();
         let server = std::thread::spawn(move || {
             let stop = Instant::now() + Duration::from_secs(30);
             let mut served = 0;
+            let mut anomalies = 0;
             while served < 20 && Instant::now() < stop {
                 let Some(mut stream) =
                     accept_within(&listener, Instant::now() + Duration::from_secs(2))
@@ -231,10 +267,15 @@ mod tests {
                     continue;
                 };
                 served += 1;
-                read_request_headers(&mut stream);
+                if read_request_headers(&mut stream) != HeaderRead::Complete {
+                    anomalies += 1;
+                    continue;
+                }
+                let _ = headers_seen.send(());
                 let mut buf = [0u8; 64];
                 let _ = stream.read(&mut buf);
             }
+            (served, anomalies)
         });
         let root = tempfile::tempdir().unwrap();
         let store = crate::store::Store::open(&root.path().join("state.db")).unwrap();
@@ -260,7 +301,9 @@ mod tests {
                     )
                 }
             });
-            std::thread::sleep(Duration::from_millis(50));
+            headers_signal
+                .recv_timeout(Duration::from_secs(10))
+                .expect("server never observed the request headers");
             cancel.store(true, Ordering::Release);
             assert!(worker.join().unwrap().is_err());
         }
@@ -269,6 +312,34 @@ mod tests {
             "stress took {:?}",
             began.elapsed()
         );
-        server.join().unwrap();
+        let (served, anomalies) = server.join().unwrap();
+        assert_eq!(served, 20);
+        assert_eq!(anomalies, 0);
+    }
+
+    #[test]
+    fn precancelled_post_fails_before_any_io() {
+        // Separate early-cancel contract: an already-cancelled operation
+        // cannot even be constructed for capture — the entry gate fails
+        // closed before any runtime, client, DNS or socket exists.
+        let cancel = Arc::new(AtomicBool::new(false));
+        cancel.store(true, Ordering::Release);
+        let root = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let epoch = store.capture_epoch().unwrap();
+        let began = Instant::now();
+        let error = match Operation::capture(store, epoch, cancel) {
+            Ok(_) => panic!("pre-cancelled capture must not construct"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("cancelled"),
+            "pre-cancel must fail closed, got: {error}"
+        );
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "pre-cancel took {:?}",
+            began.elapsed()
+        );
     }
 }
