@@ -5,9 +5,13 @@ Exact upstream Git blob: `96cbe9720e34c13191bda9c9704e1353c0760dc7`, fetched
 through authenticated GitHub access from `OpenWhispr/openwhispr/LICENSE`.
 It retains the 2024 OpenWhispr Team copyright and full MIT notice.
 
-This notice covers third-party material. MyWhisper's own license is deferred
-by its owner; no project LICENSE is established here. Release distribution
-must remain blocked until that decision and dependency notices are complete.
+MyWhisper's own code is MIT-licensed; see the project `LICENSE` and the
+`license = "MIT"` metadata in `Cargo.toml`. Adapted OpenWhispr material
+retains its upstream MIT copyright and permission notice in
+`OpenWhispr.txt`. Third-party components retain their respective licenses.
+Release tooling collects the applicable notices into
+`THIRD_PARTY_NOTICES.txt` and distributes them alongside the project license
+in release archives and installed packages.
 
 Some published crate archives omit the workspace's license files. The
 additional texts preserve the upstream licenses at the exact Git commits in
