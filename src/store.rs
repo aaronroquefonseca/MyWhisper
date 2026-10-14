@@ -1515,101 +1515,17 @@ impl Store {
         )
     }
 
-    pub(crate) fn pending_reset_nonce(&self) -> rusqlite::Result<Option<String>> {
-        self.conn
-            .query_row(
-                "SELECT value FROM kv WHERE key='reset_pending'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-    }
-
-    pub(crate) fn completed_reset(&self, nonce: &str) -> rusqlite::Result<bool> {
-        self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sync_meta WHERE key='completed_reset' AND value=?1)",
-            [nonce],
-            |row| row.get(0),
-        )
-    }
-
-    /// Persist one reset transaction. Retrying cleanup must not wipe edits
-    /// written after this commit, including after an interrupted restart.
-    pub(crate) fn begin_reset(&self, nonce: &str) -> rusqlite::Result<()> {
-        let tx = rusqlite::Transaction::new_unchecked(
-            &self.conn,
-            rusqlite::TransactionBehavior::Immediate,
-        )?;
-        let pending: Option<String> = tx
-            .query_row(
-                "SELECT value FROM kv WHERE key='reset_pending'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        match pending.as_deref() {
-            Some(current) if current == nonce => return Ok(()),
-            Some(_) => {
-                return Err(rusqlite::Error::ToSqlConversionFailure(
-                    "another reset must complete before beginning a new one".into(),
-                ));
-            }
-            None => {}
-        }
-        if self.completed_reset(nonce)? {
-            return Ok(());
-        }
-        Self::reset_on(&tx)?;
-        tx.execute(
-            "INSERT INTO kv(key,value) VALUES('reset_pending',?1)",
-            [nonce],
-        )?;
-        tx.commit()?;
-        bump_data_gen();
-        Ok(())
-    }
-
-    pub(crate) fn complete_reset(&self, nonce: &str) -> rusqlite::Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
-        let changed = tx.execute(
-            "DELETE FROM kv WHERE key='reset_pending' AND value=?1",
-            [nonce],
-        )?;
-        if changed != 1 {
-            return Err(rusqlite::Error::ToSqlConversionFailure(
-                "reset completion does not own its pending transaction".into(),
-            ));
-        }
-        tx.execute("INSERT INTO sync_meta(key,value) VALUES('completed_reset',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[nonce])?;
-        bump_gen(&tx)?;
-        tx.commit()?;
-        bump_data_gen();
-        Ok(())
-    }
-
-    /// Boot recovery for an interrupted reset: the database transaction
-    /// already committed (edits after the crash are post-reset and are
-    /// preserved); only the pending mark is cleared so captures, sync
-    /// and pairing resume. Orphaned clips are pruned by maintenance.
-    /// Returns true when a pending reset was completed.
-    pub(crate) fn complete_pending_reset(&self) -> rusqlite::Result<bool> {
-        let Some(nonce) = self.pending_reset_nonce()? else {
-            return Ok(false);
-        };
-        self.complete_reset(&nonce)?;
-        Ok(true)
-    }
-
-    /// Adopt a worker-loaded snapshot without doing database IO on GTK.
-    pub(crate) fn adopt_settings_baseline(
-        &self,
-        settings: &AppSettings,
-        warning: Option<&'static str>,
-    ) -> rusqlite::Result<()> {
-        *self.settings_baseline.borrow_mut() = Some(Self::settings_value(settings)?);
-        self.settings_warning.set(warning);
-        Ok(())
-    }
+    // Crash-safe two-phase reset (nonce intents, worker-owned recovery
+    // and GTK snapshot adopt) lives in #22/#23. The durable contract,
+    // preserved from the immutable audit snapshot, is: begin persists
+    // one reset transaction under a pending nonce (same-nonce retry is
+    // idempotent, a different nonce is refused, a completed nonce
+    // short-circuits without wiping); completion clears the pending
+    // mark and records the nonce; boot recovery completes a pending
+    // nonce without re-wiping post-transaction edits; a failed
+    // filesystem phase keeps the nonce pending and reports failure.
+    // Foundation keeps the pending-reset barriers (capture, sync and
+    // settings gates refuse while pending) enforced here.
 
     /// Delete rows older than `days` (auto-delete transcripts).
     /// Tombstones survive: dropping them would resurrect peers' rows.
@@ -3367,49 +3283,63 @@ mod release_regressions {
     }
 
     #[test]
-    fn two_phase_reset_serializes_nonces_and_boot_resume_preserves_post_crash_edits() {
+    fn pending_reset_barrier_blocks_capture_until_reset_completes() {
+        use std::sync::atomic::AtomicBool;
         let store = Store::open_memory().unwrap();
-        const NONCE: &str = "0123456789abcdef0123456789abcdef";
-        const OTHER: &str = "fedcba9876543210fedcba9876543210";
-        assert_eq!(store.pending_reset_nonce().unwrap(), None);
-        assert!(!store.completed_reset(NONCE).unwrap());
-        assert!(!store.complete_pending_reset().unwrap());
-        store.begin_reset(NONCE).unwrap();
-        assert_eq!(store.pending_reset_nonce().unwrap().as_deref(), Some(NONCE));
-        assert!(store.reset_pending().unwrap());
-        // Same-nonce retry is idempotent; a different nonce is refused
-        // while one reset owns the transaction.
-        store.begin_reset(NONCE).unwrap();
-        assert!(store.begin_reset(OTHER).is_err());
-        // An edit written after the crash is post-reset and must survive
-        // recovery: resume only clears the pending mark.
+        // Simulate a worker-owned pending reset (set by the #22/#23
+        // two-phase flow): capture, sync admission and permissions
+        // must refuse while it is pending, without wiping anything.
         store
-            .apply_history(&[HistoryRecord {
-                uuid: "synthetic-post-crash".into(),
-                text: "synthetic post-crash speech".into(),
-                raw_text: "synthetic post-crash raw".into(),
-                words: 3,
-                duration_secs: 1,
-                deleted: false,
-                discarded: false,
-                recorded_at: 1_700_000_001,
-            }])
+            .conn
+            .execute(
+                "INSERT INTO kv(key,value) VALUES('reset_pending','synthetic-nonce')",
+                [],
+            )
             .unwrap();
-        assert!(store.complete_pending_reset().unwrap());
-        assert_eq!(store.pending_reset_nonce().unwrap(), None);
-        assert!(store.completed_reset(NONCE).unwrap());
+        assert!(store.reset_pending().unwrap());
+        // Capture authority refuses while pending; the service settings
+        // path additionally reports sync disabled with a warning.
+        let (settings, epoch) = store.capture_settings().unwrap();
+        assert!(!settings.hotkeys.hotkeys_enabled);
+        let loaded = store.load_settings();
+        assert!(!loaded.sync.enabled);
+        assert_eq!(store.settings_warning(), Some("settings.reset.incomplete"));
+        let capture = CapturedUtterance {
+            raw: "synthetic raw",
+            text: "synthetic speech",
+            duration_secs: 1,
+            recorded_at: 1_700_000_001,
+            discarded: false,
+            wav: None,
+        };
+        assert!(
+            !store
+                .persist_capture(epoch, capture, &AtomicBool::new(false))
+                .unwrap()
+        );
+        assert!(store.export_history().unwrap().is_empty());
+        // Completing the reset (DELETE FROM kv via reset_all_data, as
+        // the committed transaction does) releases every barrier and
+        // leaves sync disabled with tombstones intact.
+        store.reset_all_data().unwrap();
         assert!(!store.reset_pending().unwrap());
-        assert!(!store.complete_pending_reset().unwrap());
-        assert_eq!(
-            store.export_history().unwrap()[0].uuid,
-            "synthetic-post-crash"
+        assert!(!store.load_settings().sync.enabled);
+        let (settings, epoch) = store.capture_settings().unwrap();
+        assert!(settings.hotkeys.hotkeys_enabled);
+        let capture = CapturedUtterance {
+            raw: "synthetic raw",
+            text: "synthetic speech",
+            duration_secs: 1,
+            recorded_at: 1_700_000_001,
+            discarded: false,
+            wav: None,
+        };
+        assert!(
+            store
+                .persist_capture(epoch, capture, &AtomicBool::new(false))
+                .unwrap()
         );
-        // A completed nonce short-circuits without wiping again.
-        store.begin_reset(NONCE).unwrap();
-        assert_eq!(
-            store.export_history().unwrap()[0].uuid,
-            "synthetic-post-crash"
-        );
+        assert_eq!(store.export_history().unwrap().len(), 1);
     }
 
     #[test]

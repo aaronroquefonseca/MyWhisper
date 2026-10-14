@@ -148,13 +148,6 @@ pub fn start_sync_engine(
     identity: &DeviceIdentity,
     discovered: Arc<Mutex<HashMap<String, Discovered>>>,
 ) -> u16 {
-    // Crash resume (service boot): complete an interrupted reset so the
-    // engine does not start wedged. GUI boot resumes in AppState::load.
-    match store.complete_pending_reset() {
-        Ok(true) => eprintln!("[reset] interrupted reset completed at boot"),
-        Ok(false) => {}
-        Err(e) => eprintln!("[reset] recovery: {e}"),
-    }
     let saved = store.load_settings();
     let device_name = crate::device::display_name(&saved.sync.device_name, &identity.node_id);
     let stop = Arc::new(AtomicBool::new(false));
