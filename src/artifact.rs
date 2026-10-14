@@ -2833,6 +2833,9 @@ mod tests {
         let destination = data.path().join("models/test");
         crate::private_fs::directory(&destination).unwrap();
         std::fs::write(destination.join("model"), b"previous complete model").unwrap();
+        // Detached stdio: the re-exec'd harness banner must not race the
+        // parent's result lines (partition verifier fails nested output
+        // closed). Sync is files/process-state only; no output asserted.
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -2840,6 +2843,9 @@ mod tests {
                 "--nocapture",
             ])
             .env("MYWHISPER_SWEEP_CHILD", data.path())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
         let ready = data.path().join("child-ready");
