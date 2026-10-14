@@ -2261,4 +2261,127 @@ mod tests {
         assert!(member(data.path(), Path::new("../escape")).is_err());
         assert!(member(data.path(), Path::new("/escape")).is_err());
     }
+
+    #[test]
+    fn malformed_archives_and_declared_size_mismatches_fail_closed() {
+        use std::io::Write;
+        let data = tempfile::tempdir().unwrap();
+        let root = data.path().join("root");
+        crate::private_fs::directory(&root).unwrap();
+        // Empty file as tar.bz2.
+        let empty = data.path().join("empty.tar.bz2");
+        File::create(&empty).unwrap();
+        assert!(unpack_tar(&empty, &root, || Ok(())).is_err());
+        // Random bytes as tar.bz2.
+        let random = data.path().join("random.tar.bz2");
+        std::fs::write(&random, b"not a bzip2 stream at all........").unwrap();
+        assert!(unpack_tar(&random, &root, || Ok(())).is_err());
+        // Truncated valid archive.
+        let valid = data.path().join("valid.tar.bz2");
+        archive(&valid, &[("ok-file", None)]);
+        let bytes = std::fs::read(&valid).unwrap();
+        let truncated = data.path().join("truncated.tar.bz2");
+        std::fs::write(&truncated, &bytes[..bytes.len() / 2]).unwrap();
+        assert!(unpack_tar(&truncated, &root, || Ok(())).is_err());
+        // Empty file as zip.
+        let empty_zip = data.path().join("empty.zip");
+        File::create(&empty_zip).unwrap();
+        assert!(unpack_zip(&empty_zip, &root, || Ok(())).is_err());
+        // Random bytes as zip.
+        let random_zip = data.path().join("random.zip");
+        std::fs::write(&random_zip, b"PK-not-really-a-zip........").unwrap();
+        assert!(unpack_zip(&random_zip, &root, || Ok(())).is_err());
+        // Absolute paths never reach member resolution: the tar builder
+        // itself refuses to encode them, and member() rejects RootDir.
+        assert!(member(&root, Path::new("/absolute-evil")).is_err());
+        // Parent-escape tar member, hand-crafted: the builder refuses to
+        // encode `..`, so patch a same-length name into raw header bytes and
+        // recompute the checksum before compressing.
+        let escape = data.path().join("escape.tar.bz2");
+        {
+            let mut raw = Vec::new();
+            {
+                let mut builder = tar::Builder::new(&mut raw);
+                let mut header = tar::Header::new_gnu();
+                header.set_mode(0o600);
+                header.set_size(4);
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, "xx-evil!", &b"data"[..])
+                    .unwrap();
+                builder.into_inner().unwrap();
+            }
+            raw[..7].copy_from_slice(b"../evil");
+            for byte in &mut raw[148..156] {
+                *byte = b' ';
+            }
+            let sum: u32 = raw[..512].iter().map(|byte| *byte as u32).sum();
+            let field = format!("{sum:06o}\0 ");
+            raw[148..156].copy_from_slice(field.as_bytes());
+            let mut encoder = bzip2::write::BzEncoder::new(
+                File::create(&escape).unwrap(),
+                bzip2::Compression::fast(),
+            );
+            encoder.write_all(&raw).unwrap();
+            encoder.finish().unwrap();
+        }
+        assert!(unpack_tar(&escape, &root, || Ok(())).is_err());
+        assert!(!data.path().join("evil").exists());
+        // FIFO entries are unsupported.
+        let fifo = data.path().join("fifo.tar.bz2");
+        {
+            let encoder = bzip2::write::BzEncoder::new(
+                File::create(&fifo).unwrap(),
+                bzip2::Compression::fast(),
+            );
+            let mut builder = tar::Builder::new(encoder);
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o600);
+            header.set_entry_type(tar::EntryType::Fifo);
+            header.set_size(0);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "evil-fifo", std::io::empty())
+                .unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        assert!(unpack_tar(&fifo, &root, || Ok(())).is_err());
+        // Zip-slip member.
+        let slip = data.path().join("slip.zip");
+        {
+            let mut writer = zip::ZipWriter::new(File::create(&slip).unwrap());
+            writer
+                .start_file("../evil", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"data").unwrap();
+            writer.finish().unwrap();
+        }
+        assert!(unpack_zip(&slip, &root, || Ok(())).is_err());
+        assert!(!data.path().join("evil").exists());
+        // Declared-size mismatches.
+        let mismatch = data.path().join("mismatch");
+        let mut total = 0u64;
+        crate::private_fs::directory(&mismatch).unwrap();
+        assert!(
+            copy_member(
+                &mut &b"short"[..],
+                &mismatch.join("truncated-member"),
+                100,
+                &mut total,
+                &|| Ok(()),
+            )
+            .is_err()
+        );
+        let mut total = 0u64;
+        assert!(
+            copy_member(
+                &mut &b"way too much data for the declaration"[..],
+                &mismatch.join("overlong-member"),
+                4,
+                &mut total,
+                &|| Ok(()),
+            )
+            .is_err()
+        );
+    }
 }

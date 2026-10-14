@@ -584,7 +584,8 @@ fn prepare_model(
             if let Some(top) = entry.extract_dir {
                 let nested = dir.join(top);
                 if nested.is_dir() {
-                    flatten_dir(&nested, &dir).map_err(|e| format!("flatten: {e}"))?;
+                    flatten_dir(&nested, &dir, || stage.check(cancel))
+                        .map_err(|e| format!("flatten: {e}"))?;
                 }
             }
             let missing: Vec<_> = entry
@@ -607,8 +608,13 @@ fn prepare_model(
     Ok(())
 }
 
-fn flatten_dir(src: &Path, dest: &Path) -> Result<(), String> {
+fn flatten_dir(
+    src: &Path,
+    dest: &Path,
+    check: impl Fn() -> Result<(), String>,
+) -> Result<(), String> {
     for entry in std::fs::read_dir(src).map_err(|e| format!("read extract dir: {e}"))? {
+        check()?;
         let entry = entry.map_err(|e| format!("read entry: {e}"))?;
         let to = dest.join(entry.file_name());
         let from = entry.path();
@@ -1086,30 +1092,45 @@ fn prepare_gpu_pack(
     on_event(DownloadEvent::Installing);
     crate::artifact::unpack_zip(&tmp, &dir, || stage.check(cancel))?;
     let _ = std::fs::remove_file(&tmp);
+    stage.check(cancel)?;
     // The archives ship the binary under its release filename
     // (`whisper-server-linux-x64-cuda`, …): normalize to
-    // `whisper-server` so runners have one stable path.
-    if !dir.join("whisper-server").exists() {
-        let candidates: Vec<_> = std::fs::read_dir(&dir)
-            .map_err(|e| format!("read bin dir: {e}"))?
-            .flatten()
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("whisper-server")
-            })
-            .collect();
+    // `whisper-server` so runners have one stable path. Only regular
+    // files are candidates: unpack_zip rejects symlinks, and neither
+    // rename nor chmod may operate through one, so an archive-controlled
+    // link can never redirect installation or touch unowned files.
+    if !std::fs::symlink_metadata(dir.join("whisper-server")).is_ok_and(|meta| meta.is_file()) {
+        let mut candidates = Vec::new();
+        for entry in std::fs::read_dir(&dir).map_err(|e| format!("read bin dir: {e}"))? {
+            stage.check(cancel)?;
+            let entry = entry.map_err(|e| format!("read bin dir: {e}"))?;
+            if !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("whisper-server")
+            {
+                continue;
+            }
+            if entry
+                .file_type()
+                .map_err(|e| format!("stat binary: {e}"))?
+                .is_file()
+            {
+                candidates.push(entry.path());
+            }
+        }
         if candidates.len() == 1 {
-            std::fs::rename(candidates[0].path(), dir.join("whisper-server"))
+            std::fs::rename(&candidates[0], dir.join("whisper-server"))
                 .map_err(|e| format!("normalize binary: {e}"))?;
         }
     }
-    // Server binary must be executable after unzip.
+    // Server binary must be executable after unzip. Never chmod through a
+    // symlink: only a regular staged file may gain owner-execute bits.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let bin = dir.join("whisper-server");
-        if bin.exists() {
+        if std::fs::symlink_metadata(&bin).is_ok_and(|meta| meta.is_file()) {
             let mut perms = std::fs::metadata(&bin)
                 .map_err(|e| format!("stat binary: {e}"))?
                 .permissions();
@@ -1117,7 +1138,7 @@ fn prepare_gpu_pack(
             std::fs::set_permissions(&bin, perms).map_err(|e| format!("chmod: {e}"))?;
         }
     }
-    if !dir.join("whisper-server").is_file() {
+    if !std::fs::symlink_metadata(dir.join("whisper-server")).is_ok_and(|meta| meta.is_file()) {
         return Err("whisper-server missing after extract".to_string());
     }
     crate::installed_asset::seal(&stage, &verified, || stage.check(cancel))?;
@@ -1301,7 +1322,8 @@ fn prepare_sherpa_pack(
             .filter(|e| e.path().is_dir())
             .collect();
         if tops.len() == 1 {
-            let _ = flatten_dir(&tops[0].path(), &dir);
+            flatten_dir(&tops[0].path(), &dir, || stage.check(cancel))
+                .map_err(|e| format!("flatten: {e}"))?;
         }
     }
     #[cfg(unix)]
@@ -1311,10 +1333,13 @@ fn prepare_sherpa_pack(
             if b.ends_with(".so") {
                 continue;
             }
+            // Never chmod through a symlink: only a regular staged file
+            // may gain owner-execute bits.
             let bin = dir.join(b);
-            if bin.exists()
-                && let Ok(meta) = std::fs::metadata(&bin)
-            {
+            if !std::fs::symlink_metadata(&bin).is_ok_and(|meta| meta.is_file()) {
+                continue;
+            }
+            if let Ok(meta) = std::fs::metadata(&bin) {
                 let mut perms = meta.permissions();
                 perms.set_mode(0o755);
                 let _ = std::fs::set_permissions(&bin, perms);

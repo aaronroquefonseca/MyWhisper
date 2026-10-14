@@ -1302,4 +1302,31 @@ mod tests {
             "verification reads must not mutate the authority's timestamps"
         );
     }
+
+    #[test]
+    fn zero_byte_required_file_never_promotes() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("asset");
+        crate::private_fs::directory(&destination).unwrap();
+        std::fs::write(destination.join("model"), b"previous complete model").unwrap();
+        let stage = Stage::new(root.path(), "fixture", destination.clone()).unwrap();
+        // Empty staged payload plus a valid sibling: the empty file must
+        // block installation before any promotion.
+        std::fs::write(stage.path().join("model"), b"").unwrap();
+        std::fs::write(stage.path().join("tokens.txt"), b"synthetic tokens").unwrap();
+        let spec = Spec {
+            data: root.path().into(),
+            root: destination.clone(),
+            key: "fixture".into(),
+            source: "synthetic-source".into(),
+            required: vec!["model".into()],
+            executables: Vec::new(),
+            raw: None,
+        };
+        assert!(install(stage, spec, &AtomicBool::new(false)).is_err());
+        assert_eq!(
+            std::fs::read(destination.join("model")).unwrap(),
+            b"previous complete model"
+        );
+    }
 }
