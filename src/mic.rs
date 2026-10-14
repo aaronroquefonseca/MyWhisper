@@ -208,11 +208,12 @@ pub struct AudioSource {
 pub fn input_sources() -> Vec<AudioSource> {
     let mut command = Command::new("pactl");
     command.args(["list", "sources"]);
-    if let Ok(out) = crate::child::run(
+    if let Ok(out) = crate::child::run_guarded(
         &mut command,
         &[],
         std::time::Duration::from_secs(2),
         1024 * 1024,
+        || true,
     ) {
         let text = String::from_utf8_lossy(&out);
         let mut sources = Vec::new();
