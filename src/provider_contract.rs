@@ -428,6 +428,7 @@ mod tests {
         );
         assert_eq!(ollama_answer(&ollama).unwrap(), expected);
     }
+
     #[test]
     fn completed_policy_empty_answers_are_successes() {
         assert_eq!(
@@ -452,5 +453,89 @@ mod tests {
                 .unwrap(),
             ""
         );
+    }
+
+    #[test]
+    fn malformed_unsupported_and_refusal_replies_are_rejected() {
+        // Claude: missing blocks, malformed text, unsupported tool blocks.
+        assert!(claude_answer(&json!({"stop_reason":"end_turn"})).is_err());
+        assert!(
+            claude_answer(&json!({"stop_reason":"end_turn","content":[{"type":"text"}]})).is_err()
+        );
+        assert!(
+            claude_answer(
+                &json!({"stop_reason":"end_turn","content":[{"type":"tool_use","id":"1"}]})
+            )
+            .is_err()
+        );
+        assert!(
+            claude_answer(
+                &json!({"stop_reason":"tool_use","content":[{"type":"text","text":"x"}]})
+            )
+            .is_err()
+        );
+        // Redacted thinking is skipped, never delivered.
+        assert_eq!(
+            claude_answer(
+                &json!({"stop_reason":"end_turn","content":[{"type":"redacted_thinking","data":"s"},{"type":"text","text":"ok"}]})
+            )
+            .unwrap(),
+            "ok"
+        );
+        // Gemini: missing candidate/parts, non-text function payloads.
+        assert!(gemini_answer(&json!({})).is_err());
+        assert!(
+            gemini_answer(&json!({"candidates":[{"finishReason":"STOP","content":{}}]})).is_err()
+        );
+        assert!(gemini_answer(
+            &json!({"candidates":[{"finishReason":"STOP","content":{"parts":[{"functionCall":{"name":"f"}}]}}]})
+        )
+        .is_err());
+        assert!(gemini_answer(
+            &json!({"candidates":[{"finishReason":"SAFETY","content":{"parts":[{"text":"x"}]}}]})
+        )
+        .is_err());
+        // Chat: refusal strings, null content, missing choice.
+        assert!(chat_answer(
+            &json!({"choices":[{"finish_reason":"stop","message":{"content":"x","refusal":"r"}}]})
+        )
+        .is_err());
+        assert!(
+            chat_answer(&json!({"choices":[{"finish_reason":"stop","message":{"content":null}}]}))
+                .is_err()
+        );
+        assert!(chat_answer(&json!({})).is_err());
+        // Ollama: wrong done flags, missing content.
+        assert!(
+            ollama_answer(&json!({"done":true,"done_reason":"load","message":{"content":"x"}}))
+                .is_err()
+        );
+        assert!(ollama_answer(&json!({"done":true,"done_reason":"stop","message":{}})).is_err());
+        assert!(ollama_answer(&json!({"done":true,"message":{"content":"x"}})).is_err());
+    }
+
+    #[test]
+    fn claude_tri_state_thinking_is_exhaustive() {
+        // None omits the block on every model (server default).
+        for model in ["claude-haiku-4-5", "claude-opus-4-7", "future-model"] {
+            assert!(
+                claude_request(model, None, "s", "u")
+                    .unwrap()
+                    .get("thinking")
+                    .is_none()
+            );
+        }
+        // Some(false) disables thinking on every model, even unknown ones.
+        for model in ["claude-sonnet-4-5", "future-model"] {
+            assert_eq!(
+                claude_request(model, Some(false), "s", "u").unwrap()["thinking"]["type"],
+                "disabled"
+            );
+        }
+        // Request echoes model/system/user untouched.
+        let v = claude_request("claude-sonnet-4-5", None, "sys", "usr").unwrap();
+        assert_eq!(v["model"], "claude-sonnet-4-5");
+        assert_eq!(v["system"], "sys");
+        assert_eq!(v["messages"][0]["content"], "usr");
     }
 }

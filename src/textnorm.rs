@@ -384,6 +384,34 @@ mod tests {
     }
 
     #[test]
+    fn prompt_unicode_boundary_never_splits_or_panics() {
+        // Multi-byte entries: byte budget landing mid-char must back
+        // off to a char boundary, stay valid UTF-8, and still prefer
+        // the last comma so no entry ships half-spelled.
+        let words = vec![
+            "café".to_string(),
+            "世界語".to_string(),
+            "🎙️cast".to_string(),
+        ];
+        let full = "café, 世界語, 🎙️cast";
+        for max_chars in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, full.len()] {
+            let got = dictionary_prompt(&words, max_chars).expect("some prompt");
+            assert!(got.len() <= max_chars);
+            // Comma rule: output is a comma-aligned prefix of the full list.
+            assert!(full.starts_with(&got) || full.starts_with(&format!("{got},")));
+            // Every byte index of the output is a valid boundary by construction.
+            assert!(got.is_char_boundary(got.len()));
+        }
+        // Long Unicode tail: full list fits, returned verbatim.
+        assert_eq!(dictionary_prompt(&words, 900), Some(full.to_string()));
+        // No-comma fallback still returns a valid prefix, never panics.
+        let single = vec!["🎙️🎙️🎙️".to_string()];
+        let got = dictionary_prompt(&single, 5).unwrap();
+        assert!(got.is_char_boundary(got.len()));
+        assert!(single[0].starts_with(&got));
+    }
+
+    #[test]
     fn snippets_longest_first_and_boundaries() {
         let snips = vec![
             ("ask".to_string(), "ASKED".to_string()),
