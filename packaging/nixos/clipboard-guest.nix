@@ -127,12 +127,15 @@ pkgs.testers.runNixOSTest {
     assert "CRITICAL" not in journal and "panicked" not in journal
 
     # P1: compositor MIME round-trip (writer: wl-copy; labeled tool leg).
+    # wl-paste appends a trailing newline unless -n/--no-newline is given;
+    # the -n flag reads back the actual selection bytes, so cmp asserts
+    # exact payload fidelity (no trimming, no weakening).
     wuser("wl-copy --type text/plain < " + ART + "/primed-text")
-    assert wuser("wl-paste --type text/plain | cmp - " + ART + "/primed-text && echo SAME").strip() == "SAME"
+    assert wuser("wl-paste -n --type text/plain | cmp - " + ART + "/primed-text && echo SAME").strip() == "SAME"
     wuser("wl-copy --type image/png < " + ART + "/primed-png")
-    assert wuser("wl-paste --type image/png | cmp - " + ART + "/primed-png && echo SAME").strip() == "SAME"
+    assert wuser("wl-paste -n --type image/png | cmp - " + ART + "/primed-png && echo SAME").strip() == "SAME"
     wuser("wl-copy --clear")
-    wuser("wl-paste --type text/plain > " + ART + "/pasted-empty 2>/dev/null || true")
+    wuser("wl-paste -n --type text/plain > " + ART + "/pasted-empty 2>/dev/null || true")
     assert user("cmp -s /dev/null " + ART + "/pasted-empty && echo EMPTY").strip() == "EMPTY"
     note("P1 round-trip: text/png/empty byte-exact")
 
