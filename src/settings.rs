@@ -6,7 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+#[derive(Default)]
 pub struct AppSettings {
     pub preferences: Preferences,
     pub hotkeys: HotkeySettings,
@@ -26,6 +28,7 @@ pub struct AppSettings {
 pub const DEFAULT_SYNC_PORT: u16 = 42973;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SyncSettings {
     /// Master sync switch (sync tab toggle): the service starts the
     /// sync engine only when on, and watches changes. systemd owns the process.
@@ -138,16 +141,17 @@ impl Default for PillPrefs {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Preferences {
     pub theme: Theme,
     pub dictation_sounds: bool,
     pub pause_media_on_dictation: bool,
     pub auto_paste: bool,
     pub keep_transcription_in_clipboard: bool,
-    /// Copy backend. Only wl-copy for now; the enum grows with options.
+    /// Persisted legacy backend name; implemented by an owned Wayland source.
     #[serde(default)]
     pub copy_backend: CopyBackend,
-    /// Hide from clipboard history via wl-copy --sensitive. Default on.
+    /// Hide from clipboard history via the Wayland sensitive MIME hint. Default on.
     #[serde(default = "default_true")]
     pub hide_from_history: bool,
     /// Paste backend for auto-paste injection.
@@ -246,14 +250,10 @@ fn default_dictation_hotkeys() -> Vec<HotkeyBinding> {
     }]
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct HotkeySettings {
     /// Dictation bindings, any-of fires. Per-binding mode means one
     /// key can hold-to-talk while another toggles.
-    #[serde(
-        default = "default_dictation_hotkeys",
-        deserialize_with = "de_bindings"
-    )]
     pub dictation_hotkeys: Vec<HotkeyBinding>,
     /// Legacy single combo (pre-multi-binding). Migrated into
     /// `dictation_hotkeys` on load, then ignored on save.
@@ -285,22 +285,46 @@ impl Default for HotkeySettings {
     }
 }
 
+impl<'de> Deserialize<'de> for HotkeySettings {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Bindings(#[serde(deserialize_with = "de_bindings")] Vec<HotkeyBinding>);
+        #[derive(Deserialize)]
+        struct Saved {
+            #[serde(default)]
+            dictation_hotkeys: Option<Bindings>,
+            #[serde(default)]
+            dictation_hotkey: String,
+            #[serde(default = "default_smart_tap_ms")]
+            smart_tap_ms: u64,
+            #[serde(default = "default_true")]
+            hotkeys_enabled: bool,
+        }
+        let saved = Saved::deserialize(deserializer)?;
+        let bindings = match saved.dictation_hotkeys {
+            Some(list) => list.0,
+            None if !saved.dictation_hotkey.is_empty() => vec![HotkeyBinding {
+                combo: saved.dictation_hotkey.clone(),
+                mode: ActivationMode::Push,
+            }],
+            None => default_dictation_hotkeys(),
+        };
+        Ok(Self {
+            dictation_hotkeys: bindings,
+            dictation_hotkey: String::new(),
+            smart_tap_ms: saved.smart_tap_ms,
+            hotkeys_enabled: saved.hotkeys_enabled,
+        })
+    }
+}
+
 impl HotkeySettings {
     /// Effective bindings: the list is authoritative. The legacy
     /// single slot only fills an empty list (one-time migration for
     /// pre-multi-binding databases); an empty list with no legacy
     /// means F13, never a stale default.
     pub fn effective_hotkeys(&self) -> Vec<HotkeyBinding> {
-        if !self.dictation_hotkeys.is_empty() {
-            return self.dictation_hotkeys.clone();
-        }
-        if !self.dictation_hotkey.is_empty() {
-            return vec![HotkeyBinding {
-                combo: self.dictation_hotkey.clone(),
-                mode: ActivationMode::Push,
-            }];
-        }
-        default_dictation_hotkeys()
+        self.dictation_hotkeys.clone()
     }
 
     /// Fold the legacy slot into the list once, then clear it so it
@@ -406,6 +430,7 @@ impl SttChainEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SttSettings {
     #[serde(default)]
     pub entries: Vec<SttChainEntry>,
@@ -624,6 +649,7 @@ impl LlmEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LanguageModelSettings {
     #[serde(default)]
     pub entries: Vec<LlmEntry>,
@@ -748,13 +774,13 @@ impl LanguageModelSettings {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PrivacySettings {
     /// Audio retention in days (no Never option: clips grow fast).
+    /// Legacy/malformed zero means one day, never unlimited retention.
     pub audio_retention_days: u32,
-    /// Master switch for the audio vault. Default off. Note: the
-    /// capture pipeline is RAM-only, so the vault is empty until an
-    /// audio-storing feature lands; the controls below already manage
-    /// it (greyed while off, purge + clear work on whatever is there).
+    /// Store new successful, non-discarded captures in the audio vault.
+    /// Default off. Existing clips remain subject to retention and deletion.
     #[serde(default)]
     pub keep_audio_recordings: bool,
     pub history_enabled: bool,
@@ -779,7 +805,9 @@ impl Default for PrivacySettings {
 // System
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+#[derive(Default)]
 pub struct SystemSettings {
     /// Placeholder for future system knobs. The model cache lives at
     /// `<data>/models` (+ `<data>/bin` runtimes) and is shown, not
@@ -813,6 +841,7 @@ impl Snippet {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Dictionary {
     pub words: Vec<String>,
     pub snippets: Vec<Snippet>,
@@ -914,5 +943,25 @@ mod snippet_tests {
             replacement: "x".to_string(),
         };
         assert_eq!(single.triggers(), vec!["brb".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod legacy_shortcut_regressions {
+    use super::*;
+    #[test]
+    fn absent_new_list_preserves_legacy_but_explicit_new_and_empty_lists_win() {
+        let old: HotkeySettings = serde_json::from_str(r#"{"dictation_hotkey":"Ctrl+D"}"#).unwrap();
+        assert_eq!(old.effective_hotkeys()[0].combo, "Ctrl+D");
+        let new: HotkeySettings =
+            serde_json::from_str(r#"{"dictation_hotkey":"Ctrl+D","dictation_hotkeys":["F14"]}"#)
+                .unwrap();
+        assert_eq!(new.effective_hotkeys()[0].combo, "F14");
+        let empty: HotkeySettings =
+            serde_json::from_str(r#"{"dictation_hotkey":"Ctrl+D","dictation_hotkeys":[]}"#)
+                .unwrap();
+        assert!(empty.effective_hotkeys().is_empty());
+        let default: HotkeySettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.effective_hotkeys()[0].combo, "F13");
     }
 }

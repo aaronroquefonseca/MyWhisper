@@ -31,3 +31,17 @@ pub mod update;
 pub mod viz;
 
 mod private_fs;
+
+mod address;
+
+mod child;
+
+mod database_key;
+
+mod diagnostics;
+
+mod maintenance;
+
+mod reset;
+
+mod sync_jobs;

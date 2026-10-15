@@ -3683,6 +3683,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
                         };
                     }
                     let success = reqwest::blocking::Client::builder()
+                        .dns_resolver(std::sync::Arc::new(crate::address::HttpResolver))
                         .timeout(std::time::Duration::from_secs(60))
                         .build()
                         .and_then(|client| {
@@ -4350,9 +4351,16 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
                         .parent()
                         .map(|p| p.to_path_buf())
                         .unwrap_or_default();
-                    let n = crate::audio::clear_audio(&data_dir);
-                    eprintln!("[privacy] cleared {n} audio files");
-                    super::app::notify(tr("feedback.cleared"));
+                    match crate::audio::clear_audio(&data_dir) {
+                        Ok(n) => {
+                            eprintln!("[privacy] cleared {n} audio files");
+                            super::app::notify(tr("feedback.cleared"));
+                        }
+                        Err(error) => {
+                            eprintln!("[privacy] audio cleanup failed: {error}");
+                            super::app::notify("Audio cleanup failed. Retry from Settings.");
+                        }
+                    }
                 },
             );
         }
@@ -4637,6 +4645,13 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
                 // the running service survive: the next dictation
                 // re-reads defaults from the fresh DB and reports missing
                 // models; restart the service for a fully clean slate.
+                // The fresh blob is reloaded as the source of truth so
+                // the reset (sync disabled, peers revoked, history
+                // redacted) is observed exactly — never overwritten by
+                // stale in-memory defaults that would re-enable sync.
+                // Crash-safe two-phase reset with worker ownership lives
+                // in #22/#23 (nonce APIs + recovery worker); the
+                // pending-reset barriers below stay enforced here.
                 if let Err(e) = state.store.reset_all_data() {
                     eprintln!("[system] reset db: {e}");
                     super::app::notify(tr("feedback.deletefailed"));
@@ -4651,17 +4666,7 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
                         eprintln!("[system] reset {sub}: {e}");
                     }
                 }
-                {
-                    let mut settings = state.settings.borrow_mut();
-                    *settings = crate::settings::AppSettings::default();
-                    drop(settings);
-                }
-                if let Err(e) = state
-                    .store
-                    .save_settings(&crate::settings::AppSettings::default())
-                {
-                    eprintln!("[system] reset persist: {e}");
-                }
+                *state.settings.borrow_mut() = state.store.load_settings();
                 eprintln!("[system] application data reset");
                 crate::i18n::set_lang(crate::i18n::UiLang::System);
                 apply_theme(crate::settings::Theme::System);
