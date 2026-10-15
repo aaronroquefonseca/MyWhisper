@@ -18,7 +18,7 @@ main-only evidence. Draft held; no merge, tag, release or deploy.
 | cargo audit --deny warnings | exit 0, 0 vulnerabilities (fresh DB at run time) |
 | Arch packaged install + pkgrel upgrade | pass in rootless Podman clean userspace |
 | Nix symbolic-logo / desktop VM / whisper-vulkan-loader | exit 0 via owned-store runner (own gate/build dirs, no host daemon change); desktop VM covers System dark, GUI close, encrypted storage, repeated user-service start/stop |
-| Native UI smoke (xvfb, both themes) | pass; one local run tripped the 500ms provider-IO-close timing assertion in ollama_load_smoke, clean rerun + hosted green on same SHA → timing flake under local load, reported to #16 scope, no code touched |
+| Native UI smoke (xvfb, both themes) | pass; one local run tripped the 500ms provider-IO-close assertion in ollama_load_smoke (fixture's own 500ms socket read timed out waiting for EOF after page removal; production has no 500ms close contract → readiness-fixture defect, correction proposed to #23 scope: bounded retry under the 5s stall guard asserting closure, not closure-within-window). OPEN until demonstrated; rerun/hosted green does not resolve it |
 | test-release.py / test-upgrade.py | 11/11 and 5/5 pass on this source |
 | Integrated diff review | 46 src files, +31117/-4466; deps added only for owned scopes (wayland protocols, vendored secret-service 5.2.0 patch, glib-unix, rtrb, socket2/async-io/futures-util, tokio time); no gratuitous expansion; Operation/admit/CopyTask/Guard/trust present |
 
@@ -50,6 +50,12 @@ physical microphone/device-change, cross-host LAN pairing/revocation,
 non-niri compositor variants, R49 remaining advertised assets. None
 demonstrated on this source; fixtures and unrelated-head passes do
 not substitute.
+
+## Live-gap coordination (route owned by #15, plans owed by owners)
+
+- #21 asked for an executable guest-only paste-check plan (nix check attribute, guest ydotool/uinput fixture through the real paste path, exact prereqs); host input/clipboard/keyrings stay isolated.
+- #18 asked for an executable two-VM-peer pairing plan (two-node nix check, real Noise/discovery/sync/revocation between packaged executables with synthetic credentials, exact prereqs).
+- Runnable plans will run within resource bounds once posted; stub providers/protocol fixtures do not establish integration. No physical/cloud/GPU coverage fabricated.
 
 ## Joint-acceptance gate: PR #11 NOT CLEAR
 
