@@ -230,6 +230,47 @@ host RAM 26/31G used — 4G/2-core guest runs when calm. #21 to add test-only gu
 - Two-guest ssh legs BLOCKED with precise prerequisite: no provisioned NixOS guests exist; needs two guests on an isolated multicast-capable switch (libvirt isolated net, static DHCP, bridge multicast for 224.0.0.251:5353) with sqlcipher/openssh/packaged app, or equivalently a 2-node runNixOSTest translation of GUEST_SPEC. #18 owns gate logic; route provisioning translation is the follow-up.
 - Resources: /home 100% (5.0G free, siblings hold tens of GB in target dirs — untouched); /tmp tmpfs 8.7G free; RAM fluctuates 4–9G avail (VM runs serialized, swap-backed). My own 5.6G target cache freed for execution and scratch removed after. PR11 2.8G /tmp cache untouched (move-to-disk only on reviewer coordination, not needed yet).
 
+## Executed live legs part 2 (sync fabric + clipboard P1)
+
+Two-guest fabric provisioned and proven (route-owned scratch, removed
+after): NixOS guests with static .77.2/.77.3, single-slirp + hostfwd ssh,
+qemu socket-unicast L2 relay (host loopback multicast is kernel-broken
+here — self-send test fails — so the mcast relay design was replaced;
+same Ethernet frames, no LAN exposure), Sway, app, sqlcipher, openssh.
+Findings while bringing it up (all recorded, none hidden): bwrap needs
+the flake dir outside /tmp; qemu-vm.nix must be imported explicitly for
+plain nixosSystem; UseDns=false; single slirp only (twin gateways stall
+ssh banners); default route via fabric (else advertisements carry slirp
+IPs); QEMU_NET_OPTS carries hostfwd; never pkill by patterns present in
+your own command (three self-kills survived).
+
+G0 selftest over ssh: PASS (headless --service; GUI binary is pure
+frontend and never logs engine lines — driver ssh/GUI assumption
+corrected in scratch). DB interop: two driver bugs fixed in scratch and
+owed upstream to #18 — (1) shell ate the x'hex' blob quotes deriving a
+wrong key (sh_quote helper), (2) nixpkgs sqlcipher echoes bare "ok"
+lines (strip leading ok). ssh stop() now waits for death (flock race
+made restarts exit frontend-mode). Homes must be wiped between runs on
+persistent guests; pkill -x for hygiene.
+
+G1 discovery: OPEN. Proven around it — L2 unicast + multicast frames
+deliver (counters), app joins 224.0.0.251 on eth1, engine binds
+0.0.0.0:42973, manual cross-guest TCP dial succeeds, mdns sockets on
+0.0.0.0:5353 — yet 20+ min of mutual overlap yields zero device rows
+and the app logs nothing on these paths even at debug. Narrowed to
+announce/browse behavior inside mdns-sd on the multi-homed guest;
+needs packet capture (tcpdump absent in guest closures) or app trace
+logging. No seed-as-pairing; fixture-trust variant not run as
+acceptance.
+
+Clipboard guest rerun (8dd4bbd wl-paste -n): P1 text/png/empty GREEN
+(byte-exact, isolated guest, final package); app presence leg green
+(service active, journal clean). P2 fails spawning foot via swaymsg
+exec (exit 1, nested quoting vs foot invocation — #21 lane). Tool-leg
+verdicts (incl. a second ART-root-ownership bug: driver mkdir as root
+blocks audit writes, cmp exit 2) reported to #21 with exact evidence.
+uinput/manager/isolation legs unreached; app-writer leg stays open.
+
 ## Publication hold
 
 Held. No merge, tag, release or deploy from this branch.
