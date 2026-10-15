@@ -19,7 +19,7 @@ their tip) is distinct from final integrated release acceptance
 | #21 | fix/audit-clipboard-ownership (#20) | ed08181 | hosted green/strict-zero reported |
 | #22 | fix/audit-session-lifecycle (#21) | db1f4e5 | integrating new parent; Operation/admit/CopyTask preserved by source evidence (operation.rs, service.rs, clipboard.rs); shutdown-checkpoint evidence still owed |
 | #23 | fix/audit-settings-lifecycle (#22) | 6d6da5e3 | INTEGRATED HEAD, hosted SUCCESS (run 38638287770): 340 + 5 ignored exactly once (345 + 9 harnesses); parent db1f4e5; source-specific acceptance in INTEGRATED-ACCEPTANCE.md (candidate clean, Arch+Nix+UI+audit green on exact SHA); live gaps + PR11 gate still open |
-| #11 | fix/server-status-and-switching (main) | c4c64c59 | open, under independent review, NOT CLEARED (settlement-admission race; v14 follow-up with original owner); overlaps #22, preserve on integrate |
+| #11 | fix/server-status-and-switching (main) | c4c64c59 | CODE-CLEARED independently (13 probes incl. settlement-lock v14 + negative control, 147 tests, fmt/lint/audit, hosted run 38693739264 success; live engine/GPU/compositor gaps unclaimed in review). JOINT final-source gate OPEN: #22 mapping/porting into integrated session source, verification pending; overlaps #22, preserve on integrate |
 | #4 | t3code/be770be5 (main) | 4c7f3873 | open; separate Qwen feature, no competing files |
 
 Stack lag shifts as owners advance (earlier snapshot: #21<#20 by 11,
@@ -209,6 +209,15 @@ behaved: TimeoutExpired at 120s, killpg SIGTERM→SIGKILL path, exit 1,
 no suppression. b20 green is genuine but NOT a stable gate. No
 timeout/worker/assertion changes made. #19 stays pinned (bfd7ce0,
 draft).
+
+
+## Guest-VM route feasibility (#21 plan received, #18 plan awaited)
+
+#21 posted an executable guest-only paste plan (ydotoold/uinput + Sway + manager observation, packaged app present).
+Route-owner verification (pinned flake input, owned store, offline): ydotool 1.0.4, foot 1.28.0, wl-clipboard 2.3.0,
+wtype 0.4, cliphist 0.7.0 all available; /dev/kvm + qemu + nix present; store shared (serialize gates). Constraint:
+host RAM 26/31G used — 4G/2-core guest runs when calm. #21 to add test-only guest config + driver; #15 executes.
+#18 two-peer pairing plan still awaited. No physical/cloud/GPU coverage claimed.
 
 ## Publication hold
 
