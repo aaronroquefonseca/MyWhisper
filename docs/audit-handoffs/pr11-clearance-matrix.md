@@ -24,8 +24,12 @@ distinguished from preserved behavior throughout. No blind cherry-pick
 - Autostart toggle: service-loop STT reconcile (`service.rs:
   stt_reconcile_tick`, every 2 s poll) compares stored
   `(primary, autostart)` against last applied. Toggle ON warms the
-  current configuration now (reuse when current); toggle OFF keeps the
-  running server with no bounce. Failures retry without advancing.
+  current configuration now (reuse when current) unless a Stop landed
+  after this primary was last observed disabled (per-primary disabled
+  marker: newer Stop revokes the toggle until a fresh deliberate
+  change); toggle OFF keeps the running server with no bounce.
+  Failures retry without advancing. First observation reconciles
+  current intent instead of assuming startup applied it.
 - Primary (configuration) change: stale supervised servers must not
   serve — retired first, then warmed when autostart is on (lazy state
   recorded when off). Active inference/capture defers any transition;
@@ -45,7 +49,10 @@ distinguished from preserved behavior throughout. No blind cherry-pick
 
 - P01 old update cannot borrow newer Stop; polls stay cold. Bound to
   generation-gated admission + drop-wins: a stale gated operation
-  aborts, nothing starts, status stays cold. Regression:
+  aborts, nothing starts, status stays cold. The tick revalidates live
+  pair + generation immediately before destructive control and holds
+  the engine lease across the drop, so admitted inference is never
+  destroyed. Regression:
   `local_readiness_probe_cancel_reset_and_stop_reap_owned_servers`
   (cancel/reset/`drop_servers` mid-stalled-readiness → error <500 ms,
   map empty, child reaped, lease released).
@@ -65,10 +72,14 @@ distinguished from preserved behavior throughout. No blind cherry-pick
   (rendezvous-parked transition defers, baseline unadvanced) +
   `delayed_release…` (admitted-session coherence).
 - P04 same old authority rejected; nothing resurrects; later change
-  possible. Stale gated admission errors with map empty; fresh
-  generation admission starts normally. Regressions: readiness test
-  above + `fresh_admission_reuses_current_and_restarts_after_stop_
-  with_cold_polls` (fresh start, new PID, live polls).
+  possible. Stale gated admission errors with map empty (tick
+  revalidation aborts on pair/generation drift before any drop; warm
+  paths revalidate plan identity at execution); fresh generation
+  admission starts normally.
+  Regressions: readiness test above + `fresh_admission_reuses_current_and_restarts_after_stop_
+  with_cold_polls` (fresh start, new PID, live polls) +
+  `warmup_superseded_detects_settings_moves` (admitted-vs-live plan
+  identity predicate shared by tick and deferred warm paths).
 - P05 superseded lazy preserves running server. Toggle-OFF (same
   primary) performs no mutation by construction; stale warmups die on
   their generation gates. Regressions:
@@ -78,7 +89,8 @@ distinguished from preserved behavior throughout. No blind cherry-pick
 - P07 deferral marks nothing applied. No applied-state bookkeeping
   exists (deferral = error + unchanged pair + unchanged map); valid
   suppressed settling has no counterpart because stopping is
-  terminal. Replacement coverage: `stt_tick_unresolvable_plan_retries`
+  terminal. Replacement coverage: the unresolvable-plan half of
+  `stt_tick_toggle_on_warms_current_and_unresolvable_retries`
   (failure advances nothing) + deferred-warmup retirement test.
 - P08 superseded autostart rejected at admission; original survives;
   no temp listener. Entry, generation (via operation check), port and
@@ -100,10 +112,24 @@ distinguished from preserved behavior throughout. No blind cherry-pick
   never spawned; foreign ports error), never applied. Compatibility
   decision: refusal replaces leave-local destruction. Regressions:
   foreign-port/listener tests + `retire_invalid_assets` suite.
+- P02/P06/P09-core same-target Stop stays cold across unchanged
+  polls. With settings unchanged the tick pair never moves, so no
+  warm path can resurrect a stopped server; Stop intent needs no
+  stored suppression because stopped is terminal (empty map, dead
+  child, cold status).
+  Regression: `stt_stop_stays_cold_across_unchanged_polls` (three
+  unchanged polls after Stop: map empty, socket closed, pair
+  unchanged). Command-loop coherence:
+  `server_stop_command_and_tick_stay_quiet_together` (explicit stop
+  command consumed in service order, then tick stays quiet).
 - P11/P12 revoked intent defers; fresh restore starts normally; Stop
-  retained; no false application. Stale warm/press aborts via
-  generation gates; explicit `reset` command + drop paths stay
-  immediate; fresh generation admission starts (asserted new PID).
+  retained; no false application. Stale tick observations abort on
+  pair/generation revalidation before any drop; stale warm/press
+  aborts via generation gates + plan-identity checks; explicit
+  `reset` command + drop paths stay immediate; fresh generation
+  admission starts (asserted new PID); toggle-ON after a newer Stop
+  of the same primary defers via the disabled marker until a fresh
+  deliberate change.
   Regressions: fresh test + `engine_ownership_wait_and_startup_cancel_
   without_affecting_another_owner` + 300-cycle stale-session suite.
 - P13 one coherent control/target/live-settings snapshot; fresh B

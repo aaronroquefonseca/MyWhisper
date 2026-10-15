@@ -313,7 +313,17 @@ pub(crate) static RECONCILE_TICK_PAUSE: Mutex<
 /// Deferred/failed ticks leave the pair untouched so the next poll
 /// retries. Split from the spawn loop so tests can drive the exact
 /// production path deterministically (no sleeps, no threads).
-pub(crate) fn stt_reconcile_tick(db_path: &std::path::Path, last: &mut Option<(String, bool)>) {
+///
+/// `disabled` records the `(primary, generation)` of the most recent
+/// observation with autostart off; a toggle-on warm proceeds only when
+/// no control transition landed since that observation for the same
+/// primary (a newer Stop revokes the toggle, which then needs a fresh
+/// deliberate change — exactly like the cleared toggle semantics).
+pub(crate) fn stt_reconcile_tick(
+    db_path: &std::path::Path,
+    last: &mut Option<(String, bool)>,
+    disabled: &mut Option<(String, u64)>,
+) {
     let data_dir = db_path
         .parent()
         .map(|p| p.to_path_buf())
@@ -321,6 +331,11 @@ pub(crate) fn stt_reconcile_tick(db_path: &std::path::Path, last: &mut Option<(S
     let Ok(store) = Store::open_existing(db_path) else {
         return;
     };
+    // Late reset transitions withhold reconciliation exactly like the
+    // service barrier: never mutate servers while cleanup is pending.
+    if store.reset_pending().unwrap_or(true) {
+        return;
+    }
     // Control-generation witness BEFORE any settings reads: a Stop (or
     // any bump) landing inside the snapshot window below must not pair
     // its authority with this observation.
@@ -344,9 +359,40 @@ pub(crate) fn stt_reconcile_tick(db_path: &std::path::Path, last: &mut Option<(S
         eprintln!("[service] STT snapshot torn by concurrent control; retrying next poll");
         return;
     }
+    if !auto {
+        *disabled = Some((primary.clone(), gen_before));
+    }
     let Some((last_primary, last_auto)) = last else {
-        // First observation records the baseline without acting, exactly
-        // like the service spawn path.
+        // First observation reconciles current intent instead of assuming
+        // startup applied it: warm when autostart is on (failures leave
+        // the baseline empty for retry), record otherwise. Covers both
+        // startup-warm and lazy/skipped-startup orderings.
+        if auto {
+            let generation = gen_before;
+            let warmed = (|| {
+                let plan = crate::transcribe::plan_for(&settings.stt, &data_dir)?;
+                let net = crate::transcribe::server_net(&settings.stt);
+                crate::transcribe::warmup_superseded(
+                    &plan,
+                    settings.stt.gpu_backend,
+                    settings.stt.sherpa_backend,
+                    &net,
+                    &data_dir,
+                )?;
+                crate::transcribe::ensure_for_plan_at_generation(
+                    &plan,
+                    &data_dir,
+                    settings.stt.gpu_backend,
+                    settings.stt.sherpa_backend,
+                    &net,
+                    generation,
+                )
+            })();
+            if let Err(error) = warmed {
+                eprintln!("[service] STT first-observation warm failed, retrying: {error}");
+                return;
+            }
+        }
         *last = Some((primary, auto));
         return;
     };
@@ -357,30 +403,58 @@ pub(crate) fn stt_reconcile_tick(db_path: &std::path::Path, last: &mut Option<(S
         eprintln!("[service] STT switch deferred (active inference)");
         return;
     }
-    // The witness is validated authority for this observation: it predates
-    // every input above and no transition interleaved. The toggle-on warm
-    // below carries it unchanged; the primary-changed branch re-samples
-    // after its own deliberate drop (documented there).
-    let generation = gen_before;
     if primary != *last_primary {
-        // Stale configuration must not serve: retire supervised servers,
-        // then warm the current one when autostart is on. Failures retry
-        // (pair untouched); only success or intentional lazy state
-        // advances it. Active use deferred above, reset pending never
-        // reaches here (service barrier). Authority re-samples after our
-        // own deliberate drop: the drop is this tick's transition, and any
-        // newer concurrent Stop still aborts the warm through its gate.
+        // Revalidate live intent immediately before destructive control:
+        // reread the pair and the generation; any drift aborts with no
+        // drop and no advance. Stale observations never destroy.
+        let fresh = store.load_settings();
+        let fresh_primary = crate::transcribe::stt_primary_id(&fresh.stt, &data_dir);
+        if fresh_primary != primary
+            || fresh.stt.auto_start_server != auto
+            || crate::transcribe::server_generation() != gen_before
+        {
+            eprintln!("[service] STT intent moved during observation; retrying next poll");
+            return;
+        }
+        // Lease-gated destruction: admitted engine use wins over watcher
+        // control; busy defers without advancing.
+        let lease = match crate::transcribe::EngineLease::acquire(
+            &crate::operation::Operation::unrestricted(),
+            false,
+        ) {
+            Ok(lease) => lease,
+            Err(_) => {
+                eprintln!("[service] STT switch deferred (engine in use)");
+                return;
+            }
+        };
         crate::transcribe::drop_servers(&data_dir);
+        drop(lease);
+        // Our own drop is the valid admitted transition; account for it
+        // with a fresh sample, and skip a pointless warm when intent
+        // already moved on again.
         let generation = crate::transcribe::server_generation();
+        let settled = store.load_settings();
+        let settled_primary = crate::transcribe::stt_primary_id(&settled.stt, &data_dir);
+        if settled_primary != primary || settled.stt.auto_start_server != auto {
+            return;
+        }
         if auto {
             let warmed = (|| {
-                let plan = crate::transcribe::plan_for(&settings.stt, &data_dir)?;
-                let net = crate::transcribe::server_net(&settings.stt);
+                let plan = crate::transcribe::plan_for(&settled.stt, &data_dir)?;
+                let net = crate::transcribe::server_net(&settled.stt);
+                crate::transcribe::warmup_superseded(
+                    &plan,
+                    settled.stt.gpu_backend,
+                    settled.stt.sherpa_backend,
+                    &net,
+                    &data_dir,
+                )?;
                 crate::transcribe::ensure_for_plan_at_generation(
                     &plan,
                     &data_dir,
-                    settings.stt.gpu_backend,
-                    settings.stt.sherpa_backend,
+                    settled.stt.gpu_backend,
+                    settled.stt.sherpa_backend,
                     &net,
                     generation,
                 )
@@ -393,11 +467,28 @@ pub(crate) fn stt_reconcile_tick(db_path: &std::path::Path, last: &mut Option<(S
         *last = Some((primary, auto));
     } else if auto {
         // Only the autostart toggle moved on: warming is itself
-        // deliberate, so the current local configuration starts (reuse
-        // when already current). Failures retry without advancing.
+        // deliberate, so the current configuration starts (reuse when
+        // already current) — unless a Stop landed after this primary
+        // was last observed disabled, which revokes the toggle until a
+        // fresh deliberate change. Failures retry without advancing.
+        if let Some((marked_primary, marked_gen)) = disabled
+            && *marked_primary == primary
+            && *marked_gen != gen_before
+        {
+            eprintln!("[service] STT toggle revoked by newer Stop; retrying next poll");
+            return;
+        }
+        let generation = gen_before;
         let warmed = (|| {
             let plan = crate::transcribe::plan_for(&settings.stt, &data_dir)?;
             let net = crate::transcribe::server_net(&settings.stt);
+            crate::transcribe::warmup_superseded(
+                &plan,
+                settings.stt.gpu_backend,
+                settings.stt.sherpa_backend,
+                &net,
+                &data_dir,
+            )?;
             crate::transcribe::ensure_for_plan_at_generation(
                 &plan,
                 &data_dir,
@@ -442,9 +533,11 @@ pub fn spawn_hotkey_watcher(
             eprintln!("[service] stale command cleanup failed: {e}");
         }
         let mut reset_recovery = crate::reset::Recovery::default();
-        // Last applied STT (primary, autostart): the reconcile tick below
-        // records the baseline on first pass and acts only on change.
+        // Last applied STT (primary, autostart) plus the most recent
+        // disabled observation for toggle revocation. The reconcile tick
+        // records baselines on first pass and acts only on change.
         let mut stt_last: Option<(String, bool)> = None;
+        let mut stt_disabled: Option<(String, u64)> = None;
         let mut next = std::time::Instant::now();
         while !stop.stopped() {
             if stop.wait(next.saturating_duration_since(std::time::Instant::now())) {
@@ -535,7 +628,7 @@ pub fn spawn_hotkey_watcher(
             // Live STT reconciliation: autostart toggles and primary
             // changes apply within one poll (reset pending already
             // continued above, so the barrier is respected).
-            stt_reconcile_tick(&db_path, &mut stt_last);
+            stt_reconcile_tick(&db_path, &mut stt_last, &mut stt_disabled);
             let settings = store.load_settings();
             apply_input_preferences(&settings);
             let hotkeys = settings.hotkeys;

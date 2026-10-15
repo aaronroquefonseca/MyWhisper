@@ -321,9 +321,11 @@ test|lib|transcribe::tests::repeated_speculative_cancellation_preserves_settled_
 test|lib|transcribe::tests::revoked_cli_operations_reap_children_and_remove_owned_audio|run
 test|lib|transcribe::tests::revoked_websocket_authority_rejects_new_audio_and_interrupts_completion|run
 test|lib|transcribe::tests::server_net_defaults_and_overrides|run
+test|lib|transcribe::tests::server_stop_command_and_tick_stay_quiet_together|run
 test|lib|transcribe::tests::sherpa_text_field|run
 test|lib|transcribe::tests::short_worker_pressure_preserves_capture_and_completion|run
 test|lib|transcribe::tests::spec_thread_roundtrip|ignored
+test|lib|transcribe::tests::stt_stop_stays_cold_across_unchanged_polls|run
 test|lib|transcribe::tests::stt_tick_defers_during_active_inference|run
 test|lib|transcribe::tests::stt_tick_disable_keeps_running_server_without_bounce|run
 test|lib|transcribe::tests::stt_tick_ignores_unchanged_settings|run
@@ -332,6 +334,7 @@ test|lib|transcribe::tests::stt_tick_toggle_on_warms_current_and_unresolvable_re
 test|lib|transcribe::tests::stt_tick_torn_snapshot_defers_without_advancing|run
 test|lib|transcribe::tests::task_completion_waits_for_earlier_work_and_capture_destruction|run
 test|lib|transcribe::tests::truncated_managed_whisper_is_rejected_before_provider_or_subprocess_use|run
+test|lib|transcribe::tests::warmup_superseded_detects_settings_moves|run
 test|lib|transcribe::tests::websocket_cancellation_interrupts_setup_write_and_completion|run
 test|lib|transcribe::tests::websocket_resolver_cancellation_recovers_owned_task_budget|run
 test|lib|transcribe::tests::websocket_stalled_nss_cannot_escape_startup_deadline|run
