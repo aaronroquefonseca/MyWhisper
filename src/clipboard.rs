@@ -242,6 +242,54 @@ fn request(
     stopped.store(true, Ordering::Release);
     outcome
 }
+
+/// Async capture-edge copy: queues a copy on the clipboard worker and
+/// returns immediately. The caller polls for completion (cancellation
+/// drops the task, which revokes the queued copy). Session-owned
+/// delivery uses this for the copy leg so a stuck compositor cannot
+/// wedge the release worker past its deadline.
+pub(crate) struct CopyTask {
+    result: std::sync::mpsc::Receiver<Result<crate::selection::Payload, String>>,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl CopyTask {
+    pub fn poll(&self) -> Option<Result<(), String>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result.map(|_| ())),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Some(Err("clipboard worker stopped".into()))
+            }
+        }
+    }
+}
+impl Drop for CopyTask {
+    fn drop(&mut self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+pub(crate) fn copy_text_async(text: &str, sensitive: bool) -> Result<CopyTask, String> {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let stop = cancelled.clone();
+    let guard: crate::selection::Guard =
+        Arc::new(move || !crate::runtime::closing() && !stop.load(Ordering::Acquire));
+    let (response, result) = mpsc::channel();
+    worker()?
+        .sender
+        .try_send(Request {
+            operation: Operation::Copy(text_payload(text), sensitive),
+            guard,
+            response,
+        })
+        .map_err(|_| "clipboard delivery queue is full")?;
+    Ok(CopyTask { result, cancelled })
+}
 fn pipeline_owned(
     selection: &mut crate::selection::Selection,
     text: &str,

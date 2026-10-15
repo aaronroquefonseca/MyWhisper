@@ -1527,6 +1527,77 @@ impl Store {
     // Foundation keeps the pending-reset barriers (capture, sync and
     // settings gates refuse while pending) enforced here.
 
+    pub(crate) fn pending_reset_nonce(&self) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM kv WHERE key='reset_pending'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    pub(crate) fn completed_reset(&self, nonce: &str) -> rusqlite::Result<bool> {
+        self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_meta WHERE key='completed_reset' AND value=?1)",
+            [nonce],
+            |row| row.get(0),
+        )
+    }
+
+    /// Persist one reset transaction. Retrying cleanup must not wipe edits
+    /// written after this commit, including after an interrupted restart.
+    pub(crate) fn begin_reset(&self, nonce: &str) -> rusqlite::Result<()> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let pending: Option<String> = tx
+            .query_row(
+                "SELECT value FROM kv WHERE key='reset_pending'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match pending.as_deref() {
+            Some(current) if current == nonce => return Ok(()),
+            Some(_) => {
+                return Err(rusqlite::Error::ToSqlConversionFailure(
+                    "another reset must complete before beginning a new one".into(),
+                ));
+            }
+            None => {}
+        }
+        if self.completed_reset(nonce)? {
+            return Ok(());
+        }
+        Self::reset_on(&tx)?;
+        tx.execute(
+            "INSERT INTO kv(key,value) VALUES('reset_pending',?1)",
+            [nonce],
+        )?;
+        tx.commit()?;
+        bump_data_gen();
+        Ok(())
+    }
+
+    pub(crate) fn complete_reset(&self, nonce: &str) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let changed = tx.execute(
+            "DELETE FROM kv WHERE key='reset_pending' AND value=?1",
+            [nonce],
+        )?;
+        if changed != 1 {
+            return Err(rusqlite::Error::ToSqlConversionFailure(
+                "reset completion does not own its pending transaction".into(),
+            ));
+        }
+        tx.execute("INSERT INTO sync_meta(key,value) VALUES('completed_reset',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[nonce])?;
+        bump_gen(&tx)?;
+        tx.commit()?;
+        bump_data_gen();
+        Ok(())
+    }
     /// Delete rows older than `days` (auto-delete transcripts).
     /// Tombstones survive: dropping them would resurrect peers' rows.
     pub fn purge_old_history(&self, days: u32) -> rusqlite::Result<usize> {

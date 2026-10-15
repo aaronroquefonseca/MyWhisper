@@ -788,6 +788,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "dict.snippets.create" => ("Create snippet", "Crear fragmento"),
         "feedback.saved" => ("Saved", "Guardado"),
         "feedback.deleted" => ("Deleted", "Eliminado"),
+        "capture.failed" => (
+            "Dictation failed. Check the microphone and transcription settings, then retry. Escape dismisses this message.",
+            "Falló el dictado. Revisa el micrófono y los ajustes de transcripción e inténtalo de nuevo. Escape cierra este mensaje.",
+        ),
         "feedback.copied" => ("Copied to clipboard", "Copiado al portapapeles"),
         "feedback.copyretry" => ("Copy failed. Retry", "Error al copiar. Reintentar"),
         "lm.applying" => ("Applying…", "Aplicando…"),
