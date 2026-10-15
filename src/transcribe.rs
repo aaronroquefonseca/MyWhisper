@@ -3714,7 +3714,39 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
     } else {
         eprintln!("[stt] history disabled: pasting without storing");
     }
-    crate::clipboard::run_pipeline(&text, &settings.preferences);
+    // Authorize against the same connection that owns the capture epoch, so a
+    // database replacement between the settings/history read and delivery
+    // cannot pair a stale epoch with a new file. Epoch-read failures stay
+    // distinct from authorization denials.
+    let policy_store = match crate::store::Store::open_existing(&paths.db_file()) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("[stt] clipboard authorization failed: {error}");
+            return;
+        }
+    };
+    let epoch = match policy_store.capture_epoch() {
+        Ok(epoch) => epoch,
+        Err(error) => {
+            eprintln!("[stt] capture policy read failed: {error}");
+            return;
+        }
+    };
+    let policy = match crate::clipboard::DeliveryAuth::capture(
+        policy_store,
+        epoch,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    ) {
+        Ok(policy) => policy,
+        Err(error) => {
+            eprintln!("[stt] clipboard authorization failed: {error}");
+            return;
+        }
+    };
+    let permitted = Arc::new(move || policy.permitted() && !CANCELLED.load(Ordering::SeqCst));
+    if let Err(error) = crate::clipboard::run_pipeline(&text, &settings.preferences, permitted) {
+        eprintln!("[stt] clipboard delivery failed: {error}");
+    }
 }
 
 #[cfg(test)]

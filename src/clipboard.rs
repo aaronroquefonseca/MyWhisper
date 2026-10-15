@@ -1,29 +1,30 @@
 //! Clipboard write + paste injection for dictation output.
 //!
-//! Copy side: `wl-copy` (`wl-clipboard` package), with `--sensitive`
-//! when hiding from clipboard history. Paste side: `wtype`
+//! Copy side owns an ext-data-control/wlr-data-control Wayland source and
+//! publishes a sensitive hint when requested. Paste side: `wtype`
 //! (`wtype` package, virtual-keyboard protocol) or `ydotool`
 //! (`ydotool` package + running `ydotoold` + input group). The chord
 //! is configurable: Ctrl+Shift+V (default), Ctrl+V, Shift+Insert.
 
-use crate::settings::{CopyBackend, PasteBackend, PasteCombo, Preferences};
-use std::io::Write;
-use std::process::{Command, Stdio};
+use crate::settings::{PasteBackend, PasteCombo, Preferences};
+use std::process::Command;
 use std::time::Duration;
 
 fn have(binary: &str) -> bool {
-    Command::new("which")
-        .arg(binary)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    std::env::var_os("PATH").is_some_and(|paths| {
+        use std::os::unix::fs::PermissionsExt;
+        std::env::split_paths(&paths).any(|directory| {
+            let file = directory.join(binary);
+            file.metadata().is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
+    })
 }
 
 /// Dependency strings for the settings UI, per backend.
 pub fn copy_backend_deps() -> &'static str {
-    "wl-copy (wl-clipboard package)"
+    "Wayland data-control; wl-copy/wl-paste fallback for copy or Keep in clipboard on"
 }
 
 pub fn paste_backend_deps(backend: PasteBackend) -> &'static str {
@@ -38,6 +39,7 @@ pub fn paste_backend_deps(backend: PasteBackend) -> &'static str {
 /// What's installed right now, for status lines in the UI.
 #[derive(Debug, Clone, Copy)]
 pub struct BackendStatus {
+    pub wayland: bool,
     pub wl_copy: bool,
     pub wtype: bool,
     pub ydotool: bool,
@@ -51,173 +53,330 @@ pub fn probe() -> BackendStatus {
         .unwrap_or(false);
     BackendStatus {
         wl_copy: have("wl-copy"),
+        wayland: std::env::var_os("WAYLAND_DISPLAY").is_some()
+            || std::env::var_os("WAYLAND_SOCKET").is_some(),
         wtype: have("wtype"),
         ydotool: have("ydotool"),
         ydotoold_socket: socket,
     }
 }
 
-/// Current clipboard content with its MIME type. Text and binary
-/// (e.g. images) both survive the pipeline; anything beyond one
-/// MIME type degrades to text/plain-or-first (wl-copy serves one
-/// type per process, so multi-type offers can't be fully rebuilt).
-#[derive(Debug, Clone)]
+/// Exact MIME offers, including a genuinely empty selection. Snapshot errors
+/// are returned rather than being mistaken for an empty clipboard.
+#[derive(Clone)]
 pub enum SavedClipboard {
+    Empty,
     Text(String),
     Raw { mime: String, bytes: Vec<u8> },
+    Formats(Vec<(String, Vec<u8>)>),
 }
 
-/// Read helper with a timeout so a misbehaving selection owner
-/// can't stall dictation.
-fn paste_bytes(mime: Option<&str>) -> Option<Vec<u8>> {
-    if !have("wl-paste") {
-        return None;
-    }
-    let mut cmd = Command::new("timeout");
-    cmd.args(["5", "wl-paste", "--no-newline"]);
-    if let Some(m) = mime {
-        cmd.args(["--type", m]);
-    }
-    let out = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() || out.stdout.is_empty() {
-        return None;
-    }
-    Some(out.stdout)
+struct Request {
+    operation: Operation,
+    guard: crate::selection::Guard,
+    response: std::sync::mpsc::Sender<Result<crate::selection::Payload, String>>,
 }
-
-fn offered_types() -> Vec<String> {
-    let out = Command::new("timeout")
-        .args(["5", "wl-paste", "--list-types"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-    match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect(),
-        _ => Vec::new(),
-    }
+enum Operation {
+    Snapshot,
+    Copy(crate::selection::Payload, bool),
+    Pipeline(String, Preferences),
 }
-
-/// Snapshot the current clipboard (text or binary) for later restore.
-pub fn save_clipboard() -> Option<SavedClipboard> {
-    let types = offered_types();
-    if types.is_empty() {
-        return None;
-    }
-    // Prefer text/plain when offered: cheapest and exact.
-    if types.iter().any(|t| t == "text/plain") {
-        return paste_bytes(Some("text/plain"))
-            .and_then(|b| String::from_utf8(b).ok())
-            .map(SavedClipboard::Text);
-    }
-    // Single non-text offer (e.g. image/png): keep raw bytes.
-    let mime = types.into_iter().next()?;
-    paste_bytes(Some(&mime)).map(|bytes| SavedClipboard::Raw { mime, bytes })
+struct Worker {
+    sender: std::sync::mpsc::SyncSender<Request>,
+    // The process owns one selection worker, rather than a child/reaper per
+    // dictation. Its only retained data is the currently requested selection.
+    _thread: crate::runtime::OwnedThread,
 }
-
-/// Put a snapshot back. Restored content is never marked sensitive:
-/// it was the user's normal clipboard before we borrowed it.
-pub fn restore_clipboard(saved: &SavedClipboard) -> Result<(), String> {
-    match saved {
-        SavedClipboard::Text(t) => copy_with(CopyBackend::WlCopy, t, false),
-        SavedClipboard::Raw { mime, bytes } => {
-            if !have("wl-copy") {
-                return Err("wl-copy not found (install wl-clipboard)".to_string());
+static WORKER: std::sync::OnceLock<Worker> = std::sync::OnceLock::new();
+static WORKER_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn worker() -> Result<&'static Worker, String> {
+    use std::sync::mpsc;
+    let _lock = WORKER_INIT
+        .lock()
+        .map_err(|_| "clipboard worker initialization failed")?;
+    if crate::runtime::closing() {
+        return Err("clipboard worker stopped".into());
+    }
+    if WORKER.get().is_none() {
+        let (sender, receiver) = mpsc::sync_channel::<Request>(4);
+        let thread = crate::runtime::spawn_dedicated("clipboard-selection", move || {
+            let mut selection: Option<crate::selection::Selection> = None;
+            let mut fallback: Option<crate::selection::CliSelection> = None;
+            loop {
+                if crate::runtime::closing() {
+                    if let Some(selection) = selection.as_mut() {
+                        selection.clear_if_owned();
+                    }
+                    return;
+                }
+                match receiver.recv_timeout(Duration::from_millis(2)) {
+                    Ok(request) => {
+                        let pipeline = matches!(&request.operation, Operation::Pipeline(..));
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            if !request.guard.as_ref()() {
+                                return Err("clipboard delivery cancelled".into());
+                            }
+                            if selection.is_none() {
+                                match crate::selection::Selection::open(&request.guard) {
+                                    Ok(native) => {
+                                        selection = Some(native);
+                                        fallback = None;
+                                    }
+                                    Err(error) if error == crate::selection::UNSUPPORTED => {
+                                        let (payload, sensitive, paste_prefs) = match &request.operation {
+                                                Operation::Copy(payload, sensitive) => (payload.clone(), *sensitive, None),
+                                                Operation::Pipeline(text, prefs) if prefs.keep_transcription_in_clipboard => (text_payload(text), prefs.hide_from_history, Some(prefs)),
+                                                _ => return Err("This compositor needs Keep in clipboard enabled; safe borrowing requires Wayland data-control support".into()),
+                                            };
+                                        fallback = Some(crate::selection::CliSelection::copy(
+                                            &payload,
+                                            sensitive,
+                                            &request.guard,
+                                        )?);
+                                        if let Some(prefs) = paste_prefs
+                                            && prefs.auto_paste
+                                        {
+                                            paste_guarded(
+                                                prefs.paste_backend,
+                                                prefs.paste_combo,
+                                                &request.guard,
+                                            )?;
+                                        }
+                                        return Ok(Vec::new());
+                                    }
+                                    Err(error) => return Err(error),
+                                }
+                            }
+                            let selection = selection.as_mut().ok_or("clipboard unavailable")?;
+                            match request.operation {
+                                Operation::Snapshot => selection.snapshot(&request.guard),
+                                Operation::Copy(payload, sensitive) => {
+                                    selection.copy(payload, sensitive, &request.guard)?;
+                                    Ok(Vec::new())
+                                }
+                                Operation::Pipeline(text, prefs) => {
+                                    pipeline_owned(selection, &text, &prefs, &request.guard)?;
+                                    Ok(Vec::new())
+                                }
+                            }
+                        }));
+                        let result = match result {
+                            Ok(result) => result,
+                            Err(_) => {
+                                selection = None;
+                                fallback = None;
+                                Err("clipboard worker failed; delivery aborted".into())
+                            }
+                        };
+                        if !request.guard.as_ref()() {
+                            fallback = None;
+                        }
+                        if !pipeline && !request.guard.as_ref()() {
+                            if let Some(selection) = selection.as_mut() {
+                                selection.clear_if_owned();
+                            }
+                            selection = None;
+                        }
+                        let _ = request.response.send(result);
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if fallback.as_ref().is_some_and(|owner| !owner.alive()) {
+                            fallback = None;
+                        }
+                        if selection
+                            .as_mut()
+                            .is_some_and(|selection| selection.tick().is_err())
+                        {
+                            selection = None;
+                        }
+                    }
+                }
             }
-            let mut child = Command::new("wl-copy")
-                .args(["--type", mime, "--"])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|e| format!("spawn wl-copy: {e}"))?;
-            child
-                .stdin
-                .take()
-                .ok_or_else(|| "wl-copy stdin unavailable".to_string())?
-                .write_all(bytes)
-                .map_err(|e| format!("write clipboard: {e}"))?;
-            // wl-copy forks a server to hold the clipboard; the
-            // direct child exits fast. Reap without a dedicated
-            // thread per dictation (see `reap`).
-            reap(child);
-            Ok(())
+        })?;
+        let _ = WORKER.set(Worker {
+            sender,
+            _thread: thread,
+        });
+    }
+    WORKER
+        .get()
+        .ok_or_else(|| "clipboard worker unavailable".into())
+}
+
+fn request(
+    operation: Operation,
+    guard: crate::selection::Guard,
+) -> Result<crate::selection::Payload, String> {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    let worker = worker()?;
+    let stopped = Arc::new(AtomicBool::new(false));
+    struct StopOnDrop(Arc<AtomicBool>);
+    impl Drop for StopOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
         }
     }
+    let _stop_on_return = StopOnDrop(stopped.clone());
+    let stop = stopped.clone();
+    let guarded: crate::selection::Guard =
+        Arc::new(move || !crate::runtime::closing() && !stop.load(Ordering::Acquire) && guard());
+    let (response, result) = mpsc::channel();
+    worker
+        .sender
+        .try_send(Request {
+            operation,
+            guard: guarded,
+            response,
+        })
+        .map_err(|_| "clipboard delivery queue is full")?;
+    // At most sixteen snapshot formats plus ownership/paste/consumption steps;
+    // the caller's cancellation also interrupts every individual operation.
+    let outcome = result
+        .recv_timeout(Duration::from_secs(100))
+        .map_err(|_| "clipboard worker deadline exceeded")?;
+    stopped.store(true, Ordering::Release);
+    outcome
+}
+fn pipeline_owned(
+    selection: &mut crate::selection::Selection,
+    text: &str,
+    prefs: &Preferences,
+    guard: &crate::selection::Guard,
+) -> Result<(), String> {
+    // Borrowed transcripts are temporary: always publish the sensitive hint
+    // so compliant clipboard managers skip them even when the user allows
+    // kept transcripts in history. Managers that ignore the hint still read
+    // the offer; that eager read counts as completion (see `consumed`), so a
+    // manager-heavy session can restore before the focused target consumes
+    // the paste. That is a protocol limitation, not a scheduling bug: with
+    // data-control the reader is anonymous, and `set_selection` offers no
+    // atomic ownership-conditional restore. The nested niri gate covers the
+    // no-manager case only.
+    let borrowed = !prefs.keep_transcription_in_clipboard;
+    let sensitive = prefs.hide_from_history || borrowed;
+    let saved = if borrowed {
+        Some(selection.snapshot_tracked(guard)?)
+    } else {
+        None
+    };
+    let result = (|| {
+        match &saved {
+            // Never overwrite a user's replacement that landed between the
+            // snapshot and the copy with the stale snapshot's predecessor.
+            Some((_, token)) => {
+                selection.copy_if_selection_matches(text_payload(text), sensitive, guard, token)?
+            }
+            None => selection.copy(text_payload(text), sensitive, guard)?,
+        }
+        if prefs.auto_paste {
+            selection.arm(guard)?;
+            paste_guarded(prefs.paste_backend, prefs.paste_combo, guard)?;
+            if saved.is_some() {
+                selection.consumed(guard)?;
+            }
+        }
+        Ok(())
+    })();
+    if let Some((saved, _)) = saved {
+        // Returning the user's earlier selection is cleanup, even when the
+        // transcription was cancelled. This never republishes the transcript.
+        // Restoration itself is check-then-set: `restore_if_owned` syncs and
+        // skips when another client owns the selection, but a replacement
+        // that lands between that sync and `set_selection` cannot be detected
+        // atomically and would be overwritten. The window is one roundtrip on
+        // the same connection; document it rather than claim atomicity.
+        let cleanup: crate::selection::Guard = std::sync::Arc::new(|| true);
+        if let Err(error) = selection.restore_if_owned(saved, &cleanup) {
+            selection.clear_if_owned();
+            return Err(error);
+        }
+    } else if result.is_err() && !guard() {
+        selection.clear_if_owned();
+    }
+    result
 }
 
-/// Current clipboard text, if any. Used to restore the previous
-/// content when the transcription shouldn't stay in the clipboard.
+fn text_payload(text: &str) -> crate::selection::Payload {
+    let bytes = std::sync::Arc::new(text.as_bytes().to_vec());
+    [
+        "text/plain;charset=utf-8",
+        "text/plain",
+        "UTF8_STRING",
+        "TEXT",
+        "STRING",
+    ]
+    .into_iter()
+    .map(|mime| (mime.into(), bytes.clone()))
+    .collect()
+}
+
+pub fn save_clipboard() -> Option<SavedClipboard> {
+    request(Operation::Snapshot, std::sync::Arc::new(|| true))
+        .ok()
+        .map(|payload| {
+            if payload.is_empty() {
+                SavedClipboard::Empty
+            } else {
+                SavedClipboard::Formats(
+                    payload
+                        .into_iter()
+                        .map(|(mime, bytes)| (mime, (*bytes).clone()))
+                        .collect(),
+                )
+            }
+        })
+}
+pub fn restore_clipboard(saved: &SavedClipboard) -> Result<(), String> {
+    let payload = match saved {
+        SavedClipboard::Empty => Vec::new(),
+        SavedClipboard::Text(text) => text_payload(text),
+        SavedClipboard::Raw { mime, bytes } => {
+            vec![(mime.clone(), std::sync::Arc::new(bytes.clone()))]
+        }
+        SavedClipboard::Formats(formats) => formats
+            .iter()
+            .map(|(mime, bytes)| (mime.clone(), std::sync::Arc::new(bytes.clone())))
+            .collect(),
+    };
+    request(
+        Operation::Copy(payload, false),
+        std::sync::Arc::new(|| true),
+    )
+    .map(|_| ())
+}
 pub fn previous_text() -> Option<String> {
-    match save_clipboard() {
-        Some(SavedClipboard::Text(t)) => Some(t),
+    match save_clipboard()? {
+        SavedClipboard::Text(text) => Some(text),
+        SavedClipboard::Formats(formats) => formats
+            .into_iter()
+            .find(|(mime, _)| mime.starts_with("text/plain"))
+            .and_then(|(_, bytes)| String::from_utf8(bytes).ok()),
         _ => None,
     }
 }
-
-/// Write text to the Wayland clipboard.
 pub fn copy_text(text: &str, hide_from_history: bool) -> Result<(), String> {
-    copy_with(CopyBackend::WlCopy, text, hide_from_history)
-}
-
-fn copy_with(backend: CopyBackend, text: &str, hide: bool) -> Result<(), String> {
-    match backend {
-        CopyBackend::WlCopy => {
-            if !have("wl-copy") {
-                return Err("wl-copy not found (install wl-clipboard)".to_string());
-            }
-            let mut cmd = Command::new("wl-copy");
-            if hide {
-                // Sensitive hint: history managers skip such entries.
-                cmd.arg("--sensitive");
-            }
-            cmd.arg("--")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            let mut child = cmd.spawn().map_err(|e| format!("spawn wl-copy: {e}"))?;
-            child
-                .stdin
-                .take()
-                .ok_or_else(|| "wl-copy stdin unavailable".to_string())?
-                .write_all(text.as_bytes())
-                .map_err(|e| format!("write clipboard: {e}"))?;
-            // wl-copy forks a server to hold the clipboard; the
-            // direct child exits fast. Reap without a dedicated
-            // thread per dictation (see `reap`).
-            reap(child);
-            Ok(())
-        }
-    }
-}
-
-/// Reap a short-lived child. Pooled normally; a saturated system
-/// leaks one zombie (logged) instead of panicking.
-fn reap(child: std::process::Child) {
-    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
-    let s = slot.clone();
-    if crate::runtime::submit("reap", move || {
-        if let Ok(mut g) = s.lock()
-            && let Some(mut c) = g.take()
-        {
-            let _ = c.wait();
-        }
-    })
-    .is_err()
-    {
-        eprintln!("[clipboard] saturated; leaking one wl-copy zombie");
-    }
+    request(
+        Operation::Copy(text_payload(text), hide_from_history),
+        std::sync::Arc::new(|| true),
+    )
+    .map(|_| ())
 }
 
 /// Inject the configured paste chord into the focused window.
 pub fn paste(backend: PasteBackend, combo: PasteCombo) -> Result<(), String> {
+    let guard: crate::selection::Guard = std::sync::Arc::new(|| true);
+    paste_guarded(backend, combo, &guard)
+}
+fn paste_guarded(
+    backend: PasteBackend,
+    combo: PasteCombo,
+    guard: &crate::selection::Guard,
+) -> Result<(), String> {
     match backend {
         PasteBackend::Wtype => {
             if !have("wtype") {
@@ -230,19 +389,14 @@ pub fn paste(backend: PasteBackend, combo: PasteCombo) -> Result<(), String> {
                 PasteCombo::CtrlV => &["-M", "ctrl", "-k", "v", "-m", "ctrl"],
                 PasteCombo::ShiftInsert => &["-M", "shift", "-k", "Insert", "-m", "shift"],
             };
-            Command::new("wtype")
-                .args(args)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map_err(|e| format!("spawn wtype: {e}"))
-                .and_then(|s| {
-                    if s.success() {
-                        Ok(())
-                    } else {
-                        Err("wtype failed".to_string())
-                    }
-                })
+            crate::child::run_guarded(
+                Command::new("wtype").args(args),
+                &[],
+                Duration::from_secs(5),
+                1024,
+                || guard(),
+            )
+            .map(|_| ())
         }
         PasteBackend::Ydotool => {
             if !have("ydotool") {
@@ -260,62 +414,154 @@ pub fn paste(backend: PasteBackend, combo: PasteCombo) -> Result<(), String> {
             };
             let mut args = vec!["key"];
             args.extend(seq.split(' '));
-            Command::new("ydotool")
-                .args(&args)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map_err(|e| format!("spawn ydotool: {e} (is ydotoold running?)"))
-                .and_then(|s| {
-                    if s.success() {
-                        Ok(())
-                    } else {
-                        Err("ydotool failed (is ydotoold running?)".to_string())
-                    }
-                })
+            let result = crate::child::run_guarded(
+                Command::new("ydotool").args(&args),
+                &[],
+                Duration::from_secs(5),
+                1024,
+                || guard(),
+            )
+            .map(|_| ());
+            if result.is_err() {
+                // uinput persists key state beyond an aborted tool process.
+                // Release every key this operation could have pressed. Guarded
+                // like the paste itself: no cleanup fork after cancellation.
+                let _ = crate::child::run_guarded(
+                    Command::new("ydotool").args(["key", "47:0", "110:0", "42:0", "29:0"]),
+                    &[],
+                    Duration::from_millis(500),
+                    1024,
+                    || guard(),
+                );
+            }
+            result
         }
     }
 }
 
-/// Full output pipeline for one transcription. Matrix:
-/// - auto-paste off + keep off: clipboard untouched, nothing to do.
-/// - auto-paste off + keep on: copy only, transcription stays.
-/// - auto-paste on + keep on: copy, inject chord, transcription stays.
-/// - auto-paste on + keep off: save previous clipboard, copy,
-///   inject chord, restore previous (target app already consumed
-///   the paste). Never fails dictation, only reports.
-pub fn run_pipeline(text: &str, prefs: &Preferences) {
+/// FIFO finalization calls this with its capture/privacy guard. A failed copy
+/// never injects a paste; temporary selections are restored after a completed
+/// transfer only if this generation still owns the clipboard.
+pub fn run_pipeline(
+    text: &str,
+    prefs: &Preferences,
+    guard: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
+) -> Result<(), String> {
     if !prefs.auto_paste && !prefs.keep_transcription_in_clipboard {
-        return;
+        return Ok(());
     }
-    let restore = if prefs.keep_transcription_in_clipboard {
-        None
-    } else {
-        save_clipboard()
-    };
-    if let Err(e) = copy_text(text, prefs.hide_from_history) {
-        eprintln!("[clipboard] copy failed: {e}");
-        return;
+    request(Operation::Pipeline(text.into(), prefs.clone()), guard).map(|_| ())
+}
+
+/// Minimal durable capture authorization for the dictation delivery path.
+///
+/// The full session-operation contract lives in #22; this layer needs only
+/// what `deliver` consumes: a read-only policy reader pinned to its database
+/// file identity plus the capture epoch, rechecked on every use. Denials are
+/// sticky: an unreadable policy keeps denying (existing data preserved) while
+/// revocation (epoch change, replacement, reset) denies permanently. Denial
+/// strings match the historic delivery errors.
+pub(crate) struct DeliveryAuth {
+    store: std::sync::Arc<std::sync::Mutex<crate::store::Store>>,
+    file: Option<(std::path::PathBuf, u64, u64)>,
+    epoch: i64,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    denial: std::sync::Mutex<Option<&'static str>>,
+}
+
+impl DeliveryAuth {
+    pub(crate) fn capture(
+        store: crate::store::Store,
+        epoch: i64,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<Self, String> {
+        store
+            .policy_reads_only()
+            .map_err(|_| "capture policy reader unavailable")?;
+        let file = store
+            .path()
+            .zip(store.file_identity())
+            .map(|(path, (device, inode))| (path.to_owned(), device, inode));
+        let auth = Self {
+            store: std::sync::Arc::new(std::sync::Mutex::new(store)),
+            file,
+            epoch,
+            cancel,
+            denial: std::sync::Mutex::new(None),
+        };
+        auth.check()?;
+        Ok(auth)
     }
-    eprintln!("[clipboard] copied ({} chars)", text.len());
-    if !prefs.auto_paste {
-        return;
+
+    pub(crate) fn permitted(&self) -> bool {
+        self.check().is_ok()
     }
-    // Let the hotkey release settle so its modifiers don't leak into
-    // the injected chord.
-    std::thread::sleep(Duration::from_millis(120));
-    if let Err(e) = paste(prefs.paste_backend, prefs.paste_combo) {
-        eprintln!("[clipboard] paste failed: {e} (text stays in clipboard)");
-        return;
+
+    fn deny(&self, message: &'static str) -> String {
+        *self
+            .denial
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(message);
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+        message.into()
     }
-    eprintln!("[clipboard] pasted via {:?}", prefs.paste_backend);
-    if let Some(prev) = restore {
-        // Target consumed the paste; give the user their clipboard back.
-        std::thread::sleep(Duration::from_millis(250));
-        if let Err(e) = restore_clipboard(&prev) {
-            eprintln!("[clipboard] restore failed: {e}");
-        } else {
-            eprintln!("[clipboard] previous clipboard restored");
+
+    fn check(&self) -> Result<(), String> {
+        if let Some(message) = *self
+            .denial
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+        {
+            self.cancel
+                .store(true, std::sync::atomic::Ordering::Release);
+            return Err(message.into());
+        }
+        if crate::runtime::closing() || self.cancel.load(std::sync::atomic::Ordering::Acquire) {
+            self.cancel
+                .store(true, std::sync::atomic::Ordering::Release);
+            return Err("operation cancelled".into());
+        }
+        if let Some((path, device, inode)) = &self.file {
+            use std::os::unix::fs::MetadataExt;
+            match std::fs::symlink_metadata(path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(self.deny("capture policy changed or its database was replaced"));
+                }
+                Err(_) => {
+                    return Err(
+                        self.deny("capture policy could not be read; existing data preserved")
+                    );
+                }
+                Ok(metadata) => {
+                    if !metadata.is_file() || metadata.dev() != *device || metadata.ino() != *inode
+                    {
+                        return Err(
+                            self.deny("capture policy changed or its database was replaced")
+                        );
+                    }
+                }
+            }
+        }
+        let store = match self.store.lock() {
+            Ok(store) => store,
+            Err(_) => {
+                return Err(self.deny("capture policy could not be read; existing data preserved"));
+            }
+        };
+        match store.reset_pending() {
+            Err(_) => {
+                return Err(self.deny("capture policy could not be read; existing data preserved"));
+            }
+            Ok(true) => {
+                return Err(self.deny("capture policy changed or its database was replaced"));
+            }
+            Ok(false) => {}
+        }
+        match store.capture_epoch() {
+            Err(_) => Err(self.deny("capture policy could not be read; existing data preserved")),
+            Ok(current) if current == self.epoch => Ok(()),
+            Ok(_) => Err(self.deny("capture policy changed or its database was replaced")),
         }
     }
 }
@@ -326,8 +572,71 @@ mod tests {
 
     #[test]
     fn backend_dep_strings_present() {
-        assert!(copy_backend_deps().contains("wl-copy"));
+        assert!(copy_backend_deps().contains("data-control"));
         assert!(paste_backend_deps(PasteBackend::Wtype).contains("wtype"));
         assert!(paste_backend_deps(PasteBackend::Ydotool).contains("ydotool"));
+    }
+
+    #[test]
+    fn unreadable_delivery_policy_stays_denied_after_recovery() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("state.db");
+        let key = [0x21; 32];
+        let store = crate::store::Store::open_with_key(&path, &key).unwrap();
+        let epoch = store.capture_epoch().unwrap();
+        let auth = DeliveryAuth::capture(
+            store,
+            epoch,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .unwrap();
+        let writer = rusqlite::Connection::open(&path).unwrap();
+        writer
+            .execute_batch(&format!("PRAGMA key = \"x'{}'\"", "21".repeat(32)))
+            .unwrap();
+        writer
+            .execute_batch("ALTER TABLE sync_meta RENAME TO held_policy")
+            .unwrap();
+        assert!(auth.check().unwrap_err().contains("could not be read"));
+        writer
+            .execute_batch("ALTER TABLE held_policy RENAME TO sync_meta")
+            .unwrap();
+        assert!(auth.check().is_err());
+        drop(writer);
+        let recovered = crate::store::Store::open_with_key(&path, &key).unwrap();
+        let fresh = DeliveryAuth::capture(
+            recovered,
+            epoch,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .unwrap();
+        assert!(fresh.permitted());
+    }
+
+    #[test]
+    fn delivery_authority_rejects_database_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("state.db");
+        let store = crate::store::Store::open_with_key(&path, &[21; 32]).unwrap();
+        store.checkpoint().unwrap();
+        let epoch = store.capture_epoch().unwrap();
+        let auth = DeliveryAuth::capture(
+            store,
+            epoch,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .unwrap();
+        assert!(auth.permitted());
+        let replacement = root.path().join("replacement.db");
+        let fresh = crate::store::Store::open_with_key(&replacement, &[21; 32]).unwrap();
+        assert_eq!(fresh.capture_epoch().unwrap(), epoch);
+        fresh.checkpoint().unwrap();
+        drop(fresh);
+        std::fs::rename(&path, root.path().join("old.db")).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        assert!(
+            !auth.permitted(),
+            "a fresh database with the same epoch cannot inherit old authority"
+        );
     }
 }

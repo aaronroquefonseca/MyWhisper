@@ -87,6 +87,14 @@
         inherit pkgs mywhisper;
         module = self.nixosModules.default;
       };
+      # Focused guest clipboard/compositor gate (#21 owned, #15 runs).
+      # The app package stays a parameter: point mywhisper/module at the
+      # candidate under test. Runs only when addressed explicitly; needs
+      # /dev/kvm plus ~6G free RAM for the 4G guest (see clipboard-guest.nix).
+      clipboard-guest = import ./clipboard-guest.nix {
+        inherit pkgs mywhisper;
+        module = self.nixosModules.default;
+      };
       symbolic-logo = let
         probe = import ./svg-probe.nix { inherit pkgs; };
       in pkgs.runCommand "mywhisper-symbolic-logo" {
