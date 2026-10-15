@@ -18,7 +18,7 @@ their tip) is distinct from final integrated release acceptance
 | #20 | fix/audit-verified-installers (#19) | 916a45c | hosted green/strict-zero reported; stacked on input-ownership |
 | #21 | fix/audit-clipboard-ownership (#20) | ed08181 | hosted green/strict-zero reported |
 | #22 | fix/audit-session-lifecycle (#21) | db1f4e5 | integrating new parent; Operation/admit/CopyTask preserved by source evidence (operation.rs, service.rs, clipboard.rs); shutdown-checkpoint evidence still owed |
-| #23 | fix/audit-settings-lifecycle (#22) | 5aabc5a | 343 Rust tests exactly once hosted; SKIP-bypass corrected (see R51 section); upgrade 5/5 + release 11/11 reproduced read-only; hosted Nix/candidate pending; GUI incl. trust+3tests restored |
+| #23 | fix/audit-settings-lifecycle (#22) | 6d6da5e3 | INTEGRATED HEAD, hosted SUCCESS (run 38638287770): 340 + 5 ignored exactly once (345 + 9 harnesses); parent db1f4e5; source-specific acceptance in INTEGRATED-ACCEPTANCE.md (candidate clean, Arch+Nix+UI+audit green on exact SHA); live gaps + PR11 gate still open |
 | #11 | fix/server-status-and-switching (main) | bcaff78 | open, ready for review; 10 probes pass reported, 2-phase settlement bug in progress; overlaps #22, preserve on integrate |
 | #4 | t3code/be770be5 (main) | 4c7f3873 | open; separate Qwen feature, no competing files |
 
