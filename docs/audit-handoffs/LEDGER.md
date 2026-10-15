@@ -217,7 +217,9 @@ draft).
 Route-owner verification (pinned flake input, owned store, offline): ydotool 1.0.4, foot 1.28.0, wl-clipboard 2.3.0,
 wtype 0.4, cliphist 0.7.0 all available; /dev/kvm + qemu + nix present; store shared (serialize gates). Constraint:
 host RAM 26/31G used — 4G/2-core guest runs when calm. #21 to add test-only guest config + driver; #15 executes.
-#18 two-peer pairing plan still awaited. No physical/cloud/GPU coverage claimed.
+#18 two-peer pairing plan still awaited — with correction: sync/pairing controls exist on final app_sync.rs (trust ~129, sync-now ~191, remove ~203, send-request ~322, accept ~393, decline ~412, enable ~568, id-entry ~951); #18 must use GUI paths + #23 widget automation, seeding only for setup; layer-shell must be verified in-guest (Sway available, cage not assumed). No physical/cloud/GPU coverage claimed.
+
+#22 live-STT reconciliation verifying/restoring (startup-only warming is not live auto-start/Stop); final acceptance stays source-specific after that correction.
 
 ## Publication hold
 
