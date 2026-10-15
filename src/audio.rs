@@ -146,37 +146,55 @@ pub fn clear_recorder(expected: &Arc<Mutex<Recorder>>) {
 }
 
 /// Feed one slice of s16 mono at `rate` Hz into the armed recorder
-/// (no-op when disarmed). Mic threads call this, never block: a
-/// poisoned mutex just drops the slice.
+/// (no-op when disarmed or when the slot is briefly held elsewhere).
+/// Mic threads call this, never block: an unreadable slot drops the slice.
 pub fn tap_samples(samples: &[i16], rate: u32) {
-    let Some(rec) = callback_recorder().ok().flatten() else {
+    let TapSnapshot::Ready(rec) = callback_recorder() else {
         return;
     };
+    let Some(rec) = rec else { return };
     if let Ok(mut r) = rec.try_lock() {
         push_capture(&mut r, samples, rate, std::time::Instant::now());
     }
 }
 
+/// What a nonblocking tap-slot read observed. `Contended` means another
+/// thread holds the slot across a brief set/clear (or a poisoned slot,
+/// whose holders only perform infallible ops): the caller must skip this
+/// slice, never block and never fail the session over it. The next
+/// successful read re-establishes ownership, so this self-heals.
+pub(crate) enum TapSnapshot {
+    Ready(Option<Arc<Mutex<Recorder>>>),
+    Contended,
+}
+
 /// The callback retains the recorder owning this slice. A queued slice can
 /// therefore never be redirected into a later session's recorder.
-pub(crate) fn callback_recorder() -> Result<Option<Arc<Mutex<Recorder>>>, ()> {
-    tap_slot()
-        .try_lock()
-        .map(|slot| slot.clone())
-        .map_err(|_| ())
+pub(crate) fn callback_recorder() -> TapSnapshot {
+    match tap_slot().try_lock() {
+        Ok(slot) => TapSnapshot::Ready(slot.clone()),
+        Err(_) => TapSnapshot::Contended,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn hold_tap_slot_for_test()
+-> std::sync::MutexGuard<'static, Option<Arc<Mutex<Recorder>>>> {
+    tap_slot().lock().unwrap()
 }
 
 pub(crate) fn capture_failed() -> bool {
-    callback_recorder()
-        .ok()
-        .flatten()
-        .and_then(|recorder| {
-            recorder
-                .try_lock()
-                .ok()
-                .map(|recorder| recorder.overflowed())
-        })
-        .unwrap_or(false)
+    match callback_recorder() {
+        TapSnapshot::Ready(rec) => rec,
+        TapSnapshot::Contended => None,
+    }
+    .and_then(|recorder| {
+        recorder
+            .try_lock()
+            .ok()
+            .map(|recorder| recorder.overflowed())
+    })
+    .unwrap_or(false)
 }
 
 pub(crate) fn push_capture(

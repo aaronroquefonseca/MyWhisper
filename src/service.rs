@@ -333,6 +333,9 @@ pub fn spawn_hotkey_watcher(
     up: DictationHook,
     cancel: DictationHook,
 ) {
+    if let Some(data) = db_path.parent() {
+        crate::hotkey::configure_capture_suspend(data);
+    }
     if let Err(error) = crate::runtime::spawn_dedicated("hotkey-watcher", move || {
         let mut last: (Vec<(String, crate::settings::ActivationMode)>, u64) = (Vec::new(), 0);
         let mut first = true;
@@ -386,10 +389,8 @@ pub fn spawn_hotkey_watcher(
                 }
             }
             let settings = store.load_settings();
+            apply_input_preferences(&settings);
             let hotkeys = settings.hotkeys;
-            crate::transcribe::set_hotkeys_listening(hotkeys.hotkeys_enabled);
-            crate::sound::set_enabled(settings.preferences.dictation_sounds);
-            crate::media::set_enabled(settings.preferences.pause_media_on_dictation);
             let current = (
                 hotkeys
                     .effective_hotkeys()
@@ -565,4 +566,10 @@ pub fn ensure_unit_installed() -> Result<String, String> {
     std::fs::write(&path, unit_body(&exe)).map_err(|e| format!("write unit: {e}"))?;
     systemctl(&["daemon-reload"])?;
     Ok(format!("unit installed ({})", exe.display()))
+}
+
+pub fn apply_input_preferences(settings: &crate::settings::AppSettings) {
+    crate::transcribe::set_hotkeys_listening(settings.hotkeys.hotkeys_enabled);
+    crate::sound::set_enabled(settings.preferences.dictation_sounds);
+    crate::media::set_enabled(settings.preferences.pause_media_on_dictation);
 }
