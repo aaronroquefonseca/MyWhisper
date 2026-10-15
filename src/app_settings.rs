@@ -15,20 +15,88 @@ use crate::clipboard::{BackendStatus, copy_backend_deps, paste_backend_deps, pro
 use crate::i18n::{tr, trf};
 use crate::settings::{CopyBackend, PasteBackend, PasteCombo, Theme};
 
+// Signal handlers keep weak widget references. A form is upgraded only for
+// one callback, so removing its page releases fields and their sensitive text.
+macro_rules! weak_form {
+    ($strong:ident, $weak:ident, { $($field:ident: $kind:ty),* $(,)? }, { $($state:ident: $state_kind:ty),* $(,)? }) => {
+        #[derive(Clone)]
+        struct $weak {
+            $($field: gtk4::glib::WeakRef<$kind>,)*
+            $($state: $state_kind,)*
+        }
+        impl $strong {
+            fn downgrade(&self) -> $weak {
+                $weak {
+                    $($field: self.$field.downgrade(),)*
+                    $($state: self.$state.clone(),)*
+                }
+            }
+        }
+        impl $weak {
+            fn upgrade(&self) -> Option<$strong> {
+                Some($strong {
+                    $($field: self.$field.upgrade()?,)*
+                    $($state: self.$state.clone(),)*
+                })
+            }
+        }
+    };
+}
+
 // ---------------------------------------------------------------- helpers
 
-fn connect_download_delete(button: &Button, remove: impl Fn() -> std::io::Result<()> + 'static) {
+/// Poll a bounded worker result without retaining a removed widget or blocking GTK.
+fn file_action(
+    button: &Button,
+    work: impl FnOnce() -> std::io::Result<()> + Send + 'static,
+    success: &'static str,
+) {
+    button.set_sensitive(false);
+    let (tx, rx) = std::sync::mpsc::channel();
+    if let Err(error) = crate::runtime::submit("file-action", move || {
+        let result = work().map_err(|error| error.to_string());
+        let _ = tx.send(result);
+    }) {
+        button.set_sensitive(true);
+        eprintln!("[app] file action admission: {error}");
+        super::app::notify(tr("feedback.deletefailed"));
+        return;
+    }
+    let target = button.downgrade();
+    gtk4::glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        use std::sync::mpsc::TryRecvError;
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return gtk4::glib::ControlFlow::Continue,
+            Err(TryRecvError::Disconnected) => Err("file action failed unexpectedly".into()),
+        };
+        if let Some(button) = target.upgrade() {
+            button.set_sensitive(true);
+        }
+        match result {
+            Ok(()) => super::app::notify(tr(success)),
+            Err(error) => {
+                eprintln!("[app] file action: {error}");
+                super::app::notify(tr("feedback.deletefailed"));
+            }
+        }
+        gtk4::glib::ControlFlow::Break
+    });
+}
+
+fn connect_download_delete(
+    button: &Button,
+    remove: impl Fn() -> std::io::Result<()> + Send + Sync + 'static,
+) {
+    let remove = std::sync::Arc::new(remove);
     super::app::connect_confirmed(
         button,
         tr("confirm.download.title"),
         tr("confirm.download.body"),
         tr("action.delete"),
-        move |_| match remove() {
-            Ok(()) => super::app::notify(tr("feedback.deleted")),
-            Err(error) => {
-                eprintln!("[app] delete download: {error}");
-                super::app::notify(tr("feedback.deletefailed"));
-            }
+        move |button| {
+            let remove = remove.clone();
+            file_action(button, move || remove(), "feedback.deleted");
         },
     );
 }
@@ -133,16 +201,11 @@ fn idx_of(options: &[&str], value: &str) -> usize {
     options.iter().position(|o| *o == value).unwrap_or(0)
 }
 
-fn delete_opts() -> [&'static str; 7] {
-    [
-        tr("opt.never"),
-        tr("opt.older1"),
-        tr("opt.older7"),
-        tr("opt.older14"),
-        tr("opt.older30"),
-        tr("opt.older60"),
-        tr("opt.older90"),
-    ]
+fn connection_id(prefix: &str) -> std::io::Result<String> {
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).map_err(std::io::Error::other)?;
+    let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(format!("{prefix}-{suffix}"))
 }
 
 fn valid_server_url(value: &str, websocket: bool) -> bool {
@@ -702,7 +765,7 @@ fn clipboard_page(state: &Rc<AppState>) -> GtkBox {
     {
         let (b, _) = row(tr("row.copybackend"));
         let dd = DropDown::new(
-            Some(StringList::new(&["wl-copy"])),
+            Some(StringList::new(&["Wayland"])),
             None::<gtk4::Expression>,
         );
         dd.set_selected(match p.copy_backend {
@@ -712,7 +775,8 @@ fn clipboard_page(state: &Rc<AppState>) -> GtkBox {
         dd.set_tooltip_text(Some(copy_backend_deps()));
         {
             let state = state.clone();
-            dd.connect_selected_notify(move |_| {
+            dd.connect_selected_notify(move |dd| {
+                let _ = dd.selected();
                 state.settings.borrow_mut().preferences.copy_backend = CopyBackend::WlCopy;
                 persist_prefs(state.clone())();
             });
@@ -722,7 +786,7 @@ fn clipboard_page(state: &Rc<AppState>) -> GtkBox {
         rows.append(&dep_note(&format!(
             "{} — {}",
             copy_backend_deps(),
-            avail(status.wl_copy)
+            avail(status.wayland)
         )));
     }
     {
@@ -808,6 +872,7 @@ fn clipboard_page(state: &Rc<AppState>) -> GtkBox {
 /// Hotkeys section.
 fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     let root = section_box(tr("settings.hotkeys"), tr("settings.hotkeys.sub"));
+    root.set_widget_name("hotkey-capture-page");
     let persist: Rc<dyn Fn()> = {
         let state = state.clone();
         Rc::new(move || {
@@ -833,10 +898,12 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     let (add_heading, _) = row(tr("row.addcombo"));
     let add_row = GtkBox::new(Orientation::Horizontal, 8);
     let add_entry = Entry::new();
+    add_entry.set_widget_name("hotkey-capture-entry");
     add_entry.set_hexpand(true);
     add_entry.set_width_chars(12);
     add_entry.update_property(&[gtk4::accessible::Property::Label(tr("row.addcombo"))]);
     add_entry.set_placeholder_text(Some("Ctrl+Alt+D"));
+    add_entry.set_tooltip_text(Some(tr("hotkeys.physical")));
     add_entry.connect_changed(|entry| entry.remove_css_class("error"));
     add_row.append(&add_entry);
     let add_mode = DropDown::new(
@@ -852,11 +919,14 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     let add_btn = Button::with_label(tr("action.add"));
     {
         let state = state.clone();
-        let list = list.clone();
+        let list = list.downgrade();
         let persist = persist.clone();
         let add_entry = add_entry.clone();
         let add_mode = add_mode.clone();
         add_btn.connect_clicked(move |_| {
+            let Some(list) = list.upgrade() else {
+                return;
+            };
             let raw = add_entry.text().trim().to_string();
             if crate::hotkey::parse_combo(&raw).is_none() {
                 add_entry.add_css_class("error");
@@ -895,6 +965,7 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     }
     add_row.append(&add_btn);
     let record_btn = Button::with_label(tr("hotkeys.record"));
+    record_btn.set_widget_name("hotkey-capture-start");
     record_btn.set_tooltip_text(Some(tr("hotkeys.recordhint")));
     add_heading.append(&record_btn);
     let add_form = GtkBox::new(Orientation::Vertical, 6);
@@ -906,9 +977,12 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     let reset = Button::with_label(tr("action.reset"));
     {
         let state = state.clone();
-        let list = list.clone();
+        let list = list.downgrade();
         let persist = persist.clone();
         reset.connect_clicked(move |_| {
+            let Some(list) = list.upgrade() else {
+                return;
+            };
             state.settings.borrow_mut().hotkeys.dictation_hotkeys =
                 vec![crate::settings::HotkeyBinding {
                     combo: "F13".to_string(),
@@ -1015,10 +1089,13 @@ fn refill_hotkey_list(list: &GtkBox, state: &Rc<AppState>, persist: &Rc<dyn Fn()
         remove.set_tooltip_text(Some(tr("hotkeys.keepone")));
         {
             let state = state.clone();
-            let list = list.clone();
+            let list = list.downgrade();
             let persist = persist.clone();
             let combo = binding.combo.clone();
             remove.connect_clicked(move |_| {
+                let Some(list) = list.upgrade() else {
+                    return;
+                };
                 state
                     .settings
                     .borrow_mut()
@@ -1083,6 +1160,17 @@ fn capture_token(key: gtk4::gdk::Key) -> Option<String> {
         return Some(upper);
     }
     match upper.as_str() {
+        "MINUS" => Some("Minus".into()),
+        "EQUAL" => Some("Equal".into()),
+        "BRACKETLEFT" => Some("LeftBracket".into()),
+        "BRACKETRIGHT" => Some("RightBracket".into()),
+        "SEMICOLON" => Some("Semicolon".into()),
+        "APOSTROPHE" => Some("Apostrophe".into()),
+        "GRAVE" => Some("Grave".into()),
+        "BACKSLASH" => Some("Backslash".into()),
+        "COMMA" => Some("Comma".into()),
+        "PERIOD" => Some("Period".into()),
+        "SLASH" => Some("Slash".into()),
         "SPACE" => Some("Space".to_string()),
         "RETURN" => Some("Enter".to_string()),
         "BACKSPACE" => Some("Backspace".to_string()),
@@ -1137,8 +1225,11 @@ struct Capture {
     /// Modifier slots pressed at any point this round (for
     /// modifier-only finalize on release).
     pressed: Rc<RefCell<[bool; 4]>>,
-    record_btn: Button,
-    add_entry: Entry,
+    record_btn: gtk4::glib::WeakRef<Button>,
+    add_entry: gtk4::glib::WeakRef<Entry>,
+    suspend: RefCell<Option<std::fs::File>>,
+    nonce: Cell<Option<[u8; 16]>>,
+    suspend_path: std::path::PathBuf,
 }
 
 impl Capture {
@@ -1146,23 +1237,107 @@ impl Capture {
         self.capturing.set(false);
         self.held.replace([false; 4]);
         self.pressed.replace([false; 4]);
-        self.record_btn.set_label(tr("hotkeys.record"));
-        self.add_entry.set_sensitive(true);
-        self.add_entry.set_placeholder_text(Some("F13"));
+        if let Some(nonce) = self.nonce.take() {
+            let request = self.suspend_path.with_extension("request");
+            if crate::private_fs::read_private(&request, 16)
+                .ok()
+                .as_deref()
+                == Some(nonce.as_slice())
+            {
+                let _ = std::fs::remove_file(request);
+            }
+        }
+        self.suspend.borrow_mut().take();
+        let (Some(record_btn), Some(add_entry)) =
+            (self.record_btn.upgrade(), self.add_entry.upgrade())
+        else {
+            return;
+        };
+        record_btn.set_label(tr("hotkeys.record"));
+        add_entry.set_sensitive(true);
+        add_entry.set_placeholder_text(Some("F13"));
     }
 
-    fn begin(&self) {
-        // Suspend the global listener while recording so the very
-        // keypress being recorded doesn't also fire dictation.
-        crate::hotkey::stop();
+    fn ready(&self) {
+        if self.suspend.borrow().is_none() {
+            return;
+        }
         self.capturing.set(true);
         self.live_label();
-        self.add_entry.set_sensitive(false);
-        self.add_entry
-            .set_placeholder_text(Some(tr("hotkeys.pressnow")));
+        if let Some(entry) = self.add_entry.upgrade() {
+            entry.set_placeholder_text(Some(tr("hotkeys.pressnow")));
+        }
+    }
+
+    fn begin(self: &Rc<Self>) {
+        let (Some(record_btn), Some(add_entry)) =
+            (self.record_btn.upgrade(), self.add_entry.upgrade())
+        else {
+            return;
+        };
+        let result = (|| -> std::io::Result<bool> {
+            let guard = crate::private_fs::try_lock(&self.suspend_path)?;
+            *self.suspend.borrow_mut() = Some(guard);
+            let mut nonce = [0u8; 16];
+            getrandom::fill(&mut nonce).map_err(std::io::Error::other)?;
+            self.nonce.set(Some(nonce));
+            crate::private_fs::replace(&self.suspend_path.with_extension("request"), &nonce)?;
+            // No engine owner: the capture lock still prevents a concurrent
+            // engine startup from admitting keys before this capture ends.
+            match crate::private_fs::try_lock(&self.suspend_path.with_file_name("engine.lock")) {
+                Ok(_) => Ok(false),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(true),
+                Err(error) => Err(error),
+            }
+        })();
+        let waiting = match result {
+            Ok(waiting) => waiting,
+            Err(error) => {
+                self.stop();
+                eprintln!("[hotkey] capture suspend: {error}");
+                super::app::toast(&record_btn, tr("hotkeys.suspendfailed"));
+                return;
+            }
+        };
+        add_entry.set_sensitive(false);
+        if !waiting {
+            self.ready();
+            return;
+        }
+        record_btn.set_label(tr("hotkeys.suspending"));
+        let capture = Rc::downgrade(self);
+        let nonce = self.nonce.get().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(20), move || {
+            let Some(capture) = capture.upgrade() else {
+                return gtk4::glib::ControlFlow::Break;
+            };
+            if capture.nonce.get() != Some(nonce) {
+                return gtk4::glib::ControlFlow::Break;
+            }
+            if crate::private_fs::read_private(&capture.suspend_path.with_extension("ack"), 16)
+                .ok()
+                .as_deref()
+                == Some(nonce.as_slice())
+            {
+                capture.ready();
+                return gtk4::glib::ControlFlow::Break;
+            }
+            if std::time::Instant::now() >= deadline {
+                capture.stop();
+                if let Some(button) = capture.record_btn.upgrade() {
+                    super::app::toast(&button, tr("hotkeys.suspendfailed"));
+                }
+                return gtk4::glib::ControlFlow::Break;
+            }
+            gtk4::glib::ControlFlow::Continue
+        });
     }
 
     fn live_label(&self) {
+        let Some(record_btn) = self.record_btn.upgrade() else {
+            return;
+        };
         let held = *self.held.borrow();
         let shown = combo_string(&held, None);
         let keys = if shown.is_empty() {
@@ -1170,8 +1345,7 @@ impl Capture {
         } else {
             shown
         };
-        self.record_btn
-            .set_label(crate::i18n::trf("hotkeys.recording", &[("keys", &keys)]).as_str());
+        record_btn.set_label(crate::i18n::trf("hotkeys.recording", &[("keys", &keys)]).as_str());
     }
 
     fn finish(
@@ -1183,12 +1357,20 @@ impl Capture {
         persist: &Rc<dyn Fn()>,
     ) {
         if crate::hotkey::parse_combo(&combo).is_none() {
-            self.record_btn.set_label(tr("hotkeys.invalid"));
+            let Some(record_btn) = self.record_btn.upgrade() else {
+                return;
+            };
+            record_btn.set_label(tr("hotkeys.invalid"));
             return;
         }
         {
             let mut s = state.settings.borrow_mut();
-            if !s.hotkeys.dictation_hotkeys.iter().any(|b| b.combo == combo) {
+            if !s
+                .hotkeys
+                .dictation_hotkeys
+                .iter()
+                .any(|b| same_shortcut(&b.combo, &combo))
+            {
                 s.hotkeys
                     .dictation_hotkeys
                     .push(crate::settings::HotkeyBinding { combo, mode });
@@ -1200,6 +1382,12 @@ impl Capture {
         // Recording is over either way: bring the listener back with
         // the fresh bindings.
         crate::hotkey::apply_from_settings(state);
+    }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -1219,14 +1407,25 @@ fn attach_hotkey_capture(
         capturing: Rc::new(Cell::new(false)),
         held: Rc::new(RefCell::new([false; 4])),
         pressed: Rc::new(RefCell::new([false; 4])),
-        record_btn: record_btn.clone(),
-        add_entry: add_entry.clone(),
+        record_btn: record_btn.downgrade(),
+        add_entry: add_entry.downgrade(),
+        suspend: RefCell::new(None),
+        nonce: Cell::new(None),
+        suspend_path: state
+            .db_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("hotkey-capture.lock"),
     });
+    {
+        let cap = cap.clone();
+        root.connect_unmap(move |_| cap.stop());
+    }
     {
         let cap = cap.clone();
         let state = state.clone();
         record_btn.connect_clicked(move |_| {
-            if cap.capturing.get() {
+            if cap.suspend.borrow().is_some() {
                 cap.stop();
                 crate::hotkey::apply_from_settings(&state);
             } else {
@@ -1240,11 +1439,20 @@ fn attach_hotkey_capture(
     {
         let cap = cap.clone();
         let state = state.clone();
-        let list = list.clone();
+        let list = list.downgrade();
         let persist = persist.clone();
         let add_mode = add_mode.clone();
         ctl.connect_key_pressed(move |_, key, keycode, mod_state| {
+            let Some(list) = list.upgrade() else {
+                return gtk4::glib::Propagation::Proceed;
+            };
             if !cap.capturing.get() {
+                if cap.nonce.get().is_some() {
+                    if key == gtk4::gdk::Key::Escape {
+                        cap.stop();
+                    }
+                    return gtk4::glib::Propagation::Stop;
+                }
                 return gtk4::glib::Propagation::Proceed;
             }
             // Seed from the event's own modifier state (covers
@@ -1289,7 +1497,9 @@ fn attach_hotkey_capture(
                     cap.finish(combo, mode, &state, &list, &persist);
                 }
                 None => {
-                    cap.record_btn.set_label(tr("hotkeys.unsupported"));
+                    if let Some(button) = cap.record_btn.upgrade() {
+                        button.set_label(tr("hotkeys.unsupported"));
+                    }
                 }
             }
             gtk4::glib::Propagation::Stop
@@ -1298,10 +1508,13 @@ fn attach_hotkey_capture(
     {
         let cap = cap.clone();
         let state = state.clone();
-        let list = list.clone();
+        let list = list.downgrade();
         let persist = persist.clone();
         let add_mode = add_mode.clone();
         ctl.connect_key_released(move |_, key, _, _| {
+            let Some(list) = list.upgrade() else {
+                return;
+            };
             if !cap.capturing.get() {
                 return;
             }
@@ -1325,6 +1538,59 @@ fn attach_hotkey_capture(
         });
     }
     root.add_controller(ctl);
+}
+
+fn append_asset_feedback(container: &GtkBox, status: crate::installed_asset::Status) {
+    use crate::installed_asset::Status;
+    let text = match status {
+        Status::Checking => tr("stt.asset.checking").to_owned(),
+        Status::ReadyLocal => tr("stt.asset.local").to_owned(),
+        Status::NeedsVerification => tr("stt.asset.legacy").to_owned(),
+        Status::Invalid(message) => trf("stt.asset.invalid", &[("err", &message)]),
+        Status::Missing | Status::Ready => return,
+    };
+    let label = Label::new(Some(&text));
+    label.add_css_class("dim");
+    label.set_wrap(true);
+    label.set_max_width_chars(40);
+    container.append(&label);
+}
+
+fn append_asset_verification(
+    container: &GtkBox,
+    spec: crate::installed_asset::Spec,
+    id: &'static str,
+) {
+    if !matches!(
+        crate::installed_asset::status(spec.clone()),
+        crate::installed_asset::Status::NeedsVerification
+            | crate::installed_asset::Status::Invalid(_)
+    ) || crate::stt::download_state(id).is_some_and(|download| {
+        matches!(
+            download.phase,
+            crate::stt::DlPhase::Downloading | crate::stt::DlPhase::Installing
+        )
+    }) {
+        return;
+    }
+    // Pinned raw assets verify offline automatically. Legacy archives need
+    // an authenticated reference; comparison never replaces the local files.
+    if spec.raw.is_none() {
+        let verify = Button::with_label(tr("stt.asset.verify"));
+        verify.set_tooltip_text(Some(tr("stt.asset.verifyhelp")));
+        let data = spec.data.clone();
+        verify.connect_clicked(move |_| crate::stt::start_verification(data.clone(), id));
+        container.append(&verify);
+    }
+    let trust = Button::with_label(tr("stt.asset.trust"));
+    super::app::connect_confirmed(
+        &trust,
+        tr("stt.asset.trusttitle"),
+        tr("stt.asset.trustbody"),
+        tr("stt.asset.trust"),
+        move |_| crate::stt::start_local_trust(spec.clone(), id),
+    );
+    container.append(&trust);
 }
 
 /// Registry model list for the active local engine: name, size,
@@ -1359,9 +1625,9 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
             None => "-".to_string(),
         };
         sig.push_str(&format!(
-            "{}:{}:{};",
+            "{}:{:?}:{};",
             m.id,
-            stt::is_installed(&data_dir, m),
+            stt::model_status(&data_dir, m),
             phase
         ));
     }
@@ -1416,6 +1682,16 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
         info.append(&cap);
         card.append(&info);
 
+        if m.id == "cohere-transcribe-03-2026" {
+            let explanation = Label::new(Some(tr("stt.models.coherelanguage")));
+            explanation.set_wrap(true);
+            explanation.set_xalign(0.0);
+            explanation.set_max_width_chars(65);
+            info.append(&explanation);
+        }
+
+        append_asset_feedback(&card, stt::model_status(&data_dir, m));
+        append_asset_verification(&card, stt::model_spec(&data_dir, m), m.id);
         if let Some(dl) = stt::download_state(m.id) {
             let col = GtkBox::new(Orientation::Vertical, 4);
             match &dl.phase {
@@ -1484,10 +1760,10 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
             }
             let del = Button::with_label(tr("action.delete"));
             {
-                let state = state.clone();
+                let db_path = state.db_path.clone();
                 let id = m.id;
                 connect_download_delete(&del, move || {
-                    if let Some(data_dir) = state.db_path.parent()
+                    if let Some(data_dir) = db_path.parent()
                         && let Some(entry) = stt::find_model(id)
                     {
                         return stt::delete_model(data_dir, entry);
@@ -1583,9 +1859,9 @@ fn fill_sherpa_packs(container: &GtkBox, state: &Rc<AppState>) {
             None => "-".to_string(),
         };
         sig.push_str(&format!(
-            "{}:{}:{};",
+            "{}:{:?}:{};",
             pack.id,
-            stt::sherpa_installed(&data_dir, pack),
+            stt::sherpa_status(&data_dir, pack),
             phase
         ));
     }
@@ -1625,6 +1901,8 @@ fn fill_sherpa_packs(container: &GtkBox, state: &Rc<AppState>) {
         info.append(&sub);
         card.append(&info);
 
+        append_asset_feedback(&card, stt::sherpa_status(&data_dir, pack));
+        append_asset_verification(&card, stt::sherpa_spec(&data_dir, pack), pack.id);
         if let Some(dl) = stt::download_state(pack.id) {
             let col = GtkBox::new(Orientation::Vertical, 4);
             match &dl.phase {
@@ -1669,10 +1947,10 @@ fn fill_sherpa_packs(container: &GtkBox, state: &Rc<AppState>) {
             card.append(&installed);
             let del = Button::with_label(tr("action.delete"));
             {
-                let state = state.clone();
+                let db_path = state.db_path.clone();
                 let id = pack.id;
                 connect_download_delete(&del, move || {
-                    if let Some(data_dir) = state.db_path.parent()
+                    if let Some(data_dir) = db_path.parent()
                         && let Some(pack) = stt::SHERPA_PACKS.iter().find(|p| p.id == id)
                     {
                         return stt::delete_sherpa_pack(data_dir, pack);
@@ -1714,9 +1992,9 @@ fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
             None => "-".to_string(),
         };
         sig.push_str(&format!(
-            "{}:{}:{};",
+            "{}:{:?}:{};",
             pack.id,
-            stt::gpu_installed(&data_dir, pack),
+            stt::gpu_status(&data_dir, pack),
             phase
         ));
     }
@@ -1764,6 +2042,8 @@ fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
         info.append(&sub);
         card.append(&info);
 
+        append_asset_feedback(&card, stt::gpu_status(&data_dir, pack));
+        append_asset_verification(&card, stt::gpu_spec(&data_dir, pack), pack.id);
         if let Some(dl) = stt::download_state(pack.id) {
             let col = GtkBox::new(Orientation::Vertical, 4);
             match &dl.phase {
@@ -1804,10 +2084,10 @@ fn fill_gpu_packs(container: &GtkBox, state: &Rc<AppState>) {
         } else if installed {
             let del = Button::with_label(tr("action.delete"));
             {
-                let state = state.clone();
+                let db_path = state.db_path.clone();
                 let id = pack.id;
                 connect_download_delete(&del, move || {
-                    if let Some(data_dir) = state.db_path.parent()
+                    if let Some(data_dir) = db_path.parent()
                         && let Some(pack) = stt::GPU_PACKS.iter().find(|p| p.id == id)
                     {
                         return stt::delete_gpu_pack(data_dir, pack);
@@ -1849,6 +2129,10 @@ fn refresh_needle_action(container: &GtkBox, state: &Rc<AppState>) {
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_default();
+    append_asset_feedback(container, stt::needle_status(&data_dir));
+    if let Ok(spec) = stt::needle_spec(&data_dir) {
+        append_asset_verification(container, spec, stt::NEEDLE_ENGINE_ID);
+    }
     if let Some(dl) = stt::download_state(stt::NEEDLE_ENGINE_ID) {
         let col = GtkBox::new(Orientation::Vertical, 4);
         match &dl.phase {
@@ -1885,9 +2169,9 @@ fn refresh_needle_action(container: &GtkBox, state: &Rc<AppState>) {
     } else if stt::needle_installed(&data_dir) {
         let del = Button::with_label(tr("action.delete"));
         {
-            let state = state.clone();
+            let db_path = state.db_path.clone();
             connect_download_delete(&del, move || {
-                if let Some(data_dir) = state.db_path.parent() {
+                if let Some(data_dir) = db_path.parent() {
                     return stt::delete_needle_pack(data_dir);
                 }
                 Ok(())
@@ -1942,17 +2226,11 @@ fn update_gpu_progress(container: &GtkBox) {
     }
 }
 
-/// Transcription language options for the currently selected
-/// model: "auto" + family list (whisper: full upstream list;
-/// parakeet: per-model list), except Cohere which has no
-/// auto-detect and offers its 14 codes only.
-/// Language list follows the local configuration, plus whether the
-/// dropdown locks (single-language model: greyed out, fixed).
-/// Whisper and Whistle take a language (auto supported). Sherpa
-/// servers take none, so auto on a multilingual sherpa model means
-/// "model decides" (mechanically identical to any selection, but
-/// the user's working choice); single-language ones lock. Cohere
-/// resolves auto to en at spawn (the server demands exactly one).
+/// A shared language choice must preserve remote configurations and must
+/// never be changed by rendering. Local-only configurations show their
+/// supported choices alongside any unsupported stored value; plan creation
+/// rejects that value explicitly until the user chooses a compatible model
+/// or language. Sherpa multilingual models choose their own language.
 struct SttLang {
     opts: Vec<String>,
     locked: bool,
@@ -1962,8 +2240,21 @@ fn stt_lang(state: &Rc<AppState>) -> SttLang {
     use crate::settings::LocalSttProvider;
     use crate::stt;
     let s = state.settings.borrow();
-    // Language follows the local configuration (remotes take raw
-    // codes; the dropdown keeps the local lists).
+    if s.stt
+        .chain()
+        .iter()
+        .any(|entry| entry.kind != crate::settings::SttEntryKind::Local)
+    {
+        let mut opts = vec!["auto".to_string()];
+        opts.extend(stt::WHISPER_LANGS.iter().map(|lang| lang.to_string()));
+        if !opts.contains(&s.stt.language) {
+            opts.push(s.stt.language.clone());
+        }
+        return SttLang {
+            opts,
+            locked: false,
+        };
+    }
     let model_id: &str = match s.stt.local_provider {
         LocalSttProvider::OpenAi => {
             let mut v = vec!["auto".to_string()];
@@ -1995,7 +2286,11 @@ fn stt_lang(state: &Rc<AppState>) -> SttLang {
             locked: true,
         };
     }
-    let mut v = vec!["auto".to_string()];
+    let mut v = if matches!(s.stt.local_provider, LocalSttProvider::Cohere) {
+        Vec::new()
+    } else {
+        vec!["auto".to_string()]
+    };
     v.extend(langs);
     SttLang {
         opts: v,
@@ -2020,6 +2315,22 @@ struct SttForm {
     cancel_btn: Button,
     editing: Rc<RefCell<Option<String>>>,
 }
+weak_form!(SttForm, WeakSttForm, {
+    expander: gtk4::Expander,
+    name_e: Entry,
+    url_e: Entry,
+    model_e: Entry,
+    key_e: Entry,
+    stream_sw: Switch,
+    sh_key_e: Entry,
+    provider_dd: DropDown,
+    kind_dd: DropDown,
+    add_btn: Button,
+    cancel_btn: Button,
+}, {
+    stream_intent: Rc<RefCell<bool>>,
+    editing: Rc<RefCell<Option<String>>>,
+});
 
 /// STT chain list. Local rows toggle only (configuration lives in
 /// the pills/models below); remote rows edit/remove/move.
@@ -2110,10 +2421,16 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
             btn.set_valign(gtk4::Align::Center);
             {
                 let state = state.clone();
-                let list = list.clone();
-                let form = form.clone();
+                let list = list.downgrade();
+                let form = form.downgrade();
                 let alb = add_local.clone();
                 btn.connect_clicked(move |_| {
+                    let Some(list) = list.upgrade() else {
+                        return;
+                    };
+                    let Some(form) = form.upgrade() else {
+                        return;
+                    };
                     let mut st = state.settings.borrow_mut();
                     let entries = &mut st.stt.entries;
                     let other = pos as isize + delta;
@@ -2133,9 +2450,12 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
             edit.set_valign(gtk4::Align::Center);
             {
                 let state = state.clone();
-                let form = form.clone();
+                let form = form.downgrade();
                 let id = entry.id.clone();
                 edit.connect_clicked(move |_| {
+                    let Some(form) = form.upgrade() else {
+                        return;
+                    };
                     let entry = state
                         .settings
                         .borrow()
@@ -2181,8 +2501,8 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
         del.set_valign(gtk4::Align::Center);
         {
             let state = state.clone();
-            let list = list.clone();
-            let form = form.clone();
+            let list = list.downgrade();
+            let form = form.downgrade();
             let alb = add_local.clone();
             let id = entry.id.clone();
             super::app::connect_confirmed(
@@ -2191,6 +2511,12 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
                 tr("confirm.engine.body"),
                 tr("action.remove"),
                 move |_| {
+                    let Some(list) = list.upgrade() else {
+                        return;
+                    };
+                    let Some(form) = form.upgrade() else {
+                        return;
+                    };
                     {
                         let mut st = state.settings.borrow_mut();
                         st.stt.entries.retain(|e| e.id != id);
@@ -2205,11 +2531,36 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
     }
 }
 
-/// Servers row liveness: status text + Stop iff one runs, else
-/// Cold start (greyed out without an enabled local option). Called
-/// from the page refresh and from a 2 s poll (the service owns the
-/// servers, the GUI only reads the pidfile).
-fn refresh_server_widgets(state: &Rc<AppState>, status: &Label, stop: &Button, cold: &Button) {
+struct ServerProbeTask {
+    net: crate::transcribe::ServerNet,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    result: std::sync::mpsc::Receiver<Vec<(String, bool)>>,
+    _task: crate::runtime::SessionTask,
+}
+impl Drop for ServerProbeTask {
+    fn drop(&mut self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[derive(Default)]
+struct ServerStatusProbe {
+    pending: Option<ServerProbeTask>,
+    cached: Option<(crate::transcribe::ServerNet, Vec<(String, bool)>)>,
+    last_attempt: Option<std::time::Instant>,
+    failed: bool,
+}
+
+/// GTK only polls a page-owned result. TCP and procfs checks run on one
+/// bounded owned task; unmapping or changing configuration cancels it.
+fn refresh_server_widgets(
+    state: &Rc<AppState>,
+    status: &Label,
+    stop: &Button,
+    cold: &Button,
+    probe: &RefCell<ServerStatusProbe>,
+) {
     let s = state.settings.borrow();
     let local_on = s
         .stt
@@ -2221,9 +2572,78 @@ fn refresh_server_widgets(state: &Rc<AppState>, status: &Label, stop: &Button, c
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_default();
-    let running = {
-        let net = crate::transcribe::server_net(&s.stt);
-        crate::transcribe::server_status(&data_dir, &net)
+    let net = crate::transcribe::server_net(&s.stt);
+    drop(s);
+    let mut probe = probe.borrow_mut();
+    if !status.is_mapped() {
+        probe.pending.take();
+        probe.last_attempt = None;
+        return;
+    }
+    if probe.cached.as_ref().is_some_and(|(old, _)| *old != net) {
+        probe.cached = None;
+        probe.last_attempt = None;
+    }
+    if probe
+        .pending
+        .as_ref()
+        .is_some_and(|pending| pending.net != net)
+    {
+        probe.pending.take();
+        probe.last_attempt = None;
+    }
+    if let Some(pending) = &probe.pending {
+        match pending.result.try_recv() {
+            Ok(running) => {
+                probe.cached = Some((net.clone(), running));
+                probe.pending.take();
+                probe.failed = false;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                probe.pending.take();
+                probe.failed = true;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+    if probe.pending.is_none()
+        && probe
+            .last_attempt
+            .is_none_or(|attempt| attempt.elapsed().as_secs() >= 2)
+    {
+        let (sender, result) = std::sync::mpsc::sync_channel(1);
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let active = cancel.clone();
+        let worker_net = net.clone();
+        probe.last_attempt = Some(std::time::Instant::now());
+        match crate::runtime::spawn_session("server-status", move || {
+            let running = crate::transcribe::server_status_while(&data_dir, &worker_net, &|| {
+                !active.load(std::sync::atomic::Ordering::Acquire)
+            });
+            if !active.load(std::sync::atomic::Ordering::Acquire) {
+                let _ = sender.try_send(running);
+            }
+        }) {
+            Ok(task) => {
+                probe.pending = Some(ServerProbeTask {
+                    net,
+                    cancel,
+                    result,
+                    _task: task,
+                })
+            }
+            Err(_) => probe.failed = true,
+        }
+    }
+    let Some((_, running)) = &probe.cached else {
+        status.set_text(tr(if probe.failed {
+            "server.unavailable"
+        } else {
+            "server.checking"
+        }));
+        stop.set_visible(false);
+        cold.set_visible(false);
+        return;
     };
     if running.is_empty() {
         status.set_text(tr("server.none"));
@@ -2241,8 +2661,7 @@ fn refresh_server_widgets(state: &Rc<AppState>, status: &Label, stop: &Button, c
         status.set_text(&format!("{}: {}", tr("server.running"), names.join(", ")));
     }
     // Stop only kills what we supervise (never a foreign process);
-    // Cold start hides while anything answers (ensure would just
-    // reuse it anyway).
+    // Cold start hides while anything answers; setup refuses a foreign port.
     let any_managed = running.iter().any(|(_, managed)| *managed);
     stop.set_visible(any_managed);
     cold.set_visible(running.is_empty());
@@ -2255,14 +2674,15 @@ fn refresh_server_widgets(state: &Rc<AppState>, status: &Label, stop: &Button, c
     });
 }
 
+type RefreshCallback = Rc<std::cell::RefCell<Option<Rc<dyn Fn()>>>>;
+
 fn stt_page(state: &Rc<AppState>) -> GtkBox {
     let root = section_box(tr("settings.stt"), tr("settings.stt.sub"));
 
     // ---- Engine: whisper / parakeet / cloud / self-hosted ----
     // Section visibility refreshes on engine change; the holder is
     // filled after all cards exist (handler below runs later).
-    type RefreshHolder = Rc<std::cell::RefCell<Option<Rc<dyn Fn()>>>>;
-    let refresh_holder: RefreshHolder = Rc::new(std::cell::RefCell::new(None));
+    let refresh_holder: RefreshCallback = Rc::new(std::cell::RefCell::new(None));
     // ---- Engines chain: one local option at most (toggle) plus
     // ordered remote options (self-hosted / cloud). First enabled
     // entry wins, failures fall through.
@@ -2395,11 +2815,16 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     {
         // Local option (at most one): appends + refills with form.
         let state = state.clone();
-        let list = chain_list.clone();
-        let form = form.clone();
+        let list = chain_list.downgrade();
+        let form = form.downgrade();
         let alb0 = add_local_btn.clone();
-        let alb0b = alb0.clone();
-        alb0.connect_clicked(move |_| {
+        alb0.connect_clicked(move |alb0b| {
+            let Some(list) = list.upgrade() else {
+                return;
+            };
+            let Some(form) = form.upgrade() else {
+                return;
+            };
             {
                 let mut lm = state.settings.borrow_mut();
                 if !lm
@@ -2422,7 +2847,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 }
             }
             persist_prefs(state.clone())();
-            fill_stt_chain(&list, &state, &form, &alb0b);
+            fill_stt_chain(&list, &state, &form, alb0b);
         });
     }
     {
@@ -2461,9 +2886,12 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     }
     {
         // Cancel: drop the edit, reset the form.
-        let form = form.clone();
         let cb = form.cancel_btn.clone();
+        let form = form.downgrade();
         cb.connect_clicked(move |_| {
+            let Some(form) = form.upgrade() else {
+                return;
+            };
             *form.editing.borrow_mut() = None;
             form.add_btn.set_label(tr("stt.remote.add"));
             form.cancel_btn.set_visible(false);
@@ -2480,13 +2908,17 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     }
     {
         let state = state.clone();
-        let list = chain_list.clone();
+        let list = chain_list.downgrade();
         let ab = form.add_btn.clone();
-        let ab_inner = ab.clone();
-        let cb = form.cancel_btn.clone();
-        let form = form.clone();
+        let form = form.downgrade();
         let alb1 = add_local_btn.clone();
         ab.connect_clicked(move |_| {
+            let Some(list) = list.upgrade() else {
+                return;
+            };
+            let Some(form) = form.upgrade() else {
+                return;
+            };
             use crate::settings::SttEntryKind;
             let cloud = form.kind_dd.selected() == 1;
             if cloud
@@ -2545,20 +2977,20 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                         *e = entry;
                     }
                 } else {
-                    entry.id = format!(
-                        "stt-{}-{}",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis())
-                            .unwrap_or(0),
-                        st.stt.entries.len()
-                    );
+                    entry.id = match connection_id("stt") {
+                        Ok(id) => id,
+                        Err(_) => {
+                            drop(st);
+                            super::app::toast(&form.add_btn, tr("feedback.savefailed"));
+                            return;
+                        }
+                    };
                     st.stt.entries.push(entry);
                 }
             }
             *form.editing.borrow_mut() = None;
-            ab_inner.set_label(tr("stt.remote.add"));
-            cb.set_visible(false);
+            form.add_btn.set_label(tr("stt.remote.add"));
+            form.cancel_btn.set_visible(false);
             form.name_e.set_text("");
             form.key_e.set_text("");
             form.sh_key_e.set_text("");
@@ -2566,7 +2998,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
             form.stream_sw.set_active(false);
             persist_prefs(state.clone())();
             fill_stt_chain(&list, &state, &form, &alb1);
-            super::app::toast(&ab_inner, tr("feedback.saved"));
+            super::app::toast(&form.add_btn, tr("feedback.saved"));
         });
     }
 
@@ -2645,9 +3077,12 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     fill_stt_models(&list, state);
     {
         let state = state.clone();
-        let list = list.clone();
+        let list = list.downgrade();
         let weak_root = root.downgrade();
         gtk4::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+            let Some(list) = list.upgrade() else {
+                return gtk4::glib::ControlFlow::Break;
+            };
             if weak_root.upgrade().is_none() {
                 return gtk4::glib::ControlFlow::Break;
             }
@@ -2663,6 +3098,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     let whisper_box = GtkBox::new(Orientation::Vertical, 8);
     _rows.append(&whisper_box);
     let sherpa_box = GtkBox::new(Orientation::Vertical, 8);
+    sherpa_box.set_widget_name("sherpa-runtime-controls");
     _rows.append(&sherpa_box);
     // Whistle brings its own engine: one binary, downloaded like a
     // pack (sha-verified), not a server runtime.
@@ -2825,7 +3261,12 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 lang_slot.remove(&child);
             }
             let lang = stt_lang(&state);
-            let opts = lang.opts;
+            let mut opts = lang.opts;
+            let stored = state.settings.borrow().stt.language.clone();
+            let unsupported = !opts.contains(&stored);
+            if unsupported {
+                opts.push(stored.clone());
+            }
             let (b, _) = row(tr("row.language"));
             let lang_drop = DropDown::new(
                 Some(StringList::new(
@@ -2833,47 +3274,21 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 )),
                 None::<gtk4::Expression>,
             );
-            // STT codes stay untranslated (server contract). A stored
-            // code outside the new list corrects to the model default
-            // (the single language, else en) and persists, so the
-            // list always reflects the current model.
-            let def = if opts.len() == 1 {
-                opts[0].clone()
-            } else if opts.contains(&"en".to_string()) {
-                "en".to_string()
-            } else {
-                opts[0].clone()
-            };
-            let stored = state.settings.borrow().stt.language.clone();
-            let shown = if opts.contains(&stored) { stored } else { def };
-            let corrected = {
-                let mut st = state.settings.borrow_mut();
-                if st.stt.language != shown {
-                    st.stt.language = shown.clone();
-                    true
-                } else {
-                    false
-                }
-            };
-            if corrected {
-                persist_prefs(state.clone())();
-            }
-            lang_drop
-                .set_selected(
-                    idx_of(&opts.iter().map(String::as_str).collect::<Vec<_>>(), &shown) as u32,
-                );
-            lang_drop.set_sensitive(!lang.locked);
-            if lang.locked {
+            lang_drop.set_widget_name("transcription-language-picker");
+            lang_drop.set_selected(idx_of(
+                &opts.iter().map(String::as_str).collect::<Vec<_>>(),
+                &stored,
+            ) as u32);
+            lang_drop.set_sensitive(!lang.locked || unsupported);
+            if lang.locked || unsupported {
                 lang_drop.set_tooltip_text(Some(tr("stt.lang.locked.tip")));
             }
             {
                 let state = state.clone();
                 lang_drop.connect_selected_notify(move |d| {
-                    let opts = stt_lang(&state).opts;
-                    let code = opts
-                        .get(d.selected().min(opts.len() as u32 - 1) as usize)
-                        .cloned()
-                        .unwrap_or_else(|| "auto".to_string());
+                    let Some(code) = opts.get(d.selected() as usize).cloned() else {
+                        return;
+                    };
                     state.settings.borrow_mut().stt.language = code;
                     persist_prefs(state.clone())();
                 });
@@ -3006,13 +3421,17 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         b.append(&dd);
         rows.append(&b);
     }
+    let server_probe = Rc::new(RefCell::new(ServerStatusProbe::default()));
     let (srv_status, srv_stop, srv_cold) = {
         let (b, _) = row(tr("row.serverstatus"));
-        let status = Label::new(None);
+        let status = Label::new(Some(tr("server.checking")));
+        status.set_widget_name("local-server-status");
         status.set_xalign(0.0);
         status.set_hexpand(true);
         b.append(&status);
         let stop = Button::with_label(tr("action.stop"));
+        stop.set_widget_name("local-server-stop");
+        stop.set_visible(false);
         {
             let state = state.clone();
             stop.connect_clicked(move |_| {
@@ -3033,6 +3452,8 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         }
         b.append(&stop);
         let cold = Button::with_label(tr("action.coldstart"));
+        cold.set_widget_name("local-server-start");
+        cold.set_visible(false);
         {
             let state = state.clone();
             cold.connect_clicked(move |_| {
@@ -3112,18 +3533,24 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     }
     append_collapsible(&root, &card, tr("group.sttservers"));
     {
-        // Live status: the service owns the servers, so poll the
-        // pidfile (cheap) and flip Stop/Cold-start on our own.
+        // Poll completed results without retaining removed controls. One
+        // query per page runs at a time and is refreshed every two seconds.
         let state = state.clone();
-        let srv_status = srv_status.clone();
-        let srv_stop = srv_stop.clone();
-        let srv_cold = srv_cold.clone();
+        let srv_status = srv_status.downgrade();
+        let srv_stop = srv_stop.downgrade();
+        let srv_cold = srv_cold.downgrade();
+        let server_probe = server_probe.clone();
         let weak_root = root.downgrade();
-        gtk4::glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
-            if weak_root.upgrade().is_none() {
+        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            let (Some(_root), Some(status), Some(stop), Some(cold)) = (
+                weak_root.upgrade(),
+                srv_status.upgrade(),
+                srv_stop.upgrade(),
+                srv_cold.upgrade(),
+            ) else {
                 return gtk4::glib::ControlFlow::Break;
-            }
-            refresh_server_widgets(&state, &srv_status, &srv_stop, &srv_cold);
+            };
+            refresh_server_widgets(&state, &status, &stop, &cold, &server_probe);
             gtk4::glib::ControlFlow::Continue
         });
     }
@@ -3212,9 +3639,10 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         let whisper_box = whisper_box.clone();
         let sherpa_box = sherpa_box.clone();
         let needle_box = needle_box.clone();
-        let srv_status = srv_status.clone();
-        let srv_stop = srv_stop.clone();
-        let srv_cold = srv_cold.clone();
+        let srv_status = srv_status.downgrade();
+        let srv_stop = srv_stop.downgrade();
+        let srv_cold = srv_cold.downgrade();
+        let server_probe = server_probe.clone();
         move || {
             {
                 use crate::settings::LocalSttProvider;
@@ -3222,7 +3650,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 let whisper = matches!(s.stt.local_provider, LocalSttProvider::OpenAi);
                 let sherpa = matches!(
                     s.stt.local_provider,
-                    LocalSttProvider::Nvidia | LocalSttProvider::Oruk
+                    LocalSttProvider::Nvidia | LocalSttProvider::Oruk | LocalSttProvider::Cohere
                 );
                 let whistle = matches!(s.stt.local_provider, LocalSttProvider::Whistle);
                 whisper_box.set_visible(whisper);
@@ -3234,7 +3662,11 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 drop(s);
                 // Servers: status + Stop iff one runs, else Cold start
                 // (greyed out without an enabled local option).
-                refresh_server_widgets(&state, &srv_status, &srv_stop, &srv_cold);
+                if let (Some(status), Some(stop), Some(cold)) =
+                    (srv_status.upgrade(), srv_stop.upgrade(), srv_cold.upgrade())
+                {
+                    refresh_server_widgets(&state, &status, &stop, &cold, &server_probe);
+                }
             }
             refresh_lang();
         }
@@ -3301,6 +3733,25 @@ struct LmForm {
     cancel_btn: Button,
     editing: Rc<RefCell<Option<String>>>,
 }
+weak_form!(LmForm, WeakLmForm, {
+    expander: gtk4::Expander,
+    name_e: Entry,
+    url_e: Entry,
+    ollama_model_e: Entry,
+    cloud_model_e: Entry,
+    key_e: Entry,
+    cloud_key_e: Entry,
+    provider_dd: DropDown,
+    kind_dd: DropDown,
+    keepalive_dd: DropDown,
+    thinking_dd: DropDown,
+    cloud_thinking_dd: DropDown,
+    numctx_dd: DropDown,
+    add_btn: Button,
+    cancel_btn: Button,
+}, {
+    editing: Rc<RefCell<Option<String>>>,
+});
 
 fn lm_model_row(entry: &crate::settings::LlmEntry) -> GtkBox {
     let card = GtkBox::new(Orientation::Horizontal, 8);
@@ -3385,8 +3836,11 @@ fn fill_cleanup_chain(list: &GtkBox, state: &Rc<AppState>) {
             btn.set_valign(gtk4::Align::Center);
             {
                 let state = state.clone();
-                let list = list.clone();
+                let list = list.downgrade();
                 btn.connect_clicked(move |_| {
+                    let Some(list) = list.upgrade() else {
+                        return;
+                    };
                     let mut lm = state.settings.borrow_mut();
                     let entries = &mut lm.language_models.entries;
                     let other = pos as isize + delta;
@@ -3425,9 +3879,12 @@ fn fill_lm_models(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
         edit.set_valign(gtk4::Align::Center);
         {
             let state = state.clone();
-            let form = form.clone();
+            let form = form.downgrade();
             let id = entry.id.clone();
             edit.connect_clicked(move |_| {
+                let Some(form) = form.upgrade() else {
+                    return;
+                };
                 let entry = state
                     .settings
                     .borrow()
@@ -3491,8 +3948,8 @@ fn fill_lm_models(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
         del.set_valign(gtk4::Align::Center);
         {
             let state = state.clone();
-            let list = list.clone();
-            let form = form.clone();
+            let list = list.downgrade();
+            let form = form.downgrade();
             let id = entry.id.clone();
             super::app::connect_confirmed(
                 &del,
@@ -3500,6 +3957,12 @@ fn fill_lm_models(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
                 tr("confirm.engine.body"),
                 tr("action.remove"),
                 move |_| {
+                    let Some(list) = list.upgrade() else {
+                        return;
+                    };
+                    let Some(form) = form.upgrade() else {
+                        return;
+                    };
                     {
                         let mut lm = state.settings.borrow_mut();
                         lm.language_models.entries.retain(|e| e.id != id);
@@ -3583,6 +4046,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         None::<gtk4::Expression>,
     );
     keepalive_dd.set_valign(gtk4::Align::Center);
+    keepalive_dd.set_widget_name("lm-ollama-keepalive");
     // Tri-state: Default (omit, model decides) / On / Off.
     let thinking_opts = || {
         let dd = DropDown::new(
@@ -3597,6 +4061,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         dd
     };
     let thinking_dd = thinking_opts();
+    thinking_dd.set_widget_name("lm-ollama-thinking");
     let cloud_thinking_dd = thinking_opts();
     let numctx_dd = DropDown::new(
         Some(StringList::new(&num_ctx_labels())),
@@ -3651,11 +4116,40 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
             ollama_box.append(&b);
         }
         {
+            let pending = Rc::new(RefCell::new(None::<Rc<crate::model_load::ModelLoad>>));
+            let cancel = {
+                let pending = Rc::downgrade(&pending);
+                let button = update_btn.downgrade();
+                Rc::new(move || {
+                    let task = pending
+                        .upgrade()
+                        .and_then(|pending| pending.borrow_mut().take());
+                    if let Some(task) = task {
+                        task.cancel();
+                        if let Some(button) = button.upgrade() {
+                            button.set_sensitive(true);
+                            button.set_label(tr("action.updatenow"));
+                        }
+                    }
+                })
+            };
+            for entry in [&url_e, &ollama_model_e, &key_e] {
+                let cancel = cancel.clone();
+                entry.connect_changed(move |_| cancel());
+            }
+            {
+                let cancel = cancel.clone();
+                keepalive_dd.connect_selected_notify(move |_| cancel());
+            }
+            update_btn.connect_unmap(move |_| cancel());
             let url_e = url_e.clone();
             let ollama_model_e = ollama_model_e.clone();
             let keepalive_dd = keepalive_dd.clone();
             let key_e = key_e.clone();
             update_btn.connect_clicked(move |button| {
+                if let Some(task) = pending.borrow_mut().take() {
+                    task.cancel();
+                }
                 let url = url_e.text().trim().to_string();
                 let model = ollama_model_e.text().trim().to_string();
                 let token = key_e.text().trim().to_string();
@@ -3667,57 +4161,58 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
                     .get(keepalive_dd.selected() as usize)
                     .copied()
                     .unwrap_or("");
-                let result = std::sync::Arc::new(std::sync::Mutex::new(None));
-                let sender = result.clone();
+                let task = match crate::model_load::ModelLoad::start(url, model, token, keep) {
+                    Ok(task) => Rc::new(task),
+                    Err(_) => {
+                        super::app::toast(button, tr("lm.applyfailed"));
+                        return;
+                    }
+                };
+                *pending.borrow_mut() = Some(task.clone());
                 button.set_sensitive(false);
                 button.set_label(tr("lm.applying"));
-                // Empty messages load/unload the model without generating a reply.
-                std::thread::spawn(move || {
-                    let mut body =
-                        serde_json::json!({"model": model, "stream": false, "messages": []});
-                    if !keep.is_empty() {
-                        body["keep_alive"] = match keep {
-                            "-1" => serde_json::Value::from(-1),
-                            "0" => serde_json::Value::from(0),
-                            _ => serde_json::Value::String(keep.to_string()),
-                        };
+                let task = Rc::downgrade(&task);
+                let pending = Rc::downgrade(&pending);
+                let button = button.downgrade();
+                gtk4::glib::timeout_add_local(std::time::Duration::from_millis(20), move || {
+                    let (Some(task), Some(pending), Some(button)) =
+                        (task.upgrade(), pending.upgrade(), button.upgrade())
+                    else {
+                        return gtk4::glib::ControlFlow::Break;
+                    };
+                    if !pending
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|current| Rc::ptr_eq(current, &task))
+                    {
+                        return gtk4::glib::ControlFlow::Break;
                     }
-                    let success = reqwest::blocking::Client::builder()
-                        .dns_resolver(std::sync::Arc::new(crate::address::HttpResolver))
-                        .timeout(std::time::Duration::from_secs(60))
-                        .build()
-                        .and_then(|client| {
-                            let mut request = client
-                                .post(format!("{}/api/chat", url.trim_end_matches('/')))
-                                .header("Content-Type", "application/json")
-                                .body(body.to_string());
-                            if !token.is_empty() {
-                                request = request.bearer_auth(token);
-                            }
-                            request
-                                .send()
-                                .and_then(|response| response.error_for_status())
-                        })
-                        .is_ok();
-                    *sender.lock().unwrap() = Some(success);
-                });
-                let button = button.clone();
-                gtk4::glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-                    if let Some(success) = result.lock().unwrap().take() {
+                    if !button.is_mapped() {
+                        task.cancel();
+                        pending.borrow_mut().take();
                         button.set_sensitive(true);
                         button.set_label(tr("action.updatenow"));
-                        super::app::toast(
-                            &button,
-                            tr(if success {
-                                "lm.applied"
-                            } else {
-                                "lm.applyfailed"
-                            }),
-                        );
-                        gtk4::glib::ControlFlow::Break
-                    } else {
-                        gtk4::glib::ControlFlow::Continue
+                        return gtk4::glib::ControlFlow::Break;
                     }
+                    let success = match task.result.try_recv() {
+                        Ok(result) => result.is_ok(),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            return gtk4::glib::ControlFlow::Continue;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+                    };
+                    pending.borrow_mut().take();
+                    button.set_sensitive(true);
+                    button.set_label(tr("action.updatenow"));
+                    super::app::toast(
+                        &button,
+                        tr(if success {
+                            "lm.applied"
+                        } else {
+                            "lm.applyfailed"
+                        }),
+                    );
+                    gtk4::glib::ControlFlow::Break
                 });
             });
         }
@@ -3822,14 +4317,21 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     // Re-entering this page reflects cleanup priority changes without losing form drafts.
     {
         let state = state.clone();
-        let form = form.clone();
-        list.connect_map(move |list| fill_lm_models(list, &state, &form));
+        let form = form.downgrade();
+        list.connect_map(move |list| {
+            if let Some(form) = form.upgrade() {
+                fill_lm_models(list, &state, &form);
+            }
+        });
     }
     // Cancel: drop the edit, reset the form to add-mode defaults.
     {
-        let form = form.clone();
         let cb = form.cancel_btn.clone();
+        let form = form.downgrade();
         cb.connect_clicked(move |_| {
+            let Some(form) = form.upgrade() else {
+                return;
+            };
             *form.editing.borrow_mut() = None;
             form.add_btn.set_label(tr("action.add"));
             form.cancel_btn.set_visible(false);
@@ -3850,23 +4352,30 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     }
     {
         let state = state.clone();
-        let list = list.clone();
-        let kind_dd = form.kind_dd.clone();
-        let provider_dd = form.provider_dd.clone();
-        let ollama_model_e = form.ollama_model_e.clone();
-        let cloud_model_e = form.cloud_model_e.clone();
-        let name_e = form.name_e.clone();
-        let url_e = form.url_e.clone();
-        let key_e = form.key_e.clone();
-        let cloud_key_e = form.cloud_key_e.clone();
-        let thinking_dd = form.thinking_dd.clone();
-        let cloud_thinking_dd = form.cloud_thinking_dd.clone();
-        let numctx_dd = form.numctx_dd.clone();
+        let list = list.downgrade();
         let add_btn = form.add_btn.clone();
-        let editing = form.editing.clone();
-        let ab = add_btn.clone();
-        let cb = form.cancel_btn.clone();
+        let form = form.downgrade();
         add_btn.connect_clicked(move |_| {
+            let Some(list) = list.upgrade() else {
+                return;
+            };
+            let Some(form) = form.upgrade() else {
+                return;
+            };
+            let kind_dd = form.kind_dd.clone();
+            let provider_dd = form.provider_dd.clone();
+            let ollama_model_e = form.ollama_model_e.clone();
+            let cloud_model_e = form.cloud_model_e.clone();
+            let name_e = form.name_e.clone();
+            let url_e = form.url_e.clone();
+            let key_e = form.key_e.clone();
+            let cloud_key_e = form.cloud_key_e.clone();
+            let thinking_dd = form.thinking_dd.clone();
+            let cloud_thinking_dd = form.cloud_thinking_dd.clone();
+            let numctx_dd = form.numctx_dd.clone();
+            let editing = form.editing.clone();
+            let ab = form.add_btn.clone();
+            let cb = form.cancel_btn.clone();
             let kind = match kind_dd.selected() {
                 1 => LlmKind::Local,
                 2 => LlmKind::Cloud,
@@ -3948,14 +4457,14 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
                         *e = entry;
                     }
                 } else {
-                    entry.id = format!(
-                        "lm-{}-{}",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis())
-                            .unwrap_or(0),
-                        lm.language_models.entries.len()
-                    );
+                    entry.id = match connection_id("lm") {
+                        Ok(id) => id,
+                        Err(_) => {
+                            drop(lm);
+                            super::app::toast(&ab, tr("feedback.savefailed"));
+                            return;
+                        }
+                    };
                     lm.language_models.entries.push(entry);
                 }
             }
@@ -4248,13 +4757,45 @@ fn text_cleanup_page(state: &Rc<AppState>) -> GtkBox {
     root
 }
 
+fn retention_choices(current: u32, audio: bool) -> (Vec<u32>, Vec<String>, u32) {
+    let mut days = vec![1, 7, 14, 30, 60, 90];
+    let mut labels: Vec<String> = [
+        "opt.older1",
+        "opt.older7",
+        "opt.older14",
+        "opt.older30",
+        "opt.older60",
+        "opt.older90",
+    ]
+    .iter()
+    .map(|key| tr(key).to_string())
+    .collect();
+    if !audio {
+        days.insert(0, 0);
+        labels.insert(0, tr("opt.never").to_string());
+    }
+    let selected = match days.iter().position(|days| *days == current) {
+        Some(selected) => selected,
+        None => {
+            days.push(current);
+            // Zero audio retention has never meant forever; match pruning's
+            // one-day policy without silently rewriting the stored value.
+            labels.push(if audio && current == 0 {
+                tr("opt.older1").to_string()
+            } else {
+                tr("opt.oldercustom").replace("{n}", &current.to_string())
+            });
+            days.len() - 1
+        }
+    };
+    (days, labels, selected as u32)
+}
+
 fn privacy_page(state: &Rc<AppState>) -> GtkBox {
     let root = section_box(tr("settings.privacy"), tr("settings.privacy.sub"));
 
     let (card, rows) = group(tr("group.audioret"));
     // No Never here by design (clips grow fast). Default 30 days.
-    const AUDIO_DAYS: &[u32] = &[1, 7, 14, 30, 60, 90];
-    let audio_dd: Rc<RefCell<Option<DropDown>>> = Rc::new(RefCell::new(None));
     {
         let (b, _) = row(tr("row.keepaudio"));
         let sw = Switch::new();
@@ -4262,13 +4803,19 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
         sw.set_valign(gtk4::Align::Center);
         {
             let state = state.clone();
-            let audio_dd = audio_dd.clone();
             sw.connect_state_set(move |_, active| {
                 state.settings.borrow_mut().privacy.keep_audio_recordings = active;
                 persist_prefs(state.clone())();
-                // Clear stays enabled: recordings may predate the toggle.
-                if let Some(dd) = audio_dd.borrow().as_ref() {
-                    dd.set_sensitive(active);
+                // R39: the vault must honor the toggle now, not on the next
+                // service retention pass. Turning off purges everything.
+                if !active {
+                    let db_path = state.db_path.clone();
+                    match crate::store::Store::open(&db_path).and_then(|store| store.clear_audio())
+                    {
+                        Ok(0) => {}
+                        Ok(n) => eprintln!("[privacy] keep-audio off, purged {n} audio files"),
+                        Err(e) => eprintln!("[privacy] keep-audio purge: {e}"),
+                    }
                 }
                 gtk4::glib::Propagation::Proceed
             });
@@ -4278,36 +4825,22 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
     }
     {
         let (b, _) = row(tr("row.autodeleteaudio"));
-        let dd = DropDown::new(
-            Some(StringList::new(&[
-                tr("opt.older1"),
-                tr("opt.older7"),
-                tr("opt.older14"),
-                tr("opt.older30"),
-                tr("opt.older60"),
-                tr("opt.older90"),
-            ])),
-            None::<gtk4::Expression>,
-        );
-        dd.set_selected(
-            AUDIO_DAYS
-                .iter()
-                .position(|d| *d == state.settings.borrow().privacy.audio_retention_days)
-                .unwrap_or(3) as u32,
-        );
+        let (days, labels, selected) =
+            retention_choices(state.settings.borrow().privacy.audio_retention_days, true);
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let dd = DropDown::new(Some(StringList::new(&labels)), None::<gtk4::Expression>);
+        dd.set_widget_name("audio-retention-picker");
+        dd.set_selected(selected);
         dd.set_valign(gtk4::Align::Center);
-        dd.set_sensitive(state.settings.borrow().privacy.keep_audio_recordings);
+        // Retention continues to govern old clips when new recording is off.
         {
             let state = state.clone();
             dd.connect_selected_notify(move |d| {
-                state.settings.borrow_mut().privacy.audio_retention_days =
-                    AUDIO_DAYS.get(d.selected() as usize).copied().unwrap_or(30);
-                persist_prefs(state.clone())();
+                if let Some(days) = days.get(d.selected() as usize) {
+                    state.settings.borrow_mut().privacy.audio_retention_days = *days;
+                    persist_prefs(state.clone())();
+                }
             });
-        }
-        {
-            let mut slot = audio_dd.borrow_mut();
-            *slot = Some(dd.clone());
         }
         b.append(&dd);
         rows.append(&b);
@@ -4345,22 +4878,18 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
                 tr("confirm.audio.title"),
                 tr("confirm.audio.body"),
                 tr("action.clearallaudio"),
-                move |_| {
-                    let data_dir = state
-                        .db_path
-                        .parent()
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_default();
-                    match crate::audio::clear_audio(&data_dir) {
-                        Ok(n) => {
-                            eprintln!("[privacy] cleared {n} audio files");
-                            super::app::notify(tr("feedback.cleared"));
-                        }
-                        Err(error) => {
-                            eprintln!("[privacy] audio cleanup failed: {error}");
-                            super::app::notify("Audio cleanup failed. Retry from Settings.");
-                        }
-                    }
+                move |button| {
+                    let db_path = state.db_path.clone();
+                    file_action(
+                        button,
+                        move || {
+                            crate::store::Store::open(&db_path)
+                                .and_then(|store| store.clear_audio())
+                                .map(|_| ())
+                                .map_err(std::io::Error::other)
+                        },
+                        "feedback.cleared",
+                    );
                 },
             );
         }
@@ -4370,9 +4899,6 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
     root.append(&card);
 
     let (card, rows) = group(tr("group.transcripts"));
-    // Auto-delete is meaningless without history: greyed out while
-    // the toggle below is off.
-    let autodelete_dd: Rc<RefCell<Option<DropDown>>> = Rc::new(RefCell::new(None));
     // Keep dictation history (wired): when off, dictations still
     // paste, they just aren't stored.
     {
@@ -4382,13 +4908,9 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
         sw.set_valign(gtk4::Align::Center);
         {
             let state = state.clone();
-            let autodelete_dd = autodelete_dd.clone();
             sw.connect_state_set(move |_, active| {
                 state.settings.borrow_mut().privacy.history_enabled = active;
                 persist_prefs(state.clone())();
-                if let Some(dd) = autodelete_dd.borrow().as_ref() {
-                    dd.set_sensitive(active);
-                }
                 gtk4::glib::Propagation::Proceed
             });
         }
@@ -4397,38 +4919,30 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
     }
     // Auto-delete transcripts after N days, 0 = keep forever (wired).
     {
-        const RETENTION_DAYS: &[u32] = &[0, 1, 7, 14, 30, 60, 90];
         let (b, _) = row(tr("row.autodelete"));
-        let dd = DropDown::new(
-            Some(StringList::new(&delete_opts())),
-            None::<gtk4::Expression>,
+        let (days, labels, selected) = retention_choices(
+            state.settings.borrow().privacy.transcript_auto_delete_days,
+            false,
         );
-        dd.set_selected(
-            RETENTION_DAYS
-                .iter()
-                .position(|d| *d == state.settings.borrow().privacy.transcript_auto_delete_days)
-                .unwrap_or(0) as u32,
-        );
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let dd = DropDown::new(Some(StringList::new(&labels)), None::<gtk4::Expression>);
+        dd.set_widget_name("transcript-retention-picker");
+        dd.set_selected(selected);
         dd.set_valign(gtk4::Align::Center);
         {
             let state = state.clone();
             dd.connect_selected_notify(move |d| {
-                state
-                    .settings
-                    .borrow_mut()
-                    .privacy
-                    .transcript_auto_delete_days = RETENTION_DAYS
-                    .get(d.selected() as usize)
-                    .copied()
-                    .unwrap_or(0);
-                persist_prefs(state.clone())();
+                if let Some(days) = days.get(d.selected() as usize) {
+                    state
+                        .settings
+                        .borrow_mut()
+                        .privacy
+                        .transcript_auto_delete_days = *days;
+                    persist_prefs(state.clone())();
+                }
             });
         }
-        dd.set_sensitive(state.settings.borrow().privacy.history_enabled);
-        {
-            let mut slot = autodelete_dd.borrow_mut();
-            *slot = Some(dd.clone());
-        }
+        // Existing history still expires while storing new history is off.
         b.append(&dd);
         rows.append(&b);
     }
@@ -4447,7 +4961,11 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
                     Ok(n) => {
                         eprintln!("[privacy] cleared {n} transcripts");
                         super::app::notify(tr("feedback.cleared"));
-                        crate::net::sync_after_change(state.db_path.clone(), state.creds.clone());
+                        crate::net::sync_after_change_at_epoch(
+                            state.db_path.clone(),
+                            state.creds.clone(),
+                            state.store.sync_epoch(),
+                        );
                     }
                     Err(e) => {
                         eprintln!("[privacy] clear transcripts: {e}");
@@ -4590,38 +5108,19 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
     b.append(&open);
     let clear = Button::with_label(tr("action.clearcache"));
     {
-        let state = state.clone();
         let data_dir = data_dir.clone();
         super::app::connect_confirmed(
             &clear,
             tr("confirm.cache.title"),
             tr("confirm.cache.body"),
             tr("action.clearcache"),
-            move |_| {
-                // Downloads only (models + runtimes): settings, history
-                // and identity survive. Next dictation reports exactly
-                // what to re-download.
-                let mut gone = 0;
-                let mut failed = false;
-                for sub in ["models", "bin"] {
-                    let dir = data_dir.join(sub);
-                    if dir.exists() {
-                        match std::fs::remove_dir_all(&dir).and(std::fs::create_dir_all(&dir)) {
-                            Ok(()) => gone += 1,
-                            Err(e) => {
-                                failed = true;
-                                eprintln!("[system] clear {sub}: {e}");
-                            }
-                        }
-                    }
-                }
-                eprintln!("[system] cache cleared ({gone}/2 dirs)");
-                super::app::notify(tr(if failed {
-                    "feedback.deletefailed"
-                } else {
-                    "feedback.cleared"
-                }));
-                let _ = state;
+            move |button| {
+                let data_dir = data_dir.clone();
+                file_action(
+                    button,
+                    move || crate::stt::clear_download_cache(&data_dir),
+                    "feedback.cleared",
+                );
             },
         );
     }
@@ -4631,47 +5130,47 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
 
     let (card, rows) = group(tr("group.danger"));
     let (b, _) = row(tr("row.resetall"));
-    let reset = Button::with_label(tr("action.resetdots"));
+    let retry = state.store.settings_warning() == Some("settings.reset.incomplete");
+    let reset = Button::with_label(tr(if state.reset_busy.get() {
+        "settings.reset.pending"
+    } else if retry {
+        "settings.reset.retry"
+    } else {
+        "action.resetdots"
+    }));
+    reset.set_widget_name("reset-all");
+    reset.set_sensitive(!state.reset_busy.get());
     {
         let state = state.clone();
-        let data_dir = data_dir.clone();
         super::app::connect_confirmed(
             &reset,
-            tr("confirm.reset.title"),
-            tr("confirm.reset.body"),
-            tr("action.resetdots"),
-            move |_| {
-                // Wipe user data + downloads. Identity (device key) and
-                // the running service survive: the next dictation
-                // re-reads defaults from the fresh DB and reports missing
-                // models; restart the service for a fully clean slate.
-                // The fresh blob is reloaded as the source of truth so
-                // the reset (sync disabled, peers revoked, history
-                // redacted) is observed exactly — never overwritten by
-                // stale in-memory defaults that would re-enable sync.
-                // Crash-safe two-phase reset with worker ownership lives
-                // in #22/#23 (nonce APIs + recovery worker); the
-                // pending-reset barriers below stay enforced here.
-                if let Err(e) = state.store.reset_all_data() {
-                    eprintln!("[system] reset db: {e}");
-                    super::app::notify(tr("feedback.deletefailed"));
-                    return;
-                }
-                for sub in ["models", "bin", "audio"] {
-                    let dir = data_dir.join(sub);
-                    if dir.exists()
-                        && let Err(e) =
-                            std::fs::remove_dir_all(&dir).and(std::fs::create_dir_all(&dir))
-                    {
-                        eprintln!("[system] reset {sub}: {e}");
+            tr(if retry {
+                "settings.reset.retry"
+            } else {
+                "confirm.reset.title"
+            }),
+            tr(if retry {
+                "settings.reset.retry.body"
+            } else {
+                "confirm.reset.body"
+            }),
+            tr(if retry {
+                "settings.reset.retry"
+            } else {
+                "action.resetdots"
+            }),
+            move |button| {
+                begin_reset(state.clone(), retry);
+                if state.reset_busy.get() {
+                    button.set_label(tr("settings.reset.pending"));
+                    button.set_sensitive(false);
+                    if let Some(page) = button.ancestor(Stack::static_type()) {
+                        page.set_sensitive(false);
+                        if let Some(content) = page.ancestor(Stack::static_type()) {
+                            content.set_sensitive(false);
+                        }
                     }
                 }
-                *state.settings.borrow_mut() = state.store.load_settings();
-                eprintln!("[system] application data reset");
-                crate::i18n::set_lang(crate::i18n::UiLang::System);
-                apply_theme(crate::settings::Theme::System);
-                crate::i18n::rebuild_ui();
-                super::app::notify(tr("feedback.cleared"));
             },
         );
     }
@@ -4682,10 +5181,251 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
     root
 }
 
+/// Recover only a previously authorized reset; opening a window cannot
+/// initiate a new reset or wipe edits after a completed reset transaction.
+/// Service-driven reset contract: post the command and poll the barrier.
+/// The service owns the single worker (its own recovery tick covers a
+/// non-running service); this process never drives a parallel worker.
+pub fn resume_pending_reset(state: &Rc<AppState>) {
+    if state.store.settings_warning() == Some("settings.reset.incomplete") {
+        begin_reset(state.clone(), true);
+    }
+}
+
+/// True for transient write-lock failures (another process holds the
+/// database write lock): the reset command post must be retried, never
+/// treated as a terminal failure and never run blocking on GTK.
+fn db_write_locked(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, _)
+            if matches!(
+                failure.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            )
+    )
+}
+
+/// Fresh service-presence read for reset entry selection: a live service
+/// owns the single worker (command post); an absent service leaves this
+/// process the sole worker. Never cached: staleness here would double-drive.
+fn service_running(state_dir: &std::path::Path) -> bool {
+    crate::service::read_heartbeat(state_dir).is_some()
+}
+
+fn begin_reset(state: Rc<AppState>, resume_only: bool) {
+    if state.reset_busy.replace(true) {
+        return;
+    }
+    crate::transcribe::invalidate_all_capture();
+    // Entry selection, read fresh: a live service owns the single worker
+    // (command post + barrier poll); an absent service leaves this process
+    // the sole worker (direct drive). The operation lock serializes a
+    // service that starts mid-run, so work is never parallel either way.
+    let service_up = service_running(&crate::paths::AppPaths::state_dir_path());
+    if service_up {
+        post_reset_command(state);
+    } else {
+        drive_reset_worker(state, resume_only);
+    }
+}
+
+fn post_reset_command(state: Rc<AppState>) {
+    // Service-driven interactive reset: the GUI posts a `reset` server
+    // command (same pattern as stop/start) and polls below. The service
+    // runs the single owned worker and withholds admission while pending;
+    // a second request is refused by the operation lock, so re-posting is
+    // always safe. Never drive a parallel worker here.
+    crate::transcribe::invalidate_all_capture();
+    let data_dir = state
+        .db_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    let lock_path = data_dir.join(".reset-operation.lock");
+    // Fail-closed helpers: an unreadable barrier reads as still pending;
+    // an unreadable lock reads as still held (the deadline bounds us).
+    let worker_active = {
+        let lock_path = lock_path.clone();
+        move || {
+            crate::private_fs::try_lock(&lock_path)
+                .map(|_owner| false)
+                .unwrap_or(true)
+        }
+    };
+    let started = std::time::Instant::now();
+    let posted = std::cell::Cell::new(false);
+    let posted_at = std::cell::Cell::new(None::<std::time::Instant>);
+    let latched = std::cell::Cell::new(false);
+    let mut shown_incomplete = false;
+    gtk4::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+        // Post phase: a write-locked database (installer/second process)
+        // refuses the command write; keep busy and retry, never block GTK.
+        if !posted.get() {
+            match state.store.set_server_cmd("reset") {
+                Ok(()) => {
+                    posted.set(true);
+                    posted_at.set(Some(std::time::Instant::now()));
+                }
+                Err(error) if db_write_locked(&error) => {
+                    return gtk4::glib::ControlFlow::Continue;
+                }
+                Err(error) => {
+                    state.reset_busy.set(false);
+                    eprintln!("[reset] command: {error}");
+                    super::app::notify(tr("settings.reset.failed"));
+                    crate::i18n::rebuild_ui();
+                    return gtk4::glib::ControlFlow::Break;
+                }
+            }
+        }
+        // Barrier phase, fail-closed while unreadable.
+        if !state.store.reset_pending().unwrap_or(true) {
+            // Barrier cleared: refresh the GUI from committed state.
+            state.reset_busy.set(false);
+            match state.store.try_load_settings() {
+                Ok(settings) => {
+                    if let Err(error) = state
+                        .store
+                        .adopt_settings_baseline(&settings, state.store.settings_warning())
+                    {
+                        eprintln!("[reset] snapshot: {error}");
+                    }
+                    crate::i18n::set_lang(crate::i18n::UiLang::parse(
+                        &settings.preferences.ui_language,
+                    ));
+                    apply_theme(settings.preferences.theme);
+                    *state.settings.borrow_mut() = settings;
+                }
+                Err(error) => eprintln!("[reset] reload: {error}"),
+            }
+            crate::i18n::rebuild_ui();
+            super::app::notify(tr("feedback.cleared"));
+            return gtk4::glib::ControlFlow::Break;
+        }
+        latched.set(true);
+        // While pending, track the committed state so the page observes
+        // exactly what the worker committed (muted hotkeys/sync, fresh
+        // defaults, incomplete warning) without racing it.
+        match state.store.try_load_settings() {
+            Ok(settings) => {
+                if let Err(error) = state
+                    .store
+                    .adopt_settings_baseline(&settings, state.store.settings_warning())
+                {
+                    eprintln!("[reset] snapshot: {error}");
+                }
+                *state.settings.borrow_mut() = settings;
+                if state.store.settings_warning() == Some("settings.reset.incomplete")
+                    && !shown_incomplete
+                {
+                    shown_incomplete = true;
+                    crate::i18n::rebuild_ui();
+                }
+            }
+            Err(error) => eprintln!("[reset] reload: {error}"),
+        }
+        // Failure is observable, never assumed: pending past the pickup
+        // grace with no worker holding the operation lock means the run
+        // finished without clearing the barrier. The deadline bounds a
+        // missing service the same way (retry stays available).
+        let awaiting = posted_at
+            .get()
+            .is_some_and(|at| at.elapsed() > std::time::Duration::from_secs(5));
+        let expired = started.elapsed() > std::time::Duration::from_secs(120)
+            || (!latched.get() && started.elapsed() > std::time::Duration::from_secs(15));
+        if (awaiting && !worker_active()) || expired {
+            state.reset_busy.set(false);
+            crate::i18n::rebuild_ui();
+            super::app::notify(tr(
+                if state.store.settings_warning() == Some("settings.reset.incomplete") {
+                    "settings.reset.incomplete"
+                } else {
+                    "settings.reset.failed"
+                },
+            ));
+            return gtk4::glib::ControlFlow::Break;
+        }
+        gtk4::glib::ControlFlow::Continue
+    });
+}
+
+fn drive_reset_worker(state: Rc<AppState>, resume_only: bool) {
+    // Sole-worker fallback: only when the service is absent (fresh
+    // heartbeat check in begin_reset). The operation lock serializes
+    // against a service that starts mid-run, so work is never parallel.
+    let job = match crate::reset::start(state.db_path.clone(), resume_only) {
+        Ok(job) => job,
+        Err(error) => {
+            state.reset_busy.set(false);
+            eprintln!("[reset] admission: {error}");
+            super::app::notify(tr("settings.reset.failed"));
+            crate::i18n::rebuild_ui();
+            return;
+        }
+    };
+    gtk4::glib::timeout_add_local(std::time::Duration::from_millis(20), move || {
+        let mut rebuild = false;
+        let mut finished = None;
+        loop {
+            match job.events.try_recv() {
+                Ok(crate::reset::Event::Snapshot(settings, warning)) => {
+                    if let Err(error) = state.store.adopt_settings_baseline(&settings, warning) {
+                        eprintln!("[reset] snapshot: {error}");
+                    }
+                    crate::i18n::set_lang(crate::i18n::UiLang::parse(
+                        &settings.preferences.ui_language,
+                    ));
+                    apply_theme(settings.preferences.theme);
+                    *state.settings.borrow_mut() = *settings;
+                    rebuild = true;
+                }
+                Ok(crate::reset::Event::Finished(result)) => {
+                    finished = Some(result);
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    finished = Some(Err(
+                        "reset worker disconnected; recovery remains available".into()
+                    ));
+                    break;
+                }
+            }
+        }
+        if finished.is_some() {
+            state.reset_busy.set(false);
+            rebuild = true;
+        }
+        if rebuild {
+            crate::i18n::rebuild_ui();
+        }
+        match finished {
+            Some(Ok(())) => {
+                super::app::notify(tr("feedback.cleared"));
+                gtk4::glib::ControlFlow::Break
+            }
+            Some(Err(error)) => {
+                eprintln!("[reset] {error}");
+                super::app::notify(tr(
+                    if state.store.settings_warning() == Some("settings.reset.incomplete") {
+                        "settings.reset.incomplete"
+                    } else {
+                        "settings.reset.failed"
+                    },
+                ));
+                gtk4::glib::ControlFlow::Break
+            }
+            None => gtk4::glib::ControlFlow::Continue,
+        }
+    });
+}
+
 // ---------------------------------------------------------------- page
 
 pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
     let root = GtkBox::new(Orientation::Horizontal, 0);
+    root.set_sensitive(!state.reset_busy.get());
 
     let nav = GtkBox::new(Orientation::Vertical, 4);
     nav.add_css_class("sidebar");
@@ -4745,7 +5485,7 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
         }
     }
 
-    let mut buttons: Vec<(Button, String)> = Vec::new();
+    let mut buttons: Vec<(gtk4::glib::WeakRef<Button>, String)> = Vec::new();
     let mut pending: Vec<(Button, String)> = Vec::new();
     for (id, widget) in sections {
         let scrolled = gtk4::ScrolledWindow::new();
@@ -4764,7 +5504,7 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
         }
         b.set_halign(gtk4::Align::Fill);
         nav.append(&b);
-        buttons.push((b.clone(), id.to_string()));
+        buttons.push((b.downgrade(), id.to_string()));
         pending.push((b, id.to_string()));
     }
 
@@ -4778,6 +5518,9 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
     nav.append(&note);
     let set_active = Rc::new(move |active: &str| {
         for (b, id) in buttons.iter() {
+            let Some(b) = b.upgrade() else {
+                continue;
+            };
             if id == active {
                 b.add_css_class("active");
             } else {
@@ -4793,9 +5536,12 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
         }
     });
     for (b, name) in pending {
-        let stack = stack.clone();
+        let stack = stack.downgrade();
         let set_active = set_active.clone();
         b.connect_clicked(move |_| {
+            let Some(stack) = stack.upgrade() else {
+                return;
+            };
             stack.set_visible_child_name(&name);
             set_active(&name);
         });
@@ -4814,6 +5560,30 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_entry_follows_fresh_service_presence() {
+        let dir = tempfile::tempdir().unwrap();
+        // No heartbeat file: service absent.
+        assert!(!service_running(dir.path()));
+        // Corrupt heartbeat: service absent.
+        std::fs::write(dir.path().join("service.json"), b"not-json").unwrap();
+        assert!(!service_running(dir.path()));
+        // Stale beat: service absent.
+        std::fs::write(dir.path().join("service.json"), br#"{"beat": 1, "pid": 1}"#).unwrap();
+        assert!(!service_running(dir.path()));
+        // Fresh beat: service present.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        std::fs::write(
+            dir.path().join("service.json"),
+            format!(r#"{{"beat": {now}, "pid": 1}}"#),
+        )
+        .unwrap();
+        assert!(service_running(dir.path()));
+    }
 
     #[test]
     fn shortcut_conflicts_use_parsed_keys_instead_of_spelling() {

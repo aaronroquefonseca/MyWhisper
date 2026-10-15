@@ -8,6 +8,7 @@ test|lib|app_dictionary::tests::duplicate_validation_respects_aliases_case_and_t
 test|lib|app_insights::tests::calendar_cells_fit_wide_cards_and_keep_a_readable_minimum|run
 test|lib|app_settings::tests::capture_maps_keys_to_combo_tokens|run
 test|lib|app_settings::tests::provider_urls_require_a_host_and_supported_transport|run
+test|lib|app_settings::tests::reset_entry_follows_fresh_service_presence|run
 test|lib|app_settings::tests::shortcut_conflicts_use_parsed_keys_instead_of_spelling|run
 test|lib|app_sync::tests::manual_addresses_require_a_host_and_nonzero_port|run
 test|lib|app_sync::tests::pairing_requires_a_full_hex_id|run
@@ -84,8 +85,11 @@ test|lib|i18n::tests::english_and_spanish_have_matching_placeholders|run
 test|lib|installed_asset::tests::concurrent_receipt_key_creators_reuse_one_private_authority|run
 test|lib|installed_asset::tests::delete_and_reset_retire_active_verified_content_during_use|run
 test|lib|installed_asset::tests::deletion_during_verification_retires_authority_before_another_chunk|run
+test|lib|installed_asset::tests::explicit_local_trust_preserves_manual_content_and_detects_later_corruption|run
 test|lib|installed_asset::tests::legacy_comparison_preserves_files_and_refuses_changed_or_cancelled_reference|run
+test|lib|installed_asset::tests::local_trust_never_attests_missing_empty_or_non_executable_files|run
 test|lib|installed_asset::tests::promotion_retires_queued_and_active_asset_authority_without_losing_data|run
+test|lib|installed_asset::tests::queued_verification_and_trust_cannot_renew_deleted_or_reset_authority|run
 test|lib|installed_asset::tests::raw_content_requires_exact_sha_and_cold_archive_presence_is_unverified|run
 test|lib|installed_asset::tests::receipt_source_signature_and_local_authority_cannot_be_substituted|run
 test|lib|installed_asset::tests::rejected_staging_preserves_previous_installation_and_removes_temporary_content|run
@@ -93,6 +97,8 @@ test|lib|installed_asset::tests::runtime_executability_and_unsafe_installed_path
 test|lib|installed_asset::tests::verification_cancels_and_installer_authority_cannot_survive_control_replacement|run
 test|lib|installed_asset::tests::verified_archive_detects_same_size_corruption_missing_libraries_and_extra_files|run
 test|lib|installed_asset::tests::zero_byte_required_file_never_promotes|run
+test|lib|maintenance::tests::closing_owner_interrupts_a_long_idle_timer|run
+test|lib|maintenance::tests::idle_worker_expires_existing_data_with_recording_off_and_stops_with_owner|run
 test|lib|media::tests::no_players_is_empty_success|run
 test|lib|mic::format_regressions::callback_queue_never_allocates_blocks_or_redirects_old_slices|run
 test|lib|mic::format_regressions::capture_shutdown_drains_queued_audio_into_its_original_recorder|run
@@ -106,6 +112,9 @@ test|lib|mic::lifecycle_regressions::startup_cancel_joins_reader_and_reaps_owned
 test|lib|mic::lifecycle_regressions::unavailable_real_capture_has_no_simulated_feedback|run
 test|lib|mic::tests::builtin_picker_prefers_onboard|run
 test|lib|mic::tests::mic_gated_on_dictation_active|run
+test|lib|model_load::tests::cancellation_closes_stalled_headers_and_partial_completion_bodies|run
+test|lib|model_load::tests::header_success_cannot_mask_incomplete_or_malformed_completion|run
+test|lib|model_load::tests::load_and_unload_preserve_authentication_and_model_default_contracts|run
 test|lib|net::background_catchup_delay_interrupts_original_owner_before_database_io|run
 test|lib|net::tests::disable_and_reenable_during_handshake_never_exports_the_queued_snapshot|run
 test|lib|net::tests::disabling_sync_interrupts_an_active_stalled_encrypted_export|run
@@ -141,6 +150,7 @@ test|lib|provider_io::tests::stalled_response_body_is_abandoned_on_cancel_within
 test|lib|reset::tests::admission_and_state_notifications_do_not_wait_for_database_or_installer_locks|run
 test|lib|reset::tests::cleanup_failure_reports_committed_settings_and_retry_preserves_new_edits|run
 test|lib|reset::tests::database_replacement_after_commit_denies_old_reset_filesystem_cleanup|run
+test|lib|reset::tests::failed_cleanup_reports_failure_event_and_stays_pending_for_retry|run
 test|lib|reset::tests::intent_revokes_active_capture_and_prevents_installer_promotion_before_commit|run
 test|lib|reset::tests::interactive_reset_runs_one_owned_worker_to_completion|run
 test|lib|reset::tests::interrupted_reset_recovers_each_durable_phase_without_wiping_later_edits|run

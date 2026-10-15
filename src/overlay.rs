@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 /// Recording indicator lifecycle: microphone feedback, transcription,
 /// expanded result, and error feedback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Processing/Error are future states required by the POC spec.
 pub enum OverlayState {
     Hidden,
     Listening,
@@ -127,6 +126,13 @@ struct Inner {
     layer_shell: bool,
 }
 
+impl Drop for Inner {
+    fn drop(&mut self) {
+        self.viz.set_mic_active(false);
+        self.window.destroy();
+    }
+}
+
 /// Handle to the single layer-shell overlay window.
 ///
 /// Cloneable (`Rc`-backed) so both the overlay's own buttons and the
@@ -139,7 +145,11 @@ pub struct VoiceOverlay {
 
 impl VoiceOverlay {
     pub fn new(app: &Application) -> Self {
-        let supported = gtk4_layer_shell::is_supported();
+        // The layer-shell library requires a Wayland display even for its
+        // capability probe. X11 uses the existing undecorated-window fallback.
+        let supported = gtk4::gdk::Display::default()
+            .is_some_and(|display| display.type_().name() == "GdkWaylandDisplay")
+            && gtk4_layer_shell::is_supported();
         eprintln!("[poc] layer-shell supported: {supported}");
 
         let window = Window::new();
@@ -244,19 +254,27 @@ impl VoiceOverlay {
 
         // Same-surface state transitions (no new windows).
         {
-            let o = overlay.clone();
+            let inner = Rc::downgrade(&overlay.inner);
             collapse_btn.connect_clicked(move |_| {
+                let Some(inner) = inner.upgrade() else {
+                    return;
+                };
                 eprintln!("[poc] overlay button event: Collapse clicked");
-                o.hide();
+                VoiceOverlay { inner }.hide();
             });
         }
         {
-            let o = overlay.clone();
+            let inner = Rc::downgrade(&overlay.inner);
             do_btn.connect_clicked(move |button| {
-                match crate::clipboard::copy_text(&o.inner.body.text(), false) {
-                    Ok(()) => button.set_label(crate::i18n::tr("feedback.copied")),
-                    Err(_) => button.set_label(crate::i18n::tr("feedback.copyretry")),
-                }
+                let Some(inner) = inner.upgrade() else {
+                    return;
+                };
+                crate::app::copy_from_button(button, &inner.body.text(), |button, result| {
+                    match result {
+                        Ok(()) => button.set_label(crate::i18n::tr("feedback.copied")),
+                        Err(_) => button.set_label(crate::i18n::tr("feedback.copyretry")),
+                    }
+                });
             });
         }
 
@@ -623,7 +641,9 @@ impl VoiceOverlay {
         self.inner.mirror.store(next.code(), Ordering::SeqCst);
         // Capture follows visibility exactly: open on any shown
         // state, drop on hide. No idle-open mic, ever.
-        self.inner.viz.set_mic_active(next != OverlayState::Hidden);
+        self.inner
+            .viz
+            .set_mic_active(!matches!(next, OverlayState::Hidden | OverlayState::Error));
         // Live words belong to Listening only: release (Processing)
         // and hide retire them with the state.
         if next != OverlayState::Listening {
@@ -653,11 +673,6 @@ impl VoiceOverlay {
                 self.inner
                     .viz
                     .set_spinning(next == OverlayState::Processing);
-                if next == OverlayState::Error {
-                    eprintln!(
-                        "[poc] state {next} has no dedicated UI in POC; showing compact pill"
-                    );
-                }
                 if prev == OverlayState::Assistant {
                     // Animated collapse: swap to the small content FIRST
                     // (bottom-pinned), then shrink the surface. Shrinking

@@ -27,9 +27,12 @@ pub struct AppState {
     /// True when the background service holds the engine lock. The
     /// GUI is always frontend-only; this only drives status display.
     pub service_alive: std::cell::Cell<bool>,
+    pub reset_busy: std::cell::Cell<bool>,
     /// mDNS-discovered LAN peers, refreshed by the browser thread.
     pub discovered:
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, crate::net::Discovered>>>,
+    /// Shared across window/language rebuilds; preview state does not start it.
+    _retention: Option<crate::maintenance::RetentionMaintenance>,
 }
 
 impl AppState {
@@ -44,7 +47,9 @@ impl AppState {
             creds: crate::device::DeviceIdentity::ephemeral().creds(),
             sync_port: std::cell::Cell::new(0),
             service_alive: std::cell::Cell::new(false),
+            reset_busy: std::cell::Cell::new(false),
             discovered: Default::default(),
+            _retention: None,
         })
     }
 
@@ -69,6 +74,17 @@ impl AppState {
         let history = store.load_history(200, false).unwrap_or_default();
         let mut stats = store.usage_stats().unwrap_or_default();
         stats.streak_days = streak(&store.active_days().unwrap_or_default());
+        let retention = if db_path == std::path::Path::new(":memory:") {
+            None
+        } else {
+            match crate::maintenance::RetentionMaintenance::start(db_path.to_path_buf()) {
+                Ok(worker) => Some(worker),
+                Err(error) => {
+                    eprintln!("[app] idle retention could not start: {error}");
+                    None
+                }
+            }
+        };
         Rc::new(Self {
             settings: std::cell::RefCell::new(settings),
             history,
@@ -79,7 +95,9 @@ impl AppState {
             creds,
             sync_port: std::cell::Cell::new(0),
             service_alive: std::cell::Cell::new(false),
+            reset_busy: std::cell::Cell::new(false),
             discovered,
+            _retention: retention,
         })
     }
 }
@@ -335,6 +353,39 @@ pub fn toast(from: &impl IsA<gtk4::Widget>, message: &str) {
     }
 }
 
+/// Clipboard IO stays on its owned worker. Removing a page drops its pending
+/// copy and the weak completion cannot update a later widget/window.
+pub(crate) fn copy_from_button(
+    button: &Button,
+    text: &str,
+    completed: impl Fn(&Button, Result<(), String>) + 'static,
+) {
+    if !button.is_sensitive() {
+        return;
+    }
+    let task = match crate::clipboard::copy_text_async(text, false) {
+        Ok(task) => task,
+        Err(error) => {
+            completed(button, Err(error));
+            return;
+        }
+    };
+    button.set_sensitive(false);
+    let button = button.downgrade();
+    gtk4::glib::timeout_add_local(std::time::Duration::from_millis(20), move || {
+        let Some(button) = button.upgrade().filter(|button| button.root().is_some()) else {
+            return gtk4::glib::ControlFlow::Break;
+        };
+        if let Some(result) = task.poll() {
+            button.set_sensitive(true);
+            completed(&button, result);
+            gtk4::glib::ControlFlow::Break
+        } else {
+            gtk4::glib::ControlFlow::Continue
+        }
+    });
+}
+
 /// Native modal confirmation: Escape and the default response cancel.
 /// A callback runs only for an explicit destructive response.
 pub fn confirm(
@@ -355,6 +406,13 @@ pub fn confirm(
     dialog.set_response_appearance("confirm", libadwaita::ResponseAppearance::Destructive);
     dialog.connect_response(Some("confirm"), move |_, _| on_confirm());
     dialog.present(Some(from));
+}
+
+/// Install once when creating a window, before it receives focus. Dynamic
+/// contents and dismissing dialogs may destroy the previous focus widget
+/// reentrantly; GTK must retain a valid owner through that dispatch.
+pub fn manage_window_focus(window: &impl IsA<gtk4::Window>) {
+    crate::focus::install(window);
 }
 
 pub fn connect_confirmed(
@@ -413,6 +471,7 @@ pub fn build_app_window(
     load_app_css();
 
     let window = libadwaita::ApplicationWindow::new(app);
+    manage_window_focus(&window);
     window.add_css_class("mywhisper-app");
     window.set_title(Some("MyWhisper"));
     window.set_default_size(1120, 760);
@@ -443,6 +502,7 @@ pub fn build_app_window(
 
     let stack = Stack::new();
     stack.set_widget_name("main-pages");
+    stack.set_sensitive(!state.reset_busy.get());
     stack.set_vexpand(true);
     stack.set_hexpand(true);
     stack.add_named(&crate::app_home::page(state), Some("home"));
@@ -517,6 +577,9 @@ pub fn build_app_window(
     feedback.set_child(Some(&layout));
     use libadwaita::prelude::*;
     window.set_content(Some(&feedback));
+    if let Some(warning) = state.store.settings_warning() {
+        feedback.add_toast(libadwaita::Toast::new(tr(warning)));
+    }
 
     // Preserve the current destination and settings section when translating.
     {

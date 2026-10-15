@@ -1598,6 +1598,17 @@ impl Store {
         bump_data_gen();
         Ok(())
     }
+    /// Adopt a worker-loaded snapshot without doing database IO on GTK.
+    pub(crate) fn adopt_settings_baseline(
+        &self,
+        settings: &AppSettings,
+        warning: Option<&'static str>,
+    ) -> rusqlite::Result<()> {
+        *self.settings_baseline.borrow_mut() = Some(Self::settings_value(settings)?);
+        self.settings_warning.set(warning);
+        Ok(())
+    }
+
     /// Delete rows older than `days` (auto-delete transcripts).
     /// Tombstones survive: dropping them would resurrect peers' rows.
     pub fn purge_old_history(&self, days: u32) -> rusqlite::Result<usize> {

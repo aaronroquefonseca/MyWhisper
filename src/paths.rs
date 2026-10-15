@@ -39,6 +39,13 @@ fn base_dir(env_var: &str, fallback: &str) -> PathBuf {
 }
 
 impl AppPaths {
+    /// Resolve the state-dir path WITHOUT creating anything. Latency-
+    /// sensitive GTK handlers (reset entry must answer in milliseconds)
+    /// use this instead of create(), which performs filesystem I/O.
+    pub fn state_dir_path() -> PathBuf {
+        base_dir("XDG_STATE_HOME", ".local/state").join(APP_DIR)
+    }
+
     /// Resolve (and create) the three app directories.
     pub fn create() -> std::io::Result<Self> {
         let paths = Self {

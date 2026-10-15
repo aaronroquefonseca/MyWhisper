@@ -42,6 +42,8 @@ mod database_key;
 
 mod diagnostics;
 
+mod maintenance;
+
 mod reset;
 
 mod sync_jobs;
@@ -56,3 +58,7 @@ mod process_status;
 mod provider_io;
 
 mod provider_contract;
+
+mod focus;
+
+mod model_load;

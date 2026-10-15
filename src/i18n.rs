@@ -271,6 +271,36 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "action.installing" => ("Installing…", "Instalando…"),
         "action.retry" => ("Retry", "Reintentar"),
         "stt.dl.failed" => ("Failed: {err}", "Falló: {err}"),
+        "stt.asset.checking" => (
+            "Checking installed files…",
+            "Comprobando los archivos instalados…",
+        ),
+        "stt.asset.legacy" => (
+            "Existing installation needs integrity verification. Your files are kept.",
+            "La instalación existente requiere verificar su integridad. Se conservan los archivos.",
+        ),
+        "stt.asset.local" => (
+            "Locally trusted files; upstream authenticity has not been verified.",
+            "Archivos locales de confianza; no se ha verificado su autenticidad de origen.",
+        ),
+        "stt.asset.verify" => ("Verify existing files", "Verificar archivos existentes"),
+        "stt.asset.verifyhelp" => (
+            "Download a verified reference and compare it. Your existing model files are preserved.",
+            "Descargar una referencia verificada y compararla. Se conservan los archivos del modelo.",
+        ),
+        "stt.asset.trust" => ("Trust local files…", "Confiar en archivos locales…"),
+        "stt.asset.trusttitle" => (
+            "Trust this local installation?",
+            "¿Confiar en esta instalación local?",
+        ),
+        "stt.asset.trustbody" => (
+            "Use this only for models or runtimes you intentionally installed from a source you trust. MyWhisper will record their current contents and detect later changes. This does not verify upstream authenticity or guarantee that the files work. Executable runtimes can run code as your user. Your files will be kept.",
+            "Usa esta opción solo para modelos o runtimes instalados deliberadamente desde una fuente de confianza. MyWhisper registrará su contenido actual y detectará cambios posteriores. No verifica su autenticidad de origen ni garantiza que funcionen. Los runtimes ejecutables pueden ejecutar código como tu usuario. Se conservarán tus archivos.",
+        ),
+        "stt.asset.invalid" => (
+            "Could not verify installed files: {err}",
+            "No se pudieron verificar los archivos instalados: {err}",
+        ),
         "stt.sherpa.installed" => ("Installed", "Instalado"),
         "stt.gpu.title" => ("Runtimes", "Runtimes"),
         "stt.gpu.sherpa" => (
@@ -290,6 +320,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "stt.models.compatnote" => (
             "Not all models support dictionary hinting and live streaming (lower latency).",
             "No todos los modelos admiten sugerencias del diccionario ni streaming en directo (menor latencia).",
+        ),
+        "stt.models.coherelanguage" => (
+            "Cohere Transcribe requires one of its 14 supported languages. Automatic language detection is unavailable.",
+            "Cohere Transcribe requiere uno de sus 14 idiomas compatibles. La detección automática de idioma no está disponible.",
         ),
         "stt.models.full" => ("Fully supported", "Totalmente compatible"),
         "stt.models.nostream" => ("No live streaming", "Sin streaming en directo"),
@@ -390,6 +424,36 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "row.keepwarm" => ("Keep server ready", "Mantener el servidor preparado"),
         "row.serverstatus" => ("Server status", "Estado del servidor"),
         "server.none" => ("No server running", "Ningún servidor en marcha"),
+        "settings.reset.pending" => ("Resetting…", "Restableciendo…"),
+        "settings.reset.retry" => ("Retry reset cleanup", "Reintentar limpieza"),
+        "settings.reset.retry.body" => (
+            "Finish the interrupted model and audio cleanup. Changes saved after the reset transaction will be preserved.",
+            "Completa la limpieza interrumpida de modelos y audio. Se conservarán los cambios guardados después del restablecimiento.",
+        ),
+        "settings.reset.incomplete" => (
+            "Reset cleanup is incomplete. Recording shortcuts and sync stay disabled. Retry cleanup in Settings → System; changes saved after the reset will be preserved.",
+            "La limpieza del restablecimiento está incompleta. Los atajos de grabación y la sincronización siguen desactivados. Reintenta la limpieza en Ajustes → Sistema; se conservarán los cambios guardados después del restablecimiento.",
+        ),
+        "settings.reset.failed" => (
+            "Reset could not finish. Existing data and the recovery record are preserved; retry in Settings → System.",
+            "No se pudo completar el restablecimiento. Se conservan los datos existentes y el registro de recuperación; reintenta en Ajustes → Sistema.",
+        ),
+        "settings.recovery.incomplete" => (
+            "Stored settings are incomplete. Missing privacy and sync permissions are disabled. Review Settings before saving; the original configuration is preserved.",
+            "La configuración guardada está incompleta. Los permisos de privacidad y sincronización que faltan están desactivados. Revisa Ajustes antes de guardar; la configuración original se conserva.",
+        ),
+        "settings.recovery.unreadable" => (
+            "Settings could not be read. Recording shortcuts, history and sync are disabled. Restore the preserved configuration before saving.",
+            "No se pudo leer la configuración. Los atajos de grabación, el historial y la sincronización están desactivados. Restaura la configuración conservada antes de guardar.",
+        ),
+        "server.checking" => (
+            "Checking server status…",
+            "Comprobando el estado del servidor…",
+        ),
+        "server.unavailable" => (
+            "Server status unavailable; retrying",
+            "Estado del servidor no disponible; reintentando",
+        ),
         "server.running" => ("Running", "En marcha"),
         "server.external" => ("external, not managed", "externo, no gestionado"),
         "servers.note" => (
@@ -522,6 +586,7 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "opt.older30" => ("Older than 30 days", "Anteriores a 30 días"),
         "opt.older60" => ("Older than 60 days", "Anteriores a 60 días"),
         "opt.older90" => ("Older than 90 days", "Anteriores a 90 días"),
+        "opt.oldercustom" => ("Older than {n} days", "Anteriores a {n} días"),
         "opt.day7" => ("7 days", "7 días"),
         "opt.day14" => ("14 days", "14 días"),
         "opt.day30" => ("30 days", "30 días"),
@@ -540,6 +605,14 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "opt.silhouette" => ("Silhouette", "Silueta"),
         "opt.calm" => ("Calm", "Calma"),
         // Hotkeys capture UI
+        "hotkeys.suspending" => (
+            "Waiting for dictation to stop…",
+            "Esperando a que se detenga el dictado…",
+        ),
+        "hotkeys.suspendfailed" => (
+            "Could not pause the dictation service. Retry capture when the service responds.",
+            "No se pudo pausar el servicio de dictado. Vuelve a intentarlo cuando responda.",
+        ),
         "hotkeys.record" => ("Capture keys", "Capturar teclas"),
         "hotkeys.recording" => ("Press keys… (Esc cancels)", "Pulsa teclas… (Esc cancela)"),
         "hotkeys.presskeys" => ("Press keys", "Pulsa teclas"),
@@ -556,6 +629,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "hotkeys.recordhint" => (
             "Click, then press the key combo",
             "Clic y pulsa la combinación",
+        ),
+        "hotkeys.physical" => (
+            "Shortcuts keep the same key positions when the keyboard layout changes. Punctuation names include Semicolon, Slash and Equal; use Shift+Equal for the US + position.",
+            "Los atajos mantienen la posición de las teclas al cambiar la distribución. Los nombres de signos incluyen Semicolon, Slash y Equal; usa Shift+Equal para la posición estadounidense de +.",
         ),
         "hotkeys.behavior" => (
             "Behavior for the new binding",
@@ -644,6 +721,14 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "sync.ago.d" => ("{n} d ago", "hace {n} d"),
         "sync.noaddr" => ("no address", "sin dirección"),
         "sync.lastsync" => ("last sync {ago}", "última sincronización {ago}"),
+        "sync.introducer" => (
+            "Allow this device to introduce trusted devices",
+            "Permitir que este dispositivo presente dispositivos de confianza",
+        ),
+        "sync.introducer.tip" => (
+            "Off by default. Granting this permission can automatically trust devices vouched for by this peer. Revoked devices remain blocked.",
+            "Desactivado por defecto. Este permiso permite confiar automáticamente en los dispositivos presentados por este equipo. Los dispositivos revocados siguen bloqueados.",
+        ),
         "sync.trusted" => ("Trusted device", "Dispositivo de confianza"),
         "sync.syncing" => ("Syncing with {id}…", "Sincronizando con {id}…"),
         "sync.synced" => (
