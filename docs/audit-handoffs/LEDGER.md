@@ -221,6 +221,15 @@ host RAM 26/31G used — 4G/2-core guest runs when calm. #21 to add test-only gu
 
 #22 live-STT reconciliation verifying/restoring (startup-only warming is not live auto-start/Stop); final acceptance stays source-specific after that correction.
 
+## Executed live legs (final source; route owned by #15)
+
+- e39c62e EOF fix: NEGATIVE already evidenced (/tmp/final-ui-smoke.log on 6d6da5e3: fixture 500ms read timed out, closed=false). POSITIVE reproduced locally on e39c62e tree (lib/bin identical to final): ollama-load-smoke exit 0 both themes. Outer 5s bound + 500ms per-read preserved. Awaiting hosted run of e39c62e; item stays open until then.
+- Sync G0 selftest (sync-2guest-gate.py 33b6c29, local backend, final-identical binary): exit 0 (boot/listener/mDNS/kill-restart). G1/G2-with-fixture and ssh legs need guests (below).
+- Clipboard guest (clipboard-guest.nix 1bacd60 wired to final package, owned-store route): VM booted, Sway up, app service active with clean journal (all P0/app asserts passed). P1 text round-trip FAILED: 20-byte prime pasted back longer (cmp EOF after byte 20 — trailing byte(s) from wl-copy/paste 2.3.0 chain or seat handling). PNG/empty/uinput/ydotool/manager/isolation legs unreached. Tool-leg semantics owed to #21; exact evidence posted there. No app-writer claim made.
+- Route defect fixed: shared nix runner bound /dev/kvm only when an attribute ended in `.desktop`, so every other VM check failed with missing kvm features. Fixed copy committed as scripts/nix-audit-run.py (bind whenever accessible; KVM-less hosts still build non-VM derivations); shared copy left pristine pending supervisor promotion decision.
+- Two-guest ssh legs BLOCKED with precise prerequisite: no provisioned NixOS guests exist; needs two guests on an isolated multicast-capable switch (libvirt isolated net, static DHCP, bridge multicast for 224.0.0.251:5353) with sqlcipher/openssh/packaged app, or equivalently a 2-node runNixOSTest translation of GUEST_SPEC. #18 owns gate logic; route provisioning translation is the follow-up.
+- Resources: /home 100% (5.0G free, siblings hold tens of GB in target dirs — untouched); /tmp tmpfs 8.7G free; RAM fluctuates 4–9G avail (VM runs serialized, swap-backed). My own 5.6G target cache freed for execution and scratch removed after. PR11 2.8G /tmp cache untouched (move-to-disk only on reviewer coordination, not needed yet).
+
 ## Publication hold
 
 Held. No merge, tag, release or deploy from this branch.
