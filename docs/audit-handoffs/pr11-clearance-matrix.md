@@ -1,84 +1,135 @@
 # PR11 clearance mapping → #22 session/server source
 
-Reviewed: PR11 `c4c64c5940e845e039ee9c2b24417a8fbfe3ec5a` (v15 cleared) against #22
-head `2388c80`. Method: no blind cherry-pick (different base); per-probe
-equivalence analysis against actual #22 mutation admissions. Verdict: the
-portable core (generation+intent validation at every admission,
-instance-scoped settlement/cleanup, live-socket evidence, accepted-plan
-domain separation) is already present with adapted regressions. The
-Stop/suppression/expiry/reconcile machinery is absent by accepted design
-(zero `STOPPED_FP`/`LAST_STOP_GEN`/`reconcile_servers`/`ReconcileAuthority`
-symbols in `src/`); those probes are N/A with evidence, not silently
-omitted. No production change resulted; no GUI contract change; #23
-untouched.
+Reviewed: PR11 `c4c64c5940e845e039ee9c2b24417a8fbfe3ec5a` (v15 cleared) and
+the integration probe map against #22 head (this branch). Method: bind
+each probe to equivalent USER-VISIBLE behavior in this architecture —
+engine Stop/autostart/lazy/keep-warm as the GUI advertises them — with
+actual public APIs, never bare symbols. Implementation removal is
+distinguished from preserved behavior throughout. No blind cherry-pick
+(different base); no GUI change; #23 untouched.
 
-## Applicable probes — covered with adapted regressions
+## Owned live behavior (what the user sees)
 
-- P3 torn settings/generation snapshot discarded. #22 admits ONE bundle:
-  press builds `sess.{plan,backend,sherpa_backend,net}` together and
-  `ensure_owned` consumes exactly that bundle (`transcribe.rs:3911`;
-  warm path carries `EngineConfig{plan,backend,sherpa_backend,net}` +
-  gated operation, `:4430`). Nothing re-reads settings mid-admission.
-  Regression: `delayed_release_cannot_detach_or_capture_samples_for_the_next_recording`
-  (admitted session coherence across release).
-- P5/P10 superseded lazy/save-only restore retains original server. #22
-  model REPLACES on key change by accepted design (single-server rule):
-  `ensure_server` key+port+assets compare under `SERVER_START_LOCK`
-  (`:736-751`), explicit "key changed; replacing" path. Regressions:
-  `foreign_server_markers_and_stale_pid_metadata_never_grant_ownership`,
-  `local_readiness_probe_cancel_reset_and_stop_reap_owned_servers`.
-- P8 superseded ensure admission retains ORIGINAL PID/socket/map.
-  Same accepted-model note as P5/P10: replacement (never adoption of
-  foreign state) + foreign-port refusal `:752-756`. Same regressions.
-- P4/P9 validated observation vs restored config. Live-socket evidence
-  only: `server_status_while` requires recorded start time AND socket
-  ownership (`:543-562`); local map authoritative when present; PID
-  metadata never signals (`reap_stale_servers` discards metadata,
-  `:508`). Regressions: `process_status` suite + readiness tests.
-- P6/P13 Stop-wins / no resurrection / coherent settlement. #22 Stop
-  equivalent is `drop_servers`: generation bump FIRST (`:568`), then
-  queue/map/pidfile mutation. Every ensure-bound operation carries a
-  `server_generation() == sampled` gate (press `:4280`, warm `:4415`,
-  `ensure_for_plan_at_generation` `:4101`, tests `:6914`), revalidated
-  by `reset_check` (= `operation.check`) at admission entry, pre/post
-  spawn, every wait iteration, post probe (`:720,757,759,783,807`).
-  Abort paths remove+kill only their own instance (`StartupGuard::drop`
-  `:832`, `EngineUse::drop` `:4147`, readiness-owner checks `:789,808`).
-  Regression: `local_readiness_probe_cancel_reset_and_stop_reap_owned_servers`
+- Engine Stop (GUI Stop button, service `stop` command, reset, provider
+  switch away): supervised servers die immediately
+  (`transcribe::drop_servers`: generation bump first, then warm-queue,
+  map and pidfile mutation). No resurrection: every ensure-bound
+  operation carries a `server_generation() == sampled` gate
+  (press `transcribe.rs:ensure_owned`, warm `warm_plan`,
+  `ensure_for_plan_at_generation`, tests), revalidated by
+  `reset_check` at admission entry, pre/post spawn, every wait
+  iteration and post probe (`ensure_server`). Aborts remove and reap
+  only their own instance (`StartupGuard::drop`, `EngineUse::drop`,
+  readiness-owner checks).
+- Autostart toggle: service-loop STT reconcile (`service.rs:
+  stt_reconcile_tick`, every 2 s poll) compares stored
+  `(primary, autostart)` against last applied. Toggle ON warms the
+  current configuration now (reuse when current); toggle OFF keeps the
+  running server with no bounce. Failures retry without advancing.
+- Primary (configuration) change: stale supervised servers must not
+  serve — retired first, then warmed when autostart is on (lazy state
+  recorded when off). Active inference/capture defers any transition;
+  reset pending never reaches reconciliation (service barrier).
+- Keep-warm: background reaper (`spawn_server_reaper`) re-reads the
+  setting live every 30 s; idle-past-timeout servers stop; active
+  sessions/finalizations and held engine leases are never reaped.
+- Lazy start: first press ensures its admitted plan (no server needed
+  beforehand); autostart off never blocks it.
+- Status: live listening sockets + recorded start times only
+  (`server_status_while`); PID files are metadata, never authority.
+- Accepted plans (capture sessions, releases, fallbacks) carry their
+  own admitted bundle (plan+backends+net) and operation chain;
+  no current-settings restriction applies to them.
+
+## Thirteen probes bound
+
+- P01 old update cannot borrow newer Stop; polls stay cold. Bound to
+  generation-gated admission + drop-wins: a stale gated operation
+  aborts, nothing starts, status stays cold. Regression:
+  `local_readiness_probe_cancel_reset_and_stop_reap_owned_servers`
   (cancel/reset/`drop_servers` mid-stalled-readiness → error <500 ms,
   map empty, child reaped, lease released).
-- P11/P12 revoked intent defers; fresh polls start clean. Engine-lease
-  + generation gates: stale warm/press aborts, fresh admission proceeds
-  (`ensure_for_plan_at_generation`, `WARM_QUEUE` coalescing without
-  mid-inference replacement `:4366`). Regressions:
-  `engine_ownership_wait_and_startup_cancel_without_affecting_another_owner`,
-  `configuration_warmup_cannot_replace_active_inference`,
-  R08 300-cycle stale-session suite.
-- Accepted-session/plan distinct domain (review §59). #22 has no
-  watcher/settings-identity to follow: `ensure_for_plan` takes an
-  explicit caller plan (accepted sessions pass their own), warmups are
-  owner/generation-bound, no blanket restriction exists. Correct by
-  construction; regressions: press/deliver suites.
+- P02/P06 old enable/expiry cannot clear newer Stop; suppression
+  preserved, polls cold. No expiry/suppression state exists in this
+  architecture (stopped = gone from the map + killed; there is no
+  suppressed-but-present state to resurrect). Replacement coverage:
+  drop-wins + reset barriers + `WARM_QUEUE` cleared on every Stop
+  (`drop_servers`), pinned by the readiness test above and
+  `second_startup_never_clears_barrier_of_active_reset_worker`.
+- P03 torn settings/generation snapshot discarded. Control snapshot
+  (generation witness before settings read, recheck after) discards
+  torn observations with retry-next-poll in `stt_reconcile_tick`;
+  admission bundles (plan+backends+net) travel immutably from one
+  settings load (`ensure_owned` call sites; `EngineConfig`).
+  Regressions: `stt_tick_torn_snapshot_defers_without_advancing`
+  (rendezvous-parked transition defers, baseline unadvanced) +
+  `delayed_release…` (admitted-session coherence).
+- P04 same old authority rejected; nothing resurrects; later change
+  possible. Stale gated admission errors with map empty; fresh
+  generation admission starts normally. Regressions: readiness test
+  above + `fresh_admission_reuses_current_and_restarts_after_stop_
+  with_cold_polls` (fresh start, new PID, live polls).
+- P05 superseded lazy preserves running server. Toggle-OFF (same
+  primary) performs no mutation by construction; stale warmups die on
+  their generation gates. Regressions:
+  `stt_tick_disable_keeps_running_server_without_bounce` (PID +
+  listener identical across disable) + `configuration_warmup_cannot_
+  replace_active_inference`.
+- P07 deferral marks nothing applied. No applied-state bookkeeping
+  exists (deferral = error + unchanged pair + unchanged map); valid
+  suppressed settling has no counterpart because stopping is
+  terminal. Replacement coverage: `stt_tick_unresolvable_plan_retries`
+  (failure advances nothing) + deferred-warmup retirement test.
+- P08 superseded autostart rejected at admission; original survives;
+  no temp listener. Entry, generation (via operation check), port and
+  post-spawn checks gate every admission; stale entry-check failures
+  abort pre-mutation, and foreign ports are refused, never adopted
+  (`ensure_server`). A same-port replacement removes the stale entry
+  before the port check precisely so the freed socket (not a foreign
+  listener) is observed — verified by the replacement suites, which
+  fail deterministically if this order is disturbed. Regressions:
+  fresh test (pre-cancelled attempt leaves PID, listener, singleton
+  map untouched) + foreign-marker tests.
+- P09 latest authority + live intent before suppression mutation.
+  No suppression to mutate; the analog is the dual-authority delivery
+  guard (`Operation::guard` AND `DeliveryAuth::permitted`, rechecked
+  per use + post-hoc outcome mapping). Regressions: async/sync leg
+  mapping tests + DeliveryAuth contract tests.
+- P10 leaving-local preserves original. No leave-local/foreign-apply
+  path exists: nonlocal observations are refused (`SelfHostedWs`
+  never spawned; foreign ports error), never applied. Compatibility
+  decision: refusal replaces leave-local destruction. Regressions:
+  foreign-port/listener tests + `retire_invalid_assets` suite.
+- P11/P12 revoked intent defers; fresh restore starts normally; Stop
+  retained; no false application. Stale warm/press aborts via
+  generation gates; explicit `reset` command + drop paths stay
+  immediate; fresh generation admission starts (asserted new PID).
+  Regressions: fresh test + `engine_ownership_wait_and_startup_cancel_
+  without_affecting_another_owner` + 300-cycle stale-session suite.
+- P13 one coherent control/target/live-settings snapshot; fresh B
+  starts, C stays cold. Single-server invariant + key replacement make
+  multi-target settlement unrepresentable: at most one supervised
+  server exists; Stop clears it; fresh polls start exactly the current
+  primary. Compatibility decision: target-scoping via replacement,
+  not suppression bookkeeping. Regressions: fresh test (5 status
+  polls across cold/live/drop/fresh/cold + quiescence) +
+  `stt_tick_primary_change_lazy_stops_when_auto_off`.
 
-## N/A with evidence (feature absent, not omitted)
+## Contrasting positives retained
 
-- P1/P2 Stop/expiry orderings, P6-suppression, P7 bookkeeping, P9-outer
-  fingerprint, P11/P12/P13 suppression/expiry/settlement specifics:
-  no Stop/suppression/expiry/reconcile/settlement machinery exists in
-  this tree (symbol absence verified). The control intents they govern
-  (GUI stop, reset, provider switch) are covered above through
-  generation gates + instance scoping + the readiness test.
-- Settings-only saves under admission: no background settings applier
-  exists (no watcher/reconcile thread); settings apply on next
-  admission read. Service `stop`/`start` commands are destructive by
-  design (immediate, like cleared explicit Stop) and serialize through
-  the service loop.
+Newer-Stop-wins, coherent-restore, fresh-start-without-extra-action,
+same/cross-engine replacement baselines, first-cold-start ownership,
+press-warmup usefulness, accepted-plan authority, active-use
+protection with immediate Stop, cancel/release/takeover/teardown
+accounting, empty-Stop, reaper stability, foreign/PID safety,
+deduplicated status, identity fields, snippet protection — covered by
+the suites named above plus the unchanged 335-test inventory (330
+run / 5 ignored), strict clippy zero, hosted CI green.
 
-## Preserved invariants (unchanged by this analysis)
+## Preserved invariants
 
 Input-edge ownership, bounded admission, cancellable IO, leased
 engines/assets, ordered finalization with handle joins, token-correct
 snippets, completed-answer contracts, honest reset worker + barriers,
 service-driven interactive reset, async copy leg, provider rendezvous
-fixtures. Strict clippy zero, 335-test inventory green (330 run /
-5 ignored), hosted CI green on this head.
+fixtures, single-server replacement (never adoption).

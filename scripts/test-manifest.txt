@@ -276,6 +276,7 @@ test|lib|transcribe::tests::empty_transducer_files_are_not_an_installed_or_resol
 test|lib|transcribe::tests::engine_ownership_wait_and_startup_cancel_without_affecting_another_owner|run
 test|lib|transcribe::tests::finalization_and_completion_panics_release_ownership_once|run
 test|lib|transcribe::tests::foreign_server_markers_and_stale_pid_metadata_never_grant_ownership|run
+test|lib|transcribe::tests::fresh_admission_reuses_current_and_restarts_after_stop_with_cold_polls|run
 test|lib|transcribe::tests::incompatible_local_language_is_rejected_without_changing_remote_fallback|run
 test|lib|transcribe::tests::lang_param_auto_omits|run
 test|lib|transcribe::tests::live_oruk_offline_roundtrip|ignored
@@ -323,6 +324,12 @@ test|lib|transcribe::tests::server_net_defaults_and_overrides|run
 test|lib|transcribe::tests::sherpa_text_field|run
 test|lib|transcribe::tests::short_worker_pressure_preserves_capture_and_completion|run
 test|lib|transcribe::tests::spec_thread_roundtrip|ignored
+test|lib|transcribe::tests::stt_tick_defers_during_active_inference|run
+test|lib|transcribe::tests::stt_tick_disable_keeps_running_server_without_bounce|run
+test|lib|transcribe::tests::stt_tick_ignores_unchanged_settings|run
+test|lib|transcribe::tests::stt_tick_primary_change_lazy_stops_when_auto_off|run
+test|lib|transcribe::tests::stt_tick_toggle_on_warms_current_and_unresolvable_retries|run
+test|lib|transcribe::tests::stt_tick_torn_snapshot_defers_without_advancing|run
 test|lib|transcribe::tests::task_completion_waits_for_earlier_work_and_capture_destruction|run
 test|lib|transcribe::tests::truncated_managed_whisper_is_rejected_before_provider_or_subprocess_use|run
 test|lib|transcribe::tests::websocket_cancellation_interrupts_setup_write_and_completion|run

@@ -824,6 +824,64 @@ static SERVER_GENERATION: AtomicU64 = AtomicU64::new(0);
 pub fn server_generation() -> u64 {
     SERVER_GENERATION.load(Ordering::Acquire)
 }
+
+/// Local capture/finalization in flight. The service defers server
+/// control transitions (never destruction of active use) while set.
+pub(crate) fn inference_active() -> bool {
+    ACTIVE_SESSIONS.load(Ordering::Acquire) > 0 || FINAL_COUNT.load(Ordering::Acquire) > 0
+}
+
+/// Primary engine identity for live reconciliation: everything that
+/// selects or addresses the supervised server. Secrets never included.
+/// `"none"` when no plan resolves. Compared as an opaque token; only
+/// inequality (with autostart) drives control transitions.
+pub(crate) fn stt_primary_id(stt: &crate::settings::SttSettings, data_dir: &Path) -> String {
+    let backend = format!("{:?}/{:?}", stt.gpu_backend, stt.sherpa_backend);
+    let net = server_net(stt);
+    let host = format!(
+        "{}|{}",
+        net.host,
+        net.port_override.map(|p| p.to_string()).unwrap_or_default()
+    );
+    match plan_for(stt, data_dir) {
+        Ok(Plan::WhisperHttp { model_bin, lang }) => {
+            format!("whisper|{}|{lang}|{backend}|{host}", model_bin.display())
+        }
+        Ok(Plan::SherpaOnline { model_dir }) => {
+            format!("sherpa-online|{}|{backend}|{host}", model_dir.display())
+        }
+        Ok(Plan::SherpaOffline { model_dir, lang }) => {
+            format!(
+                "sherpa-offline|{}|{lang}|{backend}|{host}",
+                model_dir.display()
+            )
+        }
+        Ok(Plan::WhistleCli {
+            engine,
+            model,
+            lang,
+        }) => format!(
+            "whistle|{}|{}|{lang}|{host}",
+            engine.display(),
+            model.display()
+        ),
+        Ok(Plan::SelfHostedWs { url, .. }) => format!("self-hosted|{url}"),
+        Ok(Plan::CloudOpenAiCompat {
+            base, model, lang, ..
+        }) => {
+            format!("openai-compat|{base}|{model}|{lang}")
+        }
+        Ok(Plan::CloudDeepgram {
+            base, model, lang, ..
+        }) => {
+            format!("deepgram|{base}|{model}|{lang}")
+        }
+        Ok(Plan::CloudGemini { model, lang, .. }) => {
+            format!("gemini|{model}|{lang}")
+        }
+        Err(_) => "none".to_string(),
+    }
+}
 struct StartupGuard {
     name: String,
     instance: u64,
@@ -7237,6 +7295,393 @@ while True:
         assert!(crate::runtime::drain(Duration::from_millis(20)).is_err());
         release_drop.send(()).unwrap();
         crate::runtime::drain(Duration::from_secs(2)).unwrap();
+    }
+
+    #[test]
+    fn fresh_admission_reuses_current_and_restarts_after_stop_with_cold_polls() {
+        let Some(_shutdown) = isolated_capture_probe(
+            "fresh_admission_reuses_current_and_restarts_after_stop_with_cold_polls",
+        ) else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        // P05/P08/P11-P13 adapted to the single-server model: the original
+        // server identity survives attempts and reuse; Stop wins with no
+        // resurrection; fresh admission starts normally; status polls track
+        // every phase (cold → live → live → cold → live → cold).
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().to_owned();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let net = ServerNet {
+            host: "127.0.0.1",
+            port_override: Some(port),
+        };
+        let key = "synthetic-fresh".to_string();
+        fn spawn_fake(port: u16) -> Result<crate::child::OwnedChild, String> {
+            use std::process::{Command, Stdio};
+            let mut command = Command::new("python3");
+            command
+                .args([
+                    "-m",
+                    "http.server",
+                    &port.to_string(),
+                    "--bind",
+                    "127.0.0.1",
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            crate::child::OwnedChild::spawn(&mut command).map_err(|e| e.to_string())
+        }
+        let whisper_live = || {
+            server_status(&data, &net)
+                .into_iter()
+                .find(|(name, _)| name == "whisper")
+                .map(|(_, live)| live)
+                .unwrap_or(false)
+        };
+        let gated = || {
+            let generation = server_generation();
+            Operation::unrestricted().with_permission(move || server_generation() == generation)
+        };
+        assert!(!whisper_live());
+        ensure_server(
+            &data,
+            "whisper",
+            key.clone(),
+            port,
+            move || spawn_fake(port),
+            || Ok(()),
+            &gated(),
+        )
+        .unwrap();
+        let pid1 = servers().lock().unwrap()["whisper"].child.0.id();
+        assert!(port_open(port));
+        assert!(whisper_live());
+        // Re-admission reuses the current server: no duplicate, same PID.
+        ensure_server(
+            &data,
+            "whisper",
+            key.clone(),
+            port,
+            move || spawn_fake(port),
+            || Ok(()),
+            &gated(),
+        )
+        .unwrap();
+        assert_eq!(servers().lock().unwrap()["whisper"].child.0.id(), pid1);
+        assert!(whisper_live());
+        // A stale admission is rejected before any mutation: original PID,
+        // listener and map entry survive, and no second listener appears.
+        let dead = Arc::new(AtomicBool::new(false));
+        dead.store(true, Ordering::Release);
+        let stale = Operation::cancellable(dead);
+        assert!(
+            ensure_server(
+                &data,
+                "whisper",
+                "synthetic-stale".into(),
+                port,
+                move || spawn_fake(port),
+                || Ok(()),
+                &stale
+            )
+            .is_err()
+        );
+        assert_eq!(servers().lock().unwrap()["whisper"].child.0.id(), pid1);
+        assert_eq!(servers().lock().unwrap().len(), 1);
+        assert!(port_open(port));
+        assert!(whisper_live());
+        // Stop wins: entry gone, child reaped, socket closed, polls cold.
+        drop_servers(root.path());
+        assert!(servers().lock().unwrap().is_empty());
+        assert!(!std::path::Path::new(&format!("/proc/{pid1}")).exists());
+        assert!(!port_open(port));
+        assert!(!whisper_live());
+        // Fresh admission after Stop starts normally with a new identity.
+        ensure_server(
+            &data,
+            "whisper",
+            key.clone(),
+            port,
+            move || spawn_fake(port),
+            || Ok(()),
+            &gated(),
+        )
+        .unwrap();
+        let pid2 = servers().lock().unwrap()["whisper"].child.0.id();
+        assert_ne!(pid1, pid2);
+        assert!(port_open(port));
+        assert!(whisper_live());
+        drop_servers(root.path());
+        assert!(!whisper_live());
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(servers().lock().unwrap().is_empty());
+    }
+
+    fn selfhosted_settings(url: String, auto: bool) -> crate::settings::SttSettings {
+        let mut settings = crate::settings::SttSettings::default();
+        settings.entries.truncate(1);
+        settings.entries[0].kind = crate::settings::SttEntryKind::SelfHosted;
+        settings.entries[0].url = url;
+        settings.entries[0].streaming = false;
+        settings.auto_start_server = auto;
+        settings
+    }
+
+    #[test]
+    fn stt_tick_ignores_unchanged_settings() {
+        let Some(_shutdown) = isolated_capture_probe("stt_tick_ignores_unchanged_settings") else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("state.db");
+        let writer = crate::store::Store::open(&db).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = selfhosted_settings("http://127.0.0.1:9".into(), true);
+        writer.save_settings(&settings).unwrap();
+        let mut last = None;
+        crate::service::stt_reconcile_tick(&db, &mut last);
+        let baseline = last.clone();
+        assert!(baseline.is_some());
+        crate::service::stt_reconcile_tick(&db, &mut last);
+        assert_eq!(last, baseline);
+        assert!(servers().lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn stt_tick_disable_keeps_running_server_without_bounce() {
+        let Some(_shutdown) =
+            isolated_capture_probe("stt_tick_disable_keeps_running_server_without_bounce")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        // P05 adapted: disabling autostart preserves the running server.
+        use std::process::{Command, Stdio};
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().to_owned();
+        let db = root.path().join("state.db");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let operation = Operation::unrestricted();
+        ensure_server(
+            &data,
+            "synthetic-keep",
+            "synthetic-keep".into(),
+            port,
+            || {
+                let mut command = Command::new("python3");
+                command
+                    .args([
+                        "-m",
+                        "http.server",
+                        &port.to_string(),
+                        "--bind",
+                        "127.0.0.1",
+                    ])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                crate::child::OwnedChild::spawn(&mut command).map_err(|e| e.to_string())
+            },
+            || Ok(()),
+            &operation,
+        )
+        .unwrap();
+        let pid = servers().lock().unwrap()["synthetic-keep"].child.0.id();
+        let writer = crate::store::Store::open(&db).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = selfhosted_settings("http://127.0.0.1:9".into(), true);
+        writer.save_settings(&settings).unwrap();
+        let mut last = None;
+        crate::service::stt_reconcile_tick(&db, &mut last);
+        assert!(last.is_some());
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = false;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_reconcile_tick(&db, &mut last);
+        assert_eq!(last.as_ref().map(|pair| pair.1), Some(false));
+        assert_eq!(
+            servers().lock().unwrap()["synthetic-keep"].child.0.id(),
+            pid
+        );
+        assert!(port_open(port));
+        drop_servers(root.path());
+    }
+
+    #[test]
+    fn stt_tick_toggle_on_warms_current_and_unresolvable_retries() {
+        let Some(_shutdown) =
+            isolated_capture_probe("stt_tick_toggle_on_warms_current_and_unresolvable_retries")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("state.db");
+        let writer = crate::store::Store::open(&db).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = selfhosted_settings("http://127.0.0.1:9".into(), false);
+        writer.save_settings(&settings).unwrap();
+        let mut last = None;
+        crate::service::stt_reconcile_tick(&db, &mut last);
+        let baseline = last.clone();
+        // Toggle on: foreign plan warms trivially (no spawn) and advances.
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_reconcile_tick(&db, &mut last);
+        assert_ne!(last, baseline);
+        assert_eq!(last.as_ref().map(|pair| pair.1), Some(true));
+        // Unresolvable primary: failure retries without advancing.
+        let mut settings = writer.load_settings();
+        settings.stt.entries.clear();
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_reconcile_tick(&db, &mut last);
+        assert_eq!(last.as_ref().map(|pair| pair.1), Some(true));
+        let primary = stt_primary_id(&writer.load_settings().stt, root.path());
+        assert_eq!(primary, "none");
+    }
+
+    #[test]
+    fn stt_tick_primary_change_lazy_stops_when_auto_off() {
+        let Some(_shutdown) =
+            isolated_capture_probe("stt_tick_primary_change_lazy_stops_when_auto_off")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        // Primary moved while autostart is off: stale supervised servers
+        // must not serve; last advances to the lazy state.
+        use std::process::{Command, Stdio};
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().to_owned();
+        let db = root.path().join("state.db");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let operation = Operation::unrestricted();
+        ensure_server(
+            &data,
+            "synthetic-old",
+            "synthetic-old".into(),
+            port,
+            || {
+                let mut command = Command::new("python3");
+                command
+                    .args([
+                        "-m",
+                        "http.server",
+                        &port.to_string(),
+                        "--bind",
+                        "127.0.0.1",
+                    ])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                crate::child::OwnedChild::spawn(&mut command).map_err(|e| e.to_string())
+            },
+            || Ok(()),
+            &operation,
+        )
+        .unwrap();
+        let pid = servers().lock().unwrap()["synthetic-old"].child.0.id();
+        let writer = crate::store::Store::open(&db).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = selfhosted_settings("http://127.0.0.1:9".into(), false);
+        writer.save_settings(&settings).unwrap();
+        let mut last = None;
+        crate::service::stt_reconcile_tick(&db, &mut last);
+        let mut settings = writer.load_settings();
+        settings.stt.entries[0].url = "http://127.0.0.1:10".into();
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_reconcile_tick(&db, &mut last);
+        assert!(servers().lock().unwrap().is_empty());
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        assert!(!port_open(port));
+    }
+
+    #[test]
+    fn stt_tick_torn_snapshot_defers_without_advancing() {
+        let Some(_shutdown) =
+            isolated_capture_probe("stt_tick_torn_snapshot_defers_without_advancing")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        // A control transition landing inside the settings snapshot window
+        // defers the tick: no application, no baseline advance.
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("state.db");
+        let writer = crate::store::Store::open(&db).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = selfhosted_settings("http://127.0.0.1:9".into(), false);
+        writer.save_settings(&settings).unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (proceed_tx, proceed_rx) = mpsc::channel();
+        *crate::service::RECONCILE_TICK_PAUSE.lock().unwrap() = Some((entered_tx, proceed_rx));
+        let tick_db = db.clone();
+        let worker = std::thread::spawn(move || {
+            let mut last = None;
+            crate::service::stt_reconcile_tick(&tick_db, &mut last);
+            last
+        });
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        drop_servers(root.path());
+        proceed_tx.send(()).unwrap();
+        assert!(worker.join().unwrap().is_none());
+        assert!(
+            crate::service::RECONCILE_TICK_PAUSE
+                .lock()
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    struct ActiveHold {
+        previous: usize,
+    }
+    impl ActiveHold {
+        fn new() -> Self {
+            let previous = ACTIVE_SESSIONS.swap(1, Ordering::AcqRel);
+            Self { previous }
+        }
+    }
+    impl Drop for ActiveHold {
+        fn drop(&mut self) {
+            ACTIVE_SESSIONS.store(self.previous, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn stt_tick_defers_during_active_inference() {
+        let Some(_shutdown) = isolated_capture_probe("stt_tick_defers_during_active_inference")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("state.db");
+        let writer = crate::store::Store::open(&db).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = selfhosted_settings("http://127.0.0.1:9".into(), false);
+        writer.save_settings(&settings).unwrap();
+        let mut last = None;
+        crate::service::stt_reconcile_tick(&db, &mut last);
+        let _active = ActiveHold::new();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_reconcile_tick(&db, &mut last);
+        assert_eq!(last.as_ref().map(|pair| pair.1), Some(false));
+        drop(_active);
+        crate::service::stt_reconcile_tick(&db, &mut last);
+        assert_eq!(last.as_ref().map(|pair| pair.1), Some(true));
     }
 
     #[test]
