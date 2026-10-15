@@ -1,35 +1,43 @@
 #!/usr/bin/env python3
 """Two-peer real pairing/discovery/sync gate driver (sync scope).
 
-All fixture writes (trust rows, settings blob, synthetic history,
-revocation rows) happen WHILE THE APP IS STOPPED, before first or next
-boot; every runtime behavior observed is genuine engine execution
-(startup application, mDNS discovery, Noise dials, authz, tombstones,
-resume, denial). Direct SQL mutation is NEVER used mid-run to fake a
-transition.
+CORRECTION: an earlier revision claimed pairing/revocation/disable had
+no headless trigger and seeded trust as coverage. That was scoped to
+the main-based storage layer and is WRONG for the final app: the real
+controls live in src/app_sync.rs (final source 6d6da5e3) and every
+transition below invokes them. Pre-start SQL fixtures remain ONLY for
+bootstrap (identities, initial settings, synthetic rows).
 
-ABSENT control paths on this branch (GUI-only downstream — NOT covered
-here, NOT relabeled as covered):
-  A1 pairing acceptance click / live revocation / untrust (no peers UI;
-      upsert/remove_peer reachable only via lib/tests).
-  A2 mid-run sync toggle / settings edits (no sync UI; save_settings
-      merge path is unit-covered).
-  A3 live reset during sync (danger-zone reset is GUI-only; reset worker
-      is #22/#23-owned).
-  A4 history deletion during sync (clear-all UI only; tombstone receive
-      path is unit-covered).
-Covered instead, honestly: pre-seeded states + REAL startup application;
-REAL discovery (mDNS required); REAL untrusted-dial rejection with
-pending row; REAL transport/tombstones/resume/revocation-denial; REAL
-SIGKILL crash recovery. Trust outcome seeding stands in for the A1
-click; everything after it is engine truth.
+Real controls bound here (final source, all with accessible labels):
+  trust switch      app_sync.rs:~129  accessible sync.trusted
+                      -> upsert_peer(trusted) + log 'sync: trust'
+  send request      app_sync.rs:~322  action.sendrequest
+                      -> upsert_peer(trusted=1)+addresses + spawn_sync
+  incoming accept   app_sync.rs:~393  action.accept
+                      -> decide_request(true) + spawn_sync
+  decline           app_sync.rs:~412  action.decline
+                      -> decide_request(false)
+  sync-now          app_sync.rs:~191  action.syncnow (trusted + targets)
+                      -> spawn_sync (REAL on-demand dial, no restart)
+  remove peer       app_sync.rs:~203  action.remove + confirm dialog
+                      -> remove_peer (REAL revocation path)
+  sync enable       app_sync.rs:~568  widget 'sync-master', sync.svc.switch
+                      -> save_settings merge + watcher applies
+  reset/clear-all   danger-zone/history UI (GUI-only; reset worker #22/#23)
 
-Backends: --backend local (single-engine selftest only; loopback has no
-multicast here, so peer gates SKIP with reason) or --backend ssh
+UI invocation goes through UiDriver (AT-SPI labels above); the concrete
+transport binding is owned by #23 (UnboundUiDriver fails closed until
+bound — a gate that needs an unbound control FAILS with its name, it
+never silently substitutes fixtures). --fixture-trust runs an explicit
+transport-smoke variant (pre-start trust seeding, LABELED setup-only,
+never pairing acceptance).
+
+Backends: --backend local (selftest + harness mechanics; loopback has no
+multicast here, peer gates SKIP with reason) or --backend ssh
 --guest-a USER@HOST --guest-b USER@HOST (full gates; sqlcipher CLI on
-guests for encrypted-DB probes; python3 NOT required on guests).
-Guest plan: --guest-spec (packages/network/env for #15's Nix
-translation — this file owns gate logic only, never VM provisioning).
+guests for encrypted-DB probes). Guest plan: --guest-spec (packages,
+network, env for #15's Nix translation — this file owns gate logic
+only, never VM provisioning).
 
 Usage:
   python3 scripts/sync-2guest-gate.py --backend local --bin ./target/debug/mywhisper
@@ -52,21 +60,25 @@ import time
 
 GUEST_SPEC = """
 # Guest spec for #15's Nix translation (one per guest, identical shape).
-packages: mywhisper (final packaged bin), cage OR xvfb (display for
-  --service GTK thread; pill layer-shell prefers cage — verify non-fatal
-  at implementation, report), sqlcipher (encrypted-DB probes), openssh,
-  jq, sqlite3.
+# Compositor: Sway (proven route per #15 evidence: clean booted NixOS/Sway
+# GUI/service acceptance passes; layer-shell pill supported). NOT cage
+# (unverified assumption, withdrawn).
+packages: mywhisper (final packaged bin), sway, sqlcipher (DB probes),
+  openssh, jq, sqlite3, wtype (UI driving input, binding by #23).
 network: libvirt isolated net, static DHCP (.2/.3), NO LAN forward;
   bridge multicast ON for 224.0.0.251:5353 (app uses built-in mdns-sd,
   no avahi daemon needed; verify guest-to-guest UDP 5353 at bringup).
-env per guest (0600 provisioning, never shared): HOME fresh,
-  MYWHISPER_DB_KEY=<distinct 64hex> (production-supported, no keyring),
-  XDG_* under HOME, no audio input, STT warmup disabled via pre-seeded
-  settings (no model downloads).
-pre-seed (BEFORE first boot, fixture-labeled): settings blob
-  (hotkeys off, stt.auto_start_server=false, sync on).
-probes: sqlcipher CLI on guest DBs, journald/app logs, virsh console+SSH.
+env per guest (0600 provisioning files, HOME itself 0700, never shared):
+  HOME=/var/lib/mywhisper-gate (fresh), MYWHISPER_DB_KEY=<distinct 64hex>
+  (production-supported, no keyring), XDG_* under HOME, no audio input,
+  STT warmup disabled via pre-seeded settings (no model downloads).
+pre-seed (BEFORE first boot, fixture-labeled): settings blob (hotkeys
+  off, stt.auto_start_server=false, sync on).
+probes: sqlcipher CLI on guest DBs, journald/app logs ([app] sync: *,
+  [sync] *), virsh console + SSH.
 RAM: 1.2 GB/guest cap suggested (service is light; STT/models off).
+UI automation transport: owned by #23 (widgets carry accessible labels;
+  see driver header mapping). wtype present for key/click driving.
 """
 
 DISCOVER_TIMEOUT = 90
@@ -83,15 +95,74 @@ def check(condition, message, evidence=None):
         raise Fail(f"{message}{detail}")
 
 
+class UiDriver:
+    """Invoke real app_sync.rs controls. Backend bound by #23."""
+
+    def control(self, guest, control, *args):
+        raise NotImplementedError
+
+
+class UnboundUiDriver(UiDriver):
+    """Fail-closed placeholder: a gate needing UI fails with the exact
+    control name instead of substituting fixtures."""
+
+    NEEDED = "#23 UI binding (AT-SPI label or wtype sequence)"
+
+    def control(self, guest, control, *args):
+        raise Fail(
+            f"{guest.name}: UI control '{control}' needs {self.NEEDED}; "
+            "not substituting fixtures"
+        )
+
+
+# Control inventory: name -> (app_sync.rs anchor, accessible label,
+# store transition, log line). Every gate below names one of these.
+CONTROLS = {
+    "trust": ("~129 Switch", "sync.trusted", "upsert_peer(trusted)", "sync: trust"),
+    "send-request": (
+        "~322 Button",
+        "action.sendrequest",
+        "upsert_peer(trusted=1)+addresses+spawn_sync",
+        "sync: pairing requested",
+    ),
+    "accept": (
+        "~393 Button",
+        "action.accept",
+        "decide_request(true)+spawn_sync",
+        "sync.accepted",
+    ),
+    "decline": (
+        "~412 Button",
+        "action.decline",
+        "decide_request(false)",
+        "sync.declined",
+    ),
+    "sync-now": ("~191 Button", "action.syncnow", "spawn_sync", "sync round"),
+    "remove": (
+        "~203 Button+confirm",
+        "action.remove",
+        "remove_peer",
+        "sync: removed peer",
+    ),
+    "sync-enable": (
+        "~568 Switch sync-master",
+        "sync.svc.switch",
+        "save_settings merge + watcher",
+        "applying engine",
+    ),
+}
+
+
 class Guest:
     """One engine instance (subprocess locally, ssh on guests)."""
 
-    def __init__(self, name, home, key, binary, ssh=None):
+    def __init__(self, name, home, key, binary, ssh=None, ui=None):
         self.name = name
         self.home = home
         self.key = key
         self.binary = binary
         self.ssh = ssh
+        self.ui = ui or UnboundUiDriver()
         self.proc = None
         self.remote_pid = None
         self.log_path = os.path.join(home, f"{name}.log")
@@ -107,7 +178,9 @@ class Guest:
             "MYWHISPER_DB_KEY": self.key,
         }
 
-    def start(self):
+    def start(self, gui=False):
+        """Boot the app. gui=True runs the full GUI (Sway guests) so real
+        controls exist; False runs --service headless (selftest only)."""
         self.stop(kill=True)
         if self.ssh is None:
             for sub in (
@@ -123,8 +196,8 @@ class Guest:
             env = dict(os.environ)
             env.pop("DBUS_SESSION_BUS_ADDRESS", None)
             env.update(self.base_env())
-            argv = [self.binary, "--service"]
-            if not env.get("DISPLAY") and not env.get("WAYLAND_DISPLAY"):
+            argv = [self.binary, "--service"] if not gui else [self.binary]
+            if not gui and not env.get("DISPLAY") and not env.get("WAYLAND_DISPLAY"):
                 if shutil.which("xvfb-run") is None:
                     raise Fail(f"{self.name}: no display and no xvfb-run")
                 argv = ["xvfb-run", "-a"] + argv
@@ -133,11 +206,12 @@ class Guest:
             )
         else:
             remote_env = " ".join(f"{k}='{v}'" for k, v in self.base_env().items())
+            mode = "--service" if not gui else ""
             setup = (
                 f"mkdir -p -m 700 {self.home}/.config "
                 f"{self.home}/.local/share {self.home}/.local/state "
                 f"{self.home}/.cache {self.home}/.run; "
-                f"{remote_env} nohup {self.binary} --service "
+                f"{remote_env} nohup {self.binary} {mode} "
                 f">{self.log_path} 2>&1 & echo $!"
             )
             result = subprocess.run(
@@ -235,12 +309,9 @@ class Guest:
 
 
 def seed_settings_blob(guest, mutate):
-    """FIXTURE (stopped app only): rewrite kv.settings JSON via SQLCipher.
-
-    The engine applies it at next startup through the real path
-    (watcher + start_sync_engine). Shape-guarded: unknown schema keys
-    refuse the write instead of corrupting the blob.
-    """
+    """FIXTURE (stopped app, first-boot bootstrap only): rewrite
+    kv.settings JSON via SQLCipher. Shape-guarded against schema drift.
+    Runtime transitions ALWAYS go through real controls below."""
     raw = guest.query("SELECT value FROM kv WHERE key='settings';").strip()
     check(raw.startswith("{"), f"{guest.name}: no settings blob yet", raw[:80])
     blob = json.loads(raw)
@@ -254,26 +325,23 @@ def seed_settings_blob(guest, mutate):
     guest.query(f"UPDATE kv SET value='{updated}' WHERE key='settings';")
 
 
-def seed_trust(guest, peer_node_id, peer_name):
-    """FIXTURE (stopped app only): trust OUTCOME without the accept click.
-
-    The pairing-acceptance click itself (A1) has no headless trigger;
-    this records its outcome so transport/auth legs run for real.
-    """
-    guest.query(
-        "INSERT INTO devices(node_id,name,trusted,pending) "
-        f"VALUES('{peer_node_id}','{peer_name}',1,0) "
-        "ON CONFLICT(node_id) DO UPDATE SET trusted=1, pending=0;"
-    )
-
-
 def seed_history(guest, uuid, text):
-    """FIXTURE (stopped app only): one history row; table INSERT triggers
-    maintain the sync ledger exactly as app writes do."""
+    """FIXTURE (stopped app, bootstrap only): one history row; table
+    INSERT triggers maintain the sync ledger exactly as app writes do."""
     safe = text.replace("'", "''")
     guest.query(
         "INSERT INTO history(uuid,text,raw_text,words,duration_secs) "
         f"VALUES('{uuid}','{safe}','{safe}',3,1);"
+    )
+
+
+def seed_trust(guest, peer_node_id, peer_name):
+    """FIXTURE (stopped app, transport-smoke ONLY): trust outcome without
+    any control. NEVER pairing acceptance — see accept_request()."""
+    guest.query(
+        "INSERT INTO devices(node_id,name,trusted,pending) "
+        f"VALUES('{peer_node_id}','{peer_name}',1,0) "
+        "ON CONFLICT(node_id) DO UPDATE SET trusted=1, pending=0;"
     )
 
 
@@ -285,7 +353,13 @@ def pending_peer_id(guest):
     return ids[0]
 
 
-def wait_converge(guest, uuid, text, timeout=CONVERGE_TIMEOUT):
+def device_identity(guest):
+    """Own node id, observed (never seeded): the peer the OTHER guest
+    recorded after a real dial, or this guest's mDNS short id mapping."""
+    return pending_peer_id(guest)
+
+
+def wait_converge(guest, uuid, text, timeout=120):
     deadline = time.time() + timeout
     while time.time() < deadline:
         got = guest.query(
@@ -297,6 +371,16 @@ def wait_converge(guest, uuid, text, timeout=CONVERGE_TIMEOUT):
     raise Fail(f"{guest.name}: row never converged", uuid)
 
 
+def send_request(ui_owner, peer_desc):
+    """REAL pairing initiation via send-request control."""
+    ui_owner.ui.control(ui_owner, "send-request", peer_desc)
+
+
+def accept_request(ui_owner, peer_node_id):
+    """REAL pairing acceptance via incoming-accept control."""
+    ui_owner.ui.control(ui_owner, "accept", peer_node_id)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=("local", "ssh"), default="")
@@ -304,6 +388,12 @@ def main():
     parser.add_argument("--guest-b", default="")
     parser.add_argument("--bin", default="")
     parser.add_argument("--guest-spec", action="store_true")
+    parser.add_argument(
+        "--fixture-trust",
+        action="store_true",
+        help="transport-smoke ONLY: pre-start trust seeding "
+        "instead of accept controls (never acceptance)",
+    )
     parser.add_argument(
         "--gate",
         default="all",
@@ -354,40 +444,62 @@ def main():
             multicast = True
         a, b = guests
         # G0 selftest: boot, listener, mDNS daemon, clean kill/restart.
+        # GUI guests boot full UI (controls must exist); local runs the
+        # headless service (mechanics only).
+        gui = args.backend == "ssh"
         for guest in guests:
-            guest.start()
+            guest.start(gui=gui)
         for guest in guests:
             guest.stop()
-            guest.start()
+            guest.start(gui=gui)
         if stop_after == "selftest":
             return 0
+        # Guests only: seed first-boot settings while stopped (fixture).
+        # Defaults enable hotkeys (no input devices in guests) and STT
+        # warmup (model downloads); both must be off. Local runs skip
+        # this (no sqlcipher CLI here; boot mechanics are the assertion).
+        if args.backend == "ssh":
+            for guest in guests:
+                guest.stop()
+
+            def _guest_defaults(blob):
+                blob["hotkeys"]["hotkeys_enabled"] = False
+                blob["stt"]["auto_start_server"] = False
+
+            for guest in guests:
+                seed_settings_blob(guest, _guest_defaults)
         check(
             multicast,
             "peer gates need the multicast bridge backend "
             "(local run covers selftest only)",
         )
-        # Boot both fresh; startup catch-up dials discovered peers.
-        # G1 discovery + G2 untrusted denial: pending rows prove mDNS
-        # discovery, Noise dial, authz denial and contact recording.
+        # Boot both fresh (DBs + identities created); stop; seed rows;
+        # start: startup catch-up dials discovered peers. G1 discovery
+        # + G2 untrusted denial: pending rows prove mDNS discovery,
+        # Noise dial, authz denial and contact recording.
+        for guest in guests:
+            guest.stop()
         seed_history(a, "synthetic-queued-1", "synthetic queued one")
         seed_history(b, "synthetic-queued-2", "synthetic queued two")
         for guest in guests:
-            guest.stop()
-        for guest in guests:
-            guest.start()
+            guest.start(gui=gui)
         deadline = time.time() + DISCOVER_TIMEOUT
         while True:
             try:
-                a_peer = pending_peer_id(a)
-                b_peer = pending_peer_id(b)
+                # Each guest's view of the OTHER node id, observed (never
+                # seeded): pending rows appear only after a real dial.
+                b_id = pending_peer_id(a)
+                a_id = pending_peer_id(b)
                 break
             except Fail:
                 check(
                     time.time() < deadline, "mutual discovery/pending never converged"
                 )
                 time.sleep(2)
-        for uuid in ("synthetic-queued-1", "synthetic-queued-2"):
-            owner, outsider = (a, b) if uuid == "synthetic-queued-1" else (b, a)
+        for uuid, owner, outsider in (
+            ("synthetic-queued-1", a, b),
+            ("synthetic-queued-2", b, a),
+        ):
             check(
                 owner.query(
                     f"SELECT count(*) FROM history WHERE uuid='{uuid}' AND deleted=0;"
@@ -406,70 +518,66 @@ def main():
             )
         if stop_after == "discovery":
             return 0
-        # G3 trust outcome seeded pre-restart (FIXTURE, see A1); restart
-        # applies it; the discovery watcher auto-dials appeared trusted
-        # peers and transport converges for real.
-        for guest in guests:
-            guest.stop()
-        seed_trust(a, b_peer, "synthetic b")
-        seed_trust(b, a_peer, "synthetic a")
-        for guest in guests:
-            guest.start()
+        # G3 pairing: REAL accept controls (fail closed until #23 binds).
+        # --fixture-trust runs the transport-smoke variant instead and
+        # SAYS SO (setup-only, never acceptance).
+        if args.fixture_trust:
+            for guest in guests:
+                guest.stop()
+            seed_trust(a, b_id, "synthetic b")
+            seed_trust(b, a_id, "synthetic a")
+            for guest in guests:
+                guest.start(gui=gui)
+        else:
+            send_request(a, b_id)
+            accept_request(b, a_id)
         wait_converge(b, "synthetic-queued-1", "synthetic queued one")
         wait_converge(a, "synthetic-queued-2", "synthetic queued two")
         if stop_after == "converge":
             return 0
-        # G4 disable-via-restart (REAL startup application; mid-run
-        # toggle has no headless trigger, see A2).
-        for guest in guests:
-            guest.stop()
-        seed_settings_blob(a, lambda blob: blob["sync"].update(enabled=False))
+        # G4 disable via REAL sync-enable control (fail closed until
+        # bound). The quiet row is staged while stopped (fixture rule);
+        # the control flips policy on the running engine, and sync-now
+        # is the REAL dial trigger for the catch-up assertion.
+        a.ui.control(a, "sync-enable", False)
+        a.stop()
         seed_history(a, "synthetic-quiet-1", "synthetic quiet one")
-        for guest in guests:
-            guest.start()
+        a.start(gui=gui)
         time.sleep(12)
         rows = b.query(
             "SELECT count(*) FROM history WHERE uuid='synthetic-quiet-1';"
         ).strip()
         check(rows == "0", f"{b.name}: export while disabled", rows)
-        for guest in guests:
-            guest.stop()
-        seed_settings_blob(a, lambda blob: blob["sync"].update(enabled=True))
-        for guest in guests:
-            guest.start()
+        a.ui.control(a, "sync-enable", True)
+        a.ui.control(a, "sync-now", b_id)
         wait_converge(b, "synthetic-quiet-1", "synthetic quiet one")
         if stop_after == "disable":
             return 0
         # G6 active cancellation: bulk row staged pre-start, kill -9 the
         # receiver mid-transfer, REAL resume must converge with no
         # partial publish. Bulk exceeds the 16 MiB segmentation floor so
-        # the transfer spans many rounds (a small row would finish
-        # before the kill lands).
+        # the transfer spans many rounds.
         for guest in guests:
             guest.stop()
         seed_history(a, "synthetic-bulk-1", "synthetic-bulk-data." * 800000)
         for guest in guests:
-            guest.start()
+            guest.start(gui=gui)
         time.sleep(4)
         b.stop(kill=True)
-        b.start()
+        b.start(gui=gui)
         wait_converge(
             b, "synthetic-bulk-1", "synthetic-bulk-data." * 800000, timeout=180
         )
         if stop_after == "cancel":
             return 0
-        # G7 revoke-via-restart (REAL startup denial; live revocation
-        # click has no headless trigger, see A1).
-        for guest in guests:
-            guest.stop()
-        b.query(
-            "INSERT INTO revoked_devices(node_id) "
-            f"VALUES('{a_peer}') "
-            "ON CONFLICT(node_id) DO NOTHING;"
-        )
+        # G7 revocation via REAL remove control (fail closed until
+        # bound). Denied row staged while stopped (fixture rule);
+        # sync-now is the REAL dial trigger into the revoked peer.
+        b.ui.control(b, "remove", a_id)
+        a.stop()
         seed_history(a, "synthetic-denied-1", "synthetic denied one")
-        for guest in guests:
-            guest.start()
+        a.start(gui=gui)
+        a.ui.control(a, "sync-now", b_id)
         time.sleep(15)
         rows = b.query(
             "SELECT count(*) FROM history WHERE uuid='synthetic-denied-1';"
