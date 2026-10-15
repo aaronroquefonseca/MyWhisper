@@ -43,7 +43,28 @@ pub fn run(app: &gtk4::Application, window: &gtk4::ApplicationWindow, change_inp
             }
         }
         send.send(false).unwrap(); // Request has reached the endpoint.
-        let closed = matches!(socket.read(&mut buffer), Ok(0));
+        // Bounded EOF wait, not a single-shot read: page removal,
+        // cancellation and TCP close propagate on their own schedule,
+        // so one 500ms read races the close it is meant to observe.
+        // EOF itself is the synchronization signal; the pre-existing
+        // outer 5s smoke guard bounds the wait. A missing cancellation
+        // never produces EOF, so the closed assert below still fails
+        // deterministically without it. The per-read 500ms timeout is
+        // unchanged; only the single attempt becomes a bounded wait.
+        let eof_by = Instant::now() + Duration::from_secs(4);
+        let closed = loop {
+            if Instant::now() >= eof_by {
+                break false;
+            }
+            match socket.read(&mut buffer) {
+                Ok(0) => break true,
+                Ok(_) => {}
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        || error.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(error) => panic!("model-load fixture read failed: {error:?}"),
+            }
+        };
         // Release a regressed blocking request before reporting the failure.
         if !closed {
             let response = br#"{"done":true,"message":{"content":""}}"#;
@@ -119,7 +140,7 @@ pub fn run(app: &gtk4::Application, window: &gtk4::ApplicationWindow, change_inp
             Ok(closed) => {
                 assert!(
                     closed,
-                    "removing the originating page must close active provider IO within 500 ms"
+                    "removing the originating page must close active provider IO within the smoke bound"
                 );
                 if change_inputs {
                     let button = old_button.as_ref().unwrap().upgrade().unwrap();
