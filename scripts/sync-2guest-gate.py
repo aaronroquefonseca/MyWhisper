@@ -64,7 +64,14 @@ GUEST_SPEC = """
 # GUI/service acceptance passes; layer-shell pill supported). NOT cage
 # (unverified assumption, withdrawn).
 packages: mywhisper (final packaged bin), sway, sqlcipher (DB probes),
-  openssh, jq, sqlite3, wtype (UI driving input, binding by #23).
+  openssh, jq, sqlite3, python3, python3-gobject + at-spi2-core (AT-SPI
+  registry for the UI adapter), wtype (input driving reserve).
+UI adapter: #23 scripts/sync-gui-adapter.py staged at /opt/gate/ on
+  guests AND the driver machine (--adapter path); Sway session env
+  (WAYLAND_DISPLAY + DBUS_SESSION_BUS_ADDRESS at provisioned fixed
+  paths) passed via repeated --session-env KEY=VALUE, merged into app
+  env and adapter ssh invocations alike. English UI required:
+  preferences.ui_language="en" pre-seeded (adapter gates on it).
 network: libvirt isolated net, static DHCP (.2/.3), NO LAN forward;
   bridge multicast ON for 224.0.0.251:5353 (app uses built-in mdns-sd,
   no avahi daemon needed; verify guest-to-guest UDP 5353 at bringup).
@@ -115,6 +122,49 @@ class UnboundUiDriver(UiDriver):
         )
 
 
+def bound_driver(adapter_path, ssh_env):
+    """#23 SyncGuiDriver bound to this driver's contract (no vendoring:
+    the module loads from the staged path #15 provides; a missing file
+    fails closed). Translates sync-enable bools to the adapter's on/off
+    words; everything else passes through verbatim."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("sync_gui_adapter", adapter_path)
+    if spec is None or spec.loader is None:
+        raise Fail(
+            f"UI adapter not found at {adapter_path} (needs #23 artifact staged by #15)"
+        )
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except OSError as error:
+        raise Fail(
+            f"UI adapter not found at {adapter_path} "
+            f"(needs #23 artifact staged by #15): {error}"
+        )
+
+    driver_cls = module.SyncGuiDriver
+    adapter_error = module.AdapterError
+
+    class BoundDriver(UiDriver):
+        def __init__(self):
+            self.inner = driver_cls(adapter=adapter_path, ssh_env=ssh_env)
+
+        def control(self, guest, control, *args):
+            if control == "sync-enable":
+                check(
+                    args and isinstance(args[0], bool),
+                    "sync-enable takes a bool",
+                )
+                args = ("on" if args[0] else "off",) + tuple(args[1:])
+            try:
+                return self.inner.control(guest, control, *args)
+            except adapter_error as error:
+                raise Fail(str(error))
+
+    return BoundDriver()
+
+
 # Control inventory: name -> (app_sync.rs anchor, accessible label,
 # store transition, log line). Every gate below names one of these.
 CONTROLS = {
@@ -156,13 +206,17 @@ CONTROLS = {
 class Guest:
     """One engine instance (subprocess locally, ssh on guests)."""
 
-    def __init__(self, name, home, key, binary, ssh=None, ui=None):
+    def __init__(self, name, home, key, binary, ssh=None, ui=None, session_env=None):
         self.name = name
         self.home = home
         self.key = key
         self.binary = binary
         self.ssh = ssh
         self.ui = ui or UnboundUiDriver()
+        # Sway session environment for GUI guests (WAYLAND_DISPLAY +
+        # DBUS_SESSION_BUS_ADDRESS at fixed provisioned paths); merged
+        # into the app env and the adapter ssh invocation alike.
+        self.session_env = dict(session_env or {})
         self.proc = None
         self.remote_pid = None
         self.log_path = os.path.join(home, f"{name}.log")
@@ -196,6 +250,7 @@ class Guest:
             env = dict(os.environ)
             env.pop("DBUS_SESSION_BUS_ADDRESS", None)
             env.update(self.base_env())
+            env.update(self.session_env)
             argv = [self.binary, "--service"] if not gui else [self.binary]
             if not gui and not env.get("DISPLAY") and not env.get("WAYLAND_DISPLAY"):
                 if shutil.which("xvfb-run") is None:
@@ -205,7 +260,9 @@ class Guest:
                 argv, env=env, stdout=log, stderr=subprocess.STDOUT
             )
         else:
-            remote_env = " ".join(f"{k}='{v}'" for k, v in self.base_env().items())
+            merged = dict(self.base_env())
+            merged.update(self.session_env)
+            remote_env = " ".join(f"{k}='{v}'" for k, v in merged.items())
             mode = "--service" if not gui else ""
             setup = (
                 f"mkdir -p -m 700 {self.home}/.config "
@@ -407,20 +464,40 @@ def main():
             "revoke",
         ),
     )
+    parser.add_argument(
+        "--adapter",
+        default="",
+        help="#23 sync-gui-adapter.py staged path; absent keeps UI "
+        "controls fail-closed (UnboundUiDriver)",
+    )
+    parser.add_argument(
+        "--session-env",
+        action="append",
+        default=[],
+        help="Sway session env for guests, KEY=VALUE (repeatable; "
+        "e.g. WAYLAND_DISPLAY + DBUS_SESSION_BUS_ADDRESS at "
+        "provisioned paths). Merged into app env and adapter ssh.",
+    )
     args = parser.parse_args()
     if args.guest_spec:
         print(GUEST_SPEC)
         return 0
     check(args.backend in ("local", "ssh"), "--backend is required")
     check(args.bin, "--bin is required")
+    session_env = {}
+    for item in args.session_env:
+        check("=" in item, f"--session-env needs KEY=VALUE, got {item!r}")
+        key, _, value = item.partition("=")
+        session_env[key] = value
+    ui = bound_driver(args.adapter, session_env) if args.adapter else None
     stop_after = args.gate if args.gate != "all" else "revoke"
     work = tempfile.mkdtemp(prefix="sync-2guest-gate.")
     guests = []
     try:
         if args.backend == "local":
             guests = [
-                Guest("a", work + "/a-home", secrets.token_hex(32), args.bin),
-                Guest("b", work + "/b-home", secrets.token_hex(32), args.bin),
+                Guest("a", work + "/a-home", secrets.token_hex(32), args.bin, ui=ui),
+                Guest("b", work + "/b-home", secrets.token_hex(32), args.bin, ui=ui),
             ]
             multicast = False
         else:
@@ -432,6 +509,8 @@ def main():
                     secrets.token_hex(32),
                     args.bin,
                     ssh=args.guest_a,
+                    ui=ui,
+                    session_env=session_env,
                 ),
                 Guest(
                     "b",
@@ -439,6 +518,8 @@ def main():
                     secrets.token_hex(32),
                     args.bin,
                     ssh=args.guest_b,
+                    ui=ui,
+                    session_env=session_env,
                 ),
             ]
             multicast = True
@@ -465,6 +546,8 @@ def main():
             def _guest_defaults(blob):
                 blob["hotkeys"]["hotkeys_enabled"] = False
                 blob["stt"]["auto_start_server"] = False
+                # The UI adapter gates on the English Devices nav.
+                blob["preferences"]["ui_language"] = "en"
 
             for guest in guests:
                 seed_settings_blob(guest, _guest_defaults)
