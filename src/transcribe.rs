@@ -762,6 +762,28 @@ pub(crate) fn clear_reconcile_ensure_pause() {
     RECONCILE_ENSURE_PAUSE.lock().unwrap().take();
 }
 
+/// Test-only barrier parked at settlement classification entry, before
+/// the settlement admission acquires its holding (never while holding
+/// it, so a test's real Stop cannot deadlock). Lets a test land a
+/// newer Stop or a restore strictly between startup rejection and the
+/// coherent snapshot read. Production builds contain no hook: the
+/// parked worker holds nothing, so the main test thread acts freely.
+#[cfg(test)]
+static RECONCILE_SETTLE_PAUSE: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> =
+    Mutex::new(None);
+
+/// Install the settlement-classification barrier (single-shot).
+#[cfg(test)]
+pub(crate) fn set_reconcile_settle_pause(tx: mpsc::Sender<()>, rx: mpsc::Receiver<()>) {
+    *RECONCILE_SETTLE_PAUSE.lock().unwrap() = Some((tx, rx));
+}
+
+/// Clear a parked (never reached) barrier so later tests never block.
+#[cfg(test)]
+pub(crate) fn clear_reconcile_settle_pause() {
+    RECONCILE_SETTLE_PAUSE.lock().unwrap().take();
+}
+
 /// Test-only barrier parked at reconcile admission entries, before any
 /// lock is taken, so a test can land a transition strictly between a
 /// queued call's arrival and its authoritative checks. Production builds
@@ -4457,25 +4479,56 @@ pub fn reconcile_servers(
         Err(e) if e.starts_with("superseded configuration") => Ok(true),
         Err(e) if e.starts_with("obsolete generation") => {
             // A revoked startup is not an application of `fp`: settle
-            // cold only when a newer Stop actually suppresses THIS
-            // snapshot — target-scoped (`STOPPED_FP` still names `fp`),
-            // strictly newer than our witness, with current truth still
-            // `fp` (a fresh tick would settle identically). "Some newer
-            // Stop occurred" is not enough: a Stop targeting C must not
+            // cold only on one coherent snapshot in which a newer Stop
+            // actually suppresses THIS snapshot — target-scoped
+            // (`STOPPED_FP` still names `fp`), strictly newer than our
+            // witness, with current truth still `fp`. "Some newer Stop
+            // occurred" is not enough: a Stop targeting C must not
             // settle a restored B, or the watcher would record B as
             // applied without launching it and starve every later
             // unchanged poll. Otherwise defer so a fresh observation
             // applies the later intent. Either way nothing launches and
             // nothing is resurrected here.
-            if LAST_STOP_GEN.load(Ordering::Acquire) > gen_at_check
-                && !fp.is_empty()
-                && STOPPED_FP.lock().map(|g| g.as_str() == fp).unwrap_or(false)
-                && current_fingerprint(data_dir) == fp
+            //
+            // Coherent settlement admission: the three reads below run
+            // under a fresh `SERVER_START_LOCK` holding, so they form
+            // one atomic snapshot serialized against every Stop/control
+            // transition (which bumps the generation and records its
+            // target under that same lock). Linearization point: lock
+            // acquisition — transitions before it are all visible,
+            // transitions after it are later events the watcher observes
+            // on subsequent ticks. Reading the target and the live
+            // settings from different control states (e.g. Stop-B
+            // evidence combined with post-Stop-C restored settings) is
+            // exactly the mixing this holding rules out. No other lock
+            // is held here (outer lease/admission/live were all
+            // released), lock order stays `START_LOCK` -> `STOPPED_FP`,
+            // and the Store read is milliseconds — the same scale as
+            // the identity reads in every other admission.
+            // Test seam (cfg(test) only): park before acquiring the
+            // holding — never while holding it, so the test's real Stop
+            // cannot deadlock — letting a test land a newer Stop (or a
+            // restore) strictly between rejection and classification.
+            // Production builds contain no hook.
+            #[cfg(test)]
+            if let Some((entered, proceed_)) = RECONCILE_SETTLE_PAUSE
+                .lock()
+                .ok()
+                .and_then(|mut g| g.take())
             {
-                Ok(false)
-            } else {
-                Ok(true)
+                let _ = entered.send(());
+                let _ = proceed_.recv_timeout(Duration::from_secs(10));
             }
+            let settle = match SERVER_START_LOCK.lock() {
+                Ok(_admission) => {
+                    LAST_STOP_GEN.load(Ordering::Acquire) > gen_at_check
+                        && !fp.is_empty()
+                        && STOPPED_FP.lock().map(|g| g.as_str() == fp).unwrap_or(false)
+                        && current_fingerprint(data_dir) == fp
+                }
+                Err(_) => false,
+            };
+            if settle { Ok(false) } else { Ok(true) }
         }
         Err(e) => Err(e),
     }
@@ -8991,6 +9044,295 @@ mod tests {
         worker.join().expect("worker thread panicked");
         clear_reconcile_outer_pause();
         clear_reconcile_ensure_pause();
+    }
+
+    /// Settlement is one coherent admission: the old B startup parks
+    /// before classification, a newer Stop C lands first, B is restored
+    /// by a pure save, and the decision must combine only evidence from
+    /// a single control state. Stop-B evidence must never be combined
+    /// with post-Stop-C restored settings: old B defers with
+    /// bookkeeping A and suppression C intact, and fresh unchanged-B
+    /// polls then start B with no further change.
+    #[test]
+    fn settlement_admission_defers_when_newer_stop_wins() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        clear_reconcile_outer_pause();
+        clear_reconcile_ensure_pause();
+        clear_reconcile_settle_pause();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        install_fake_whisper_http(root.path());
+        let writer = seed_whisper_tiny(root.path());
+        let data_dir = root.path().to_path_buf();
+        let db_path = root.path().join("state.db");
+        // Owned A applied through the real watcher: last-applied is A.
+        let port_a = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let mut last_primary = String::new();
+        let mut last_auto = false;
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(port_open(port_a));
+        assert!(last_auto);
+        let pid_a = servers().lock().unwrap()["whisper"].child.id();
+        let last_a = last_primary.clone();
+        // Save B; the worker tick validates it and parks immediately
+        // before startup admission (outer admission strictly predates
+        // everything below by construction).
+        let port_b = free_port();
+        assert_ne!(port_a, port_b);
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_b.to_string();
+        writer.save_settings(&settings).unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<(String, bool)>();
+        let (finished_tx, finished_rx) = mpsc::channel::<()>();
+        set_reconcile_ensure_pause(entered_tx, proceed_rx);
+        let worker_db = db_path.clone();
+        let worker_dir = data_dir.clone();
+        let worker = std::thread::spawn(move || {
+            let mut wlast_p = last_a;
+            let mut wlast_a = true;
+            crate::service::stt_watcher_tick(&worker_db, &worker_dir, &mut wlast_p, &mut wlast_a);
+            let _ = done_tx.send((wlast_p, wlast_a));
+            let _ = finished_rx.recv_timeout(Duration::from_secs(15));
+        });
+        entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        // Stop while settings are B (STOPPED_FP records B, reaping A),
+        // then pure-save C (no generation move) before resuming.
+        let (sentered_tx, sentered_rx) = mpsc::channel::<()>();
+        let (sproceed_tx, sproceed_rx) = mpsc::channel::<()>();
+        set_reconcile_settle_pause(sentered_tx, sproceed_rx);
+        let port_c = free_port();
+        assert_ne!(port_a, port_c);
+        assert_ne!(port_b, port_c);
+        drop_servers(root.path());
+        wait_gone(pid_a);
+        assert!(proc_gone(pid_a));
+        assert!(!port_open(port_a));
+        assert!(!port_open(port_b));
+        let stop_b = stt_fingerprint(&writer.load_settings().stt, &data_dir);
+        assert_eq!(
+            STOPPED_FP.lock().unwrap().as_str(),
+            stop_b.as_str(),
+            "first Stop did not record B"
+        );
+        let gen_stop_b = server_generation();
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_c.to_string();
+        writer.save_settings(&settings).unwrap();
+        assert_eq!(
+            server_generation(),
+            gen_stop_b,
+            "C save must not move generation"
+        );
+        proceed_tx.send(()).unwrap();
+        // Rejected startup parks at classification entry with live
+        // settings already C; the newer Stop C (with its empty-map
+        // control transition) lands strictly before the snapshot read.
+        sentered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        drop_servers(root.path());
+        assert!(server_generation() > gen_stop_b);
+        let stt_c = writer.load_settings().stt;
+        let stop_c = stt_fingerprint(&stt_c, &data_dir);
+        assert!(!stop_c.is_empty());
+        let gen_stop_c = server_generation();
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_b.to_string();
+        writer.save_settings(&settings).unwrap();
+        assert_eq!(
+            server_generation(),
+            gen_stop_c,
+            "restore must not move generation (that is the point)"
+        );
+        sproceed_tx.send(()).unwrap();
+        // Old B defers on the coherent snapshot: Stop C is the latest
+        // decision, so bookkeeping stays A and suppression stays C.
+        let (wlast_p, wlast_a) = done_rx.recv_timeout(Duration::from_secs(25)).unwrap();
+        assert_eq!(
+            wlast_p, last_primary,
+            "mixed settlement advanced watcher state"
+        );
+        assert!(wlast_a);
+        assert_eq!(
+            STOPPED_FP.lock().unwrap().as_str(),
+            stop_c.as_str(),
+            "mixed settlement disturbed Stop C"
+        );
+        assert!(servers().lock().unwrap().is_empty());
+        assert!(!port_open(port_a));
+        assert!(!port_open(port_b));
+        assert!(!port_open(port_c));
+        assert_eq!(active_count(), 0);
+        // Fresh unchanged-B polls start B with no further change; C
+        // never resurrects.
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(port_open(port_b), "fresh B poll did not start B");
+        let pid_b = servers().lock().unwrap()["whisper"].child.id();
+        assert!(!proc_gone(pid_b));
+        assert!(STOPPED_FP.lock().unwrap().is_empty());
+        assert!(!port_open(port_c), "C resurrected");
+        for _ in 0..2 {
+            crate::service::stt_watcher_tick(
+                &db_path,
+                &data_dir,
+                &mut last_primary,
+                &mut last_auto,
+            );
+            assert!(port_open(port_b));
+            assert!(!port_open(port_c));
+        }
+        drop_servers(root.path());
+        wait_gone(pid_b);
+        assert_eq!(active_count(), 0);
+        let _ = finished_tx.send(());
+        worker.join().expect("worker thread panicked");
+        clear_reconcile_outer_pause();
+        clear_reconcile_ensure_pause();
+        clear_reconcile_settle_pause();
+    }
+
+    /// Settlement wins first when it is genuinely coherent: same windows
+    /// as above, but the restore lands before classification with no
+    /// newer Stop after it, so Stop B still targets current B and the
+    /// old call settles cold. Later unchanged-B polls stay cold.
+    #[test]
+    fn settlement_admission_settles_coherent_restore() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        clear_reconcile_outer_pause();
+        clear_reconcile_ensure_pause();
+        clear_reconcile_settle_pause();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        install_fake_whisper_http(root.path());
+        let writer = seed_whisper_tiny(root.path());
+        let data_dir = root.path().to_path_buf();
+        let db_path = root.path().join("state.db");
+        // Owned A applied through the real watcher: last-applied is A.
+        let port_a = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let mut last_primary = String::new();
+        let mut last_auto = false;
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(port_open(port_a));
+        assert!(last_auto);
+        let pid_a = servers().lock().unwrap()["whisper"].child.id();
+        let last_a = last_primary.clone();
+        // Save B; the worker tick validates it and parks immediately
+        // before startup admission.
+        let port_b = free_port();
+        assert_ne!(port_a, port_b);
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_b.to_string();
+        writer.save_settings(&settings).unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<(String, bool)>();
+        let (finished_tx, finished_rx) = mpsc::channel::<()>();
+        set_reconcile_ensure_pause(entered_tx, proceed_rx);
+        let worker_db = db_path.clone();
+        let worker_dir = data_dir.clone();
+        let worker = std::thread::spawn(move || {
+            let mut wlast_p = last_a;
+            let mut wlast_a = true;
+            crate::service::stt_watcher_tick(&worker_db, &worker_dir, &mut wlast_p, &mut wlast_a);
+            let _ = done_tx.send((wlast_p, wlast_a));
+            let _ = finished_rx.recv_timeout(Duration::from_secs(15));
+        });
+        entered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        // Stop while settings are B (STOPPED_FP records B, reaping A),
+        // then pure-save C (no generation move), exactly as above.
+        let (sentered_tx, sentered_rx) = mpsc::channel::<()>();
+        let (sproceed_tx, sproceed_rx) = mpsc::channel::<()>();
+        set_reconcile_settle_pause(sentered_tx, sproceed_rx);
+        let port_c = free_port();
+        assert_ne!(port_a, port_c);
+        assert_ne!(port_b, port_c);
+        drop_servers(root.path());
+        wait_gone(pid_a);
+        assert!(proc_gone(pid_a));
+        let stop_b = stt_fingerprint(&writer.load_settings().stt, &data_dir);
+        assert_eq!(
+            STOPPED_FP.lock().unwrap().as_str(),
+            stop_b.as_str(),
+            "first Stop did not record B"
+        );
+        let gen_stop_b = server_generation();
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_c.to_string();
+        writer.save_settings(&settings).unwrap();
+        assert_eq!(
+            server_generation(),
+            gen_stop_b,
+            "C save must not move generation"
+        );
+        proceed_tx.send(()).unwrap();
+        // Rejected startup parks at classification entry; the restore
+        // lands first with no newer Stop after it, so the snapshot is
+        // coherent (Stop B still targets current B) and settles cold.
+        sentered_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port_b.to_string();
+        writer.save_settings(&settings).unwrap();
+        assert_eq!(
+            server_generation(),
+            gen_stop_b,
+            "restore must not move generation (that is the point)"
+        );
+        sproceed_tx.send(()).unwrap();
+        let (wlast_p, wlast_a) = done_rx.recv_timeout(Duration::from_secs(25)).unwrap();
+        let fp_b = stt_primary_id(&writer.load_settings().stt, &data_dir);
+        assert_eq!(wlast_p, fp_b, "coherent restore did not settle");
+        assert!(wlast_a);
+        let stop_b = stt_fingerprint(&writer.load_settings().stt, &data_dir);
+        assert_eq!(
+            STOPPED_FP.lock().unwrap().as_str(),
+            stop_b.as_str(),
+            "Stop B record disturbed"
+        );
+        assert!(servers().lock().unwrap().is_empty());
+        assert!(!port_open(port_a));
+        assert!(!port_open(port_b));
+        assert!(!port_open(port_c));
+        assert_eq!(active_count(), 0);
+        // The worker's tick advanced the shared watcher state to B, so
+        // subsequent unchanged-B polls skip cold: B stays suppressed,
+        // never started, C never resurrects.
+        last_primary = wlast_p;
+        last_auto = wlast_a;
+        for _ in 0..3 {
+            crate::service::stt_watcher_tick(
+                &db_path,
+                &data_dir,
+                &mut last_primary,
+                &mut last_auto,
+            );
+            assert!(!port_open(port_a));
+            assert!(!port_open(port_b));
+            assert!(!port_open(port_c));
+            assert!(servers().lock().unwrap().is_empty());
+        }
+        let _ = finished_tx.send(());
+        worker.join().expect("worker thread panicked");
+        clear_reconcile_outer_pause();
+        clear_reconcile_ensure_pause();
+        clear_reconcile_settle_pause();
     }
 
     /// A queued lazy switch must yield to a cold start that committed
