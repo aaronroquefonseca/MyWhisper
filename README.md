@@ -5,6 +5,7 @@ GTK4 + Rust, Linux/Wayland-first.
 
 For fast local PR testing and PR-based release notes, see
 [the development workflow](docs/DEVELOPMENT.md).
+Release notes use dated, release-linked headings and the categories in [the release configuration](.github/release.yml).
 
 ## Pieces
 
