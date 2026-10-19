@@ -14,7 +14,6 @@ fs2 = "0.4.3"
 getrandom = "0.4.3"
 gtk4 = { version = "0.11.5", features = ["v4_22"] }
 gtk4-layer-shell = "0.8.1"
-keyring = "4.2.0"
 libc = "0.2.190"
 libadwaita = { version = "0.9.2", features = ["v1_5"] }
 mdns-sd = "0.21.5"
@@ -33,5 +32,17 @@ tracing-appender = "0.2.5"
 tracing-subscriber = "0.3.23"
 tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 unicode-normalization = "0.1"
-zbus = "5.19.0"
-zip = "8.6.0"
+zbus = "6"
+zip = "9"
+
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))'.dependencies]
+keyring-core = "1"
+dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust", "vendored"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+keyring-core = "1"
+apple-native-keyring-store = "1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring-core = "1"
+windows-native-keyring-store = "1"

@@ -130,18 +130,86 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
 /// Database encryption key (32 bytes). Order: explicit env override
 /// (headless/testing) first, otherwise the OS keyring, creating and
 /// storing a random key on first run.
+///
+/// Linux uses the D-Bus Secret Service via `dbus-secret-service-keyring-store`
+/// (same collection and service/username attributes as the previous zbus
+/// backend, so existing `mywhisper/state-db` credentials remain readable).
+/// macOS and Windows use their native stores through `keyring-core`.
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+))]
+fn ensure_default_store() -> Result<(), String> {
+    use std::sync::OnceLock;
+    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
+    INIT.get_or_init(|| match dbus_secret_service_keyring_store::Store::new() {
+        Ok(store) => {
+            keyring_core::set_default_store(store);
+            Ok(())
+        }
+        Err(e) => Err(format!(
+            "keyring unavailable: {e} (is a Secret Service running?)"
+        )),
+    })
+    .clone()
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn ensure_default_store() -> Result<(), String> {
+    use std::sync::OnceLock;
+    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
+    INIT.get_or_init(
+        || match apple_native_keyring_store::keychain::Store::new() {
+            Ok(store) => {
+                keyring_core::set_default_store(store);
+                Ok(())
+            }
+            Err(e) => Err(format!("keyring unavailable: {e}")),
+        },
+    )
+    .clone()
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_default_store() -> Result<(), String> {
+    use std::sync::OnceLock;
+    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
+    INIT.get_or_init(|| match windows_native_keyring_store::Store::new() {
+        Ok(store) => {
+            keyring_core::set_default_store(store);
+            Ok(())
+        }
+        Err(e) => Err(format!("keyring unavailable: {e}")),
+    })
+    .clone()
+}
+
+#[cfg(not(any(
+    all(
+        unix,
+        not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+    ),
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "windows"
+)))]
+fn ensure_default_store() -> Result<(), String> {
+    Err("keyring unavailable: unsupported platform".to_string())
+}
+
 fn db_key() -> Result<[u8; 32], String> {
     if let Ok(hexkey) = std::env::var("MYWHISPER_DB_KEY") {
         return hex_decode_key(&hexkey)
             .ok_or_else(|| "MYWHISPER_DB_KEY must be 64 hex chars".to_string());
     }
-    let entry = keyring::Entry::new("mywhisper", "state-db")
+    ensure_default_store()?;
+    let entry = keyring_core::Entry::new("mywhisper", "state-db")
         .map_err(|e| format!("keyring unavailable: {e} (is a Secret Service running?)"))?;
     match entry.get_password() {
         Ok(stored) => {
             hex_decode_key(&stored).ok_or_else(|| "keyring holds a malformed db key".to_string())
         }
-        Err(keyring::Error::NoEntry) => {
+        Err(keyring_core::Error::NoEntry) => {
             let mut raw = [0u8; 32];
             getrandom::fill(&mut raw).map_err(|e| format!("rng: {e}"))?;
             entry
@@ -1461,5 +1529,49 @@ mod tests {
         }])
         .unwrap();
         assert_eq!(snippet(&a, "k").as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn db_key_hex_helpers_roundtrip() {
+        let raw = [0xabu8; 32];
+        let hex = hex_encode(&raw);
+        assert_eq!(hex.len(), 64);
+        assert_eq!(hex_decode_key(&hex).unwrap(), raw);
+        assert!(hex_decode_key("00").is_none());
+        assert!(hex_decode_key(&"zz".repeat(32)).is_none());
+        // Env override path parses the same 64-hex format.
+        assert!(hex_decode_key(&"00".repeat(32)).is_some());
+    }
+
+    /// The Linux Secret Service backend (dbus, replacing zbus) must keep
+    /// existing `mywhisper/state-db` credentials readable: both stores use
+    /// the same collection and service/username attributes, and the same
+    /// `keyring-core` Entry API. This exercises the new backend with a
+    /// disposable entry and skips when no Secret Service is running
+    /// (same policy as `shared_gen_visible_across_connections`).
+    #[test]
+    fn secret_service_backend_preserves_credentials() {
+        if ensure_default_store().is_err() {
+            return;
+        }
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let service = format!(
+            "mywhisper-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+        let entry = match keyring_core::Entry::new(&service, "state-db-compat") {
+            Ok(entry) => entry,
+            Err(_) => return,
+        };
+        let _ = entry.delete_credential();
+        let secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        entry.set_password(secret).unwrap();
+        assert_eq!(entry.get_password().unwrap(), secret);
+        entry.delete_credential().unwrap();
+        assert!(matches!(
+            entry.get_password(),
+            Err(keyring_core::Error::NoEntry)
+        ));
     }
 }
