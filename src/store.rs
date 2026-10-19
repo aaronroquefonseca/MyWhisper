@@ -141,47 +141,53 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
 ))]
 fn ensure_default_store() -> Result<(), String> {
     use std::sync::OnceLock;
-    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
-    INIT.get_or_init(|| match dbus_secret_service_keyring_store::Store::new() {
-        Ok(store) => {
-            keyring_core::set_default_store(store);
-            Ok(())
+    static DONE: OnceLock<()> = OnceLock::new();
+    if DONE.get().is_none() {
+        match dbus_secret_service_keyring_store::Store::new() {
+            Ok(store) => {
+                keyring_core::set_default_store(store);
+                let _ = DONE.set(());
+            }
+            Err(e) => {
+                return Err(format!(
+                    "keyring unavailable: {e} (is a Secret Service running?)"
+                ));
+            }
         }
-        Err(e) => Err(format!(
-            "keyring unavailable: {e} (is a Secret Service running?)"
-        )),
-    })
-    .clone()
+    }
+    Ok(())
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn ensure_default_store() -> Result<(), String> {
     use std::sync::OnceLock;
-    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
-    INIT.get_or_init(
-        || match apple_native_keyring_store::keychain::Store::new() {
+    static DONE: OnceLock<()> = OnceLock::new();
+    if DONE.get().is_none() {
+        match apple_native_keyring_store::keychain::Store::new() {
             Ok(store) => {
                 keyring_core::set_default_store(store);
-                Ok(())
+                let _ = DONE.set(());
             }
-            Err(e) => Err(format!("keyring unavailable: {e}")),
-        },
-    )
-    .clone()
+            Err(e) => return Err(format!("keyring unavailable: {e}")),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
 fn ensure_default_store() -> Result<(), String> {
     use std::sync::OnceLock;
-    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
-    INIT.get_or_init(|| match windows_native_keyring_store::Store::new() {
-        Ok(store) => {
-            keyring_core::set_default_store(store);
-            Ok(())
+    static DONE: OnceLock<()> = OnceLock::new();
+    if DONE.get().is_none() {
+        match windows_native_keyring_store::Store::new() {
+            Ok(store) => {
+                keyring_core::set_default_store(store);
+                let _ = DONE.set(());
+            }
+            Err(e) => return Err(format!("keyring unavailable: {e}")),
         }
-        Err(e) => Err(format!("keyring unavailable: {e}")),
-    })
-    .clone()
+    }
+    Ok(())
 }
 
 #[cfg(not(any(
@@ -203,8 +209,18 @@ fn db_key() -> Result<[u8; 32], String> {
             .ok_or_else(|| "MYWHISPER_DB_KEY must be 64 hex chars".to_string());
     }
     ensure_default_store()?;
+    #[cfg(all(
+        unix,
+        not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+    ))]
     let entry = keyring_core::Entry::new("mywhisper", "state-db")
         .map_err(|e| format!("keyring unavailable: {e} (is a Secret Service running?)"))?;
+    #[cfg(not(all(
+        unix,
+        not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+    )))]
+    let entry = keyring_core::Entry::new("mywhisper", "state-db")
+        .map_err(|e| format!("keyring unavailable: {e}"))?;
     match entry.get_password() {
         Ok(stored) => {
             hex_decode_key(&stored).ok_or_else(|| "keyring holds a malformed db key".to_string())

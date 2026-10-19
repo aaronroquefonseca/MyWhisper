@@ -798,26 +798,32 @@ mod tests {
             b"binary"
         );
 
-        // Malicious archive: `../` entry must not escape `dest`.
-        let evil_archive = root.join("evil.zip");
-        {
-            let file = std::fs::File::create(&evil_archive).unwrap();
-            let mut zip = zip::ZipWriter::new(file);
-            zip.start_file("../evil.txt", zip::write::SimpleFileOptions::default())
-                .unwrap();
-            zip.write_all(b"evil").unwrap();
-            zip.finish().unwrap();
-        }
-        let evil_dest = root.join("evil-out");
-        std::fs::create_dir_all(&evil_dest).unwrap();
-        {
-            let file = std::fs::File::open(&evil_archive).unwrap();
-            let mut zip = zip::ZipArchive::new(file).unwrap();
-            let _ = zip.extract(&evil_dest);
+        // Malicious archives: `../` and absolute entries must not escape.
+        for name in ["../evil.txt", "/tmp/mywhisper-zip-escape-probe.txt"] {
+            let evil_archive = root.join(format!("evil-{}.zip", name.len()));
+            {
+                let file = std::fs::File::create(&evil_archive).unwrap();
+                let mut zip = zip::ZipWriter::new(file);
+                zip.start_file(name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(b"evil").unwrap();
+                zip.finish().unwrap();
+            }
+            let evil_dest = root.join("evil-out");
+            std::fs::create_dir_all(&evil_dest).unwrap();
+            {
+                let file = std::fs::File::open(&evil_archive).unwrap();
+                let mut zip = zip::ZipArchive::new(file).unwrap();
+                let _ = zip.extract(&evil_dest);
+            }
         }
         assert!(
             !root.join("evil.txt").exists(),
             "zip extract must not escape destination"
+        );
+        assert!(
+            !std::path::Path::new("/tmp/mywhisper-zip-escape-probe.txt").exists(),
+            "zip extract must not write absolute paths"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
