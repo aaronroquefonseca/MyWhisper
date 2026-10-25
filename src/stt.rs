@@ -26,6 +26,7 @@ pub enum ModelKind {
     Whisper,
     Parakeet,
     Whistle,
+    Bark,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,6 +265,72 @@ pub const PARAKEET_MODELS: &[ModelEntry] = &[
     },
 ];
 
+/// Underdog Bark 3.0 family (Conway Research, CC-BY-4.0):
+/// English-only Parakeet TDT 0.6B v3 fine-tunes, converted to
+/// sherpa-onnx ONNX by unofficial `velddev` builds. The files follow
+/// the layout of k2-fsa's own Parakeet TDT exports (NeMo transducer:
+/// encoder, decoder, joiner, tokens.txt), so the existing sherpa
+/// offline server runs them with no new runtime. int8 only
+/// (encoder 630.7MB + decoder 47.7MB + joiner 6.1MB + tokens);
+/// `download_url` is the repo `.../resolve/main` base and every
+/// entry of `required_files` is fetched from it (see
+/// `download_bark_snapshot`). Bark 3.0/Plus transcribe verbatim
+/// (0.25s leading silence required, applied at transcribe time);
+/// Clean drops fillers ("um"/"uh") and needs no padding.
+/// Bark 3.0 Pro (1.25GB bf16 safetensors, transformers-only) has no
+/// ONNX build: follow-up, not in this registry.
+const BARK_FILES: &[&str] = &[
+    "encoder.int8.onnx",
+    "decoder.int8.onnx",
+    "joiner.int8.onnx",
+    "tokens.txt",
+];
+
+pub const BARK_MODELS: &[ModelEntry] = &[
+    ModelEntry {
+        id: "bark-3.0-clean",
+        kind: ModelKind::Bark,
+        name: "Bark 3.0 Clean",
+        description: "English dictation ASR, drops ums and uhs (CC-BY-4.0)",
+        size_label: "685MB",
+        size_mb: 685,
+        expected_bytes: Some(684_624_270),
+        download_url: "https://huggingface.co/velddev/Underdog-Bark-3.0-Clean-sherpa-onnx/resolve/main",
+        extract_dir: None,
+        required_files: BARK_FILES,
+        runtime: None,
+        recommended: true,
+    },
+    ModelEntry {
+        id: "bark-3.0",
+        kind: ModelKind::Bark,
+        name: "Bark 3.0",
+        description: "English verbatim ASR, SOTA at its size (CC-BY-4.0)",
+        size_label: "685MB",
+        size_mb: 685,
+        expected_bytes: Some(684_624_242),
+        download_url: "https://huggingface.co/velddev/Underdog-Bark-3.0-sherpa-onnx/resolve/main",
+        extract_dir: None,
+        required_files: BARK_FILES,
+        runtime: None,
+        recommended: false,
+    },
+    ModelEntry {
+        id: "bark-3.0-plus",
+        kind: ModelKind::Bark,
+        name: "Bark 3.0 Plus",
+        description: "English verbatim ASR, larger sibling (CC-BY-4.0)",
+        size_label: "685MB",
+        size_mb: 685,
+        expected_bytes: Some(684_624_267),
+        download_url: "https://huggingface.co/velddev/Underdog-Bark-3.0-Plus-sherpa-onnx/resolve/main",
+        extract_dir: None,
+        required_files: BARK_FILES,
+        runtime: None,
+        recommended: false,
+    },
+];
+
 /// Full whisper.cpp language list (99 codes + Cantonese), pulled from
 /// upstream whisper.cpp. The UI prepends "auto".
 pub const WHISPER_LANGS: &[&str] = &[
@@ -296,6 +363,7 @@ pub fn model_languages(model_id: &str) -> &'static [&'static str] {
     match model_id {
         "parakeet-tdt-0.6b-v3" | "orukeet-v0.1.0" => PARAKEET_25,
         "whistle-v1" => WHISTLE_LANGS,
+        "bark-3.0" | "bark-3.0-plus" | "bark-3.0-clean" => &["en"],
         "parakeet-unified-en-0.6b" | "nemotron-speech-streaming-en-0.6b" => &["en"],
         "nemotron-3.5-asr-streaming-0.6b" => NEMOTRON_15,
         "cohere-transcribe-03-2026" => COHERE_14,
@@ -321,6 +389,7 @@ pub fn models_for_vendor(vendor: crate::settings::LocalSttProvider) -> Vec<&'sta
             .iter()
             .filter(|m| m.id == "cohere-transcribe-03-2026")
             .collect(),
+        V::Bark => BARK_MODELS.iter().collect(),
     }
 }
 
@@ -344,6 +413,7 @@ mod lang_tests {
         for m in super::WHISPER_MODELS
             .iter()
             .chain(super::PARAKEET_MODELS.iter())
+            .chain(super::BARK_MODELS.iter())
         {
             let langs = if m.kind == super::ModelKind::Whisper {
                 super::WHISPER_LANGS
@@ -357,11 +427,13 @@ mod lang_tests {
 
 /// Capability matrix: (live streaming, dictionary bias).
 /// Whisper prompts natively; sherpa transducers take hotwords files;
-/// whistle takes keyword files; orukeet/cohere expose neither path.
+/// whistle takes keyword files; orukeet/cohere expose neither path;
+/// Bark transducers behave like Parakeet (offline, hotwords bias).
 pub fn capabilities(entry: &ModelEntry) -> (bool, bool) {
     match entry.kind {
         ModelKind::Whisper => (false, true),
         ModelKind::Whistle => (true, true),
+        ModelKind::Bark => (false, true),
         ModelKind::Parakeet => match entry.id {
             "orukeet-v0.1.0" => (false, false),
             _ if entry.runtime == Some(ParakeetRuntime::Online) => (true, true),
@@ -375,6 +447,7 @@ pub fn find_model(id: &str) -> Option<&'static ModelEntry> {
         .iter()
         .chain(PARAKEET_MODELS.iter())
         .chain(WHISTLE_MODELS.iter())
+        .chain(BARK_MODELS.iter())
         .find(|m| m.id == id)
 }
 
@@ -390,12 +463,14 @@ pub fn model_dir(data_dir: &Path, entry: &ModelEntry) -> PathBuf {
         ModelKind::Whisper => "whisper",
         ModelKind::Parakeet => "parakeet",
         ModelKind::Whistle => "whistle",
+        ModelKind::Bark => "bark",
     };
     models_dir(data_dir).join(sub).join(entry.id)
 }
 
 /// Whisper: the .bin exists and (when known) matches expected bytes.
 /// Parakeet: all required files exist under the model dir.
+/// Bark: all snapshot files exist and together match expected bytes.
 pub fn is_installed(data_dir: &Path, entry: &ModelEntry) -> bool {
     let dir = model_dir(data_dir, entry);
     match entry.kind {
@@ -407,6 +482,22 @@ pub fn is_installed(data_dir: &Path, entry: &ModelEntry) -> bool {
             match entry.expected_bytes {
                 Some(n) => meta.len() >= (n * 95) / 100,
                 None => meta.len() > 0,
+            }
+        }
+        ModelKind::Bark => {
+            if !entry.required_files.iter().all(|f| dir.join(f).exists()) {
+                return false;
+            }
+            match entry.expected_bytes {
+                Some(n) => {
+                    let total: u64 = entry
+                        .required_files
+                        .iter()
+                        .map(|f| std::fs::metadata(dir.join(f)).map(|m| m.len()).unwrap_or(0))
+                        .sum();
+                    total >= (n * 95) / 100
+                }
+                None => true,
             }
         }
         ModelKind::Parakeet | ModelKind::Whistle => {
@@ -451,6 +542,9 @@ pub fn download_model(
     cancel: &AtomicBool,
     on_event: &DownloadCallback,
 ) -> Result<(), String> {
+    if entry.kind == ModelKind::Bark {
+        return download_bark_snapshot(data_dir, entry, cancel, on_event);
+    }
     let dir = model_dir(data_dir, entry);
     std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
 
@@ -534,6 +628,97 @@ pub fn download_model(
             if !missing.is_empty() {
                 return Err(format!("missing after extract: {missing:?}"));
             }
+        }
+        // Bark snapshots return before this match (multi-file path
+        // above); the arm exists so the match stays exhaustive.
+        ModelKind::Bark => {
+            return Err("bark uses the snapshot downloader".to_string());
+        }
+    }
+    on_event(DownloadEvent::Done);
+    Ok(())
+}
+
+/// Bark snapshot download: every `required_files` entry is fetched
+/// from the repo `.../resolve/main` base straight into the model
+/// dir (flat layout, no extraction — the velddev ONNX builds ship
+/// loose files, not archives). Blocking; run on a worker thread.
+/// Partial `.part` files are removed on cancel/failure so the next
+/// attempt starts that file clean. Integrity = every file present
+/// + snapshot byte total within 5%.
+fn download_bark_snapshot(
+    data_dir: &Path,
+    entry: &ModelEntry,
+    cancel: &AtomicBool,
+    on_event: &DownloadCallback,
+) -> Result<(), String> {
+    let dir = model_dir(data_dir, entry);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(None)
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    let mut received = 0u64;
+    for file in entry.required_files {
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".to_string());
+        }
+        let dest = dir.join(file);
+        let tmp = dir.join(format!(".{}.{file}.part", entry.id));
+        let _ = std::fs::remove_file(&tmp);
+        let mut out = std::fs::File::create(&tmp).map_err(|e| format!("create: {e}"))?;
+        let url = format!("{}/{file}", entry.download_url);
+        let mut resp = client
+            .get(&url)
+            .send()
+            .map_err(|e| format!("request {file}: {e}"))?;
+        if !resp.status().is_success() {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("http status for {file}: {}", resp.status()));
+        }
+        let total = entry.expected_bytes.filter(|n| *n > 0);
+        let mut buf = [0u8; 65536];
+        loop {
+            if cancel.load(Ordering::SeqCst) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err("cancelled".to_string());
+            }
+            let n = resp
+                .read(&mut buf)
+                .map_err(|e| format!("read {file}: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            out.write_all(&buf[..n])
+                .map_err(|e| format!("write {file}: {e}"))?;
+            received += n as u64;
+            on_event(DownloadEvent::Progress { received, total });
+        }
+        drop(out);
+        if dest.exists() {
+            let _ = std::fs::remove_file(&dest);
+        }
+        std::fs::rename(&tmp, &dest).map_err(|e| format!("install {file}: {e}"))?;
+    }
+    on_event(DownloadEvent::Installing);
+    let missing: Vec<_> = entry
+        .required_files
+        .iter()
+        .filter(|f| !dir.join(f).exists())
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!("missing after download: {missing:?}"));
+    }
+    if let Some(expected) = entry.expected_bytes {
+        let total: u64 = entry
+            .required_files
+            .iter()
+            .map(|f| std::fs::metadata(dir.join(f)).map(|m| m.len()).unwrap_or(0))
+            .sum();
+        if total < (expected * 95) / 100 {
+            return Err(format!(
+                "size mismatch: got {total} bytes, expected ~{expected}"
+            ));
         }
     }
     on_event(DownloadEvent::Done);
@@ -678,12 +863,15 @@ mod tests {
         assert_eq!(capabilities(n), (true, true));
         let wh = find_model("whistle-v1").unwrap();
         assert_eq!(capabilities(wh), (true, true));
+        let b = find_model("bark-3.0-clean").unwrap();
+        assert_eq!(capabilities(b), (false, true));
     }
 
     #[test]
     fn registry_is_complete_and_consistent() {
         assert_eq!(WHISPER_MODELS.len(), 6);
         assert_eq!(PARAKEET_MODELS.len(), 6);
+        assert_eq!(BARK_MODELS.len(), 3);
         let mut recommended = 0;
         for m in WHISPER_MODELS.iter().chain(PARAKEET_MODELS.iter()) {
             assert!(m.download_url.starts_with("https://"), "{}", m.id);
@@ -698,6 +886,20 @@ mod tests {
         }
         // Exactly one recommended default per family.
         assert_eq!(recommended, 2);
+        // Bark family: flat HF snapshots (no archive), exactly one
+        // recommended default (Clean, the dictation fit).
+        let mut bark_recommended = 0;
+        for m in BARK_MODELS.iter() {
+            assert!(m.download_url.starts_with("https://"), "{}", m.id);
+            assert!(m.size_mb > 0, "{}", m.id);
+            assert!(!m.required_files.is_empty(), "{}", m.id);
+            assert!(m.extract_dir.is_none(), "{}", m.id);
+            assert_eq!(m.kind, ModelKind::Bark);
+            if m.recommended {
+                bark_recommended += 1;
+            }
+        }
+        assert_eq!(bark_recommended, 1);
     }
 
     #[test]
@@ -708,6 +910,9 @@ mod tests {
             "turbo",
             "orukeet-v0.1.0",
             "cohere-transcribe-03-2026",
+            "bark-3.0",
+            "bark-3.0-plus",
+            "bark-3.0-clean",
         ] {
             assert!(find_model(id).is_some(), "{id}");
         }

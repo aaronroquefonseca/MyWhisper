@@ -17,6 +17,11 @@
 //! - Local / NVIDIA offline-or-unmarked (parakeet TDT) and Local /
 //!   Oruk (orukeet) → `sherpa-onnx-offline-websocket-server`, whole
 //!   utterance after release.
+//! - Local / Bark (bark-3.0, plus, clean) → the same offline server:
+//!   the velddev ONNX builds keep the NeMo transducer layout, so no
+//!   new runtime. Bark 3.0/Plus get 0.25s of leading silence (their
+//!   eval condition, keeps the first word); Clean needs no padding
+//!   and drops fillers; `<unk>` tokens are stripped for Bark only.
 //! - Local / Cohere → unsupported: `offline-websocket-server`
 //!   v1.13.8 exposes no `cohere-transcribe-*` flags (library-only
 //!   model). Clear error, revisit when the server grows flags.
@@ -331,6 +336,16 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
                 lang: s.language.clone(),
             })
         }
+        LocalSttProvider::Bark => {
+            let entry = stt::find_model(&s.bark_model)
+                .ok_or_else(|| format!("unknown bark model {:?}", s.bark_model))?;
+            let dir = stt::model_dir(data_dir, entry);
+            require_transducer_files(&dir, entry.id)?;
+            Ok(Plan::SherpaOffline {
+                model_dir: dir,
+                lang: s.language.clone(),
+            })
+        }
         LocalSttProvider::Whistle => {
             let entry = stt::find_model("whistle-v1").ok_or_else(|| missing("whistle"))?;
             let dir = stt::model_dir(data_dir, entry);
@@ -372,6 +387,44 @@ fn require_transducer_files(dir: &Path, id: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Bark models live under `<data>/models/bark/` (other sherpa
+/// transducers under `models/parakeet/`).
+fn is_bark_dir(model_dir: &Path) -> bool {
+    model_dir
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|n| n == "bark")
+        .unwrap_or(false)
+}
+
+/// Bark 3.0/Plus were evaluated with 0.25s of leading silence (it
+/// keeps the first word); Clean was evaluated as-is and needs no
+/// padding. Detected by model dir id.
+fn bark_needs_leading_silence(model_dir: &Path) -> bool {
+    if !is_bark_dir(model_dir) {
+        return false;
+    }
+    let name = model_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    name.starts_with("bark-3.0") && name != "bark-3.0-clean"
+}
+
+/// sherpa-onnx renders the unknown-word token as `<unk>`; the
+/// reference Bark decoding leaves it out (velddev README). Strip it
+/// for Bark models only — other transducers keep server text verbatim.
+/// Whitespace is collapsed so removed tokens never leave double gaps.
+fn strip_bark_unk(text: &str, model_dir: &Path) -> String {
+    if !is_bark_dir(model_dir) {
+        return text.to_string();
+    }
+    text.replace("<unk>", "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 // ------------------------------------------------------- server lifetime
@@ -2982,8 +3035,21 @@ fn transcribe_blocking(
                 engine_port(net, WHISPER_PORT),
             )
         }
-        Plan::SherpaOffline { .. } => {
-            sherpa_offline_transcribe(f32s, engine_port(net, SHERPA_OFFLINE_PORT))
+        Plan::SherpaOffline { model_dir, .. } => {
+            // Bark 3.0/Plus were evaluated with 0.25s of leading
+            // silence (keeps the first word); Clean was evaluated
+            // as-is. sherpa-onnx renders the unknown-word token as
+            // `<unk>` while the reference Bark decoding leaves it
+            // out: strip it for Bark models only.
+            let samples: Vec<f32> = if bark_needs_leading_silence(model_dir) {
+                let mut padded = vec![0.0f32; 4000];
+                padded.extend_from_slice(f32s);
+                padded
+            } else {
+                f32s.to_vec()
+            };
+            let text = sherpa_offline_transcribe(&samples, engine_port(net, SHERPA_OFFLINE_PORT))?;
+            Ok(strip_bark_unk(&text, model_dir))
         }
         Plan::WhistleCli {
             engine,
@@ -3716,6 +3782,23 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bark_frontend_pad_and_unk() {
+        let bark = Path::new("/data/models/bark/bark-3.0");
+        let plus = Path::new("/data/models/bark/bark-3.0-plus");
+        let clean = Path::new("/data/models/bark/bark-3.0-clean");
+        let para = Path::new("/data/models/parakeet/parakeet-tdt-0.6b-v3");
+        assert!(bark_needs_leading_silence(bark));
+        assert!(bark_needs_leading_silence(plus));
+        assert!(!bark_needs_leading_silence(clean));
+        assert!(!bark_needs_leading_silence(para));
+        assert_eq!(strip_bark_unk("hello <unk>", bark), "hello");
+        assert_eq!(strip_bark_unk("a <unk> b", bark), "a b");
+        assert_eq!(strip_bark_unk("plain text", bark), "plain text");
+        // Non-Bark models keep server text verbatim.
+        assert_eq!(strip_bark_unk("hello <unk>", para), "hello <unk>");
+    }
 
     #[test]
     fn server_net_defaults_and_overrides() {

@@ -17,10 +17,11 @@ For fast local PR testing and PR-based release notes, see
   history), Activity (stats + heatmap), Dictionary (words + spoken
   snippets), Devices, and Settings (including transcription and text cleanup).
 - **Speech to Text**: chained options, top-down fallback. Local
-  whisper (HTTP :8080), sherpa online/offline (websocket :6006/:6007),
-  Whistle CLI, self-hosted (OpenAI-compat http or sherpa-protocol
-  ws/wss, optional bearer token), cloud (OpenAI/Groq/Mistral/Gemini/
-  Deepgram). One local server at a time; lazy start with catch-up.
+  whisper (HTTP :8080), sherpa online/offline (websocket :6006/:6007,
+  incl. the English Bark 3.0 family), Whistle CLI, self-hosted
+  (OpenAI-compat http or sherpa-protocol ws/wss, optional bearer
+  token), cloud (OpenAI/Groq/Mistral/Gemini/Deepgram). One local
+  server at a time; lazy start with catch-up.
 - **Sync**: serverless device-to-device over encrypted TCP
   (Noise_XX, ed25519 session proofs), mDNS discovery, LWW merge.
 - **State**: single encrypted `state.db` (`~/.local/share/mywhisper/`),
