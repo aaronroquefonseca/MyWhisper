@@ -379,6 +379,16 @@ fn settle_hold_ms(cfg: &MicConfig) -> u64 {
     (cfg.warm_secs as u64 * 1000).max(cfg.release_delay_ms + SETTLE_GRACE_MS)
 }
 
+/// Merge a new hold deadline with an armed one: never extend. A second
+/// deactivate (e.g. Processing -> Hidden after release already armed
+/// the hold) must not slide the close past release + hold.
+fn merge_hold(existing: Option<Instant>, candidate: Instant) -> Instant {
+    match existing {
+        Some(e) if e < candidate => e,
+        _ => candidate,
+    }
+}
+
 impl MicInput {
     pub fn new() -> Self {
         Self {
@@ -413,9 +423,9 @@ impl MicInput {
             let cfg = resolve_config();
             let hold_ms = settle_hold_ms(&cfg);
             if hold_ms > 0 {
-                self.warm_until =
-                    Some(Instant::now() + std::time::Duration::from_millis(hold_ms));
-                eprintln!("[mic] hold {hold_ms}ms (warm {}s + settle)", cfg.warm_secs);
+                let candidate = Instant::now() + std::time::Duration::from_millis(hold_ms);
+                self.warm_until = Some(merge_hold(self.warm_until, candidate));
+                eprintln!("[mic] hold {hold_ms}ms (max warm {}s, settle)", cfg.warm_secs);
             } else {
                 self.close_capture();
                 self.warm_until = None;
@@ -505,13 +515,12 @@ impl MicInput {
 impl LevelSource for MicInput {
     fn sample(&mut self, _dt: f32) -> f32 {
         if !self.wanted {
-            // Warm hold countdown runs here (this ticks continuously).
+            // Hold countdown runs here (this ticks continuously).
             if let Some(deadline) = self.warm_until
                 && Instant::now() >= deadline
             {
-                eprintln!("[mic] warm hold expired, capture closed");
-                self.real_cpal = None;
-                self.real_parec = None;
+                eprintln!("[mic] hold expired");
+                self.close_capture();
                 self.warm_until = None;
             }
             return 0.0;
@@ -606,5 +615,17 @@ mod tests {
             ..MicConfig::default()
         };
         assert_eq!(settle_hold_ms(&cfg), 10_000);
+    }
+
+    /// A second deactivate (Processing -> Hidden) must not slide the
+    /// close past release + hold.
+    #[test]
+    fn hold_merge_never_extends() {
+        let t0 = Instant::now();
+        let early = t0 + std::time::Duration::from_millis(500);
+        let late = t0 + std::time::Duration::from_millis(1000);
+        assert_eq!(merge_hold(Some(early), late), early);
+        assert_eq!(merge_hold(Some(late), early), early);
+        assert_eq!(merge_hold(None, late), late);
     }
 }
