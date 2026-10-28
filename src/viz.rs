@@ -418,6 +418,11 @@ impl Visualizer {
     pub fn set_mic_active(&self, active: bool) {
         self.state.borrow_mut().mic.set_active(active);
     }
+
+    /// Immediate close for cancel: no tail to land, so skip the hold.
+    pub fn close_mic_now(&self) {
+        self.state.borrow_mut().mic.close_now();
+    }
 }
 
 fn bars_width(count: usize) -> f64 {

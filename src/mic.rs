@@ -421,15 +421,18 @@ impl MicInput {
                 return;
             }
             let cfg = resolve_config();
+            // Always >= SETTLE_GRACE_MS by construction (see
+            // settle_hold_ms): the tail outlives every close.
             let hold_ms = settle_hold_ms(&cfg);
-            if hold_ms > 0 {
-                let candidate = Instant::now() + std::time::Duration::from_millis(hold_ms);
-                self.warm_until = Some(merge_hold(self.warm_until, candidate));
+            debug_assert!(hold_ms > 0, "settle hold must cover the release tail");
+            let candidate = Instant::now() + std::time::Duration::from_millis(hold_ms);
+            let deadline = merge_hold(self.warm_until, candidate);
+            // A second deactivate must not re-log as a fresh arm when
+            // the earlier deadline won.
+            if self.warm_until != Some(deadline) {
                 eprintln!("[mic] hold {hold_ms}ms (max warm {}s, settle)", cfg.warm_secs);
-            } else {
-                self.close_capture();
-                self.warm_until = None;
             }
+            self.warm_until = Some(deadline);
         }
     }
 
@@ -444,7 +447,15 @@ impl MicInput {
     pub fn use_sim(&mut self) {
         self.use_real = false;
         self.close_capture();
+        self.warm_until = None;
         eprintln!("[poc] mic source -> sim");
+    }
+
+    /// Immediate close: the cancel path (tap already disarmed, no
+    /// tail to land) must not park the device open for the hold.
+    pub fn close_now(&mut self) {
+        self.close_capture();
+        self.warm_until = None;
     }
 
     fn close_capture(&mut self) {
@@ -627,5 +638,19 @@ mod tests {
         assert_eq!(merge_hold(Some(early), late), early);
         assert_eq!(merge_hold(Some(late), early), early);
         assert_eq!(merge_hold(None, late), late);
+    }
+
+    /// Cancel closes now: no armed hold may survive it or a sim
+    /// switch (both leave no tail to land).
+    #[test]
+    fn close_now_and_sim_clear_hold() {
+        let t0 = Instant::now() + std::time::Duration::from_secs(60);
+        let mut mic = MicInput::new();
+        mic.warm_until = Some(t0);
+        mic.close_now();
+        assert!(mic.warm_until.is_none());
+        mic.warm_until = Some(t0);
+        mic.use_sim();
+        assert!(mic.warm_until.is_none());
     }
 }
