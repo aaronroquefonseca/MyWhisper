@@ -382,8 +382,8 @@ impl VoiceOverlay {
         self.inner.viz.set_mic_source(real)
     }
 
-    /// Immediate mic close for cancel: the tap is already disarmed,
-    /// so the release-tail hold must not park the device open.
+    /// Immediate mic close for cancel: the tap is disarmed right
+    /// after, so the release-tail hold must not park the device open.
     pub fn close_mic_now(&self) {
         self.inner.viz.close_mic_now();
     }

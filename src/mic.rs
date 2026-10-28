@@ -446,14 +446,17 @@ impl MicInput {
 
     pub fn use_sim(&mut self) {
         self.use_real = false;
+        // Not close_now(): a source switch may land mid-utterance,
+        // where close_now's wanted-debug_assert must not fire.
         self.close_capture();
         self.warm_until = None;
         eprintln!("[poc] mic source -> sim");
     }
 
-    /// Immediate close: the cancel path (tap already disarmed, no
-    /// tail to land) must not park the device open for the hold.
+    /// Immediate close: the cancel path (tap disarmed right after, no
+    /// tail to transcribe) must not park the device open for the hold.
     pub fn close_now(&mut self) {
+        debug_assert!(!self.wanted, "close_now must not orphan a live utterance");
         self.close_capture();
         self.warm_until = None;
     }
