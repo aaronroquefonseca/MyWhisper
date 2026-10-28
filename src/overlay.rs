@@ -4,8 +4,8 @@ use gtk4::{Application, Box as GtkBox, Button, Label, Orientation, Window};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Recording indicator lifecycle: microphone feedback, transcription,
@@ -609,9 +609,13 @@ impl VoiceOverlay {
             .set(self.inner.anim_gen.get().wrapping_add(1));
         self.inner.state.set(next);
         self.inner.mirror.store(next.code(), Ordering::SeqCst);
-        // Capture follows visibility exactly: open on any shown
-        // state, drop on hide. No idle-open mic, ever.
-        self.inner.viz.set_mic_active(next != OverlayState::Hidden);
+        // Capture follows dictation, not visibility: open on Listening
+        // only, drop on release (Processing and later). The mic's own
+        // settle grace keeps the tail; inference never needs the mic,
+        // so Processing must not hold it. No idle-open mic, ever.
+        self.inner
+            .viz
+            .set_mic_active(next == OverlayState::Listening);
         // Live words belong to Listening only: release (Processing)
         // and hide retire them with the state.
         if next != OverlayState::Listening {

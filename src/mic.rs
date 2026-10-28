@@ -112,6 +112,7 @@ pub struct MicConfig {
     pub selection: MicSelection,
     pub device_id: String,
     pub warm_secs: u32,
+    pub release_delay_ms: u64,
 }
 
 impl Default for MicConfig {
@@ -120,6 +121,7 @@ impl Default for MicConfig {
             selection: MicSelection::System,
             device_id: String::new(),
             warm_secs: 0,
+            release_delay_ms: 0,
         }
     }
 }
@@ -137,6 +139,7 @@ pub fn resolve_config() -> MicConfig {
         selection: prefs.mic_selection,
         device_id: prefs.mic_device_id,
         warm_secs: prefs.mic_warm_hold_secs,
+        release_delay_ms: prefs.mic_release_delay_ms,
     }
 }
 
@@ -346,9 +349,10 @@ impl CpalMic {
 /// Level source with automatic sim fallback.
 ///
 /// The capture stream is demand-gated: it exists only while dictation
-/// is active (`set_active(true)` on pill show, `false` on hide), so
-/// the OS mic indicator is on exactly while we listen -- never
-/// idling open in the background.
+/// is active (`set_active(true)` on Listening, `false` on release to
+/// Processing/hide), so the OS mic indicator is on exactly while we
+/// listen -- never idling open in the background and never held
+/// through inference.
 pub struct MicInput {
     real_cpal: Option<CpalMic>,
     real_parec: Option<ParecMic>,
@@ -357,8 +361,22 @@ pub struct MicInput {
     wanted: bool,
     /// Warm hold: when Some, the stream stays open until this deadline
     /// after dictation ends (set from prefs at every edge). Checked in
-    /// `sample()`, which already ticks continuously.
+    /// `sample()`, which already ticks continuously. Also covers the
+    /// release-tail settle grace (see `SETTLE_GRACE_MS`), so the close
+    /// below never amputates in-flight slices.
     warm_until: Option<Instant>,
+}
+
+/// Settle grace: minimum stream hold after dictation ends so the
+/// release-tail thread (`RELEASE_FLUSH_MS` in transcribe.rs) can land
+/// in-flight slices before the device closes. Inference itself never
+/// needs the mic; this only protects the ~1 quantum tail.
+const SETTLE_GRACE_MS: u64 = 500;
+
+/// Hold after dictation ends: the longer of the warm hold and the
+/// release-tail settle window. Pure for testability.
+fn settle_hold_ms(cfg: &MicConfig) -> u64 {
+    (cfg.warm_secs as u64 * 1000).max(cfg.release_delay_ms + SETTLE_GRACE_MS)
 }
 
 impl MicInput {
@@ -373,10 +391,13 @@ impl MicInput {
         }
     }
 
-    /// Open the capture stream (pill show) or schedule its close (pill
-    /// hide). With a warm hold configured, the stream stays open for
-    /// that many seconds after use so slow-starting mics don't clip
-    /// the next utterance's onset; 0 closes immediately.
+    /// Open the capture stream (dictation start) or schedule its close
+    /// (dictation end). The stream stays open for the longer of the
+    /// configured warm hold and the release-tail settle grace
+    /// (`release_delay_ms + SETTLE_GRACE_MS`), so slow-starting mics
+    /// don't clip the next onset and the release tail still lands;
+    /// inference itself never needs the mic. Callers must deactivate
+    /// on release (not on hide), so Processing never holds the mic.
     pub fn set_active(&mut self, active: bool) {
         self.wanted = active;
         if active {
@@ -385,11 +406,16 @@ impl MicInput {
                 self.open_selected();
             }
         } else {
-            let warm = resolve_config().warm_secs;
-            if warm > 0 && (self.real_cpal.is_some() || self.real_parec.is_some()) {
+            if self.real_cpal.is_none() && self.real_parec.is_none() {
+                self.warm_until = None;
+                return;
+            }
+            let cfg = resolve_config();
+            let hold_ms = settle_hold_ms(&cfg);
+            if hold_ms > 0 {
                 self.warm_until =
-                    Some(Instant::now() + std::time::Duration::from_secs(warm as u64));
-                eprintln!("[mic] warm hold {warm}s");
+                    Some(Instant::now() + std::time::Duration::from_millis(hold_ms));
+                eprintln!("[mic] hold {hold_ms}ms (warm {}s + settle)", cfg.warm_secs);
             } else {
                 self.close_capture();
                 self.warm_until = None;
@@ -560,5 +586,25 @@ mod tests {
         assert!(live, "sim should produce levels while active");
         mic.set_active(false);
         assert_eq!(mic.sample(0.033), 0.0);
+    }
+
+    /// Release hold covers the tail settle first, the warm hold when
+    /// it is longer: Processing never holds the mic, the tail still
+    /// lands.
+    #[test]
+    fn settle_hold_covers_tail_then_warm() {
+        let cfg = MicConfig::default();
+        assert_eq!(settle_hold_ms(&cfg), SETTLE_GRACE_MS);
+        let cfg = MicConfig {
+            release_delay_ms: 1000,
+            ..MicConfig::default()
+        };
+        assert_eq!(settle_hold_ms(&cfg), 1000 + SETTLE_GRACE_MS);
+        let cfg = MicConfig {
+            warm_secs: 10,
+            release_delay_ms: 1000,
+            ..MicConfig::default()
+        };
+        assert_eq!(settle_hold_ms(&cfg), 10_000);
     }
 }
