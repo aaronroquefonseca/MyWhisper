@@ -69,6 +69,10 @@ pub const GROQ_PROMPT_CHARS: usize = 890;
 
 /// Comma-joined hint list, cut at the last comma inside `max_chars`
 /// so no entry ships half-spelled. Empty input → None (no prompt).
+/// `max_chars` is a byte budget; truncation backs up to the previous
+/// UTF-8 char boundary so multi-byte text never splits (R11: the old
+/// `&full[..max_chars]` panicked on emoji/CJK and could leave
+/// dictation busy — busy-guard recovery itself is owned by #22).
 pub fn dictionary_prompt(words: &[String], max_chars: usize) -> Option<String> {
     let cleaned: Vec<&str> = words
         .iter()
@@ -82,7 +86,11 @@ pub fn dictionary_prompt(words: &[String], max_chars: usize) -> Option<String> {
     if full.len() <= max_chars {
         return Some(full);
     }
-    let head = &full[..max_chars];
+    let mut end = max_chars.min(full.len());
+    while !full.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &full[..end];
     match head.rfind(',') {
         Some(i) => Some(head[..i].to_string()),
         None => Some(head.to_string()),
@@ -314,6 +322,93 @@ mod tests {
         assert_eq!(dictionary_prompt(&words, 10), Some("alpha".to_string()));
         assert_eq!(dictionary_prompt(&[], 900), None);
         assert_eq!(dictionary_prompt(&["  ".to_string()], 900), None);
+    }
+
+    #[test]
+    fn prompt_unicode_boundaries_never_panic_or_split() {
+        // R11: byte truncation must back up to a char boundary and
+        // still cut at the last comma so no entry ships half-spelled.
+        let words = vec![
+            "café".to_string(),
+            "naïve".to_string(),
+            "東京".to_string(),
+            "🎙️dictation".to_string(),
+        ];
+        let full = "café, naïve, 東京, 🎙️dictation";
+        assert_eq!(dictionary_prompt(&words, 900), Some(full.to_string()));
+        // Every budget from 0..=full.len()+4 must return valid UTF-8
+        // without panicking.
+        for budget in 0..=full.len() + 4 {
+            let got = dictionary_prompt(&words, budget);
+            let s = got.expect("non-empty input always yields Some");
+            assert!(
+                s.len() <= budget || full.len() <= budget,
+                "budget {budget}: len {} exceeds budget",
+                s.len()
+            );
+            // No half-spelled entry: result is a prefix cut at a comma
+            // or the whole string.
+            assert!(
+                full == s || full.starts_with(&format!("{s},")) || full.starts_with(&s),
+                "budget {budget}: {s:?} is not a comma cut of {full:?}"
+            );
+            if !s.is_empty() {
+                assert!(
+                    full.contains(&s) || s.contains(','),
+                    "budget {budget}: {s:?}"
+                );
+            }
+        }
+        // A budget landing inside "é" (2 bytes) backs up, then cuts at
+        // the comma: "café" alone has no comma, so the head survives.
+        let single = vec!["café".to_string(), "x".to_string()];
+        // "café, x": bytes c(1)a(1)f(1)é(2),(1) (1)x(1) = 8.
+        // Budget 4 lands inside é; head backs to "caf", no comma.
+        assert_eq!(dictionary_prompt(&single, 4), Some("caf".to_string()));
+        // Budget 5 keeps "café" (5 bytes), still no comma.
+        assert_eq!(dictionary_prompt(&single, 5), Some("café".to_string()));
+        // Budget 6 covers "café," — cut at the comma keeps "café".
+        assert_eq!(dictionary_prompt(&single, 6), Some("café".to_string()));
+        // CJK: 3 bytes per char; splitting inside still yields valid
+        // UTF-8 and never panics.
+        let cjk = vec!["東京".to_string(), "大阪".to_string()];
+        for budget in 0..=16 {
+            let s = dictionary_prompt(&cjk, budget).unwrap();
+            assert!(cjk.join(", ").contains(&s) || s.is_empty() || !s.contains('\u{fffd}'));
+        }
+        // Emoji (4 bytes + variation selector): same guarantee.
+        let emoji = vec!["🎙️a".to_string(), "b".to_string()];
+        for budget in 0..=12 {
+            let _ = dictionary_prompt(&emoji, budget).unwrap();
+        }
+    }
+
+    #[test]
+    fn prompt_unicode_boundary_never_splits_or_panics() {
+        // Multi-byte entries: byte budget landing mid-char must back
+        // off to a char boundary, stay valid UTF-8, and still prefer
+        // the last comma so no entry ships half-spelled.
+        let words = vec![
+            "café".to_string(),
+            "世界語".to_string(),
+            "🎙️cast".to_string(),
+        ];
+        let full = "café, 世界語, 🎙️cast";
+        for max_chars in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, full.len()] {
+            let got = dictionary_prompt(&words, max_chars).expect("some prompt");
+            assert!(got.len() <= max_chars);
+            // Comma rule: output is a comma-aligned prefix of the full list.
+            assert!(full.starts_with(&got) || full.starts_with(&format!("{got},")));
+            // Every byte index of the output is a valid boundary by construction.
+            assert!(got.is_char_boundary(got.len()));
+        }
+        // Long Unicode tail: full list fits, returned verbatim.
+        assert_eq!(dictionary_prompt(&words, 900), Some(full.to_string()));
+        // No-comma fallback still returns a valid prefix, never panics.
+        let single = vec!["🎙️🎙️🎙️".to_string()];
+        let got = dictionary_prompt(&single, 5).unwrap();
+        assert!(got.is_char_boundary(got.len()));
+        assert!(single[0].starts_with(&got));
     }
 
     #[test]
