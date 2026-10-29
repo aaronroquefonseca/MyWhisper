@@ -139,7 +139,9 @@ pub struct VoiceOverlay {
 
 impl VoiceOverlay {
     pub fn new(app: &Application) -> Self {
-        let supported = gtk4_layer_shell::is_supported();
+        let supported = gtk4::gdk::Display::default()
+            .is_some_and(|display| display.type_().name() == "GdkWaylandDisplay")
+            && gtk4_layer_shell::is_supported();
         eprintln!("[poc] layer-shell supported: {supported}");
 
         let window = Window::new();

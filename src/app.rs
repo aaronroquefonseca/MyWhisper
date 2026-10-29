@@ -401,6 +401,11 @@ pub fn centered_column(outer: &GtkBox, width: i32) -> GtkBox {
     col
 }
 
+/// Retain focus owners through reentrant GTK dispatch and release afterward.
+pub fn manage_window_focus(window: &impl IsA<gtk4::Window>) {
+    crate::focus::install(window);
+}
+
 /// Build the main window. Returns the window (not presented).
 /// `initial_page` deep-links one of home|insights|dictionary|sync|settings,
 /// `initial_section` deep-links a settings section.
@@ -413,6 +418,7 @@ pub fn build_app_window(
     load_app_css();
 
     let window = libadwaita::ApplicationWindow::new(app);
+    manage_window_focus(&window);
     window.add_css_class("mywhisper-app");
     window.set_title(Some("MyWhisper"));
     window.set_default_size(1120, 760);
