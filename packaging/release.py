@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Prepare a reviewable release candidate; publishing has a separate license gate."""
 import argparse
+import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -45,6 +46,18 @@ def preflight(root, tag):
     notes = [body.strip() for heading, body in sections if heading == candidate]
     if len(notes) != 1 or not notes[0]:
         raise ValueError("release needs one nonempty matching changelog section")
+    # Only the release being prepared must use the current format. Historical
+    # headings remain readable so old notes still delimit the current section.
+    _, start, end = next(heading for heading in changelog_headings(changelog) if heading[0] == candidate)
+    heading = re.fullmatch(
+        rf"## \[{re.escape(candidate)}\]\(https://github.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/releases/tag/v{re.escape(candidate)}\) - (\d{{4}}-\d{{2}}-\d{{2}})",
+        changelog[start:end].rstrip("\n"))
+    if heading is None:
+        raise ValueError("changelog heading must be ## [VERSION](https://github.com/OWNER/REPO/releases/tag/vVERSION) - YYYY-MM-DD")
+    try:
+        datetime.date.fromisoformat(heading[1])
+    except ValueError as error:
+        raise ValueError("changelog heading needs a valid calendar date") from error
     return {"tag": tag, "version": candidate, "prerelease": prerelease,
             "notes": notes[0] + "\n"}
 

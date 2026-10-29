@@ -24,7 +24,10 @@ class Release(unittest.TestCase):
         self.write("Cargo.toml", '[package]\nname="mywhisper"\nversion="1.2.3"\n')
         self.write("packaging/arch/PKGBUILD", "pkgver=1.2.3\npkgrel=1\nsha256sums=('" + "0" * 64 + "')\n")
         self.write("packaging/nixos/flake.nix", "version = manifest.package.version;\n")
-        self.write("CHANGELOG.md", "## 1.2.3\n\n- Synthetic corrected behavior.\n\n## 1.2.2\n- Old.\n")
+        self.write("CHANGELOG.md", self.heading() + "\n\n### Fixes\n\n- Synthetic corrected behavior.\n\n## 1.2.2\n- Old.\n")
+
+    def heading(self, candidate="1.2.3", date="2026-10-12"):
+        return f"## [{candidate}](https://github.com/fixture/project/releases/tag/v{candidate}) - {date}"
 
     def write(self, name, text):
         path = self.root / name
@@ -46,14 +49,16 @@ class Release(unittest.TestCase):
         self.assertFalse(release.preflight(self.root, "v1.2.3")["prerelease"])
         self.write("Cargo.toml", '[package]\nname="mywhisper"\nversion="1.2.3-rc.1"\n')
         self.write("packaging/arch/PKGBUILD", "pkgver=1.2.3rc.1\n")
-        self.write("CHANGELOG.md", "## 1.2.3-rc.1\n- Candidate, not a stable installer offer.\n")
+        self.write("CHANGELOG.md", self.heading("1.2.3-rc.1") + "\n\n### Fixes\n\n- Candidate, not a stable installer offer.\n")
         self.assertTrue(release.preflight(self.root, "v1.2.3-rc.1")["prerelease"])
         for value in ["1.2", "01.2.3", "1.2.3-rc.01", "1.2.3+build", "1.2.3-", "1.2.3-界", "1" * 129]:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 release.version(value)
 
     def test_missing_empty_duplicate_or_wrong_notes_block_the_release(self):
-        for text in ["## 1.2.2\n- Wrong.\n", "## 1.2.3\n", "## 1.2.3\n- First.\n## 1.2.3\n- Duplicate.\n"]:
+        for text in [self.heading("1.2.2") + "\n- Wrong.\n", self.heading() + "\n",
+                     self.heading() + "\n- First.\n" + self.heading() + "\n- Duplicate.\n",
+                     self.heading() + "\n- First.\n## 1.2.3\n- Duplicate legacy heading.\n"]:
             self.write("CHANGELOG.md", text)
             with self.assertRaisesRegex(ValueError, "changelog"):
                 release.preflight(self.root, "v1.2.3")
@@ -182,15 +187,28 @@ class Release(unittest.TestCase):
         self.assertFalse(output.exists())
 
     def test_notes_accept_freeform_markdown_and_linked_dated_headings(self):
-        self.write("CHANGELOG.md", "## [1.2.3](https://example.invalid/tag) - 2026-10-12\n\n"
-                   "A reviewed release summary.\n\n## What's Changed\n"
+        self.write("CHANGELOG.md", self.heading() + "\n\n"
+                   "A reviewed release summary.\n\n## What's Changed\n\n### Fixes\n"
                    "* Multiple related improvements ([#5](https://example.invalid/pull/5)).\n\n"
                    "## 1.2.2\n- Old release.\n")
         notes = release.preflight(self.root, "v1.2.3")["notes"]
         self.assertIn("A reviewed release summary", notes)
         self.assertIn("## What's Changed", notes)
         self.assertIn("[#5]", notes)
+        self.assertIn("### Fixes", notes)
         self.assertNotIn("Old release", notes)
+        self.assertEqual(release.changelog_sections((self.root / "CHANGELOG.md").read_text())[-1],
+                         ("1.2.2", "- Old release.\n"))
+
+    def test_current_heading_requires_release_link_matching_version_and_calendar_date(self):
+        for heading in ("## 1.2.3", "## 1.2.3 - 2026-10-12",
+                        "## [1.2.3](https://github.com/fixture/project/releases/tag/v1.2.3)",
+                        "## [1.2.3](https://example.invalid/tag) - 2026-10-12",
+                        self.heading().replace("/tag/v1.2.3", "/tag/v1.2.2"),
+                        self.heading(date="2026-02-30")):
+            with self.subTest(heading=heading), self.assertRaisesRegex(ValueError, "changelog heading"):
+                self.write("CHANGELOG.md", heading + "\n\n### Fixes\n\n- A correction.\n")
+                release.preflight(self.root, "v1.2.3")
 
     def test_local_patch_inventory_preserves_notices_and_rejects_unreviewed_source(self):
         from types import SimpleNamespace
