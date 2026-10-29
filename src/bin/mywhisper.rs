@@ -165,6 +165,7 @@ fn run_headless(
         cancel.clone(),
     );
     mywhisper::service::spawn_hotkey_watcher(db_path.clone(), down, up, cancel);
+    mywhisper::service::spawn_stt_watcher(db_path.clone());
     mywhisper::service::spawn_pill_watcher(db_path.clone(), tx.clone());
     // Fixed task runtime first: every background job below flows
     // through it (bounded pool, no panicking spawns). If even this
@@ -191,6 +192,7 @@ fn run_headless(
     // first press then only arms capture instead of cold-starting.
     {
         let db_path = paths.db_file();
+        let generation = mywhisper::transcribe::server_generation();
         if let Err(e) = mywhisper::runtime::submit("startup-warmup", move || {
             let data_dir = db_path
                 .parent()
@@ -210,12 +212,16 @@ fn run_headless(
                         Ok(plan) => {
                             eprintln!("[stt] startup warmup: {}", plan.describe());
                             let net = mywhisper::transcribe::server_net(&settings.stt);
-                            if let Err(e) = mywhisper::transcribe::ensure_for_plan(
+                            if let Err(e) = mywhisper::transcribe::ensure_for_plan_at_gen(
                                 &plan,
                                 &data_dir,
                                 settings.stt.gpu_backend,
                                 settings.stt.sherpa_backend,
                                 &net,
+                                generation,
+                                // Startup work has no owning utterance:
+                                // defer whenever any recording is active.
+                                None,
                             ) {
                                 eprintln!("[stt] startup warmup: {e}");
                             }

@@ -13,7 +13,7 @@
 //! service's settings watcher the same way.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -347,6 +347,183 @@ pub fn spawn_hotkey_watcher(
             }
         }
     });
+}
+
+/// Watch STT settings for provider switches and reconcile the
+/// running local servers (service-owned, 2 s poll).
+///
+/// - Local-to-local with autostart: warm the new engine now (ensure
+///   replaces the old); lazy: stop the old, leave the new cold until
+///   the next utterance.
+/// - Leaving local (cloud / self-hosted / Whistle / disabled /
+///   unresolvable): stop owned locals so the previous engine does not
+///   stay warm.
+/// - Autostart toggle alone: warm on enable (if local and idle),
+///   keep running on disable (no bounce).
+/// - Active recording/inference defers: the fingerprint is retried on
+///   the next idle tick, never mid-utterance.
+/// - Fallback chains key off the primary (first enabled) plan; the
+///   release worker still ensures fallbacks per-utterance.
+///
+/// Engine owner only: call from the service.
+pub fn spawn_stt_watcher(db_path: PathBuf) {
+    // Boot state already warmed (or deliberately lazy) by
+    // run_headless; track it so the first tick is a no-op.
+    let (mut last_primary, mut last_auto) = match Store::open(&db_path) {
+        Ok(store) => {
+            let data_dir = db_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            let stt = store.load_settings().stt;
+            (
+                crate::transcribe::stt_primary_id(&stt, &data_dir),
+                stt.auto_start_server,
+            )
+        }
+        Err(_) => (String::new(), true),
+    };
+    std::thread::spawn(move || {
+        let data_dir = db_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        }
+    });
+}
+
+/// One STT watcher poll: compare the stored settings against the last
+/// applied `(primary, autostart)` pair and reconcile once on change.
+/// Deferred/failed ticks leave the pair untouched so the next poll
+/// retries. Split from the spawn loop so tests can drive the exact
+/// production path deterministically (no sleeps, no threads).
+pub fn stt_watcher_tick(
+    db_path: &Path,
+    data_dir: &Path,
+    last_primary: &mut String,
+    last_auto: &mut bool,
+) {
+    let Ok(store) = Store::open(db_path) else {
+        return;
+    };
+    // Control-generation witness BEFORE any settings/fingerprint reads:
+    // a Stop (or any bump) landing inside the snapshot window below must
+    // not pair its authority with this observation.
+    let gen_before = crate::transcribe::server_generation();
+    // Test seam (cfg(test) only): park after the witness, before the
+    // reads, so a test can land a control transition strictly inside
+    // the snapshot window. Production builds contain no hook.
+    #[cfg(test)]
+    if let Some((entered, proceed_)) = crate::transcribe::TICK_SNAPSHOT_PAUSE
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take())
+    {
+        let _ = entered.send(());
+        let _ = proceed_.recv_timeout(Duration::from_secs(10));
+    }
+    let stt = store.load_settings().stt;
+    let curr_primary = crate::transcribe::stt_primary_id(&stt, data_dir);
+    let curr_auto = stt.auto_start_server;
+    let gen_snap = crate::transcribe::server_generation();
+    if gen_snap != gen_before {
+        // Torn snapshot: a control transition landed mid-read. Apply
+        // nothing — no marker, no last_* advance, no reconcile — and
+        // retry on the next poll with a fresh snapshot. The transition
+        // itself already recorded its own authority (Stop bumps and
+        // records; replacements bump for stale-work abort), so deferring
+        // here only costs one poll interval, never correctness. Never
+        // re-sample and continue: that would reintroduce the gap.
+        eprintln!("[service] STT snapshot torn by concurrent control; retrying next poll");
+        return;
+    }
+    // From here `gen_snap` is validated authority for this observation:
+    // it predates every input above and no transition interleaved. It is
+    // carried into every apply branch below (never re-sampled), so a
+    // queued tick cannot authorize stale work with a fresh generation.
+    // The fingerprint travels with it: apply paths compare current truth
+    // against this attested identity, not a re-derived one.
+    //
+    // Disabled-state observations refresh the disable marker here —
+    // before the skip check, so even unchanged disabled ticks keep it
+    // current. A refusal below therefore never strands later toggles:
+    // the next disable observation refreshes past any Stop, and only a
+    // Stop strictly newer than that refresh can revoke again.
+    if !curr_auto {
+        crate::transcribe::note_disable_observed(gen_snap);
+    }
+    let authority = crate::transcribe::ReconcileAuthority {
+        witness: gen_snap,
+        snapshot_fp: crate::transcribe::stt_fingerprint(&stt, data_dir),
+    };
+    if curr_primary == *last_primary && curr_auto == *last_auto {
+        return;
+    }
+    if crate::transcribe::inference_active() {
+        eprintln!("[service] STT switch deferred (active utterance)");
+        return;
+    }
+    if curr_primary != *last_primary {
+        // Configuration moved. Transient failures (foreign port,
+        // missing runtime, admission contention) retry on the next
+        // tick; only success advances the fingerprint. Active
+        // captures/inference defer the same way.
+        let applied = if curr_auto {
+            match crate::transcribe::reconcile_servers(&stt, data_dir, Some(authority.clone())) {
+                Ok(deferred) => !deferred,
+                Err(e) => {
+                    eprintln!("[service] STT reconcile failed, retrying: {e}");
+                    false
+                }
+            }
+        } else {
+            match crate::transcribe::reconcile_lazy_switch(&stt, data_dir, Some(authority.clone()))
+            {
+                Ok(deferred) => !deferred,
+                Err(e) => {
+                    eprintln!("[service] STT lazy stop failed, retrying: {e}");
+                    false
+                }
+            }
+        };
+        if applied {
+            eprintln!("[service] STT config reconciled");
+            *last_primary = curr_primary;
+            *last_auto = curr_auto;
+        }
+    } else {
+        // Only the autostart toggle moved.
+        if curr_auto {
+            // Re-enabling is itself deliberate: expire any Stop
+            // suppression of this fingerprint before warming, so
+            // the current local configuration starts — unless a newer
+            // Stop (past the last observed disable) revoked this
+            // observation, in which case defer without touching
+            // bookkeeping: the toggle was never validly applied, and the
+            // next observations (including a fresh disable, whose marker
+            // refresh above keeps working) retry correctly.
+            if !crate::transcribe::expire_stop_suppression_at(data_dir, &authority) {
+                return;
+            }
+            match crate::transcribe::reconcile_servers(&stt, data_dir, Some(authority)) {
+                Ok(deferred) => {
+                    if !deferred {
+                        *last_auto = curr_auto;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[service] STT autostart warm failed, retrying: {e}");
+                }
+            }
+        } else {
+            // Disable keeps the running server (no bounce). The marker
+            // was already refreshed above for every disabled observation.
+            *last_auto = curr_auto;
+        }
+    }
 }
 
 /// Commands from background threads to the service's GTK thread.
