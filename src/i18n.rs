@@ -125,6 +125,9 @@ pub(crate) fn backend_text(text: &'static str) -> &'static str {
         "Vulkan server" => "backend.caption.20",
         "Sherpa CUDA server" => "backend.caption.21",
         "Sherpa CPU server" => "backend.caption.22",
+        "English dictation ASR, drops ums and uhs (CC-BY-4.0)" => "backend.caption.23",
+        "English verbatim ASR, SOTA at its size (CC-BY-4.0)" => "backend.caption.24",
+        "English verbatim ASR, larger sibling (CC-BY-4.0)" => "backend.caption.25",
         _ => return text,
     };
     tr(tag)
@@ -1034,6 +1037,18 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "backend.caption.20" => ("Vulkan server", "Servidor Vulkan"),
         "backend.caption.21" => ("Sherpa CUDA server", "Servidor Sherpa CUDA"),
         "backend.caption.22" => ("Sherpa CPU server", "Servidor Sherpa CPU"),
+        "backend.caption.23" => (
+            "English dictation ASR, drops ums and uhs (CC-BY-4.0)",
+            "ASR inglés para dictado, omite ums y uhs (CC-BY-4.0)",
+        ),
+        "backend.caption.24" => (
+            "English verbatim ASR, SOTA at its size (CC-BY-4.0)",
+            "ASR inglés literal, SOTA en su tamaño (CC-BY-4.0)",
+        ),
+        "backend.caption.25" => (
+            "English verbatim ASR, larger sibling (CC-BY-4.0)",
+            "ASR inglés literal, hermano mayor (CC-BY-4.0)",
+        ),
         "lm.residency.default" => ("Ollama default", "Predeterminado de Ollama"),
         "lm.residency.forever" => ("Until server restarts", "Hasta reiniciar el servidor"),
         "lm.residency.unload" => ("Unload immediately", "Descargar de memoria al terminar"),

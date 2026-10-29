@@ -1344,6 +1344,7 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
     let selected = match settings.stt.local_provider {
         LocalSttProvider::Nvidia => settings.stt.parakeet_model.clone(),
         LocalSttProvider::OpenAi => settings.stt.whisper_model.clone(),
+        LocalSttProvider::Bark => settings.stt.bark_model.clone(),
         LocalSttProvider::Oruk => "orukeet-v0.1.0".to_string(),
         LocalSttProvider::Cohere => "cohere-transcribe-03-2026".to_string(),
         LocalSttProvider::Whistle => "whistle-v1".to_string(),
@@ -1473,6 +1474,8 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
                             // may have been rebuilt under us.
                             if matches!(s.stt.local_provider, LocalSttProvider::Nvidia) {
                                 s.stt.parakeet_model = id.clone();
+                            } else if matches!(s.stt.local_provider, LocalSttProvider::Bark) {
+                                s.stt.bark_model = id.clone();
                             } else {
                                 s.stt.whisper_model = id.clone();
                             }
@@ -1974,6 +1977,7 @@ fn stt_lang(state: &Rc<AppState>) -> SttLang {
             };
         }
         LocalSttProvider::Nvidia => &s.stt.parakeet_model,
+        LocalSttProvider::Bark => &s.stt.bark_model,
         LocalSttProvider::Oruk => "orukeet-v0.1.0",
         LocalSttProvider::Cohere => "cohere-transcribe-03-2026",
         LocalSttProvider::Whistle => {
@@ -2582,7 +2586,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         pill_row.set_column_spacing(8);
         pill_row.set_row_spacing(8);
         rows.append(&pill_row);
-        let vendors = ["Oruk", "OpenAI", "NVIDIA", "Cohere", "Whistle"];
+        let vendors = ["Oruk", "OpenAI", "NVIDIA", "Bark", "Cohere", "Whistle"];
         {
             use crate::settings::LocalSttProvider;
             let current = state.settings.borrow().stt.local_provider;
@@ -2590,8 +2594,9 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 LocalSttProvider::Oruk => 0,
                 LocalSttProvider::OpenAi => 1,
                 LocalSttProvider::Nvidia => 2,
-                LocalSttProvider::Cohere => 3,
-                LocalSttProvider::Whistle => 4,
+                LocalSttProvider::Bark => 3,
+                LocalSttProvider::Cohere => 4,
+                LocalSttProvider::Whistle => 5,
             };
             let mut first: Option<gtk4::ToggleButton> = None;
             for (i, name) in vendors.iter().enumerate() {
@@ -2615,8 +2620,9 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                             s.stt.local_provider = match i {
                                 0 => LocalSttProvider::Oruk,
                                 2 => LocalSttProvider::Nvidia,
-                                3 => LocalSttProvider::Cohere,
-                                4 => LocalSttProvider::Whistle,
+                                3 => LocalSttProvider::Bark,
+                                4 => LocalSttProvider::Cohere,
+                                5 => LocalSttProvider::Whistle,
                                 _ => LocalSttProvider::OpenAi,
                             };
                         }
@@ -2657,8 +2663,9 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
     }
 
     // ---- Runtimes: whisper packs (+ backend picker) for the OpenAI
-    // vendor, sherpa packs for Oruk / NVIDIA / Cohere. Toggled per
-    // vendor in the refresh closure below.
+    // vendor, sherpa packs for Oruk / NVIDIA / Bark. Toggled per
+    // vendor in the refresh closure below. (Cohere is library-only:
+    // no server flags in sherpa-onnx v1.13.8.)
     let (card, _rows) = group(tr("stt.gpu.title"));
     let whisper_box = GtkBox::new(Orientation::Vertical, 8);
     _rows.append(&whisper_box);
@@ -3222,7 +3229,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 let whisper = matches!(s.stt.local_provider, LocalSttProvider::OpenAi);
                 let sherpa = matches!(
                     s.stt.local_provider,
-                    LocalSttProvider::Nvidia | LocalSttProvider::Oruk
+                    LocalSttProvider::Nvidia | LocalSttProvider::Oruk | LocalSttProvider::Bark
                 );
                 let whistle = matches!(s.stt.local_provider, LocalSttProvider::Whistle);
                 whisper_box.set_visible(whisper);
