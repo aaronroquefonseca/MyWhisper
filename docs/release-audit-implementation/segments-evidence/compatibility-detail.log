@@ -1,0 +1,7 @@
+Actual legacy/current signed Noise loopback converged: new initiator
+[sync] served 045d381a716c2813982ccbc68e35756e2002e61380c3d95ce64d569a3da2c797 (1 words in, 0 introduced)
+Actual legacy/current signed Noise loopback converged: old initiator
+[sync] served 79c406494a30021b2aec909d1a68d1a4990945088e42386ccc5c9a469a796f74 (1 words in, 0 introduced)
+Schema 8 upgrade/recovery preserved settings, words, history and durable ledger
+Actual schema-7 build refused schema 8 without changing encrypted data
+Schema 8 upgrade/recovery preserved settings, words, history and durable ledger

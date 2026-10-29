@@ -1,0 +1,40 @@
+REPRODUCED deletion exports original text and raw text
+REPRODUCED stale discarded history resurrects deleted row
+REPRODUCED future-dated remote word cannot be deleted locally
+REPRODUCED same-millisecond same-node delete silently ignored
+REPRODUCED reset preserves trust, re-enables sync, and permits data resurrection
+REPRODUCED legacy Ctrl+D migrates to F13
+
+thread 'main' (3884134) panicked at src/textnorm.rs:41:21:
+end byte index 890 is not a char boundary; it is inside '界' (bytes 888..891 of string)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+REPRODUCED Unicode dictionary truncation panics
+[sync] served 337ce26c6ef20678751db8121f806f71f425183f3f418e94780a4cf416991808 (0 words in, 0 introduced)
+REPRODUCED real encrypted loopback sync transfers history while sync.enabled=false
+[sync] served 337ce26c6ef20678751db8121f806f71f425183f3f418e94780a4cf416991808 (0 words in, 0 introduced)
+REPRODUCED outbound sync sends history to locally untrusted authenticated peer
+REPRODUCED concurrent identity initialization returned 4 different identities
+[stt] press: armed (cloud http://127.0.0.1:1 (test))
+REPRODUCED queued press after release leaves an orphan live recording
+[stt] cancel: dropped (0.0s, not kept)
+[stt] press: armed (cloud http://127.0.0.1:1 (test))
+[stt] release: engine ready, transcribing (0.7s window)
+[stt] release: no audio captured (mic unavailable or sim source)
+REPRODUCED release of old session disarms a replacement recorder
+[stt] press: armed (whisper-server (/tmp/mywhisper-audit-repro.pJyMAh/models/whisper/tiny/ggml-tiny.bin))
+[stt] speculative passes on (every 0.5s)
+[stt] warmup: whisper-cpu runtime pack (download it in Settings → Speech to Text / Language Models)
+[stt] cancel: dropped (0.1s, not kept)
+[stt] press: armed (whisper-server (/tmp/mywhisper-audit-repro.pJyMAh/models/whisper/tiny/ggml-tiny.bin))
+[stt] speculative passes on (every 0.5s)
+[stt] warmup: whisper-cpu runtime pack (download it in Settings → Speech to Text / Language Models)
+[stt] cancel: dropped (0.1s, not kept)
+[stt] press: armed (whisper-server (/tmp/mywhisper-audit-repro.pJyMAh/models/whisper/tiny/ggml-tiny.bin))
+[stt] speculative passes on (every 0.5s)
+[stt] warmup: whisper-cpu runtime pack (download it in Settings → Speech to Text / Language Models)
+[stt] cancel: dropped (0.1s, not kept)
+[stt] press: armed (whisper-server (/tmp/mywhisper-audit-repro.pJyMAh/models/whisper/tiny/ggml-tiny.bin))
+[stt] warmup: whisper-cpu runtime pack (download it in Settings → Speech to Text / Language Models)
+[stt] speculative passes on (every 0.5s)
+REPRODUCED four cancelled speculative utterances exhaust all four runtime workers
+All focused reproductions completed using disposable state.

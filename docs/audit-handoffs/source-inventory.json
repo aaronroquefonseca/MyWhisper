@@ -1,0 +1,2763 @@
+{
+  "snapshot": "08d2f6ae1295cf088cb8bb9fc12ea38fd97a4186",
+  "baseline": "15776960fe4351be551df607861db21b59d0e388",
+  "current_main": "092cd80626b71396c71ef5f275e34495d75301ad",
+  "original_changed_files": 459,
+  "all_original_paths_assigned": true,
+  "paths": [
+    {
+      "path": ".github/workflows/release.yml",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "67228654b77399cfa752864848c6c58b6f2b3214"
+    },
+    {
+      "path": "Cargo.lock",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "7c8b306fa3429933571cd6e64364409693fc5927"
+    },
+    {
+      "path": "Cargo.toml",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "89b342f98ce6c5d8c59220e8bc1362c5456c0ced"
+    },
+    {
+      "path": "README.md",
+      "primary_pr": 15,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "c973d90d755d4a0593795f655288d0ad10fa8f71"
+    },
+    {
+      "path": "docs/RELEASE_AUDIT.md",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "323347f2028e25e6b7d99252f7ad795ad1b40e9b"
+    },
+    {
+      "path": "docs/RELEASE_AUDIT_HANDOFF.md",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "f919da59b970c6c91b4819519f58c578cc4a90ab"
+    },
+    {
+      "path": "docs/RELEASE_AUDIT_MATRIX.md",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "19d3050e4cc625a842f20aed74265ec30b1fcd98"
+    },
+    {
+      "path": "docs/RELEASE_AUDIT_STATUS.md",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "f86e383bee9d63bee3740706122c5976ce0ea25c"
+    },
+    {
+      "path": "docs/SYNC_PROTOCOL.md",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "29e3caf57d3a9622ac1f0a6bada78c1cdb40284f"
+    },
+    {
+      "path": "docs/release-audit-implementation/artifact_native_probe.py",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "8867388aed2413199b279d5902e7d7c378655ad0"
+    },
+    {
+      "path": "docs/release-audit-implementation/asset-dialog-evidence/asset-dialogs.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "854046ce6629cd3795c19eb9020844bc5733a981"
+    },
+    {
+      "path": "docs/release-audit-implementation/asset-dialog-evidence/native-summary.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "388104052678e374050018003db79aabc39110d4"
+    },
+    {
+      "path": "docs/release-audit-implementation/asset-dialog-evidence/packaging.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "84fb19f67f4debb05bf5ad58e6dea718d5fbb0ca"
+    },
+    {
+      "path": "docs/release-audit-implementation/asset-dialog-evidence/rust-summary.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "a10fa0f9c27a03c74c479f0a5b9852126dc90045"
+    },
+    {
+      "path": "docs/release-audit-implementation/asset-dialog-evidence/upgrade.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "d2d5331fd49bb3311bb85eb8b26b6c20093fa544"
+    },
+    {
+      "path": "docs/release-audit-implementation/asset-ownership-evidence/native-summary.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "b23a12f72a69209619b6f4868904752b6fd0a924"
+    },
+    {
+      "path": "docs/release-audit-implementation/asset-ownership-evidence/packaging.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "3328c4f7fea09b6fff3f3dc7fb7623cc380ff026"
+    },
+    {
+      "path": "docs/release-audit-implementation/asset-ownership-evidence/runtime.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "17dbe0a857058a7f8359eec5e2fab5a7ebd6bfaf"
+    },
+    {
+      "path": "docs/release-audit-implementation/asset-ownership-evidence/rust-summary.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "b20d031631f8b88598c826a75ccc27a40e955e77"
+    },
+    {
+      "path": "docs/release-audit-implementation/asset-ownership-evidence/upgrade.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "68393923127cf73ba79e97e53ecd5e55c98dded6"
+    },
+    {
+      "path": "docs/release-audit-implementation/assets-evidence/native-summary.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "a0136790c293bd3a9491e95798bcc05bcd6ec097"
+    },
+    {
+      "path": "docs/release-audit-implementation/assets-evidence/packaging.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "c0927e75fc153d5594a7b674c0e731281b12faa1"
+    },
+    {
+      "path": "docs/release-audit-implementation/assets-evidence/runtime.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "60274f13469394b3aebd5dc03010151567cfde31"
+    },
+    {
+      "path": "docs/release-audit-implementation/assets-evidence/rust-summary.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "d2211df9f028b7fba0eda9bbcba7db220e1d54f1"
+    },
+    {
+      "path": "docs/release-audit-implementation/assets-evidence/upgrade.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "46abbdcd5b338cc072af4520a87f53ea5184d76f"
+    },
+    {
+      "path": "docs/release-audit-implementation/cohere-cuda-evidence/debug-budget120-failure.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "cdcaf3dc225a688ae22dacb62d37a1225d97d29b"
+    },
+    {
+      "path": "docs/release-audit-implementation/cohere-cuda-evidence/debug-budget120.py",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "b8b6401649fe2fb261668b294292db391c161959"
+    },
+    {
+      "path": "docs/release-audit-implementation/cohere-cuda-evidence/debug-budget300-failure.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "67ac8a12870d6ddf602a44751a1ae05d0ccc1184"
+    },
+    {
+      "path": "docs/release-audit-implementation/cohere-cuda-evidence/debug-budget300.py",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "57174eefa1fecb8c960f50ba3de109190b18fe6f"
+    },
+    {
+      "path": "docs/release-audit-implementation/cohere-cuda-evidence/debug-build.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e4ac50c24ce76ab1c5594ae8b68a1f7e7fb6e2f1"
+    },
+    {
+      "path": "docs/release-audit-implementation/cohere-cuda-evidence/live-release.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "48f5ac13c05dd61d29a8c1891fe0c6208383cc58"
+    },
+    {
+      "path": "docs/release-audit-implementation/cohere-cuda-evidence/live-release.py",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "48fee02ea3800f8197fd192aac0e4d92fd723248"
+    },
+    {
+      "path": "docs/release-audit-implementation/cohere-cuda-evidence/release-build.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "aea9db23079fda68502f201cb96924110046075d"
+    },
+    {
+      "path": "docs/release-audit-implementation/cuda-evidence/README.md",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "6808eb5a88f980a79385154fcfd13c61c10a6f2b"
+    },
+    {
+      "path": "docs/release-audit-implementation/cuda-evidence/live-cuda.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "c11415eae0eed7d130c147afc1a39949892e0eeb"
+    },
+    {
+      "path": "docs/release-audit-implementation/cuda-evidence/native-runner-inputs.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "6872cd6a028f3c9be77cd1f46a16ad28efcfa3e4"
+    },
+    {
+      "path": "docs/release-audit-implementation/cuda-evidence/runtime-build.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e8df52a6548db321fedb419d210aa645c718024a"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/clipboard.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "c97616657d82c8a961e54057895b4d84c1acd910"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/clippy.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "20b06e56ad0d5838ba82bfe0a88a0dd236e5882d"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/current-artifact.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "206df32d110bf3b000bdddf9a74d36aac4cb3a9c"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/fmt.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/gtk422-logo-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "55aa885dd8e9dc6ed0cce1e71d427f4853e14f1b"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/gtk422-logo-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "8a6fd82f8e39ed40662b110079925089d3f44303"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/gtk422-probe-build.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "c5cc9328354c66c2bf612653e7cc08ff43e55146"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/host-tests.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "2fdc519595a7856c7843df7545a15960201d3dfb"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/icons-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "03ce8718e8691ec6c7fa790e7fd817923c078d67"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/icons-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "18f3036601af14aa752984387b0baaf1b46586f0"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/keyring-sync.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "7fc8415f81452d2be14ce7a409dd71e7dd74e3d4"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/logo-before.svg",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "71bc03622a3546d7164c4777c9d52c28b5fcd497"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/long-tmp-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "17973d47089366e413e38289861e820d3d6440f8"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/long-tmp-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "6e52d8c421954e958858d4d61a10a00340ea8b9c"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/native-assets.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "5cd71ec618504a6df55e3f902d6737780a7064ac"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/native-setup-colliding-displays.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "fd766f26e259b83f236a1ae0ba43bd6fb55979f6"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/native-shutdown.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "222dedbee304eb15079d379d783ae34f02d25d8f"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/native-ui.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "42f30f40f9b202b69ba8d77fa10dd05f90d45ff9"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/nix-icons-after.png",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "72e552cce77a11b62649bc5203528654d8e4dadf"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/nix-icons-before.png",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "ec1e8c23b84e5263fdccac8e6e301b5c8020899d"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/nix-long-tmp-failure.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "ad508280a308074d02dda76b228affeeae793167"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/nix-long-tmp-recovery.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "d08f31b70444530ca18376457d4b6c848fc52937"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/nix-package-build.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "8193db1f8e67f6019c15eeae6862fa3197b3f8ed"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/nixos-system-dark.png",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "c340ebc497145bafb92b7ee1be7751f3dfd41fd9"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/packaging.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "8f1c5d45b8c97523e00bc421be14c0780007077d"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/probe-finalization-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "76e3d17cf6fad007a2ebffed5b40b94d38deabc3"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/probe-shutdown-stress.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "47f45c5fd5eb00362cc85eae9301fab991325f58"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/probe-shutdown-tests.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "7cf267f1ffa05f9a3187f643786ed7c5d2f6543c"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/release.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "f9bae7659d40a11c0016e13c321c0e0c271e0d4d"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/rustsec-fetch.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/rustsec.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "b6779c4c8d6c33e73f68a67a91e13708d3f86deb"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/svg-setup-hidden-source.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "dac9e88a132ccdd3de9c09650c342af2ed4f1c75"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/symbolic-check-build.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "145fff6997c42206875bb2b586104e8d8f094d0d"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/symbolic-check-driver.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "2967d4b3df887b2bc07c29704d933dbcc33c6373"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/symbolic-setup-missing-dbus-config.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "30610faad960976efc05585275a35a9f25dc20d2"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/symbolic-setup-readonly-tmp.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "2130302c5181190578c50fee0ae9e2da6ecc294e"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/ui-probe-invalid-weight.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "016241433c2a9f834b7d11ea7c9b1ef99c8a9514"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/vm-build.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "22984250951441f2f2028d1be31c2dff0d427e7f"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/vm-driver.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "6bac3fa76ee162a55829869c92667bf21c551cb0"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/vm-gui.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "92e73ea4aeb62a3e7679511eabce0c4a5adce52e"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/vm-service.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "479a6cde093a38cab3f9fb198e70a7d5017f419f"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/vm-setup-deprecated-api.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "8fb375907141ee117f660638e8eeb8661a6b7b81"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/vm-setup-long-socket.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "cd80575bfe154bce36453525bb71d323b8058b85"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/vm-setup-missing-schemas.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "1bdbb9cc534ea4ec7a8ab0e6c9fa1e8768a0ed3f"
+    },
+    {
+      "path": "docs/release-audit-implementation/desktop-evidence/vm-setup-sway-command.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "d3dc8ca9d883dcb2b647ceeef146ce9d5333d15c"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "4ace3f0c2cb8ccb11d60441b778953dfda2b5973"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/assets-native.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "9fb2f49bc29d8ac263b09381a9d1411f090241c2"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "cc7760416df53c751494424b433b4ddd4a64f807"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/clippy.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "8ed30f74f41d63e82b65f9ea24f8c17fc8d92b15"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/fmt.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/nix-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "9065c174b3ece221c944274256876ea32645dc9a"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/nix-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "9eadd07067db3f66ce0223bb241a643a8cc65783"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/nix-native-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "73210233988654caaf375c60b9728982c85a5409"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/nix-native-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "98a2d7ada1349de2a941b1798ac7b956c0452f55"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/nix-public-dns.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "b17164e01cab9ad0d53683037b2d9f810b89c6fa"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/nix-version.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "88ec650ecd022f8ae8f5135b894d517110b0da17"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/packaging.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "90a87ca25b3afa36d33705208b4110a998ef3b97"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/release.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "2389332f0e682a5c46ead6ab147207370f9e1f1a"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/security.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "d70d252b9ab4383d1ad952663f93dfddd3bfcdb1"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/tests.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "ad285597a66f1d51778a518e2e5546f46e4e27ed"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/ui.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "396bd2326f3747685ac7d524937226ec92510595"
+    },
+    {
+      "path": "docs/release-audit-implementation/download-dns-evidence/upgrade.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "7ed95f43529c4bbeb099b102b2ab77dfac85de4a"
+    },
+    {
+      "path": "docs/release-audit-implementation/final-nix-evidence/build-summary.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "786abe7a9bc53bead89efca2b31b06967556ac64"
+    },
+    {
+      "path": "docs/release-audit-implementation/final-nix-evidence/keyring-summary.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "1942cf625c7dd65be28364f9a100389d7df55eae"
+    },
+    {
+      "path": "docs/release-audit-implementation/final-nix-evidence/native.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "eb2416583cf00d4b53a25303e3eef5c7f41c481c"
+    },
+    {
+      "path": "docs/release-audit-implementation/final-nix-evidence/version.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "88ec650ecd022f8ae8f5135b894d517110b0da17"
+    },
+    {
+      "path": "docs/release-audit-implementation/fork_lock_probe.py",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "1018c98b6c3dd18465629bf0c93b858ad5144a42"
+    },
+    {
+      "path": "docs/release-audit-implementation/identity-recovery-evidence/all-targets.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "95a14857f3893d1bc80293cd86749c7d1105bade"
+    },
+    {
+      "path": "docs/release-audit-implementation/identity-recovery-evidence/clippy.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "1c0c3289a715184dc8da4656a706f3cb8dcbfe6b"
+    },
+    {
+      "path": "docs/release-audit-implementation/identity-recovery-evidence/fmt-check.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "docs/release-audit-implementation/identity-recovery-evidence/release.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "97200dc49be87f499027f31c9efe9c4ff52f5fb2"
+    },
+    {
+      "path": "docs/release-audit-implementation/identity-recovery-evidence/targeted.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "9df1a7ed2083c3ec98721491463eca5104d38edf"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/actual-enospc.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "6bb9c768928fe15761091e4a8b3af07250db2993"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/all-targets.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "47d7bad9337807f643d379dc49ce06d685830b3f"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/artifact-native.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "978f214dcffe57318a355fc1542dc2e336e3d459"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/artifact-version.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "88ec650ecd022f8ae8f5135b894d517110b0da17"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/clippy.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "f68ff88b751c8c3efaf4341c82803c360afe6dce"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/crash-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "23e6eededb298d9e73586917159f7276e8376307"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/crash-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "72bab0589289f0431c83e819dfe1839457eefbe1"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/dns-readiness-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "62a334c76b4b2b6c30eb2f63a9ea430b32e660f4"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/dns-readiness-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "352be7e4a134b8371c4a15f78eb51e7f52a7e526"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/dns-stress.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "664afc8360dbe5a5411668315968d14d9354ddad"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/dns-thread-count-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "8b3079be35c89fb5e23e07e7121c3a57b2449a7c"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/dns-thread-exit-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "a38e4032539e0281b0a70a8030143479bbfff87c"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/fmt.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/installer-targeted.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "93f59ff303686bcc99e517f22e0865b2df74de07"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/keyring-sync.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "c186dac3f2e893c1cbdb7f669453da29f88bcf74"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/native-assets.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "0a169e57e8b87b7dc950ba224920681ca27beb68"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/native-display-concurrent-failed.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "678d0a41d2ff26ae4c048273651f6f1ff279f79e"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/native-heartbeat-load-failed.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "899527c788461112fe624c033d4e03e26d561b57"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/native-ui.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "1b863ed55beb978ac3824ca02a1b80e943cd89d9"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/nix.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "5f1db5e7df51d413aa07cf0a9bb2f07bd18fa765"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/packaging.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "af215536544eb7f963ca4b61de8a528cc3651847"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/path-ownership-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "6d9b99a652c3465def9666dd7b7a22ff9f76c474"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/path-ownership-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "1e0d33eee41f8b32bf08d4b043d1823ab0531c0c"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/promotion-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "06ec395af4842b104e8f99479b2e46b71f6865c8"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/release.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "c6bfc5bd30d38869dcbd2986a4342777fb75667c"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/runner-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "a43d3408c5ac7a5a15d646639961b92ad953db6a"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/runner-input-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "caa66b1ab6111acee9e9bffa8be5815d7fd5e2c7"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/runner-ownership-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "6f96f453b78e3582ba1ab779b6cb63033bd4f72a"
+    },
+    {
+      "path": "docs/release-audit-implementation/install-recovery-evidence/security.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "09bdab5da315e32aeb1cbf7a69edece2d9858ae3"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/README.md",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "7c287299db4d57c37eb967e07e86cdf6f4b62bee"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/after-native-owner.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "478812c7d68d9c47aaa2f6216dfb92e9f37bea16"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/all-targets.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "8965131fe2063ef1af291a91abb3ae4cc89c8b63"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/before-native-failure.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "9e61278b10e566b9b33ebb71ac97efa62eb36041"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/clippy.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "c9505c1cc9aa8baaf2d064f3ddb99cde29eda9f9"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/dependency-audit.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "09bdab5da315e32aeb1cbf7a69edece2d9858ae3"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/fmt.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/host-quota-failures.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "54942fdaec61517190b9404208ed1b71ecba2654"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/live-ollama.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "72da0c26ac79c3e8d4be14ae103833f5032d3c68"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/native-assets.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "bf7f25e7dd5d4dcfaa7eb5f8804a5e71c8e3ab9e"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/native-ui.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "0c71c346803a7e8032d556ce27e2a47450e9c352"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/nix-build.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "cc53f545ac1f57c24cb5f9dad391043a4c86b037"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/nix-flake-reference-failure.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "adf7964f8b1579fce5fa8df5b4e7371a8de56bf9"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/nix-quota-failure.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "7282b624dde53e38791625fc01c07ba7ce89a8d3"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/nix-relocation-first-failure.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "99923152b0de9dea583a8449c800fb1f6fd9d2cb"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/nix-relocation-verified.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "20c59b033f513543462bc72a6ed39d142486f67d"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/nix-result.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "a38a4506edda376946e19644d8ea2ef4af5f53db"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/ollama-help.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "f7629085af5062d1a480cc642029e45b16abf690"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/packaged-artifact.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "2e81980748a87ab5dd05940d55121e4bee14306b"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/packaged-artifact.py",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "13f856b9b1bfd5e4ed7f9858023c554f80d7284d"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/packaged-display-failure.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "d20953b078801c237709f85c775e6de2978e4b83"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/packaged-display.py",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "4cc161a7d85dc767b8e94ad5b82fe03b8bdb6ab2"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/packaged-setup-failure.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "4ffbe2f8b68fb8ebe323d72400147f0586c8bb57"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/packaged-window-failure.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "f297172034f6081c0736c8789e345ff71262651f"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/packaged-xvfb-failure.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "f95aff6d1c5041cf50fe9756f97623a6d4be8d5a"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/packaging-release.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "5f635489a8af006b1b7475c52e0676a91f64ec04"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/packaging-upgrade.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e44bfc2c5bf3d4c538111abbdee8537e7f22c1f9"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/real-keyring-sync.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "b26de44b1decb6ac5edca761ca69399c5fe9aa9c"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/registry-pull-diagnostic.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "d89ea3b8991fecffec6c4a7d4677005302d39bdd"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/registry-pull-timeout.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e0e7684e87e54288ffcb908109e275f4b7f51b27"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/release-build.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "d347d0d23a07fd46e1f097579197ca2fa8db2cbc"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/runner-ownership.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "0d5e0d667683e2a9813b1e93cb874b757500aa50"
+    },
+    {
+      "path": "docs/release-audit-implementation/model-load-evidence/targeted-tests.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "5f15f6fd48fab84d8cfcb02c81776054a780488d"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/all-targets.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "1ccf38e228491b409ee66be776e788d147197cc4"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/artifact-native.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "24c21b39f7d5bc602bda61231b834d0c4814480c"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/artifact-version.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "88ec650ecd022f8ae8f5135b894d517110b0da17"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/background-owner-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "ead20942220319e9153bb934b4ada322c7d4056d"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/capture-pressure-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "47cef1a7c891a64b188fe60bdea02a15ac316923"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/clippy.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "d6bcbf43675023bbc27d35abec205d59e37784dc"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/completion-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "3c3f7316728d4a2d0cb6a2eecf0ca9b09e728651"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/fmt.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/input-reader-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "37f9d8297d55162aa3e7edc29c043edfb3a0e747"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/input-reader-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "d67468c932b0cdf1f5084526940e631ab3873fc7"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/installer-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "5a2108d598ef6f4cdb4946ee1d371d23ec52b471"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/installer-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "14e15eba53262bc77832e0525dca5d02125ee5db"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/keyring-build.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "dbdda8efe1155b2bcbe0d14b79640401380c3846"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/keyring-live.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "c306b0de0096449caab76b99efb818413bdaa318"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/native-assets.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "f0517893af288c6256375869d73cc52e7ed1f0cd"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/native-ui.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "b5ad388d8c8012ca7e5a20d95acc246ca7c72293"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/nix.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "b15c2fef0c325cea973cf1bd29c8e9fa7eb85fed"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/packaging-release.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "eaf386a3b972423c28f30779da77029617fe56e1"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/packaging-upgrade.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "088fd3bcf0dd89ad6da51423563338b7fc2acc32"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/process-exit-analysis.md",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "0aa5257ae6b36b181e62eaa1dcc10d925561c4f6"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/rapid-replacement-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "1abc6a9d9986e020264c5a2bda20ef16d3090cc7"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/release.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "a2668d0e3cd7ec355f6e1d1197d2fbf4806933d8"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/security.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "dde5386c7d88be5445b7b0dba93aa191aff2e8d2"
+    },
+    {
+      "path": "docs/release-audit-implementation/owned-work-evidence/suite-before-completion.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "88c2046196d36d0199ccc11e1bb4527fc9d23c36"
+    },
+    {
+      "path": "docs/release-audit-implementation/pages-evidence/compatibility.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "0e992f26a08048ece50b10ef548ac5aa628f6d2c"
+    },
+    {
+      "path": "docs/release-audit-implementation/pages-evidence/native-summary.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "ae73c1cebb3d6cf0bd37140d89ae53da0558b23f"
+    },
+    {
+      "path": "docs/release-audit-implementation/pages-evidence/network.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "a32e573bfd6169b88f71a7b0488a6418807d7c8d"
+    },
+    {
+      "path": "docs/release-audit-implementation/pages-evidence/rust-summary.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "974b23d5841589ca8b1ea04db6b22e6e2590e964"
+    },
+    {
+      "path": "docs/release-audit-implementation/pages_compat_probe.py",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "f6ac68e25c7cb495d909a093a423f443be1e0ef0"
+    },
+    {
+      "path": "docs/release-audit-implementation/pages_compat_probe.rs",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "1e977eee08a7b44a1f5adbb709e045a7b96fae1c"
+    },
+    {
+      "path": "docs/release-audit-implementation/reset-evidence/before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "b618305733ecb861eb10639787bf294193ab41f5"
+    },
+    {
+      "path": "docs/release-audit-implementation/reset-evidence/compatibility.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "ca6f2d33c97ddbfd3320806617f74b89c6091dfb"
+    },
+    {
+      "path": "docs/release-audit-implementation/reset-evidence/compatibility_build.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "01b45e4dd936269778b448db1610d19d96a10dd4"
+    },
+    {
+      "path": "docs/release-audit-implementation/reset-evidence/core.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "3b666f3c347910d7e05b33a2730e555fa8242d44"
+    },
+    {
+      "path": "docs/release-audit-implementation/reset-evidence/keyring.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "4d88694302c68bc184c23a3e3e294ff064c60d61"
+    },
+    {
+      "path": "docs/release-audit-implementation/reset-evidence/tests.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "f6c509bc2c6c24f672a6f64f5837b53ab9ef7c21"
+    },
+    {
+      "path": "docs/release-audit-implementation/reset-evidence/ui.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "56743f583cd62f242140c8530c24e588bedf8b10"
+    },
+    {
+      "path": "docs/release-audit-implementation/reset_schema_probe.py",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "d15de5829fa8f87ccb5f34ddc7b457bd876952cb"
+    },
+    {
+      "path": "docs/release-audit-implementation/reset_schema_probe.rs",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "fc557e23a79476a5aea3d64622232dc787a656ec"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/REVIEW.md",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "ffcf07f8fd41903407a09c3fea10f7a1dfdca3ef"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/evidence.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "8a190cb832dc32951758b73dcf8fa3b4be68decf"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/fake_whisper.py",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "d4116bf4fe3e7e0ec5a5760054117620f12751fa"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/probe-armlock.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "2033201948a6136788abe66776b5dd3c3c2d2850"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/probe-build.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "c7a9bb06ae5acde6d2efad16c8594445d7890870"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/probe-cancel.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "59b0d79d99f974a53413cb0e6412772e2c382a99"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/probe-discard.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "58ad4b470b0494bf742298035aa4fe3101ef0433"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/probe-dns.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "bb3b94e740241e9dafc4167e3ebe077b66c777d5"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/probe-installed.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "cbdbf3e9fa699995a5f744a2af495a7a415508b1"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/probe-oversized.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "c837fa5c7b48c7faf85d7af75c337224e7370019"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/probe-queued.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "051b1cdca9426b2c6a8f86e2a71d9a3b7c959d46"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/probe-reset.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "1553510e83a7543760587e011ef0863e8f8e1e36"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/probe-server-replacement.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "8398e62a848a887c5c2d088bebcfccff6c94322a"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/probe-thinking.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "4857254ec3a3fcb811cf1db4a4fcac37847090cd"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/review_acceptance.rs",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e0738259a0c64b8b7704ab8944bb4a6828e967bb"
+    },
+    {
+      "path": "docs/release-audit-implementation/review-f426c9a/stalled_dns.c",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "a3f5682be8bda85cc8a7113cad00dfa8e3634acf"
+    },
+    {
+      "path": "docs/release-audit-implementation/segments-evidence/compatibility-detail.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "beb9d118e0c235b3023581cff5b646ea3d701d1d"
+    },
+    {
+      "path": "docs/release-audit-implementation/segments-evidence/keyring-summary.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "1942cf625c7dd65be28364f9a100389d7df55eae"
+    },
+    {
+      "path": "docs/release-audit-implementation/segments-evidence/native-summary.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "388104052678e374050018003db79aabc39110d4"
+    },
+    {
+      "path": "docs/release-audit-implementation/segments-evidence/packaging.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "bb5601f70b6ac039eb3a7250ba5abc96d34c8b0a"
+    },
+    {
+      "path": "docs/release-audit-implementation/segments-evidence/rust-summary.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "bfe135595e5a8be72d976d3e07be73ef9a15b0d6"
+    },
+    {
+      "path": "docs/release-audit-implementation/segments-evidence/targeted.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "37841d868625627aeece89c9253b1b59bf1325e8"
+    },
+    {
+      "path": "docs/release-audit-implementation/segments-evidence/upgrade.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "066367d934b68a404b92c42aa7812bfbd46072dc"
+    },
+    {
+      "path": "docs/release-audit-implementation/segments_compat_probe.py",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "9ef166edda532a2d07eec4c9c7f6952d71160a0d"
+    },
+    {
+      "path": "docs/release-audit-implementation/segments_compat_probe.rs",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "4142ac9965934bd3443590a4d779627f7969865a"
+    },
+    {
+      "path": "docs/release-audit-implementation/settings-writer-evidence/after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "c06a0636410185a92d8445df01185d482562ff08"
+    },
+    {
+      "path": "docs/release-audit-implementation/settings-writer-evidence/before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "b69b781dfe3e58be9068157308644d715876e00d"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/all-targets.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "f2bc0df6ec6bf30ebec47170ed7618e9e7fe6bf2"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/audit-tool-missing.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "4900a370c1b11839b3565c5467913a565c284732"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/clipboard.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "dbbc594ddc0cd7ebbab26bb0a943e64e2b18b4b1"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/clippy.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "cd72eb88fac9d65d98bb57052e559b33db0ca18a"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/cpal.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "d95e02ab4c06e6f517bbe539f63b9ec93beeceee"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/fmt.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/keyring-sync.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "16d8e5fefca845017128319a19d1a42ca47e5a14"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/native-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "72818f9f9b958ea446885bddcce199292cb399d8"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/native-assets.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "700df800f1e474e9a6198fc9edb9d219abc319ca"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/native-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "3183fcc7eb01f4a0e4e98648cf93eb23a4023c63"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/native-ui.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "bd273961c15042281a3b11677e89c3b871608041"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/notices.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "08d9527225e402e34b09c14e275fef309f0edf1e"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/packaging-release.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "6074369a270711dee3b2ef8e61abca1a3adfc57f"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/packaging-upgrade.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "8eb405939a7debd215ceeed5473d087645b64e96"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/release.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "3c052272b6b406eee9b1150cd19ddce38a5f66f4"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/rustsec-fetch.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "docs/release-audit-implementation/shutdown-evidence/rustsec.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "b6779c4c8d6c33e73f68a67a91e13708d3f86deb"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/clippy.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "5bbd69286ac47c31008fe7c078190984dea0fb89"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/coordinated-checkpoints.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "2eec9c8faa0564b1d395c56fa218ff0d8c0f5c0e"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/fifo-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "04d1ee1b223f0458ed8c010dcd4289b24276f895"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/fifo-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "960bae8b1516062fe0b8e1f61e9856a3d120664e"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/fmt.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/host-stress.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "29a02b86126260d474fbbb1b6a024ccce4f53658"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/host-tests.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "d5f463cbdc34783dde104dd416618d3e6ffaa483"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/late-write-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "b7c0587c3ef0b2f84c8bb7e369c9168f579a2e89"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/late-write-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "0ea7b92d7ca1eb0476993fee2e7f194e6b5c912a"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/migration-regressions.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "7993364884690e232a4fe4d393ee5db076ec2900"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/native-assets.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "264616931bfa5ad4dce999d20b3a156e7cc54a44"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/native-ui.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "c470c062c442f84e5db516d8ade19d656f449e9e"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/nix-build.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "222da34d04d4d2d02c8fe1b8a583c57dfc4e3c9e"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/nix-checkpoint-race.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "3a203411844793c667313f8ef9be36140eab969d"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/nix-package.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "8f2461a34605413ea9b06c08c0e5fca79f905c8e"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/nixos-desktop-driver.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "36b09279f931177a1dedb6485c8df9d45b83d838"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/nixos-gui.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "321397e0d2d5823118201403f0175c300f014d61"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/nixos-loader-driver.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "2b6b644563c479c15cfcf30fee57751ff1a3eb12"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/nixos-mywhisper-system-dark.png",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "ef27a612f5637c5a9b3c3983596a221bc20fd05b"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/nixos-service.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "fa7b5e4ec3f0c8cdd7e98386a8f79b57f733dcdb"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/private-files.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "4384c4b7bc889ccaaee4b1dac3b0e0d6aaf18a1e"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/release.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "ee446e537b9e8863005a17292dea87f177ab822b"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/vulkan-host-loader.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "11787323a2ad008e53d237b51cf366561f0f1169"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/vulkan-nixos-before.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "7b8aa5930d7324dab91ef3e58f6edf3123a0350b"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/vulkan-nixos-capture-setup-failure.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "ed195be54bbe1a59e93d8e5f3e0ac400d54cca7e"
+    },
+    {
+      "path": "docs/release-audit-implementation/storage-runtime-evidence/vulkan-nixos-isolated-after.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "bc7d0cb18208fc977831647ee798b554ef7fde2d"
+    },
+    {
+      "path": "docs/release-audit-implementation/synthetic-needle-contract.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "1fa8711897a66aafa8331254008c2306890f4919"
+    },
+    {
+      "path": "docs/release-audit-implementation/toast-dark-hover.png",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "91c178ae84d7221b46b7206e3ec944904fb4b164"
+    },
+    {
+      "path": "docs/release-audit-implementation/toast-dark-normal.png",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "8b9d2b573e650c80dcf9ac8b5900b6642048f7a9"
+    },
+    {
+      "path": "docs/release-audit-implementation/toast-light-hover.png",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "c3154e02539155e95e45e348a695bbbe22e526f2"
+    },
+    {
+      "path": "docs/release-audit-implementation/toast-light-normal.png",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "a05a220d99b031922a93da5841113f721c2d8cd7"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-2026-10-10-commit-sequence.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "34a3ac61231b2ffa3c52e56d25809a48b0174db2"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-2026-10-10-keyring-cohere.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "2451e8ae87054474bde5a61cd3d04864acb37dbc"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-2026-10-10-sync-retention.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "a5af158fcd20159aa55c5a16dc4cad32e1c524cf"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-2026-10-10-ui-status.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "9803e93f3f7168bfe5cabe369e672f6b1d38d041"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-2026-10-10.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e951afdb4ac486d41eb4a6262e188889331dc1a5"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-arm.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "5d5eb9966f7887c21d5b85d6a8e6fcc773aa4ad3"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-asset-dialogs.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "da9653e0fddc491e3ea47f5cfa3ac47f10cee188"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-asset-ownership.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "7df129639ac0d8086aa851ccb572cdd46109ab47"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-assets.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "2516aff4ccc5e7d5785358a4af8162ad3cf78684"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-authority.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "057d7c0a3f7bd9925613cb8e8a83821a5f8680b5"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-capture.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e6dd0805af0ec47e0d57460a4b98c084813eda0f"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-cohere-cuda.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "be26edbb9e4fb3372321223aba64a16c2f1efe53"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-cuda.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "3cf403558580d88f87b66fd8e28edfee01947df9"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-desktop-inspection.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "c43675b62f57dffb6c14146f98ab5f21d1cf2344"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-desktop.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "a7d7ac4b1a7c26eefaaa4c1732b9382399fa2218"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-discard.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "6682f065768d6db76da0fe2dd072160f5e4549f1"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-download-dns.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "bf21923b7829239fb4cb61db3ef651b928bda322"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-engine.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "64255514dfb3f02693ce3daadff6c1eb334bc271"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-final-nix.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "601253cc4706a58c004f707cf2a0535a0ffd91a8"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-focus.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "9d4b3909edcdd30b78194bd0b154489abec355ae"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-hotkey-isolation.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "1ded1c7d19e0e1dab56aec29f2bba542c89bab6e"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-identity-recovery.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "f4094c29516143d676ff99e1d89ce0410b85f808"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-install-recovery.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "6bf128656245562f8be11257c03a3f525d7bb07e"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-model-load.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e863860959ea9632e00febc09d6b454d0b3429f6"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-needle.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "6c91fb7c808a299bd9cd320a74cd4e38e8e6caca"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-nonce.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "e21f453002d994f04dd692ad02a4723c82a76cc8"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-owned-work.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "acc4ff8c99b424d9f93c7ab7dc410a5a76682f06"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-pages.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "7bc89ee19d351bedae825fac3f6e11ca4bbfedbd"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-reset.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "bb84a3d071b821e6030f4883eefd84d745b99083"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-segments.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "a6a0c5efc83763f9c8374f042264eeb93b2399a9"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-settings-writer.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "312d106d33c43dff3565f35d854421b37e69f72e"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-settings.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "fedaac73526c07959dbe85d4c662c5a1021f2a89"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-shutdown.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "0f49c0c0f5d6e3360e772f3b0ea440b4389fb6b4"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-startup.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "2aa744ccc7024d5a5409cdcd0cc4644db01f0f22"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-storage-runtime.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "37d0fcc8fe815d1f3c9adc62690676ae74a62259"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-sync-permission.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "a6caff13f66b34153b5c5b6edcbb29f4edefb833"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-thinking.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "01e5e083b6ea445efc3d75502c7a6b9ea8a47293"
+    },
+    {
+      "path": "docs/release-audit-implementation/validation-review-websocket.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "03598686d0792bf76a4bd66c9f67a00c7608e319"
+    },
+    {
+      "path": "docs/release-audit/clippy.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "bce638534c33cb849d0b315ab5bcf96dafb20dca"
+    },
+    {
+      "path": "docs/release-audit/dependencies.json",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "90f16655537f7c196c536e4180377b01efcb1406"
+    },
+    {
+      "path": "docs/release-audit/format.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "afd8930d528be56333e4ba4c4543174b2aec6ef9"
+    },
+    {
+      "path": "docs/release-audit/release-build.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "1bd487ebb020709da9d45e75d37b53af054386c4"
+    },
+    {
+      "path": "docs/release-audit/repro.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "ad6b7a3831bb82a09d52a7430c735c9668b4101a"
+    },
+    {
+      "path": "docs/release-audit/repro.rs",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "32129000b6cc811dfb0c76e044e17d406812fe26"
+    },
+    {
+      "path": "docs/release-audit/reproduce.sh",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "6f39cfafb835e7a3227bcab551971be3f1c6caf0"
+    },
+    {
+      "path": "docs/release-audit/script-run.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "56c77a27616be3769b98faa32213803fb3838fe3"
+    },
+    {
+      "path": "docs/release-audit/ui-discovery.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "5f542447378e6a31cb0931f9244c8e27842c2c6b"
+    },
+    {
+      "path": "docs/release-audit/ui-language.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "28daf034fba8afe784ae10600fc7107eeb8bdb69"
+    },
+    {
+      "path": "docs/release-audit/ui-leak.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "159099dcaf871584f38c3685e3a54078a4787e7d"
+    },
+    {
+      "path": "docs/release-audit/ui-smoke-en.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "2d51bef3fec98a5a8d70e0708a631729aa5730aa"
+    },
+    {
+      "path": "docs/release-audit/ui-smoke-es.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "730fe123277741452c20819851eda18a47267e5a"
+    },
+    {
+      "path": "docs/release-audit/ui_probe.rs",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "b0cf46c90b0021a0cb1d0323acb2989b2e118f50"
+    },
+    {
+      "path": "docs/release-audit/version-without-keyring.log",
+      "primary_pr": 15,
+      "disposition": "historical report/evidence preserved in full",
+      "snapshot_blob": "25965ab6b706e144e8f99d62d47ae04ab740732b"
+    },
+    {
+      "path": "examples/clipboard_smoke.rs",
+      "primary_pr": 21,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "87382151b1450dca3e039b598e11124bf064e814"
+    },
+    {
+      "path": "examples/installer_fs_probe.rs",
+      "primary_pr": 20,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "a193ca8cd716a25e41869ad491fbc4feb4e6fb68"
+    },
+    {
+      "path": "examples/runtime_smoke.rs",
+      "primary_pr": 22,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "cc3c7edd1961002433f0c0c7abfc350313630c15"
+    },
+    {
+      "path": "examples/shutdown_fixture.rs",
+      "primary_pr": 22,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "3d78837418524a26785c0775a84cd066cacaf29e"
+    },
+    {
+      "path": "examples/store_probe.rs",
+      "primary_pr": 22,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "72f6537cea7431d704b36b5eec5786124710c1a1"
+    },
+    {
+      "path": "examples/ui_preview.rs",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "48dd02b27a7b6455cdcd73769a56936a3170e4bb"
+    },
+    {
+      "path": "examples/ui_preview/asset_smoke.rs",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "1d688ca7711ee0f01287ec3e57a28fc478b46673"
+    },
+    {
+      "path": "examples/ui_preview/ollama_load_smoke.rs",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "5f32aa8dcbf05823577945406258d0c01d8358f8"
+    },
+    {
+      "path": "examples/ui_preview/reset_smoke.rs",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "57d50edefa900920180caec9ec9062819976f41f"
+    },
+    {
+      "path": "examples/ui_preview/smoke.rs",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "5a7a539ef6187f1dfdfc643aea9d6b96c4cd4def"
+    },
+    {
+      "path": "packaging/arch/PKGBUILD",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "b9b12e40b844fd2a638919166d8b92a73ca0d92a"
+    },
+    {
+      "path": "packaging/arch/update.sh",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "f1996f08e5f794c3d0d7eab2fdfc463e87625e70"
+    },
+    {
+      "path": "packaging/nixos/desktop-test.nix",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "273fc5979c6a72e19b80deefd88da6926b31a065"
+    },
+    {
+      "path": "packaging/nixos/flake.lock",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "416bfe1718b65a5f18a412e290aa7f4d4ec2afa0"
+    },
+    {
+      "path": "packaging/nixos/flake.nix",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "a1ccfbcc41b6d97a2cc7d1212ed02ab82d16366e"
+    },
+    {
+      "path": "packaging/nixos/module.nix",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "52899eea4e37fdd82c663614c03845b033b61ca8"
+    },
+    {
+      "path": "packaging/nixos/runtime-loader-test.nix",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "db677998099b1b7cceec9cf38a2f1d9961a4d410"
+    },
+    {
+      "path": "packaging/nixos/svg-probe.nix",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "abcb0e3a79c1ad3b511b75985e53c8401304083e"
+    },
+    {
+      "path": "packaging/notices/OpenWhispr.txt",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "96cbe9720e34c13191bda9c9704e1353c0760dc7"
+    },
+    {
+      "path": "packaging/notices/README.md",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "61cbaaedfd0a54f90d842d06d8f27c86dc2fd8c5"
+    },
+    {
+      "path": "packaging/notices/dasp-APACHE.txt",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "74c4f492b303bec6da5ec6af182865f664a4c4c0"
+    },
+    {
+      "path": "packaging/notices/dasp-MIT.txt",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "b35b54912ac435a64227b09c9347475caefa1cbd"
+    },
+    {
+      "path": "packaging/notices/gl-rs-APACHE.txt",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7"
+    },
+    {
+      "path": "packaging/notices/gtk4-layer-shell-MIT.txt",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "65a8f3dbcf850ac490ef4735af924940c2ef7731"
+    },
+    {
+      "path": "packaging/notices/libadwaita-MIT.txt",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "64a801a7baf36086abdeef709e60b2c062d584d1"
+    },
+    {
+      "path": "packaging/notices/sources.json",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "1ee3cd4c04bf8b49d38b1b1009651a7dbe4f583c"
+    },
+    {
+      "path": "packaging/notices/symphonia-MPL.txt",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "f4bbcd200ad42bbb2fe2faf67e87e8619fafc17a"
+    },
+    {
+      "path": "packaging/release.py",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "7372956bcc1e056bd464a391fdae8b4c654e8647"
+    },
+    {
+      "path": "packaging/test-release.py",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "df3f8ad9994530b454e426eaee065d7072b1d1f4"
+    },
+    {
+      "path": "packaging/test-upgrade.py",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "063898d42d9bd4b5c978ed255913ca43be746d7d"
+    },
+    {
+      "path": "packaging/validate-artifact.py",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "030c788ef395bd079c0f86df6f59020b272f0e91"
+    },
+    {
+      "path": "scripts/arch-package-smoke.py",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "f7e2e5033e8ef149cf7718e49b9ad89787c723f7"
+    },
+    {
+      "path": "scripts/clipboard-smoke.sh",
+      "primary_pr": 21,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "b8cdca97e280a6d2753e98ea42bbf1ce86bc2289"
+    },
+    {
+      "path": "scripts/cpal-smoke.py",
+      "primary_pr": 19,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "42d438815f6889c0e28e3086a799fe3b2ccf7af6"
+    },
+    {
+      "path": "scripts/cpal-smoke.sh",
+      "primary_pr": 19,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "dad1b84ecebb81eb8f124a5abb67aec604a75ec2"
+    },
+    {
+      "path": "scripts/cuda-smoke.py",
+      "primary_pr": 22,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "4ee4c7a1172e05276831ea3299b64e158d756a6d"
+    },
+    {
+      "path": "scripts/disposable.py",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "7bf68edfa843de63d1e763f180c3c4923054ecf9"
+    },
+    {
+      "path": "scripts/installer-fs-smoke.sh",
+      "primary_pr": 20,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "ff568c55a8760375475e50a884e77315ec58c1a2"
+    },
+    {
+      "path": "scripts/keyring-smoke.sh",
+      "primary_pr": 22,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "53724217fd53776e6ad66c01f931459c35245243"
+    },
+    {
+      "path": "scripts/native-hotkey-smoke.sh",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "03c139a7daa5b3b564c5cf48fad0df133b5226a1"
+    },
+    {
+      "path": "scripts/ollama-smoke.py",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "25bfee0031886fcadd697707cdd9c97ae36828bb"
+    },
+    {
+      "path": "scripts/shutdown-smoke.py",
+      "primary_pr": 22,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "c22b85bd8a33ef114a2f7a7b8ce8c2dea6090f57"
+    },
+    {
+      "path": "scripts/test-disposable.py",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "47bb01079fca8a701758931d1ca50477535a3dd7"
+    },
+    {
+      "path": "scripts/ui-assets-smoke.sh",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "07dbb8754955365f187cf4ecf16981146e074152"
+    },
+    {
+      "path": "scripts/ui-smoke.sh",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "2959f839494097bb5cbecb1c72943aabb8889c2f"
+    },
+    {
+      "path": "src/address.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "c63c1915773d0f48b8ab66351c449f070f21a284"
+    },
+    {
+      "path": "src/app.css",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "aaf43f3a1bccdbc083d8e846bdcb2c3d6fca41c2"
+    },
+    {
+      "path": "src/app.rs",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "5e02f8d41d501a656927c81e3d281517e729ebe6"
+    },
+    {
+      "path": "src/app_dictionary.rs",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "989db777880c94e55113171a11fc8dd392e8afbb"
+    },
+    {
+      "path": "src/app_home.rs",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "b7dc316d85ec0a37db032cdd919172db265c4549"
+    },
+    {
+      "path": "src/app_settings.rs",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "fa1741fe27b962ff701caeea9fb89858e88ca7ee"
+    },
+    {
+      "path": "src/app_sync.rs",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "b1c951807b6ea09649c760196fada7a05a81a861"
+    },
+    {
+      "path": "src/artifact.rs",
+      "primary_pr": 20,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "4476ba6837f49588e719bde0859938c0bbeea2b9"
+    },
+    {
+      "path": "src/audio.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "63085cfb683bed5e985c1c777c38b28b6306895b"
+    },
+    {
+      "path": "src/bin/mywhisper.rs",
+      "primary_pr": 22,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "e9182904bad6d1d97b6dfcae01166c2587785b9d"
+    },
+    {
+      "path": "src/child.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "87bb0a4deebe76ede8350bed786e99d69e36ae53"
+    },
+    {
+      "path": "src/clipboard.rs",
+      "primary_pr": 21,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "5825ee1e60e13e8ec7f2f66d5627fa5c0f7e327c"
+    },
+    {
+      "path": "src/database_key.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "112ee92fb99a4ca2125135d2ee4bc7f7ff05789c"
+    },
+    {
+      "path": "src/device.rs",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "d239c26b73c206f53549e7a6c7beaef9c8d6bc9f"
+    },
+    {
+      "path": "src/diagnostics.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "62d52755194c043fdc7c334b687c636082367103"
+    },
+    {
+      "path": "src/focus.rs",
+      "primary_pr": 16,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "67a2902536b12b5261abd8a12164a63cab304183"
+    },
+    {
+      "path": "src/hotkey.rs",
+      "primary_pr": 19,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "5490871c88e266a6f75191e12f09f7a656b97090"
+    },
+    {
+      "path": "src/i18n.rs",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "e4ade16b9633208a51fa40f999e6afdb62396214"
+    },
+    {
+      "path": "src/installed_asset.rs",
+      "primary_pr": 20,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "9ad091c8ef56dcafd5d999cb2390e75db4482f14"
+    },
+    {
+      "path": "src/lib.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "3402dee1c83b4235a10218b1f87c12176ced161c"
+    },
+    {
+      "path": "src/maintenance.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "81b7b6e3e8b9956059f4de7f482a1b8bc4105f77"
+    },
+    {
+      "path": "src/mic.rs",
+      "primary_pr": 19,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "5076ad79ee19caca54cd6c2c15cdf2c3039e7cd3"
+    },
+    {
+      "path": "src/model_load.rs",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "213c10a666db9eca0d6131d08a82e98496409f3e"
+    },
+    {
+      "path": "src/net.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "c34cdecd030362399a2d18e0b78951ffde82b8ea"
+    },
+    {
+      "path": "src/operation.rs",
+      "primary_pr": 20,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "e2fa816e4c25d24f5030fa20bd982ff494c56272"
+    },
+    {
+      "path": "src/overlay.rs",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "86ab9fee3399cbef61510e545e672fc5347abade"
+    },
+    {
+      "path": "src/paths.rs",
+      "primary_pr": 15,
+      "disposition": "already merged/superseded by #5/#6/#7/#8/#9/#10/#13/#14; current main preserved",
+      "snapshot_blob": "60c07cdb7a0e4ee5b2c8279cf934dbaa57fb3b1b"
+    },
+    {
+      "path": "src/private_fs.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "ba7ca36b1018835a986404a5ad20417b40343183"
+    },
+    {
+      "path": "src/process_status.rs",
+      "primary_pr": 22,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "a6dd79baf445f19ae1073f266effbf5981a58913"
+    },
+    {
+      "path": "src/provider_contract.rs",
+      "primary_pr": 17,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "dfbb12fb0a00081a5673f5d0a30cd0479c7bb635"
+    },
+    {
+      "path": "src/provider_io.rs",
+      "primary_pr": 22,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "02f332304d8d90d4e9122ab0934b94800407e1e7"
+    },
+    {
+      "path": "src/reset.rs",
+      "primary_pr": 22,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "5bd61886f04df31da95d1b1429d969eec3344949"
+    },
+    {
+      "path": "src/runtime.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "7809c36182ca6b103c7880d6b7f9cc550144c30d"
+    },
+    {
+      "path": "src/runtime/shutdown_tests.rs",
+      "primary_pr": 22,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "92285631af1b459d5b9e51fcb50ed095cc1e6e2b"
+    },
+    {
+      "path": "src/selection.rs",
+      "primary_pr": 20,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "0dfdf7a64a012d2f64ad8560cbb5bf8e3711db34"
+    },
+    {
+      "path": "src/service.rs",
+      "primary_pr": 22,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "430ef92088e557ebf6c05f4eb6ed1f91517e926a"
+    },
+    {
+      "path": "src/settings.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "047226e324f124e1876120829249bf2df27b8b85"
+    },
+    {
+      "path": "src/sound.rs",
+      "primary_pr": 19,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "a9731069a0b0014e6e0b64fb6d22dee1af75f568"
+    },
+    {
+      "path": "src/store.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "400c797f754d00fb49e6c86b11122e1619c5e129"
+    },
+    {
+      "path": "src/store_migration_tests.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "0b35a80e7b72bdb9358215ff320dce33c8f614d9"
+    },
+    {
+      "path": "src/stt.rs",
+      "primary_pr": 20,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "2545fe87a96c46afb8989a24d12eeb1704570475"
+    },
+    {
+      "path": "src/sync_jobs.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "80b6d7a601968876a221509d5b76506e239f108b"
+    },
+    {
+      "path": "src/sync_pages.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "eaba21d08f89e734e7d8e286473fb616bebede36"
+    },
+    {
+      "path": "src/sync_segments.rs",
+      "primary_pr": 18,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "3cbef9488ee1f30a755a99adfc2a0633a5df9989"
+    },
+    {
+      "path": "src/test_fixtures/stalled_dns.c",
+      "primary_pr": 20,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "76ec2875c67f2917e96c6a9a4c031d4781b3d7f1"
+    },
+    {
+      "path": "src/textnorm.rs",
+      "primary_pr": 17,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "62ad0d7bd272e94e3e0dae4043f8ada8d15501e6"
+    },
+    {
+      "path": "src/transcribe.rs",
+      "primary_pr": 22,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "7acffe916317f4d4f8a1a5033cfd24b051cf5449"
+    },
+    {
+      "path": "src/update.rs",
+      "primary_pr": 23,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "394e0090a0bbf185896c34a22cebfaa774e5ecb3"
+    },
+    {
+      "path": "src/viz.rs",
+      "primary_pr": 19,
+      "disposition": "scoped source, staged wiring or semantics-preserving adaptation",
+      "snapshot_blob": "b31510b546543070e4608b64391486a1134f66e9"
+    },
+    {
+      "path": "vendor/secret-service/.cargo_vcs_info.json",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "2ee595929733998358b29ed790acb5b4a708990d"
+    },
+    {
+      "path": "vendor/secret-service/CHANGELOG.md",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "3f985e570313dbaa6c73447bd2047176c6b6d0d6"
+    },
+    {
+      "path": "vendor/secret-service/Cargo.lock",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "02a53ba8600ec00156ab8a231e5b0964b3f0a934"
+    },
+    {
+      "path": "vendor/secret-service/Cargo.toml",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "560fb0e89064ef14edad89894a8cc224e410246e"
+    },
+    {
+      "path": "vendor/secret-service/Cargo.toml.orig",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "77628d2ca00fa0415118a459bc34580a3a24b515"
+    },
+    {
+      "path": "vendor/secret-service/LICENSE-APACHE",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "16fe87b06e802f094b3fbb0894b137bca2b16ef1"
+    },
+    {
+      "path": "vendor/secret-service/LICENSE-MIT",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "39eb723f075c547c6f0c59205477aaf01593fe57"
+    },
+    {
+      "path": "vendor/secret-service/LOCAL_PATCH.md",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "84a78cbbc889ede2a10edf829814a7379cbea458"
+    },
+    {
+      "path": "vendor/secret-service/NOTES_ON_PORT.md",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "fb9235cb1b41c36e7eb504746fe8f83e742bb606"
+    },
+    {
+      "path": "vendor/secret-service/README.md",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "5e73a0b6caa748259db95c90187d9e0626470a35"
+    },
+    {
+      "path": "vendor/secret-service/UPSTREAM.json",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "20b8f3d28d539c34ddcf3e941deee804546fe7c5"
+    },
+    {
+      "path": "vendor/secret-service/examples/example.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "d2c6266e12e52fef2c97ce67bbc40ef6c16aa724"
+    },
+    {
+      "path": "vendor/secret-service/src/blocking/collection.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "193be7051c7480f73c2ac9280c70cff3a3252155"
+    },
+    {
+      "path": "vendor/secret-service/src/blocking/item.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "39f3c3b74ccec2c940cb613898d58211a7d37a57"
+    },
+    {
+      "path": "vendor/secret-service/src/blocking/mod.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "98c482645a097d933aafb1c6fab045acc08f6462"
+    },
+    {
+      "path": "vendor/secret-service/src/collection.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "d80578b3c19d2857016513b0ad6969c19fb77d3f"
+    },
+    {
+      "path": "vendor/secret-service/src/error.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "ae4c036d577b8601264c6109895aa09f542cb228"
+    },
+    {
+      "path": "vendor/secret-service/src/item.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "34e679e26d9bd115e6caa2ef8138c9afd74dc378"
+    },
+    {
+      "path": "vendor/secret-service/src/lib.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "6516a28491781f1eb3a5971486fb48d796872e35"
+    },
+    {
+      "path": "vendor/secret-service/src/proxy/collection.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "8bb6cae5ad8f4ba499d5eb0999c19358edb0dd88"
+    },
+    {
+      "path": "vendor/secret-service/src/proxy/item.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "9d980620304fa35cad881f4ba95c0da96857c426"
+    },
+    {
+      "path": "vendor/secret-service/src/proxy/mod.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "7031f9abb026861da314fce74929177923bacc75"
+    },
+    {
+      "path": "vendor/secret-service/src/proxy/prompt.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "2dc15cab10684a75ecb380903516c931d2dddf6c"
+    },
+    {
+      "path": "vendor/secret-service/src/proxy/service.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "d74198eb1b2443ddebfe7ed606a830d66b4849b5"
+    },
+    {
+      "path": "vendor/secret-service/src/session.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "33fae0fb95a39c00fbdbaff831dd33ed28cb063c"
+    },
+    {
+      "path": "vendor/secret-service/src/ss.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "b9c1c5c31f426a40d30d00495f89af56db78d532"
+    },
+    {
+      "path": "vendor/secret-service/src/util.rs",
+      "primary_pr": 18,
+      "disposition": "local bounded Secret Service source/notices preserved",
+      "snapshot_blob": "e0566f03ced8b1e3d08a555d3e984a4ae938dd21"
+    }
+  ]
+}

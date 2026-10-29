@@ -1,0 +1,8 @@
+[ui-smoke] release regressions passed: widget lifetime, remote language, malformed discovery
+[ui-smoke] settings recovery passed: visible message, disabled permissions, unknown fields preserved after native save
+[ui-smoke] release regressions passed: widget lifetime, remote language, malformed discovery
+[ui-smoke] settings recovery passed: visible message, disabled permissions, unknown fields preserved after native save
+[ui-smoke] reset passed: independent DB/installer stalls, GTK heartbeat, committed state after file failure, visible retry, preserved later edits
+[ui-smoke] startup reset recovery passed: muted pending state, owned recovery, preserved later edit, removed old assets
+[ui-smoke] reset passed: independent DB/installer stalls, GTK heartbeat, committed state after file failure, visible retry, preserved later edits
+[ui-smoke] startup reset recovery passed: muted pending state, owned recovery, preserved later edit, removed old assets

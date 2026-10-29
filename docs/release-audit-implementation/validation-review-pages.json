@@ -1,0 +1,56 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "baseline": "f96ee2c",
+  "correction": "F07 aggregate synchronization uses negotiated byte/row-bounded pages, durable latest-key change sequences and transactional receive cursors; no aggregate size cutoff for capable peers",
+  "passed": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo test --locked --all-targets: 212 passed, five existing opt-in ignores unchanged",
+    "cargo build --release --locked --bin mywhisper",
+    "Both native UI configurations; eight invocations with fatal GTK criticals",
+    "Actual disposable Secret Service/keyring, fixed-port replacement, owned socket/watch cleanup, outbound-only encrypted sync and same-host multicast discovery/removal",
+    "Actual schema-6/current binaries: signed Noise compatibility in both directions, killed migration recovery, encrypted upgrade preserving data, older-build refusal without byte changes",
+    "Current RustSec: 1296 advisories, zero vulnerabilities/warnings"
+  ],
+  "regressions": [
+    "More than 16 MiB of Unicode history over actual encrypted TCP; cut after page commit/before ACK; resume uses committed progress",
+    "Fresh encrypted receiver retaining its device identity obtains every transcript and tombstone",
+    "Steady-state exchanges carry zero history records; later deletion and word are individual deltas",
+    "Malformed content rolls back all affected tables and receive cursor; competing pages cannot skip records",
+    "65-row pagination with an earlier-key deletion and late insertion receives their newer sequences in the next snapshot",
+    "Backward conflict clock does not move changes behind a sequence cursor",
+    "Disable/reset/revocation deny every new page",
+    "Change ledger holds one row per key, not one per edit; removal cannot roll back its upper sequence",
+    "Valid multi-megabyte Unicode record remains exact; control escaping exceeding wire bound fails while preserving local text",
+    "Bounded network JSON encoder rejects escaped overflow before sending a prefix; the same encrypted channel then delivers a valid Unicode message"
+  ],
+  "migration": "Schema 7 atomically creates durable key/sequence tracking, cursor tables, triggers and a random stream ID. No transcript duplication, settings/key/identity rotation or age-based tombstone deletion. Reset and peer removal clear receive progress. Schema-6 builds refuse upgraded files. A snapshot-only deterministic barrier allowed SIGKILL after real migration SQL/before COMMIT; old binary remained usable, then normal upgrade/reopen succeeded.",
+  "compatibility": "Optional pages capability on the existing signed protocol-1 hello. Legacy peers retain small full-snapshot exchange; oversized legacy export is rejected before aggregate vectors with an explicit upgrade requirement. Individual records beyond the bounded message size remain local and report failure; segmentation and very large/slow-link acceptance are still open. Recent imports may echo once as fresh local changes; their eventual unchanged records are omitted.",
+  "harness_notes": [
+    "The first new network assertion expected no echo immediately after an incomplete responder snapshot; its two remaining imported changes had fresh sequences and correctly belonged to the next round. The regression now asserts those exact two changes, then retains the original zero-history assertion after both cursors catch up. A peer-identity-only echo shortcut was removed because it could skip fresh-peer recovery; the final regression proves that recovery. Failure retained at /tmp/mywhisper-review-pages-origin-echo-failure.log.",
+    "A parallel hotkey immediate lock-release failure is preserved at /tmp/mywhisper-review-pages-parallel-lock-failure.log. Independent kernel fork proof and complete lock-owner isolation preserve every original assertion; twelve exact repetitions and the parallel suite pass. Separate commit f96ee2c records this harness correction.",
+    "Migration kill hook exists only in a separately named disposable snapshot binary, never in production source. Example/package identities differ so snapshot builds cannot replace normal native artifacts."
+  ],
+  "logs_sha256": {
+    "network": "87e473ced60202f3410e468c57229a42dafa4ca4200163dcc3312b6ad3077b5a",
+    "compatibility": "85bdbd92d0ceb7135b18c8968671ee87a0c114fc5581c04e3aabfe693069ca63",
+    "tests": "b16e7dc9f5ad289610dbcce5842aead6bb976a703108e18e622d183b946c5add",
+    "clippy": "5f577c343e03505c93a95795f2e7fa3fcfda0d804a85540dbd797d446def6660",
+    "fmt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "release": "f4858bf1eba8d2d5bbfcb0f30d4b595aedd1e1de2dc8022be0219210e62a7b8c",
+    "ui": "fb93a40916ba45ad4b7f2364d810507801dcc4e6287c9ddd66a1f565b227b507",
+    "keyring": "2e7ea4d47e9c0379b12fe2ff7c27e4d152823302d936ffab80ba44bb96768506",
+    "security": "c1fd5aed7215276b64781f0b19750419b3d763d31c3484b1b3eee5b80470a151"
+  },
+  "source_sha256": {
+    "src/net.rs": "57f41250c35c7cce35cfa16b1d7644061ff48be588f2a7222d122edaaad6cbf6",
+    "src/store.rs": "86e5c63e57e06826d0657fbab85d6cac172f276b08566b9d11f6d59177a5e935",
+    "src/sync_pages.rs": "7ef07568892ee3f9e0dda412950879eb31891689e21509f5e61137e5629c5a6e",
+    "src/reset.rs": "eadefbe6e0c665a2deb34ffcdb94691c8b9b91581072844f6f7319e80cf4b5d4",
+    "src/hotkey.rs": "fc9c25ef559342f2584f5f47f03dd92457845653226f7eae3652d1d0066f3a8a",
+    "docs/release-audit-implementation/pages_compat_probe.py": "0d08e05c61636b2f554fb987ed88e55c414f63faaaf324011918eb2c621e4cd0",
+    "docs/release-audit-implementation/pages_compat_probe.rs": "973f41b48016e3f2535e1716b2983ed69ce4c65abae30ba9357eafb24d469255"
+  },
+  "outstanding": "F09 asset integrity, individual-record segmentation/large slow-link acceptance, remaining original grouped audit obligations and final integrations/packaging/privacy/resource review. PR unsubmitted; no release/tag/deployment."
+}

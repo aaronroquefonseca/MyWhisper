@@ -1,0 +1,136 @@
+{
+  "disposable_instrumented_source": true,
+  "native_runtime_protocol": true,
+  "multiple_committed_events": 3,
+  "exact_committed_sequence_preserved": true,
+  "upstream_pending_excluded": true,
+  "synthetic_speech_sha256": "c44fb7f281554a1495bfdb02002e4bcd0cd05649fb374e2200adbcbebf5988e8",
+  "events": [
+    {
+      "text": "This is a simple",
+      "words": [
+        {
+          "word": "This",
+          "start": 0.08,
+          "end": 0.32,
+          "probability": 0.832
+        },
+        {
+          "word": "is",
+          "start": 0.32,
+          "end": 0.48,
+          "probability": 0.755
+        },
+        {
+          "word": "a",
+          "start": 0.48,
+          "end": 0.64,
+          "probability": 0.428
+        },
+        {
+          "word": "simple",
+          "start": 0.64,
+          "end": 0.96,
+          "probability": 0.991
+        }
+      ],
+      "pending": "speech recognition test.",
+      "language": "en",
+      "received": 3.0,
+      "pass_ms": 60.7
+    },
+    {
+      "text": "speech recognition test.",
+      "words": [
+        {
+          "word": "speech",
+          "start": 0.96,
+          "end": 1.44,
+          "probability": 0.402
+        },
+        {
+          "word": "recognition",
+          "start": 1.44,
+          "end": 2.16,
+          "probability": 0.931
+        },
+        {
+          "word": "test.",
+          "start": 2.16,
+          "end": 2.64,
+          "probability": 0.997
+        }
+      ],
+      "pending": "",
+      "language": "en",
+      "received": 4.0,
+      "pass_ms": 93.0
+    },
+    {
+      "text": "a purple gun turning on the table.",
+      "words": [
+        {
+          "word": "a",
+          "start": 3.28,
+          "end": 3.36,
+          "probability": 0.983
+        },
+        {
+          "word": "purple",
+          "start": 3.36,
+          "end": 3.76,
+          "probability": 0.997
+        },
+        {
+          "word": "gun",
+          "start": 3.76,
+          "end": 4.0,
+          "probability": 0.423
+        },
+        {
+          "word": "turning",
+          "start": 4.0,
+          "end": 4.4,
+          "probability": 0.57
+        },
+        {
+          "word": "on",
+          "start": 4.4,
+          "end": 4.56,
+          "probability": 0.977
+        },
+        {
+          "word": "the",
+          "start": 4.56,
+          "end": 4.72,
+          "probability": 0.99
+        },
+        {
+          "word": "table.",
+          "start": 4.72,
+          "end": 5.04,
+          "probability": 0.954
+        }
+      ],
+      "pending": "",
+      "language": "en",
+      "received": 5.61,
+      "pass_ms": 0.0
+    }
+  ],
+  "result": "This is a simple speech recognition test. a purple gun turning on the table.",
+  "model": {
+    "id": "whistle-v1",
+    "sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
+    "bytes": 16919407
+  },
+  "runtime": {
+    "revision": "2ae11323dc000f5e70c49f7403efa6af12ba9e67",
+    "sha256": "f38dc4b0345d66b4e385734ad0f12af43ac6e2cfa1752d0795af5c137200c8e4",
+    "bytes": 1541680
+  },
+  "fixture": {
+    "synthetic_text": "This is a simple speech recognition test. A purple lantern is on the table.",
+    "expected_word": "purple"
+  }
+}

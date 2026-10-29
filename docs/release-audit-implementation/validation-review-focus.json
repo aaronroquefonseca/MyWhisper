@@ -1,0 +1,32 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "baseline": "92ebb54",
+  "correction": "R46 window focus owners survive reentrant selectable-label focus transitions and are released after dispatch/close",
+  "before": "Same synthetic focus-removal fixture without window ownership aborts with GTK fatal gtk_widget_is_ancestor critical; exit 134. GTK 4.24.1 gtklabel.c caches prev_focus across parent grab_focus.",
+  "primary_source": "https://raw.githubusercontent.com/GNOME/gtk/4.24.1/gtk/gtklabel.c",
+  "regression": "Sixteen focus/removal/close rounds in each normal light/en and dark/es smoke. Old widget alive during dispatch, released afterward; closed window released; label remains selectable. All original 36 interaction assertions retained. Eight native invocations also pass strict settings and reset/retry/startup recovery.",
+  "passed": [
+    "205 Rust tests; five existing opt-in ignores unchanged",
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo test --locked --all-targets",
+    "cargo build --release --locked --bin mywhisper",
+    "both native UI configurations with G_DEBUG=fatal-criticals"
+  ],
+  "logs_sha256": {
+    "before": "62609f477000fd2f072818d63ff72363826d7e6ff2cf29e98c4c691cc988bde5",
+    "ui": "9fcbabd943e89ad90bbb343b873df29c01977d7689e1d38f0e219150df49332e",
+    "tests": "092763f618ec6bb90c44f506f2fcda819d33d93395a5d4fb4dfe6a3bd590a336",
+    "clippy": "672d54eda0cc113b4ae3aebe39e1f1f9438fcdd7732058fa3c53b02272aec394",
+    "fmt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "release": "2733e0619e729c0a22374496c13fd63226cbeeb9c01dcea3df58ab3592984f56"
+  },
+  "source_sha256": {
+    "src/focus.rs": "484db3f492967ccad447a24422254fb590f443c714b75dd8a4f7a2e1c5697e11",
+    "src/app.rs": "f9c8b2589281fb6f7b4cfd51501b771fccfa81c5aa3fb0fcb77d98477e5c72bb",
+    "src/lib.rs": "b60979e78bb40531b6da4aacce9680f87431b53bfc1bf3b04369aa1a1459a5bd",
+    "examples/ui_preview/smoke.rs": "b705d9623dd06bfbc32ea9a285a706b5bcca52a81a464d6902744e1d014361f3"
+  },
+  "outstanding": "F07 paginated synchronization, F09 installed asset integrity, remaining original audit obligations and final integrations/artifact gates. No PR submitted."
+}

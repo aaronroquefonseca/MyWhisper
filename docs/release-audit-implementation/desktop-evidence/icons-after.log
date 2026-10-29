@@ -1,0 +1,19 @@
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=23 comm="/nix/store/y1z71x7wkd61w4pmmfzkfaj0833ihns4-mywhis")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=36 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=36 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-artifactnative-audit.3uf2mjj1/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:36): xdg-desktop-portal-WARNING **: 22:37:27.937: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:36): xdg-desktop-portal-WARNING **: 22:37:27.949: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:36): xdg-desktop-portal-WARNING **: 22:37:27.949: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+<string>:14: DeprecationWarning: Gtk.IconPaintable.is_symbolic is deprecated
+All five packaged navigation icons resolve as symbolic icons without host icon files
+Actual Nix-packaged GTK artifact passed: visible window, executable resolver from actual wrapper PATH, normal close/zero exit, encrypted disposable database, no input/audio devices or capture

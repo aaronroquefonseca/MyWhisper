@@ -1,0 +1,56 @@
+gpgv: Signature made Fri Sep 11 08:10:35 2026 CEST
+gpgv:                using RSA key 882DCFE48E2051D48E2562ABF3B607488DB35A47
+gpgv: Good signature from "CachyOS <admin@cachyos.org>"
+NVIDIA GeForce RTX 3090, 615.71.09
+cuda 13.4.2-1
+cudnn 9.27.0.42-1.1
+Actual Cohere/CUDA model download, runtime readiness, server-owned GPU memory, synthetic inference and cleanup gate begins.
+verified download progress: 37223655/1699791751 bytes
+verified download progress: 103101061/1699791751 bytes
+verified download progress: 167788544/1699791751 bytes
+verified download progress: 238499969/1699791751 bytes
+verified download progress: 308510338/1699791751 bytes
+verified download progress: 377503744/1699791751 bytes
+verified download progress: 448279583/1699791751 bytes
+verified download progress: 508115958/1699791751 bytes
+verified download progress: 576467902/1699791751 bytes
+verified download progress: 639202601/1699791751 bytes
+verified download progress: 708934004/1699791751 bytes
+verified download progress: 776126464/1699791751 bytes
+verified download progress: 843264956/1699791751 bytes
+verified download progress: 912324308/1699791751 bytes
+verified download progress: 965770177/1699791751 bytes
+verified download progress: 1036563880/1699791751 bytes
+verified download progress: 1106506770/1699791751 bytes
+verified download progress: 1171439872/1699791751 bytes
+verified download progress: 1237336064/1699791751 bytes
+verified download progress: 1307672208/1699791751 bytes
+verified download progress: 1374633984/1699791751 bytes
+verified download progress: 1439445235/1699791751 bytes
+verified download progress: 1480325402/1699791751 bytes
+verified download progress: 1498102527/1699791751 bytes
+verified download progress: 1551908864/1699791751 bytes
+verified download progress: 1609792037/1699791751 bytes
+verified download progress: 1657749161/1699791751 bytes
+installing verified artifact
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import sys; sys.path.insert(0,sys.argv[1]); import disposable; del sys.argv[1]; sys.exit(disposable.main(timeout=300))
+                                                                                             ~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1/scripts/disposable.py", line 76, in main
+    return process.wait(timeout=timeout)
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/subprocess.py", line 1279, in wait
+    return self._wait(timeout=timeout)
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/subprocess.py", line 2076, in _wait
+    raise TimeoutExpired(self.args, timeout)
+subprocess.TimeoutExpired: Command '['bwrap', '--bind', '/', '/', '--unshare-user', '--unshare-pid', '--proc', '/proc', '--dev-bind', '/dev', '/dev', '--tmpfs', '/tmp', '--bind', '/home/aaronroque/.cache/mywhisper-cohere-cuda-audit.d0zn25h1/tmp/mywhisper-coherecuda-audit.n7m_mzcs', '/home/aaronroque/.cache/mywhisper-cohere-cuda-audit.d0zn25h1/tmp/mywhisper-coherecuda-audit.n7m_mzcs', '--die-with-parent', '--new-session', '--', '/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1/target/debug/examples/runtime_smoke', 'cohere-transcribe-03-2026', 'cuda', '/home/aaronroque/.cache/mywhisper-cohere-cuda-audit.d0zn25h1/synthetic.raw', 'hello']' timed out after 300 seconds
+Traceback (most recent call last):
+  File "/tmp/mywhisper-cohere-cuda-live.py", line 24, in <module>
+    subprocess.run(['python3','-c','import sys; sys.path.insert(0,sys.argv[1]); import disposable; del sys.argv[1]; sys.exit(disposable.main(timeout=300))',str(repo/'scripts'),'MYWHISPER_AUDIT_ROOT','coherecuda',str(repo/'target/debug/examples/runtime_smoke'),'cohere-transcribe-03-2026','cuda',str(pcm),'hello'],env=env,check=True,timeout=315)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/subprocess.py", line 578, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['python3', '-c', 'import sys; sys.path.insert(0,sys.argv[1]); import disposable; del sys.argv[1]; sys.exit(disposable.main(timeout=300))', '/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1/scripts', 'MYWHISPER_AUDIT_ROOT', 'coherecuda', '/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1/target/debug/examples/runtime_smoke', 'cohere-transcribe-03-2026', 'cuda', '/home/aaronroque/.cache/mywhisper-cohere-cuda-audit.d0zn25h1/synthetic.raw', 'hello']' returned non-zero exit status 1.

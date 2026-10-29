@@ -1,0 +1,262 @@
+{
+  "date": "2026-10-10",
+  "interim": true,
+  "submission_gate_passed": false,
+  "audit_baseline": "f018ab855af41759e275c80708d67973f2890587",
+  "implementation_branch": "t3code/release-audit-complete",
+  "progress": {
+    "finding_groups": 51,
+    "with_implemented_corrections": 51,
+    "fully_closed": 0,
+    "additional_toast_verified": true
+  },
+  "source_diff_scope": [
+    "src",
+    "Cargo.toml",
+    "Cargo.lock",
+    "examples",
+    "packaging",
+    "scripts",
+    ".github",
+    "README.md",
+    "vendor"
+  ],
+  "uncommitted_source_diff_sha256": "d0e7ec70c41debe3be89413e0e63ca339d112662c49c532332a6a46a579f5388",
+  "rust_tests": {
+    "command": "cargo test --locked --all-targets",
+    "passed": 164,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "required_rust_checks": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo build --release --locked --bin mywhisper"
+  ],
+  "native_ui": {
+    "configurations": [
+      "light/en",
+      "dark/es"
+    ],
+    "gtk_criticals_are_fatal": true,
+    "cohere_selector_download_and_14_explicit_languages": true,
+    "limitation": "One earlier run emitted gtk_widget_is_ancestor after a dictionary-dialog cancellation. Subsequent debugger and fatal-critical runs do not reproduce it; investigation remains open."
+  },
+  "native_keyring": {
+    "passed": [
+      "8 independent concurrent creators",
+      "missing-key refusal/restoration",
+      "duplicate candidates select existing key without replacing entries/data",
+      "locked refusal under 2s",
+      "private-daemon restart/persisted-key recovery",
+      "two 5s stalled requests preserve database bytes and recover",
+      "fixed-port replacement/stalled socket closure/watcher joins",
+      "outbound-only encrypted catch-up",
+      "same-host real multicast discovery/goodbye"
+    ],
+    "secret_service_patch": {
+      "crate": "secret-service",
+      "version": "5.2.0",
+      "crate_checksum": "5107b24b91445dd2aa449a258a1807b63240942157292354dc5bfdbeb8bc6db8",
+      "source_commit": "1fe4fbe405b152bc969deb5de417847e1e4e4c7b",
+      "source_url": "https://github.com/hwchen/secret-service-rs",
+      "upstream_files": {
+        ".cargo_vcs_info.json": "132694ea9100769fbf78c57e3b817002d3b6ff58c722f868dc4eab246770b0a1",
+        "CHANGELOG.md": "151a8a23a5e48a51959d19cfd630c94d53be83fa34ccd01e57a3df92f70957a6",
+        "Cargo.lock": "841c86c6ecfba47609bac86c615ae2c3bf9e8bdb385a0f2dd61b02d2a5bb1228",
+        "Cargo.toml": "9fec80c963dda52e0856ec8bb18d4e16422ed820c3005a3df7c2406a9f6fce78",
+        "Cargo.toml.orig": "a8f928d9dc98f791ac794c342298972699d73032a4d13233a3c1573c0f3766cf",
+        "LICENSE-APACHE": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+        "LICENSE-MIT": "074585dbaf488db540c26f7b20f36053a157d7580bb1c390dc9f6afdb017c83a",
+        "NOTES_ON_PORT.md": "02132c378add48a1820a4774c1f8b3f40a8a78bf3bacd90fb4d95f7768749265",
+        "README.md": "ae034e37a98d96698a8fa98f34116e1852cfa401eeccb624f6aea4ae66a5818a",
+        "examples/example.rs": "23774ae4c05951386dfeeb3742ee9356c066ba599284b85c615318750374d95c",
+        "src/blocking/collection.rs": "6cec59f0f175fea32cb633f35b0bef44f53d6796f35ef5e82f732a1ff029ff99",
+        "src/blocking/item.rs": "d528f8009c5839232f41c038e01cacef43233de0a5cb291bc33e390800dbca8e",
+        "src/blocking/mod.rs": "b93303bd2879764817b9eee992d568415a4ede4e87d1a99c06e5ff30e99a7586",
+        "src/collection.rs": "db20aae820057d896df0cdcb90d3836fb94484f118b163fbcd65102dc0668603",
+        "src/error.rs": "e43b5c24609894a90af24699dd2b786a0e348cbd9a4848e48367109a04d7ec32",
+        "src/item.rs": "59a8d67d69229880091157949f8c6c169c88bcef041ed19c8145c3a31806debb",
+        "src/lib.rs": "d09ba116fc0d3d0a26d42f10571cf06c39088f822e52c8564a860ca2d2643e8c",
+        "src/proxy/collection.rs": "75b90ac96601295cad733f56711e27ff4c41125a2687b391af014708ff037511",
+        "src/proxy/item.rs": "bf7eb831b3d5b64b4945ac8f531070bde0b051a787e4ee022f205af36c03aa73",
+        "src/proxy/mod.rs": "5c89709f27a218d936ec618dbae5215fe3b3daf9e7430132bef94f3b4e35d696",
+        "src/proxy/prompt.rs": "f7c3745568065ba7f602c71884dcb92ec7303fa0376508d0305a9186c9722af4",
+        "src/proxy/service.rs": "d46f02cfe2aaf9652c42c9f1f761379ebd4a5257ef143080f2bf75e74912533d",
+        "src/session.rs": "bc4fd204ad3a53c67bbe8ccae1dd747afcc63768089464c1ac46c174c3a5dc6d",
+        "src/ss.rs": "c2e6b0bbbe19657f745dc2f99d7da494519a436283166369edb23a2aa66b94c6",
+        "src/util.rs": "8cf576dd04646305c629dd70e2c1244a942ffcf7c03ff7fc2268a39f6b3723fb"
+      },
+      "modified_files": [
+        "src/collection.rs"
+      ],
+      "local_files": {
+        ".cargo_vcs_info.json": "132694ea9100769fbf78c57e3b817002d3b6ff58c722f868dc4eab246770b0a1",
+        "CHANGELOG.md": "151a8a23a5e48a51959d19cfd630c94d53be83fa34ccd01e57a3df92f70957a6",
+        "Cargo.lock": "841c86c6ecfba47609bac86c615ae2c3bf9e8bdb385a0f2dd61b02d2a5bb1228",
+        "Cargo.toml": "9fec80c963dda52e0856ec8bb18d4e16422ed820c3005a3df7c2406a9f6fce78",
+        "Cargo.toml.orig": "a8f928d9dc98f791ac794c342298972699d73032a4d13233a3c1573c0f3766cf",
+        "LICENSE-APACHE": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+        "LICENSE-MIT": "074585dbaf488db540c26f7b20f36053a157d7580bb1c390dc9f6afdb017c83a",
+        "LOCAL_PATCH.md": "4edd7d7ef7151bb01fc4afc4f5ea3fdbfb6c419ca898838d6923f9e801e97a47",
+        "NOTES_ON_PORT.md": "02132c378add48a1820a4774c1f8b3f40a8a78bf3bacd90fb4d95f7768749265",
+        "README.md": "ae034e37a98d96698a8fa98f34116e1852cfa401eeccb624f6aea4ae66a5818a",
+        "examples/example.rs": "23774ae4c05951386dfeeb3742ee9356c066ba599284b85c615318750374d95c",
+        "src/blocking/collection.rs": "6cec59f0f175fea32cb633f35b0bef44f53d6796f35ef5e82f732a1ff029ff99",
+        "src/blocking/item.rs": "d528f8009c5839232f41c038e01cacef43233de0a5cb291bc33e390800dbca8e",
+        "src/blocking/mod.rs": "b93303bd2879764817b9eee992d568415a4ede4e87d1a99c06e5ff30e99a7586",
+        "src/collection.rs": "504597db66154ec4bc59c04a20aa99a460b5b2e86f0b8a8043f43164c3c2df3e",
+        "src/error.rs": "e43b5c24609894a90af24699dd2b786a0e348cbd9a4848e48367109a04d7ec32",
+        "src/item.rs": "59a8d67d69229880091157949f8c6c169c88bcef041ed19c8145c3a31806debb",
+        "src/lib.rs": "d09ba116fc0d3d0a26d42f10571cf06c39088f822e52c8564a860ca2d2643e8c",
+        "src/proxy/collection.rs": "75b90ac96601295cad733f56711e27ff4c41125a2687b391af014708ff037511",
+        "src/proxy/item.rs": "bf7eb831b3d5b64b4945ac8f531070bde0b051a787e4ee022f205af36c03aa73",
+        "src/proxy/mod.rs": "5c89709f27a218d936ec618dbae5215fe3b3daf9e7430132bef94f3b4e35d696",
+        "src/proxy/prompt.rs": "f7c3745568065ba7f602c71884dcb92ec7303fa0376508d0305a9186c9722af4",
+        "src/proxy/service.rs": "d46f02cfe2aaf9652c42c9f1f761379ebd4a5257ef143080f2bf75e74912533d",
+        "src/session.rs": "bc4fd204ad3a53c67bbe8ccae1dd747afcc63768089464c1ac46c174c3a5dc6d",
+        "src/ss.rs": "c2e6b0bbbe19657f745dc2f99d7da494519a436283166369edb23a2aa66b94c6",
+        "src/util.rs": "8cf576dd04646305c629dd70e2c1244a942ffcf7c03ff7fc2268a39f6b3723fb"
+      }
+    }
+  },
+  "privacy": {
+    "before": "Expanded captured-child regression failed with sensitive-value leak.",
+    "after": "Typed settings and actual encrypted peer JSON now report category/location without values; original corrupt settings preserved and safe mode remains active."
+  },
+  "cohere": {
+    "runtime_contract": {
+      "cohere_flags": [
+        [
+          "cohere-transcribe-encoder",
+          true
+        ],
+        [
+          "cohere-transcribe-decoder",
+          true
+        ],
+        [
+          "cohere-transcribe-language",
+          true
+        ]
+      ],
+      "help_status": 0,
+      "pack": "sherpa-cpu",
+      "sha256": "d0f96c8b65c6cd0974fada22737e337de81bc8cd2abbec2e39caf358b1eec5fc"
+    },
+    "model": "cohere-transcribe-03-2026",
+    "model_sha256": "bd582588d50685a795dcd2807ab77e11361b8312d96c53884682def45ab4206d",
+    "archive_bytes": 1699791751,
+    "cpu_inference_passed": true,
+    "elapsed_seconds": 263.7,
+    "gpu_inference_tested": false,
+    "synthetic_speech_only": true,
+    "resources_removed": true,
+    "correction": "The library-only/no-server-flags rationale was incorrect. Actual authenticated v1.13.8 binary supports Cohere encoder/decoder/language flags."
+  },
+  "security": {
+    "database": {
+      "advisory-count": 1296,
+      "last-commit": "7eebec69c352c7191b1f13eb95dd510eeca5d1de",
+      "last-updated": "2026-10-09T10:12:02+02:00"
+    },
+    "lockfile": {
+      "dependency-count": 477
+    },
+    "settings": {
+      "target_arch": [],
+      "target_os": [],
+      "severity": null,
+      "ignore": [],
+      "informational_warnings": [
+        "unmaintained",
+        "unsound",
+        "notice"
+      ]
+    },
+    "vulnerabilities": {
+      "found": false,
+      "count": 0,
+      "list": []
+    },
+    "warnings": {}
+  },
+  "packaging_snapshots": {
+    "scope": "Keyring/status implementation snapshot before Cohere changes; not final artifacts.",
+    "nix_package": "/nix/store/fsdc1fvjhbrf4cs0ybb9rqxwgw3f42ib-mywhisper-0.9.2",
+    "nix_tests_passed": 164,
+    "dependency_notices": 370,
+    "reviewed_local_patch_provenance_included": true,
+    "arch_candidate_sha256": "a2c828af4c2d2d0fed77eb867021117da25ada0442f3008e7f4664e685023ceb",
+    "arch_image": "3f477b4c3b130405b0f9fd36ceaff1c250b84edde9fc68b88c5865b0d276a8de",
+    "arch_install_and_pkgrel_upgrade_passed": true,
+    "desktop_running_service_upgrade_tested": false
+  },
+  "log_artifacts": {
+    "rust_tests": {
+      "local_path": "/tmp/mywhisper-audit-tests-current.log",
+      "sha256": "d9e193d90123f989d2a44aac121cf69a7f1b2248cba9943ea6af0708cd14c8b1"
+    },
+    "fmt": {
+      "local_path": "/tmp/mywhisper-audit-format-current.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "clippy": {
+      "local_path": "/tmp/mywhisper-audit-clippy-current.log",
+      "sha256": "286be0b46912a26cd0fe4e8e13a3812e7076a6eefe57bd09150aaea70956f185"
+    },
+    "release_build": {
+      "local_path": "/tmp/mywhisper-audit-release-current.log",
+      "sha256": "6005ff8a3438a937dade32278afd4e1e756b1dda797d8ac97704663109ccf69a"
+    },
+    "native_ui": {
+      "local_path": "/tmp/mywhisper-native-ui-cohere-language-current.log",
+      "sha256": "1339a4fcb07fa878e84a4e9e1e8117aedf893d0ed4d67ce271e82a620223bcfb"
+    },
+    "native_keyring": {
+      "local_path": "/tmp/mywhisper-real-bounded-keyring-current.log",
+      "sha256": "da579e20ae8bb3dace6b6d2ab3d86f57674e18c18f005692594e51e185a2d5b9"
+    },
+    "privacy_before": {
+      "local_path": "/tmp/mywhisper-json-privacy-before.log",
+      "sha256": "72406904658e01bb9998fec9a3f38f25322ff3b9a969e28880a510b212da3032"
+    },
+    "privacy_after": {
+      "local_path": "/tmp/mywhisper-json-privacy-after.log",
+      "sha256": "6a7c294d442dbf824a9e30e65bde5c8442456f0c2465d488ecee8eb058a0decc"
+    },
+    "nix_keyring_status_snapshot": {
+      "local_path": "/tmp/mywhisper-nix-keyring-current.log",
+      "sha256": "6ec9685ae5bccc788727658d29371ba9539af3ba5e4ac31f736edc67a6d32244"
+    },
+    "arch_keyring_status_snapshot": {
+      "local_path": "/tmp/mywhisper-clean-arch-keyring-current.log",
+      "sha256": "cac51445a1ba1a6067b4917cddc94954615e239c23e12b3754f34ff4b3ce30ba"
+    },
+    "cohere_contract": {
+      "local_path": "/tmp/mywhisper-real-sherpa-contract.log",
+      "sha256": "26efd813f361ed27477d67c3420ee0d6e691eb79acd00f2b6ab40c252ec630b5"
+    },
+    "cohere_inference": {
+      "local_path": "/tmp/mywhisper-real-cohere-cpu.log",
+      "sha256": "0b551996a24f95f2348fcc4c3be9958b70ceb65f9709083eedf3a530be92ca6b"
+    },
+    "cuda_inference_status_metadata": {
+      "local_path": "/tmp/mywhisper-real-whisper-cuda-current.log",
+      "sha256": "9084e5945fd30c8b3daa98bf60ca89656effdeb72bad2fd2fb6bf21d0117dcab"
+    },
+    "release_regressions": {
+      "local_path": "/tmp/mywhisper-release-gate-tests-current.log",
+      "sha256": "88e99df14c79b2b8b54e19bfe748593fc04331b4abf62e48aa612a926eb90bb4"
+    },
+    "upgrade_regressions": {
+      "local_path": "/tmp/mywhisper-package-regressions-current.log",
+      "sha256": "2930bd95c05f9b3bed0fc963fa705e3ef79aef78a784c746bcd76bdb5d4b23a7"
+    },
+    "security": {
+      "local_path": "/tmp/mywhisper-security-keyring-current.json",
+      "sha256": "c1fd5aed7215276b64781f0b19750419b3d763d31c3484b1b3eee5b80470a151"
+    }
+  },
+  "outstanding": "All findings remain open for complete acceptance. Further protocol/lifecycle/privacy/migration/download work and authenticated cloud/WSS, physical device/compositor, clean NixOS desktop and final artifact gates remain. Project LICENSE explicitly deferred; distribution held. No commit, push, PR, tag or release."
+}

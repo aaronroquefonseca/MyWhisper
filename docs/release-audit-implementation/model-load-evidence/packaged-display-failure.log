@@ -1,0 +1,48 @@
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: server already running
+_XSERVTransSocketUNIXCreateListener: ...SocketCreateListener() failed
+_XSERVTransMakeAllCOTSServerListeners: server already running
+_XSERVTransmkdir: ERROR: euid != 0,directory /tmp/.X11-unix will not be created.
+(EE) 
+(EE) Backtrace:
+(EE) unw_get_proc_name failed: no unwind info found [-10]
+(EE) 0: Xvfb (?+0x0) [0x55ab8921dd74]
+(EE) unw_get_proc_name failed: no unwind info found [-10]
+(EE) 1: /usr/lib/libc.so.6 (?+0x0) [0x7f4f9f244e70]
+(EE) unw_get_proc_name failed: no unwind info found [-10]
+(EE) 2: /usr/lib/libnvidia-egl-gbm.so.1 (?+0x0) [0x7f4f9e465dcd]
+(EE) unw_get_proc_name failed: no unwind info found [-10]
+(EE) 3: /usr/lib/libEGL_nvidia.so.0 (?+0x0) [0x7f4f9e672399]
+(EE) unw_get_proc_name failed: no unwind info found [-10]
+(EE) 4: /usr/lib/libEGL_nvidia.so.0 (?+0x0) [0x7f4f9e61330f]
+(EE) unw_get_proc_name failed: no unwind info found [-10]
+(EE) 5: /usr/lib/libEGL.so.1 (?+0x0) [0x7f4f9e6f862c]
+(EE) unw_get_proc_name failed: no unwind info found [-10]
+(EE) 6: /usr/lib/dri/swrast_dri.so (?+0x0) [0x7f4f9e75c373]
+(EE) unw_get_proc_name failed: no unwind info found [-10]
+(EE) 7: Xvfb (?+0x0) [0x55ab8923b9ff]
+(EE) unw_get_proc_name failed: no unwind info found [-10]
+(EE) 8: Xvfb (?+0x0) [0x55ab892379f6]
+(EE) unw_get_proc_name failed: no unwind info found [-10]
+(EE) 9: Xvfb (?+0x0) [0x55ab890f83bc]
+(EE) unw_get_proc_name failed: no unwind info found [-10]
+(EE) 10: Xvfb (?+0x0) [0x55ab8926c4a0]
+(EE) unw_get_proc_name failed: no unwind info found [-10]
+(EE) 11: Xvfb (?+0x0) [0x55ab8908304a]
+(EE) unw_get_proc_name failed: no unwind info found [-10]
+(EE) 12: /usr/lib/libc.so.6 (?+0x0) [0x7f4f9f227d0e]
+(EE) 13: /usr/lib/libc.so.6 (__libc_start_main+0x8b) [0x7f4f9f227e4b]
+(EE) unw_get_proc_name failed: no unwind info found [-10]
+(EE) 14: Xvfb (?+0x0) [0x55ab890864d5]
+(EE) 
+(EE) Segmentation fault at address 0x25
+(EE) 
+Fatal server error:
+(EE) Caught signal 11 (Segmentation fault). Server aborting
+(EE) 
+
+Traceback (most recent call last):
+  File "/tmp/mywhisper-packaged-display.py", line 11, in <module>
+    if not data.isdigit():raise RuntimeError('owned Xvfb failed to allocate a display')
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: owned Xvfb failed to allocate a display

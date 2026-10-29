@@ -1,0 +1,11 @@
+Take care of PR #15 and keep working on it.
+
+Objectives: coordinate final acceptance and documentation across R01–R51, with release/upgrade/artifact work under R48/R51. Audit that every grouped issue has an owner, correction or evidence-backed non-defect determination and meaningful current regression/live evidence.
+
+This independent main-based draft retains the complete historical report, matrix, probes, manifests and immutable all-work snapshot, plus a source inventory assigning every original changed path. Earlier #5–#7 are merged; historical no-license/open-PR/version claims must not overwrite current MIT/version/workflow decisions. The copied probes deliberately assert old bugs and must not become a passing suite.
+
+Chosen strategy: #16/#17 are standalone code scopes; the coupled core is #18→#19→#20→#21→#22→#23. Preserve provenance, coordinate shared interfaces and promote scopes only after actual gates pass. Compile results and historical successes are not full release certification.
+
+Next: maintain the ownership matrix as agents finish, reconcile overlapping #11/server and #4/Qwen work, review complete migrations/privacy/WAL/backups/audio/temp/log/resource cleanup, and run the final integrated locked fmt/strict lint/tests/release/security/native/Arch/NixOS/install-upgrade/artifact gates. Trusted authenticated WSS/paid credentials, physical devices, cross-host LAN, compositor variants and final packaged inference still need real evidence. Report exact prerequisites and continue independent work; do not fabricate closure or publish a release.
+
+Keep this PR draft until its scope and required checks are actually complete. Preserve supported behavior, user data, all meaningful assertions and the current version/license/workflows. Use disposable encrypted stores, identities, HOME/XDG/session state, synthetic transcripts and test-only keys. Do not add ignores, suppress failures, enlarge limits to hide symptoms, merge, tag, release or deploy. Update the finding ownership/evidence and review the complete resulting diff. Historical probes assert buggy behavior and are evidence only.

@@ -1,0 +1,40 @@
+Oct 11 21:57:56 desktop systemd[810]: Started MyWhisper background dictation engine.
+Oct 11 21:57:56 desktop mywhisper[1148]: [service] engine lock acquired
+Oct 11 21:57:56 desktop mywhisper[1148]: [hotkey] watching physical binding (Push) for DictationToggle
+Oct 11 21:57:56 desktop mywhisper[1148]: [stt] startup warmup: Local: whisper model base (download it in Settings → Speech to Text / Language Models)
+Oct 11 21:57:56 desktop mywhisper[1148]: [sync] applying engine (port 42973, name "")
+Oct 11 21:57:56 desktop mywhisper[1148]: [hotkey] watching 2 keyboard(s): QEMU Virtio Keyboard, AT Translated Set 2 keyboard
+Oct 11 21:57:56 desktop mywhisper[1148]: [hotkey] status: Listening
+Oct 11 21:57:56 desktop mywhisper[1148]: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+Oct 11 21:57:56 desktop mywhisper[1148]: [hotkey] watching physical binding (Push) for DictationToggle
+Oct 11 21:57:56 desktop mywhisper[1148]: [hotkey] watching 2 keyboard(s): QEMU Virtio Keyboard, AT Translated Set 2 keyboard
+Oct 11 21:57:56 desktop mywhisper[1148]: [hotkey] status: Listening
+Oct 11 21:57:56 desktop mywhisper[1148]: [service] activate, headless engine
+Oct 11 21:57:56 desktop mywhisper[1148]: [poc] layer-shell supported: true
+Oct 11 21:57:56 desktop mywhisper[1148]: [poc] layer-shell configured: layer=Overlay bottom-anchored margin=24 keyboard=None exclusive=0 ns=mywhisper-pill
+Oct 11 21:57:56 desktop mywhisper[1148]: [poc] viz mark icon loaded: 18x18
+Oct 11 21:57:56 desktop mywhisper[1148]: Dropping DeviceSink, audio playing through this sink will stop, to prevent this message from appearing use tracing or call `.log_on_drop(false)` on this DeviceSink
+Oct 11 21:57:57 desktop systemd[810]: Stopping MyWhisper background dictation engine...
+Oct 11 21:57:58 desktop mywhisper[1148]: [sync] engine stopped
+Oct 11 21:57:58 desktop mywhisper[1148]: [app] owned shutdown complete; database checkpointed
+Oct 11 21:57:58 desktop systemd[810]: Stopped MyWhisper background dictation engine.
+Oct 11 21:57:58 desktop systemd[810]: Started MyWhisper background dictation engine.
+Oct 11 21:57:58 desktop mywhisper[1244]: [service] engine lock acquired
+Oct 11 21:57:58 desktop mywhisper[1244]: [hotkey] watching physical binding (Push) for DictationToggle
+Oct 11 21:57:58 desktop mywhisper[1244]: [stt] startup warmup: Local: whisper model base (download it in Settings → Speech to Text / Language Models)
+Oct 11 21:57:58 desktop mywhisper[1244]: [sync] applying engine (port 42973, name "")
+Oct 11 21:57:58 desktop mywhisper[1244]: [hotkey] watching 2 keyboard(s): QEMU Virtio Keyboard, AT Translated Set 2 keyboard
+Oct 11 21:57:58 desktop mywhisper[1244]: [hotkey] status: Listening
+Oct 11 21:57:58 desktop mywhisper[1244]: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+Oct 11 21:57:58 desktop mywhisper[1244]: [hotkey] watching physical binding (Push) for DictationToggle
+Oct 11 21:57:58 desktop mywhisper[1244]: [hotkey] watching 2 keyboard(s): QEMU Virtio Keyboard, AT Translated Set 2 keyboard
+Oct 11 21:57:58 desktop mywhisper[1244]: [hotkey] status: Listening
+Oct 11 21:57:58 desktop mywhisper[1244]: [service] activate, headless engine
+Oct 11 21:57:58 desktop mywhisper[1244]: [poc] layer-shell supported: true
+Oct 11 21:57:58 desktop mywhisper[1244]: [poc] layer-shell configured: layer=Overlay bottom-anchored margin=24 keyboard=None exclusive=0 ns=mywhisper-pill
+Oct 11 21:57:58 desktop mywhisper[1244]: [poc] viz mark icon loaded: 18x18
+Oct 11 21:57:58 desktop mywhisper[1244]: Dropping DeviceSink, audio playing through this sink will stop, to prevent this message from appearing use tracing or call `.log_on_drop(false)` on this DeviceSink
+Oct 11 21:57:59 desktop systemd[810]: Stopping MyWhisper background dictation engine...
+Oct 11 21:58:00 desktop mywhisper[1244]: [sync] engine stopped
+Oct 11 21:58:00 desktop mywhisper[1244]: [app] owned shutdown complete; database checkpointed
+Oct 11 21:58:00 desktop systemd[810]: Stopped MyWhisper background dictation engine.

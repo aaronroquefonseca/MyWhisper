@@ -1,0 +1,42 @@
+   Compiling mywhisper v0.9.3 (/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.74s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 1 test
+
+thread 'transcribe::tests::delayed_release_cannot_detach_or_capture_samples_for_the_next_recording' (2894850) panicked at src/transcribe.rs:4880:9:
+capture probe delayed_release_cannot_detach_or_capture_samples_for_the_next_recording failed (exit status: 101): 
+running 1 test
+[stt] press: armed (OpenAI-compatible transcription)
+[stt] press: armed (OpenAI-compatible transcription)
+[stt] release: 16320 samples @ 16000 Hz
+[stt] release: inference took 0.0s (primary)
+[stt] raw transcript received (content redacted)
+[stt] final transcript ready (content redacted)
+[stt] cancel: dropped (0.0s, not kept)
+[stt] press: armed (OpenAI-compatible transcription)
+
+thread 'transcribe::tests::delayed_release_cannot_detach_or_capture_samples_for_the_next_recording' (2894853) panicked at src/transcribe.rs:6829:31:
+called `Result::unwrap()` on an `Err` value: "capture policy reader busy; retry dictation"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test transcribe::tests::delayed_release_cannot_detach_or_capture_samples_for_the_next_recording ... FAILED
+
+failures:
+
+failures:
+    transcribe::tests::delayed_release_cannot_detach_or_capture_samples_for_the_next_recording
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 253 filtered out; finished in 0.05s
+
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test transcribe::tests::delayed_release_cannot_detach_or_capture_samples_for_the_next_recording ... FAILED
+
+failures:
+
+failures:
+    transcribe::tests::delayed_release_cannot_detach_or_capture_samples_for_the_next_recording
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 253 filtered out; finished in 0.07s
+
+error: test failed, to rerun pass `--lib`

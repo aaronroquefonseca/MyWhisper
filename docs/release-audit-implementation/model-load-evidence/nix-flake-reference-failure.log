@@ -1,0 +1,18 @@
+error:
+       … while calling the 'derivationStrict' builtin
+         at «nix-internal»/derivation-internal.nix:37:12:
+           36|
+           37|   strict = derivationStrict drvAttrs;
+             |            ^
+           38|
+
+       … while evaluating the derivation attribute 'name'
+         at «github:NixOS/nixpkgs/e7439b6b14ad3cc35d05608ebca9bce01a25f5f8?narHash=sha256-H83yz/do%2BhjOO0uujHyH8RgtIQP2v7Mw%2BcLwcZK/xKc%3D»/pkgs/stdenv/generic/make-derivation.nix:651:11:
+          650|         derivationArg = removeAttrs attrs removedOrReplacedAttrNames // {
+          651|           ${if (attrs ? name || (attrs ? pname && attrs ? version)) then "name" else null} =
+             |           ^
+          652|             let
+
+       (stack trace truncated; use '--show-trace' to show the full, detailed trace)
+
+       error: access to absolute path '/nix/Cargo.toml' is forbidden in pure evaluation mode (use '--impure' to override)

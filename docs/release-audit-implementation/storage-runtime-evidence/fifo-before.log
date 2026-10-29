@@ -1,0 +1,22 @@
+   Compiling mywhisper v0.9.3 (/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.68s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-7ad4458611a62635)
+
+running 1 test
+test store::migration_tests::special_database_files_fail_without_waiting_for_a_writer ... FAILED
+
+failures:
+
+---- store::migration_tests::special_database_files_fail_without_waiting_for_a_writer stdout ----
+
+thread 'store::migration_tests::special_database_files_fail_without_waiting_for_a_writer' (388083) panicked at src/store_migration_tests.rs:373:9:
+database open waited for a writer on a private FIFO
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    store::migration_tests::special_database_files_fail_without_waiting_for_a_writer
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 277 filtered out; finished in 1.01s
+
+error: test failed, to rerun pass `--lib`

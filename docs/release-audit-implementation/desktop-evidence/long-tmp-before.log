@@ -1,0 +1,16 @@
+Disposable TMPDIR byte length: 111
+
+running 1 test
+
+thread 'database_key::tests::create_item_prompt_is_dismissed_before_activation_and_its_future_is_cancelled' (169415) panicked at src/database_key.rs:233:26:
+private bus closed before its address
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test database_key::tests::create_item_prompt_is_dismissed_before_activation_and_its_future_is_cancelled ... FAILED
+
+failures:
+
+failures:
+    database_key::tests::create_item_prompt_is_dismissed_before_activation_and_its_future_is_cancelled
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 272 filtered out; finished in 0.01s
+

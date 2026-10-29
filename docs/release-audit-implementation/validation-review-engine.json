@@ -1,0 +1,57 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "baseline": "e989680",
+  "correction": "F05 local runtime ownership through readiness and inference; deferred warmup and instance-specific cleanup",
+  "rust_tests": {
+    "passed": 205,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "passed": [
+    "strict Clippy",
+    "formatting",
+    "release build",
+    "current RustSec: 1296 advisories; 0 vulnerabilities and warnings",
+    "seven native hotkey checks",
+    "real verified Tiny Whisper CPU download/inference and owned cleanup"
+  ],
+  "native_ui_gate": "FAILED: fatal GTK 4.24.1 gtk_label_grab_focus cached previous-focus use after focus transition/dismissal, during dictionary delete cancellation at step 7. Preserved /tmp/mywhisper-review-gtk-focus.core and /tmp/mywhisper-review-gtk-{backtrace,notebook-asm,focus-objects}.log; R46 investigation continues. No suppression or assertion removal.",
+  "regressions": [
+    "Six changing configurations while actual supervised inference is active; original en response completes; coalesced es warmup starts afterward",
+    "Same configuration restarted: old startup instance cannot remove its newer instance",
+    "Actual capture/release/finalization/delivery retains Spanish snapshot across French warmup and completes once",
+    "Four short workers occupied during cold local launch, inferred speech and deferred replacement",
+    "Twelve canceled lease waits preserve another owner",
+    "Online and offline readiness probes stalled at actual WS handshake: Cancel, durable Reset and Stop interrupt and reap six children",
+    "Never-listening startup canceled and reaped",
+    "Queued warmup and a stale control-generation request cannot resurrect a stopped engine",
+    "Existing permanent ownership thread admits one process launch; a panic releases admission and the thread remains usable"
+  ],
+  "compatibility": "No schema/key/identity/peer-wire change. Public provider constructors remain supported. Local runtime ownership serializes actual inference on the existing single local-engine slot; RAM capture continues independently. Deferred warmup coalesces configuration changes and retains cancellation/control authority. Model changes still start the selected --model; the duplicate HTTP /load path is unnecessary and removed.",
+  "logs_sha256": {
+    "active": "d4337cc5829260436570ebf8655651f633fe05c390f1c897cadf91a138f8fa6f",
+    "cancel": "462c7c7e0bead7d735d2de58f45a92efdee9da0f8769d5e7b32e74508849a619",
+    "readiness": "bc18ac14b7acbd8ea66bcb948a61ec0c8b01a141d5116630c55bf8c9ea7fc28c",
+    "tests": "ed30b32d6b69657fae93ec02b11841bd9004076775e7ea0ef4e4fc46589c9e50",
+    "clippy": "73508dd8da1b4439f9dc41e0cdebefb935157e0d8afc11ccfb2f16c557e17d7b",
+    "fmt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "release": "79fa0603138a19b3c52d0d74a87bb105a10f00a8f560e2ef8937f1472153e9cd",
+    "native": "5ce03bd4ee948ff0eef9b8371177dad3f583e881882fcecb806398eb483f6485",
+    "runtime": "ae2ee8fe154f6ccb065e0a01832862575a27639bb095fafbcd25a7a42f2050d6",
+    "ui": "a0d1ab688a7f3f4d92c4066c844f7791b4c79a5aa33de9fd6828ef087f1a3953",
+    "security": "c1fd5aed7215276b64781f0b19750419b3d763d31c3484b1b3eee5b80470a151"
+  },
+  "source_sha256": {
+    "src/transcribe.rs": "9a18fd652491265a0358177d3a70b43eda88342e353a7f6d588f4be1e93f8c52",
+    "src/operation.rs": "5e21bfb5d7369f4d4d48467a4423550e1a4a417528364f3fd499a6bad4d8597b",
+    "src/runtime.rs": "df49cb935c371eb597ec9a447ab1d77f9e33a3b59037a8adf2751a2bebbcca9d",
+    "src/service.rs": "c229fb712aa32627e5e4a6e797081030e207eba1f06ec8f5bf58e38e7ed1b512",
+    "src/bin/mywhisper.rs": "b1ed1dd2bc5f0a132ea919bd48ad2c64e941f21f75c7634fe47303ccc5d240f9"
+  },
+  "harness_notes": [
+    "An early regression assumed synchronous release of a deferred warmup lease at Stop. The corrected regression observes owned cancellation completion and retains the 500 ms bound; original failure remains /tmp/mywhisper-review-engine-cleanup-barrier-failure.log.",
+    "Native UI previously passed before the persistent process-launch changes; the latest gate hit an existing intermittent focus bug and is explicitly failed. It is not represented as passing."
+  ],
+  "outstanding": "Asset integrity, paginated synchronization, GTK focus defect, all remaining original grouped audit obligations and final integrations/artifact gates; PR unsubmitted."
+}

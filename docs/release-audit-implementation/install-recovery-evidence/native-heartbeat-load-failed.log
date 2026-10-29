@@ -1,0 +1,396 @@
+   Compiling mywhisper v0.9.3 (/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.85s
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-ui-audit.fck5hqg7/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:56:24.158: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:56:24.165: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:56:24.165: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 16:56:24.225: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[poc] layer-shell supported: false
+[poc] WARNING: layer-shell not supported; using undecorated fallback window
+[poc] viz mark icon loaded: 18x18
+[poc] overlay state: Hidden -> Error
+[poc] anim 69x36 -> 93x48 220ms fade 0.00->1.00
+[poc] overlay shown (compact Error)
+[poc] fit window to content: 683x70
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] geom anim done (Error): window=0x0 compact=0x0 vis=false expanded=0x0 vis=false
+[hotkey] capture saw keycode=192 token=Some("F14")
+[hotkey] capture saw keycode=47 token=Some("Semicolon")
+[ui-smoke] release regressions passed: widget lifetime, remote language, malformed discovery
+[ui-smoke] step 0
+[ui-smoke] step 1
+[sync] outgoing database path unavailable
+[ui-smoke] step 2
+[ui-smoke] step 3
+[ui-smoke] step 4
+[ui-smoke] step 5
+[ui-smoke] step 6
+[ui-smoke] step 7
+[ui-smoke] step 8
+[ui-smoke] step 9
+[sync] outgoing database path unavailable
+[ui-smoke] step 10
+[ui-smoke] step 11
+[sync] outgoing database path unavailable
+[sync] outgoing database path unavailable
+[ui-smoke] step 12
+[ui-smoke] step 13
+[ui-smoke] step 14
+[ui-smoke] step 15
+[ui-smoke] step 16
+[ui-smoke] step 17
+[ui-smoke] step 18
+[ui-smoke] step 19
+[ui-smoke] step 20
+[ui-smoke] step 21
+[ui-smoke] step 22
+[ui-smoke] step 23
+[ui-smoke] step 24
+[ui-smoke] step 25
+[ui-smoke] step 26
+[ui-smoke] step 27
+[ui-smoke] step 28
+[ui-smoke] step 29
+[ui-smoke] step 30
+[ui-smoke] step 31
+[ui-smoke] step 32
+[ui-smoke] step 33
+[ui-smoke] step 34
+[privacy] cleared 4 transcripts
+[sync] outgoing database path unavailable
+[ui-smoke] step 35
+[app] palette -> dark
+[app] theme state: dark=true system-supports-color-schemes=false scheme=ForceDark theme-name=Adwaita-empty
+[app] theme -> Dark
+[app] palette -> light
+[app] theme state: dark=false system-supports-color-schemes=false scheme=ForceLight theme-name=Adwaita-empty
+[app] theme -> Light
+[ui-smoke] step 36
+Native UI smoke passed: validation, draft retention, delete cancel/confirm, multiline snippet creation/editing, alias conflicts, search, deep links, separate model/cleanup settings, cleanup persistence, prompt draft cancel/close, explicit save, summary refresh, default restoration, model add/edit/remove, priority and selection across pages, bulk history clear, theme persistence, language rebuild.
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-recovery-audit.17d7dt2y/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:56:54.554: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:56:54.570: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:56:54.570: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 16:56:54.721: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[ui-smoke] settings recovery passed: visible message, disabled permissions, unknown fields preserved after native save
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-ui-audit.6vhiusy_/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:57:00.715: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:57:00.728: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:57:00.728: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 16:57:00.954: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+[poc] layer-shell supported: false
+[poc] WARNING: layer-shell not supported; using undecorated fallback window
+[poc] viz mark icon loaded: 18x18
+[poc] overlay state: Hidden -> Error
+[poc] anim 69x36 -> 93x48 220ms fade 0.00->1.00
+[poc] overlay shown (compact Error)
+[poc] fit window to content: 592x70
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] viz mark icon loaded: 18x18
+[poc] geom anim done (Error): window=0x0 compact=0x0 vis=false expanded=0x0 vis=false
+[hotkey] capture saw keycode=192 token=Some("F14")
+[hotkey] capture saw keycode=47 token=Some("Semicolon")
+[ui-smoke] release regressions passed: widget lifetime, remote language, malformed discovery
+[ui-smoke] step 0
+[ui-smoke] step 1
+[sync] outgoing database path unavailable
+[ui-smoke] step 2
+[ui-smoke] step 3
+[ui-smoke] step 4
+[ui-smoke] step 5
+[ui-smoke] step 6
+[ui-smoke] step 7
+[ui-smoke] step 8
+[ui-smoke] step 9
+[sync] outgoing database path unavailable
+[ui-smoke] step 10
+[ui-smoke] step 11
+[sync] outgoing database path unavailable
+[sync] outgoing database path unavailable
+[ui-smoke] step 12
+[ui-smoke] step 13
+[ui-smoke] step 14
+[ui-smoke] step 15
+[ui-smoke] step 16
+[ui-smoke] step 17
+[ui-smoke] step 18
+[ui-smoke] step 19
+[ui-smoke] step 20
+[ui-smoke] step 21
+[ui-smoke] step 22
+[ui-smoke] step 23
+[ui-smoke] step 24
+[ui-smoke] step 25
+[ui-smoke] step 26
+[ui-smoke] step 27
+[ui-smoke] step 28
+[ui-smoke] step 29
+[ui-smoke] step 30
+[ui-smoke] step 31
+[ui-smoke] step 32
+[ui-smoke] step 33
+[ui-smoke] step 34
+[privacy] cleared 4 transcripts
+[sync] outgoing database path unavailable
+[ui-smoke] step 35
+[app] palette -> light
+[app] theme state: dark=false system-supports-color-schemes=false scheme=ForceLight theme-name=Adwaita-empty
+[app] theme -> Light
+[ui-smoke] step 36
+Native UI smoke passed: validation, draft retention, delete cancel/confirm, multiline snippet creation/editing, alias conflicts, search, deep links, separate model/cleanup settings, cleanup persistence, prompt draft cancel/close, explicit save, summary refresh, default restoration, model add/edit/remove, priority and selection across pages, bulk history clear, theme persistence, language rebuild.
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-recovery-audit.ivyg75oc/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:57:31.548: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:57:31.553: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:57:31.553: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 16:57:31.599: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+[ui-smoke] settings recovery passed: visible message, disabled permissions, unknown fields preserved after native save
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-reset-audit.xm7bmmkf/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:57:36.583: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:57:36.588: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:57:36.588: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 16:57:36.630: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[app] palette -> light
+[reset] reset committed; model cleanup is incomplete and can be retried
+[app] palette -> light
+[reset] reset committed; model cleanup is incomplete and can be retried
+[app] palette -> light
+[app] palette -> light
+[ui-smoke] reset passed: independent DB/installer stalls, GTK heartbeat, committed state after file failure, visible retry, preserved later edits
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-resetresume-audit.3drrf7ib/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:57:41.126: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:57:41.131: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:57:41.131: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 16:57:41.173: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[app] palette -> light
+[app] palette -> light
+[ui-smoke] startup reset recovery passed: muted pending state, owned recovery, preserved later edit, removed old assets
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=20 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=29 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-reset-audit.de_d4uij/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:57:44.973: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:57:44.986: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:29): xdg-desktop-portal-WARNING **: 16:57:44.986: The camera portal requires an access impl
+dbus-daemon[3]: [session uid=1000 pid=3 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:20): Gdk-WARNING **: 16:57:45.092: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+
+thread 'main' (20) panicked at examples/ui_preview/reset_smoke.rs:116:13:
+reset stalled GTK for 259.5212ms
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (20) panicked at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/panicking.rs:225:5:
+panic in a function that cannot unwind
+stack backtrace:
+   0:     0x55e22a701cc1 - std[c29fa2d9dbea2b0e]::backtrace_rs::backtrace::libunwind::trace
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9
+   1:     0x55e22a701cc1 - std[c29fa2d9dbea2b0e]::backtrace_rs::backtrace::trace_unsynchronized::<std[c29fa2d9dbea2b0e]::sys::backtrace::_print_fmt::{closure#1}>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/../../backtrace/src/backtrace/mod.rs:66:14
+   2:     0x55e22a701cc1 - std[c29fa2d9dbea2b0e]::sys::backtrace::_print_fmt
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/backtrace.rs:74:9
+   3:     0x55e22a701cc1 - <<std[c29fa2d9dbea2b0e]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[a9090a07a7fa7517]::fmt::Display>::fmt
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/backtrace.rs:44:26
+   4:     0x55e22a71b72a - <core[a9090a07a7fa7517]::fmt::rt::Argument>::fmt
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/fmt/rt.rs:152:76
+   5:     0x55e22a71b72a - core[a9090a07a7fa7517]::fmt::write
+   6:     0x55e22a70820c - core[a9090a07a7fa7517]::io::write::default_write_fmt::<std[c29fa2d9dbea2b0e]::sys::stdio::unix::Stderr>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/io/write.rs:402:11
+   7:     0x55e22a70820c - <std[c29fa2d9dbea2b0e]::sys::stdio::unix::Stderr as core[a9090a07a7fa7517]::io::write::Write>::write_fmt
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/io/write.rs:335:13
+   8:     0x55e22a6db706 - <std[c29fa2d9dbea2b0e]::sys::backtrace::BacktraceLock>::print
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/backtrace.rs:47:9
+   9:     0x55e22a6db706 - std[c29fa2d9dbea2b0e]::panicking::default_hook::{closure#0}
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:292:27
+  10:     0x55e22a6f9601 - std[c29fa2d9dbea2b0e]::panicking::default_hook
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:319:9
+  11:     0x55e22a6f992b - std[c29fa2d9dbea2b0e]::panicking::panic_with_hook
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:815:13
+  12:     0x55e22a6db7e4 - std[c29fa2d9dbea2b0e]::panicking::panic_handler::{closure#0}
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:681:13
+  13:     0x55e22a6d3dc9 - std[c29fa2d9dbea2b0e]::sys::backtrace::__rust_end_short_backtrace::<std[c29fa2d9dbea2b0e]::panicking::panic_handler::{closure#0}, !>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/backtrace.rs:182:18
+  14:     0x55e22a6dc66d - __rustc[9d087a5ab36ea756]::rust_begin_unwind
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:679:5
+  15:     0x55e22a71bd4d - core[a9090a07a7fa7517]::panicking::panic_nounwind_fmt::runtime
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/panicking.rs:122:22
+  16:     0x55e22a71bd4d - core[a9090a07a7fa7517]::panicking::panic_nounwind_fmt
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/intrinsics/mod.rs:2636:9
+  17:     0x55e22a71bccb - core[a9090a07a7fa7517]::panicking::panic_nounwind
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/panicking.rs:225:5
+  18:     0x55e22a71be57 - core[a9090a07a7fa7517]::panicking::panic_cannot_unwind
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/panicking.rs:350:5
+  19:     0x55e228fa37d3 - glib[c30c21a7c745d72c]::source::trampoline_local::<ui_preview[7b4faa703cdca5ab]::reset_smoke::run::{closure#0}>
+                               at /home/aaronroque/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/glib-0.22.10/src/source.rs:87:1
+  20:     0x7f8d648e8cf1 - <unknown>
+  21:     0x7f8d648e6ffd - <unknown>
+  22:     0x7f8d648e8438 - <unknown>
+  23:     0x7f8d648e8592 - g_main_context_iteration
+  24:     0x7f8d64af521e - g_application_run
+  25:     0x55e228fbe675 - <gtk4[16020661e161a291]::auto::application::Application as gio[cdfd4b251c71caab]::application::ApplicationExtManual>::run_with_args::<&str>
+                               at /home/aaronroque/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gio-0.22.10/src/application.rs:31:13
+  26:     0x55e228f92796 - ui_preview[7b4faa703cdca5ab]::main
+                               at /home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1/examples/ui_preview.rs:148:9
+  27:     0x55e228fd281b - <fn() -> glib[c30c21a7c745d72c]::exit_code::ExitCode as core[a9090a07a7fa7517]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/ops/function.rs:250:5
+  28:     0x55e228fbfdfe - std[c29fa2d9dbea2b0e]::sys::backtrace::__rust_begin_short_backtrace::<fn() -> glib[c30c21a7c745d72c]::exit_code::ExitCode, glib[c30c21a7c745d72c]::exit_code::ExitCode>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/backtrace.rs:166:18
+  29:     0x55e228fbeb81 - std[c29fa2d9dbea2b0e]::rt::lang_start::<glib[c30c21a7c745d72c]::exit_code::ExitCode>::{closure#0}
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/rt.rs:206:18
+  30:     0x55e22a6f8709 - <&dyn core[a9090a07a7fa7517]::ops::function::Fn<(), Output = i32> + core[a9090a07a7fa7517]::marker::Sync + core[a9090a07a7fa7517]::panic::unwind_safe::RefUnwindSafe as core[a9090a07a7fa7517]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/ops/function.rs:287:21
+  31:     0x55e22a6f8709 - std[c29fa2d9dbea2b0e]::panicking::catch_unwind::do_call::<&dyn core[a9090a07a7fa7517]::ops::function::Fn<(), Output = i32> + core[a9090a07a7fa7517]::marker::Sync + core[a9090a07a7fa7517]::panic::unwind_safe::RefUnwindSafe, i32>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:576:43
+  32:     0x55e22a6f8709 - std[c29fa2d9dbea2b0e]::panicking::catch_unwind::<i32, &dyn core[a9090a07a7fa7517]::ops::function::Fn<(), Output = i32> + core[a9090a07a7fa7517]::marker::Sync + core[a9090a07a7fa7517]::panic::unwind_safe::RefUnwindSafe>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:544:19
+  33:     0x55e22a6f8709 - std[c29fa2d9dbea2b0e]::panic::catch_unwind::<&dyn core[a9090a07a7fa7517]::ops::function::Fn<(), Output = i32> + core[a9090a07a7fa7517]::marker::Sync + core[a9090a07a7fa7517]::panic::unwind_safe::RefUnwindSafe, i32>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panic.rs:359:14
+  34:     0x55e22a6f8709 - std[c29fa2d9dbea2b0e]::rt::lang_start_internal::{closure#0}
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/rt.rs:175:24
+  35:     0x55e22a6f8709 - std[c29fa2d9dbea2b0e]::panicking::catch_unwind::do_call::<std[c29fa2d9dbea2b0e]::rt::lang_start_internal::{closure#0}, isize>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:576:43
+  36:     0x55e22a6f8709 - std[c29fa2d9dbea2b0e]::panicking::catch_unwind::<isize, std[c29fa2d9dbea2b0e]::rt::lang_start_internal::{closure#0}>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panicking.rs:544:19
+  37:     0x55e22a6f8709 - std[c29fa2d9dbea2b0e]::panic::catch_unwind::<std[c29fa2d9dbea2b0e]::rt::lang_start_internal::{closure#0}, isize>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/panic.rs:359:14
+  38:     0x55e22a6f8709 - std[c29fa2d9dbea2b0e]::rt::lang_start_internal
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/rt.rs:171:5
+  39:     0x55e228fbeb67 - std[c29fa2d9dbea2b0e]::rt::lang_start::<glib[c30c21a7c745d72c]::exit_code::ExitCode>
+                               at /rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/rt.rs:205:5
+  40:     0x55e228f9285e - main
+  41:     0x7f8d64427d0e - <unknown>
+  42:     0x7f8d64427e4b - __libc_start_main
+  43:     0x55e228f907e5 - _start
+  44:                0x0 - <unknown>
+thread caused non-unwinding panic. aborting.
+timeout: the monitored command dumped core
+/usr/bin/xvfb-run: line 180:    19 Aborted                    DISPLAY=:$SERVERNUM XAUTHORITY=$AUTHFILE "$@"

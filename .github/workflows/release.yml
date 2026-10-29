@@ -75,20 +75,51 @@ jobs:
           cargo test --locked --all-targets --no-run
           # The fixture belongs only to this child. Keep toolchain caches outside
           # its private HOME, and never pass desktop keyring/session state.
-          python3 scripts/disposable.py MYWHISPER_AUDIT_ROOT rusttests \
-            env -u DISPLAY -u SSH_AUTH_SOCK CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
-            RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
-            MYWHISPER_DB_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
-            cargo test --locked --all-targets
+          # Hosted Rust tests run as 4 explicit sequential batches sharing one
+          # checked-in manifest (scripts/test-manifest.txt, 4-way stride).
+          # Each batch gets its own 120s disposable invocation with unchanged
+          # libtest concurrency and production deadlines. Ephemeral tmpfs
+          # scratch applies ONLY to these Rust regression fixtures (host /tmp
+          # fsync cost dominates them); native UI, package, Nix and
+          # physical-filesystem gates stay on their real storage. The
+          # whole suite stays REQUIRED locally to catch cross-case
+          # interference; the verifier proves the batches execute every
+          # manifest test exactly once with the identical ignored set.
+          python3 scripts/partition-tests.py verify-manifest --manifest scripts/test-manifest.txt
+          for batch in 0 1 2 3; do
+            MYWHISPER_AUDIT_TMPFS_TMP=1 python3 scripts/disposable.py MYWHISPER_AUDIT_ROOT rustbatch$batch \
+              env -u DISPLAY -u SSH_AUTH_SOCK CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
+              RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+              MYWHISPER_DB_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
+              cargo test --locked --all-targets -- --exact $(python3 scripts/partition-tests.py filters --manifest scripts/test-manifest.txt --batch $batch/4) \
+              > batch-$batch.log 2>&1 || exit 1
+          done
+          python3 scripts/partition-tests.py verify-batches --manifest scripts/test-manifest.txt --logs batch-0.log batch-1.log batch-2.log batch-3.log
           python3 packaging/test-upgrade.py
           python3 packaging/test-release.py
           python3 scripts/test-disposable.py
+          python3 scripts/test-partition.py
           python3 scripts/test-iteration.py
           shellcheck scripts/pr-test.sh
           python3 scripts/test-pr-test.py
+      - name: Preserve batch evidence on fixture failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rust-batch-logs
+          path: |
+            batch-*.log
+            scripts/test-manifest.txt
+          if-no-files-found: error
+          retention-days: 7
       - name: Current dependency security audit
         run: |
-          cargo install --locked cargo-audit --version 0.22.2
+          # The toolchain cache may already provide this exact binary;
+          # reinstalling it is an error there and must not abort the gate.
+          # The audit below still always runs with --deny warnings.
+          if ! cargo audit --version 2>/dev/null | grep -q '0\.22\.2'; then
+            cargo install --locked cargo-audit --version 0.22.2
+          fi
           cargo audit --deny warnings --json > security-audit.json
       - name: Release binary and native UI configurations
         run: |

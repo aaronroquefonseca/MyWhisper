@@ -1,0 +1,27 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "baseline": "6df7b23",
+  "change": "R24 native nonce regression runs its entire lock owner in a fresh process, retaining all original assertions and per-stage deadlines. Production hotkey behavior unchanged.",
+  "reason": "Parallel tests can fork while this test owns a flock. O_CLOEXEC closes at exec, so a child can retain the open description briefly after the parent closes it. The process-isolated owner has no unrelated forks.",
+  "passed": "Twelve exact two-process handshake repetitions; parallel full working-tree suite 212 tests (includes pending F07 implementation), strict lint, fmt and release. Five existing opt-in ignores unchanged.",
+  "logs_sha256": {
+    "fork_proof": "03157b6d020579b98389afaee6a238c3070b25af66bb8d4de5a9e68212791bd4",
+    "initial_parallel_failure": "812ec4c7800ffe3af8b069f92c7dc07bdfc9dfaf40cd7526c97e0c02a574cde2",
+    "repetition_1": "381c9d7914f66550927ebf8e0b8acdb384ba71d5d62b6069ed81e81aab7f1662",
+    "repetition_2": "3d236c6c45bc72b972da29d2fdfe05ac867e3a695bc4a170e79b78d138389d54",
+    "repetition_3": "ae1e238b15a9194576ee90258f8f59ecdc23773565be8cc1d229ab04fa1393d9",
+    "repetition_4": "4f50799c41330fbb0ef2d7f6de8b12c257bdb3a6497981c7da7f0a2b2e52439b",
+    "repetition_5": "8ff89928964839e56fc1d484d47148fc01ae615c1b5ce9a041ad571353d79142",
+    "repetition_6": "9b9a58eac8edc68389ceb32734a32b61733d5dd2474f3c1a583e0e82642c0caf",
+    "repetition_7": "b7b31c1b45d26a33cbd180e5ccfe65ae687ff235fcfe97995fa8e899774de0b3",
+    "repetition_8": "f6e801b90bfc484630d139991f8b16bb88c02957ba7169621eabaf8e36b7fcc8",
+    "repetition_9": "22f6dcfcfa15a6c3dffecb69eaa0e4c4c4975b9bed6699e6d5db88615930c323",
+    "repetition_10": "3d236c6c45bc72b972da29d2fdfe05ac867e3a695bc4a170e79b78d138389d54",
+    "repetition_11": "6117ae731bbad4400668c2dbd085000972fae52c5c1fb60f1b06c24d44f0fa3a",
+    "repetition_12": "22f6dcfcfa15a6c3dffecb69eaa0e4c4c4975b9bed6699e6d5db88615930c323"
+  },
+  "source_sha256": {
+    "src/hotkey.rs": "fc9c25ef559342f2584f5f47f03dd92457845653226f7eae3652d1d0066f3a8a"
+  }
+}

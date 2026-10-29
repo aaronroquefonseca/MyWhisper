@@ -1,0 +1,33 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s
+dbus-daemon[2933819]: [session uid=1000 pid=2933819 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=2934069 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[2933819]: [session uid=1000 pid=2933819 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=2934078 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[2933819]: [session uid=1000 pid=2933819 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[2933819]: [session uid=1000 pid=2933819 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=2934078 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[2933819]: [session uid=1000 pid=2933819 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+
+(/usr/lib/xdg-desktop-portal:2934078): xdg-desktop-portal-WARNING **: 15:18:25.216: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:2934078): xdg-desktop-portal-WARNING **: 15:18:25.216: The camera portal requires an access impl
+dbus-daemon[2933819]: [session uid=1000 pid=2933819 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:2934069): Gdk-WARNING **: 15:18:25.263: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> light
+[ui-smoke] asset acceptance passed: real pinned legacy runtime verification preserves bytes/inode, native cancel grants no trust, explicit manual trust is labeled and preserves bytes, same-length mutation loses installation authority, GTK stays responsive
+dbus-daemon[2934490]: [session uid=1000 pid=2934490 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=2934694 comm="/home/aaronroque/.t3/worktrees/MyWhisper/t3code-72")
+dbus-daemon[2934490]: [session uid=1000 pid=2934490 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=2934703 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[2934490]: [session uid=1000 pid=2934490 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[2934490]: [session uid=1000 pid=2934490 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=2934703 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[2934490]: [session uid=1000 pid=2934490 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+
+(/usr/lib/xdg-desktop-portal:2934703): xdg-desktop-portal-WARNING **: 15:18:32.720: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:2934703): xdg-desktop-portal-WARNING **: 15:18:32.720: The camera portal requires an access impl
+dbus-daemon[2934490]: [session uid=1000 pid=2934490 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+MESA-EGL: warning: DRI3 error: Could not get DRI3 device
+MESA-EGL: warning: Ensure your X server supports DRI3 to get accelerated rendering
+
+(ui_preview:2934694): Gdk-WARNING **: 15:18:32.773: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] palette -> dark
+[ui-smoke] asset acceptance passed: real pinned legacy runtime verification preserves bytes/inode, native cancel grants no trust, explicit manual trust is labeled and preserves bytes, same-length mutation loses installation authority, GTK stays responsive

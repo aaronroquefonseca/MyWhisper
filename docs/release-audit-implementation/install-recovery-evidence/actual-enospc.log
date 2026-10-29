@@ -1,0 +1,2 @@
+Filling private tmpfs after 8120 actual downloader bytes.
+Actual ENOSPC after partial downloader output: previous bytes/inode preserved, private staging removed, authenticated synthetic retry promoted successfully.

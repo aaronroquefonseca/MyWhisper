@@ -1,0 +1,11 @@
+Take care of PR #20 and keep working on it.
+
+Objectives: complete R49’s download integrity, installation, cancellation, repair and active-use guarantees, including runtime prerequisites supporting R34. Parent is #19; shared storage/runtime contracts originate in #18.
+
+Previous issues: corrupt/truncated/zero-byte models appeared installed; downloads/extraction could stall, publish partial content or retain canceled work; reset/delete races resurrected assets; recovery risked deleting unowned paths.
+
+Chosen strategy: pinned integrity metadata, bounded owned IO, private staging, journal-proven interrupted recovery and authenticated local installed-content receipts. Verification/explicit local trust preserves existing custom models; do not remove them to obtain green tests. Active engine retirement call sites are intentionally integrated in #22 and must be reviewed together before closing the finding.
+
+Next: exercise partial writes/TAR/ZIP, malformed archives, stale authorities, repeated cancellation, corruption/tampering, directory-fsync failure, real ENOSPC and retry, inode/ancestor replacement, reset/delete during active inference, and every advertised asset/runtime. Recovery currently covers the next locked retry/delete/cache-clear; automatic startup sweeping and physical power loss are not established. Locked all-target compilation passes; resource/admission and complete provider/UI acceptance remain.
+
+Keep this PR draft until its scope and required checks are actually complete. Preserve supported behavior, user data, all meaningful assertions and the current version/license/workflows. Use disposable encrypted stores, identities, HOME/XDG/session state, synthetic transcripts and test-only keys. Do not add ignores, suppress failures, enlarge limits to hide symptoms, merge, tag, release or deploy. Update the finding ownership/evidence and review the complete resulting diff. Historical probes assert buggy behavior and are evidence only.

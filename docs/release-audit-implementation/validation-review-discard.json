@@ -1,0 +1,27 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "reviewed_baseline": "f426c9ae71854c262a43f6bd337036d82173adfc",
+  "correction": "F06: canonical discarded payloads and schema 4 redaction",
+  "rust_tests": {
+    "passed": 168,
+    "failed": 0,
+    "existing_ignored": 5
+  },
+  "regression_failed_before_correction": true,
+  "migration": "v3 to v4 redacts discarded text/raw/words without removing duration; old binaries reject newer schema. Existing row IDs and identity are preserved.",
+  "coverage": [
+    "all six normal/discard/invalid-discard permutations and repetition",
+    "two encrypted databases converge before and after deletion",
+    "private encrypted schema-three upgrade and repeated reopen"
+  ],
+  "logs": {
+    "/tmp/mywhisper-review-discard-before.log": "734fbc50e9922cb6d2bf42f015f723838b3ad28856ffab7c3b267d9ad20d4540",
+    "/tmp/mywhisper-review-discard-after.log": "6ede202b2f04dbff087cf45625febc178ea3647b1276a5e254fa0dac95fd8c11",
+    "/tmp/mywhisper-review-discard-migration.log": "b69cff16b9e03dda0f25a127a80a09a844f0c98c02703b07cf1e533918167bb5",
+    "/tmp/mywhisper-review-discard-clippy.log": "ce772445e66cf92f9054fe2d74ca2dc4b2138ead95187a81287b23771c829cef",
+    "/tmp/mywhisper-review-discard-tests.log": "6f744916cb7c211fdfd101be8a091549a120ec326b26bc76ecf3b4a4b2694bdd"
+  },
+  "source_diff_sha256": "5461ad0ec02e7e6af7264f99f0ea2ac2899cba21dd58c9f42876e92dd63c2fcd",
+  "unresolved": "Other eleven review issues and original grouped/final validation requirements remain open."
+}

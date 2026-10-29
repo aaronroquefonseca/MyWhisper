@@ -1,0 +1,3 @@
+SVG diagnostic: Ignoring metadata and non-standard elements: <title> (code=7, element=svg)
+SVG diagnostic: Invalid attribute: fill (code=2, element=g)
+GTK 4.22.4 errors=1 color_errors=0 black_pixels=0 white_pixels=0

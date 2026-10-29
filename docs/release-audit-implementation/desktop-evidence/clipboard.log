@@ -1,0 +1,17 @@
+dbus-daemon[23]: [session uid=1000 pid=23 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.2' (uid=1000 pid=79 comm="target/debug/examples/clipboard_smoke")
+dbus-daemon[23]: [session uid=1000 pid=23 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.3' (uid=1000 pid=85 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[23]: [session uid=1000 pid=23 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[23]: [session uid=1000 pid=23 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.3' (uid=1000 pid=85 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[23]: [session uid=1000 pid=23 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fusermount3: mount failed: Operation not permitted
+error: fuse init failed: Can't mount path /tmp/mywhisper-compositor-audit.dcitj3c9/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:85): xdg-desktop-portal-WARNING **: 23:07:55.928: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.5 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:85): xdg-desktop-portal-WARNING **: 23:07:55.934: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:85): xdg-desktop-portal-WARNING **: 23:07:55.934: The camera portal requires an access impl
+dbus-daemon[23]: [session uid=1000 pid=23 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+
+(process:79): Gdk-WARNING **: 23:07:55.935: Cannot get portal org.freedesktop.portal.Settings version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Settings”
+Real nested niri/wtype passed: delayed consumption; empty/text/binary restoration; user replacement; cancellation; copy-only/no-op.

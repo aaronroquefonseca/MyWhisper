@@ -1,0 +1,95 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "source_commit": "8fb30c273f2ced1ff4874025dec253d09ce6a206",
+  "correction_commits": {
+    "installer": "28aee1c",
+    "job_service_ownership": "cdc955d",
+    "input_reader_ownership": "8fb30c2"
+  },
+  "groups": [
+    "R08",
+    "R09",
+    "R10",
+    "R49",
+    "R50"
+  ],
+  "classification": "Demonstrated installer lock waits and input-reader contention; demonstrated child exit crash with inspected completion/SQLCipher lifetime evidence; inspected unowned service loops with held-cleanup regression.",
+  "corrections": [
+    "Original installer authority captured before worker admission; guarded shared/exclusive lock polling checks cancellation, reset and deletion without renewing epochs; promotion cancellation preserves prior installation.",
+    "Accepted-job completion counts through destruction of captured resources, including rejected jobs and unwind; an actual cleanup barrier replaces inadequate queue sentinels.",
+    "Five service timer/settings/reaper loops return fallible owned tasks, interrupt idle waits and join before their owners finish.",
+    "Input admission has its own startup-provisioned connection; background authorization uses a separate reader and original database identity/epoch. Presses perform no background reader/keyring wait; replaced databases cannot inherit authority."
+  ],
+  "regressions": [
+    "Two actual separate-process held-lock regressions: cancel admission on reset and asset locks, delete/reset while queued, and cancel promotion on metadata lock. Both failed before and pass after.",
+    "Held earlier job/destructor remains incomplete after all later sentinels pass; actual encrypted-store destruction is required before draining completes.",
+    "Background owner interrupts a 60-second idle timer within 500 ms; joining an active pass waits for encrypted Store destruction.",
+    "Twelve rapid recordings at delays 0/200/2000 ms use held old microphone callbacks, exact old provider PCM/WAV, one Complete callback, continued new tap/capture and late-owner isolation.",
+    "Held background reader admits press/cancel within 100 ms; a same-epoch replacement database is rejected before recording."
+  ],
+  "executed_validation": [
+    "cargo fmt --all -- --check: pass",
+    "cargo clippy --locked --all-targets -- -D warnings: pass",
+    "cargo test --locked --all-targets: 250 passed, zero failed, five original opt-in ignores unchanged",
+    "cargo build --release --locked --bin mywhisper: pass",
+    "cargo-audit with current RustSec 7eebec69c352c7191b1f13eb95dd510eeca5d1de (1296 advisories): no dependency vulnerabilities or advisory warnings; fetch log includes a transient advisory-directory lock wait",
+    "scripts/ui-smoke.sh: eight native smoke/recovery/reset invocations across light/en and dark/es pass",
+    "scripts/ui-assets-smoke.sh: both configurations pass real pinned CPU reference verification, local trust, cancel/mutation and responsive UI acceptance",
+    "packaging/test-release.py: nine tests pass; packaging/test-upgrade.py: five tests pass",
+    "Real private Secret Service: eight concurrent creators, preserved shared identity/key, missing/duplicate/locked/stalled-key recovery; both input readers provisioned against real keyring, then four cached input/device-failure cycles with only that daemon paused; original settings and eight words preserved",
+    "Private native sync lifecycle: fixed-port replacement, stalled socket cleanup, watcher joins, outbound-only encrypted catch-up, mutual mDNS discovery and goodbye removal pass",
+    "Fresh committed-source Nix build/check/install/fixup: 250 Rust tests pass, original five ignores unchanged, complete 370 dependency notices",
+    "Actual Nix artifact reports mywhisper 0.9.3; native visible GTK window closes normally with zero exit, encrypted disposable database and working resolver executable selected from actual wrapper PATH"
+  ],
+  "migration_compatibility": "No schema, peer protocol, identity/key rotation or user-data reset. Worker counts/queues and installer deadlines unchanged. Service background Rust helpers return Result<BackgroundTask,String>, and all application callers retain owners. Input provisions one extra existing query-only connection at startup and requires original file identity to match both readers. Actual provider/persistence checks still enforce durable authority.",
+  "isolation": "Disposable databases, synthetic PCM/transcripts, private real keyring, XDG roots, independent helper lock processes and native display/D-Bus sessions. Packaged artifact smoke has no input/audio devices. Core inspection remained private; repository evidence contains only symbolic analysis.",
+  "packaged_artifact": "/nix/store/rc8fdhxxyyf473xp4z5pgg7bgsqafk6s-mywhisper-0.9.3",
+  "limitations": [
+    "Installer interrupted promotion/staging cleanup, disk-full/partial writes and complete extraction/retry/worker-budget acceptance remain open.",
+    "Full process shutdown and remaining UI/provider producers are not established by a completion counter or five owned loops.",
+    "Physical microphones/device changes, final repeated cancellation/delivery/speculation/resource stress remain open.",
+    "Actual authenticated WSS/paid cloud contracts, remaining runtime/CUDA/language combinations and other original grouped/live gates remain open.",
+    "Nix-built artifact runs on local Arch kernel/display stack; clean booted Arch/NixOS desktops, running upgrades and hosted CI/final complete diff are not established.",
+    "Project LICENSE deferred by user; distribution held. No PR/tag/release created."
+  ],
+  "source_file_sha256": {
+    "src/artifact.rs": "ff62535dace13b689484173cfb41fc4e975ed7520ab3ae3b35c6fea9736cb46d",
+    "src/private_fs.rs": "d147cc9183325f0c2ca129cb1d837686be29a1a6f569821772d4e90b209993c3",
+    "src/stt.rs": "2efbe2f59f0ab94eb91c85105963fbbff802c098eecb744e87184b2e678c2c40",
+    "src/runtime.rs": "1db09097f7c6d92b9ec6780705c47c4206860802717eae86255368641b19ae80",
+    "src/service.rs": "1b5099954ee0ddcbc959674bbf31634d64d3ab0b19cd86484eb4aa466fd84583",
+    "src/bin/mywhisper.rs": "ce9f6c2df1b87e56f8b571bde4b5b7ae5c0f44e29e79fc02cffe6024d446c752",
+    "src/transcribe.rs": "eb75c42cfce3b57c9713611b98bb3c61caf06f099d15cda1a8aaee3699105c09",
+    "src/operation.rs": "4f85b328b4cdf92a939ac6eb3bc2c93c23834480e7c1773044618f8e756f73b7",
+    "examples/store_probe.rs": "f16d3037042292e268b06d520a19942b1fcd368a0e9cd8bc594b79f05eddae5f",
+    "scripts/keyring-smoke.sh": "4740c5a031224b76484f71ba29082098916eba20e18bd12f6110677a8eadc3dc",
+    "packaging/nixos/flake.nix": "ea0da31d3ace9bb9e46fb2a691b5b982566623e892580f64b79068ba596e60d0"
+  },
+  "evidence_sha256": {
+    "all-targets.log": "a4c325bc050e45935fcff7a8a0fe4350cbd3d507f08ce7a97fac96c4d064e5f2",
+    "artifact-native.log": "9bc051fb300d8ccf44f523ad5122abf326077dd0ab5faf156c3c428b65ddf25a",
+    "artifact-version.log": "74f568e9cf97672590d8a0fbc2ca234d2ab7ae6322ae44c4ac92b9b45e2f2bda",
+    "background-owner-after.log": "46a13f6b7a6179c1a316cd1e3d736faf297b8160f5caefbb8e8fad9c33b75535",
+    "capture-pressure-after.log": "b6810d214adb473d51027ac61626f9f8154bc9f4624f1430d79313342bf86bd6",
+    "clippy.log": "e767f4350c3d2a8a2a07aba01aef7b3223ba06a4063ba09f73bbc5640032e095",
+    "completion-after.log": "d6b069597038fd116336d8f7ea1dddaefca2354fd9bda871bd675b2eb4cc5738",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "input-reader-after.log": "61f167fbf97b862ff576702b333de266ee9400916b4d4755d7ad0919bf759a9d",
+    "input-reader-before.log": "b17dec2d4fc08be6ed6828fba2a4766a143d0941587112724f915b9c9f142344",
+    "installer-after.log": "bad37fb38b0dacff3a7370923a54e856d432e69437c4332ec30ac1c1715563b6",
+    "installer-before.log": "55c3cacc18580d0d4773088b4ae306c93970a170a9b5a166eab338533119368a",
+    "keyring-build.log": "8309a16dce85a5fddb61f3f12fef6de352a78bf248c2e3f6d2f0fb1f4512c298",
+    "keyring-live.log": "f6ee29ab655c10b84994d2bc199a1bbc2b18fb0219ca13f2683dc45aa813e0ee",
+    "native-assets.log": "9a49ac5806a9ba8111bcbda54fad0e21e39bcd5d1c0ba70c504540a1e94be7a0",
+    "native-ui.log": "b6325b999a97bda2f3e5fb0ffb9a6e5661e43fffa307caa98ed1ba6fbb892c34",
+    "nix.log": "e73e24f244f0b151eeaa55b2ca7636adba24ab8981888f2ac3ffb0d766eb1d09",
+    "packaging-release.log": "cfce76af6ab4054acf9164a1fa45c6d9026cc65f5ac3eef644b4be2a7924e966",
+    "packaging-upgrade.log": "2bdd172b0a053a131d6057f4f6ee79ef395ef904de357033de95f968bd1a075b",
+    "process-exit-analysis.md": "08b9f7475c24e94d0b7ef08eaff27b36ddda8d0b96b2d08e5199f991f502e4fe",
+    "rapid-replacement-after.log": "74e8a396488eaa56c7189434bb5130b9e7e1b8ecc12b8c2aaab3dd5e5dd7e9e7",
+    "release.log": "8fb7788ea5debc8a31f4488fc11593cfd3cebefa6d8ef3efc543d7e077a94d49",
+    "security.log": "ad9b05cc076c69de1cd638244a1675f12eaf82b7d408b8b949fdfdb2e4be3fe3",
+    "suite-before-completion.log": "33cdc4ad96d9c287ce71d182d396abedfad5c01ccff6a75b92633b4c5f542bb3"
+  }
+}

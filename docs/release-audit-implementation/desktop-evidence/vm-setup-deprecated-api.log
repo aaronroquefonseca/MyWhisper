@@ -1,0 +1,35 @@
+warning: Git tree '/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1' is dirty
+these 4 derivations will be built:
+  /nix/store/6m3q6svvhm7knpxx34v57i8f17bi9pcd-test-script.drv
+  /nix/store/6zgr118j0gi6czw3iwf3jxykc4kn4n0q-driverConfiguration.json.drv
+  /nix/store/ksig04kbl4pganzpbch4gc7h81w9s4dd-nixos-test-driver-mywhisper-desktop.drv
+  /nix/store/qb55s1922rk5zv3illx06njklfhpbidk-vm-test-run-mywhisper-desktop.drv
+building '/nix/store/6m3q6svvhm7knpxx34v57i8f17bi9pcd-test-script.drv'...
+building '/nix/store/6zgr118j0gi6czw3iwf3jxykc4kn4n0q-driverConfiguration.json.drv'...
+building '/nix/store/ksig04kbl4pganzpbch4gc7h81w9s4dd-nixos-test-driver-mywhisper-desktop.drv'...
+error: Cannot build '/nix/store/ksig04kbl4pganzpbch4gc7h81w9s4dd-nixos-test-driver-mywhisper-desktop.drv'.
+       Reason: builder failed with exit code 1.
+       Output paths:
+         /nix/store/8ixk9n7zkqzmd012bssbv1dfy1dxhg7f-nixos-test-driver-mywhisper-desktop
+       Last 15 log lines:
+       > Running type check (enable/disable: config.skipTypeCheck)
+       > See https://nixos.org/manual/nixos/stable/#test-opt-skipTypeCheck
+       > warning[deprecated]: The function `copy_from_vm` is deprecated
+       >    --> testScriptWithTypes:192:9
+       >     |
+       > 192 | desktop.copy_from_vm("/home/audit/gui.log")
+       >     |         ^^^^^^^^^^^^ Use copy_from_machine() instead
+       >
+       > warning[deprecated]: The function `copy_from_vm` is deprecated
+       >    --> testScriptWithTypes:193:9
+       >     |
+       > 193 | desktop.copy_from_vm("/home/audit/service.log")
+       >     |         ^^^^^^^^^^^^ Use copy_from_machine() instead
+       >
+       > Found 2 diagnostics
+       For full logs, run:
+         nix log /nix/store/ksig04kbl4pganzpbch4gc7h81w9s4dd-nixos-test-driver-mywhisper-desktop.drv
+error: Cannot build '/nix/store/qb55s1922rk5zv3illx06njklfhpbidk-vm-test-run-mywhisper-desktop.drv'.
+       Reason: 1 dependency failed.
+       Output paths:
+         /nix/store/rfskz03rh93nrvzdqs0377m4nmdnmij6-vm-test-run-mywhisper-desktop

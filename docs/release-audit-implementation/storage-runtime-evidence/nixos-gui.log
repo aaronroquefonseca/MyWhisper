@@ -1,0 +1,7 @@
+[app] background service alive: false
+
+(mywhisper:986): Gdk-WARNING **: 21:57:54.667: Cannot get portal org.freedesktop.portal.Inhibit version: GDBus.Error:org.freedesktop.DBus.Error.InvalidArgs: No such interface “org.freedesktop.portal.Inhibit”
+[app] activate (frontend)
+[app] palette -> dark
+[app] theme state: dark=true system-supports-color-schemes=true scheme=Default theme-name=Adwaita-empty
+[app] owned shutdown complete; database checkpointed

@@ -1,0 +1,12 @@
+[stt] fallbacks: http://127.0.0.1:42177
+[stt] press: armed (OpenAI-compatible transcription)
+[stt] release: engine ready, transcribing (0.0s window)
+[stt] release: 16000 samples @ 16000 Hz
+Mock primary received 32255 body bytes
+Committed database reset while primary request is blocked
+[stt] primary failed (cloud transcription: HTTP 500); trying next
+Mock fallback received 32255 body bytes
+Fallback event AFTER reset: Ok("fallback")
+[stt] http://127.0.0.1:42177 failed (cloud transcription: HTTP 500); trying next
+[stt] transcription failed: all STT options failed; last: cloud transcription: HTTP 500
+Completion: Ok(Failed)

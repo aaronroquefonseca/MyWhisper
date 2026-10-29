@@ -1,0 +1,11 @@
+Take care of PR #18 and keep working on it.
+
+Objectives: finish transactional encrypted storage, safe key provisioning/migration and authorized bounded synchronization: R01–R07, R12, R16, R19–R22, R25 and R41–R44. Identity provisioning from #5 is already merged; preserve it.
+
+Previous issues: disabled/untrusted peers could export data; deletion/discard/reset resurrected or retained text; concurrent writes and future clocks broke convergence; missing settings restored permissive defaults; full-state sync exceeded the aggregate cap. Later review found lost concurrent provider edits and reactivated explicitly empty provider lists.
+
+Chosen strategy: durable policy/capture epochs, transactional authorization and redaction, monotonic versions/tombstones, resumable pages/segments, exclusive recoverable migration and bounded Secret Service calls. This is the main-based foundation for #19–#23. Every layer compiles; current full regression/lint/live acceptance remains.
+
+Next: revocation/export/apply barriers, clock rollback/overflow, interrupted key creation and migration/fsync/ENOSPC recovery, WAL/backup/audio deletion guarantees, orphan retirement, idle maintenance faults, scale/fairness, asymmetric pairing and cross-host discovery/restart. Preserve older-build refusal and unknown settings. Keep shared contracts stable for dependent agents; do not replace missing permissions with permissive defaults.
+
+Keep this PR draft until its scope and required checks are actually complete. Preserve supported behavior, user data, all meaningful assertions and the current version/license/workflows. Use disposable encrypted stores, identities, HOME/XDG/session state, synthetic transcripts and test-only keys. Do not add ignores, suppress failures, enlarge limits to hide symptoms, merge, tag, release or deploy. Update the finding ownership/evidence and review the complete resulting diff. Historical probes assert buggy behavior and are evidence only.

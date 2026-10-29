@@ -1,0 +1,25 @@
+{
+  "interim": true,
+  "submission_gate_passed": false,
+  "correction": "R50 concurrent settings snapshot upgrade failure",
+  "root_cause": "A deferred settings transaction read the stored blob before obtaining write ownership; concurrent contact/settings writes could commit first and make the read snapshot impossible to upgrade. busy_timeout cannot repair SQLITE_BUSY_SNAPSHOT.",
+  "implemented": "BEGIN IMMEDIATE obtains write ownership before reading/patching the stored JSON. Existing bounded busy timeout, original baseline-diff semantics, unknown-field preservation and capture/sync epoch changes remain in effect. No retries or timeout increase.",
+  "reproduced": "Actual Nix check failed in disable-and-reenable-during-handshake; the added barrier regression uses two independent encrypted connections and 64 rounds of concurrent disjoint privacy/sync edits. It fails on the original transaction and passes after correction.",
+  "regression": "Every save must succeed; final disjoint settings values and a synthetic unknown JSON field must survive. Disposable database/key only; failures collect without leaving either barrier participant blocked.",
+  "passed": [
+    "Targeted before/after regression: before fails, after passes",
+    "cargo fmt --all -- --check",
+    "cargo clippy --locked --all-targets -- -D warnings",
+    "cargo test --locked --all-targets: 243 passed, zero failed, five original opt-in ignores"
+  ],
+  "compatibility": "No database/schema/key/identity/peer-format change. SQLite serializes writers before the read while readers retain WAL behavior; this does not itself move remaining synchronous GTK persistence onto a worker.",
+  "remaining": [
+    "Full composed native/release/package checks and Nix rebuild are being finished alongside the separate fixture/native-dialog correction",
+    "Remaining R50 GTK blocking IO, backup/export policy, task/architecture/documentation requirements and other original audit gates remain open"
+  ],
+  "source_sha256": "098fe42d5a695ed6b73b1aad9d29eed5e6cdf0a67cc510f25684ce6a227603bc",
+  "logs_sha256": {
+    "before": "b6dbecef3eedcfcbaa75822121fdbe0d0df60e8dc2c21a67a5cc1db59bd7c7fd",
+    "after": "6877ca25fc4c0bcfe43402bb1367536c3eeffad584ba29a820dcb0cc76926c69"
+  }
+}

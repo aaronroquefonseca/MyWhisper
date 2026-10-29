@@ -1,0 +1,10 @@
+   Compiling mywhisper v0.9.3 (/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.82s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 2 tests
+test artifact::tests::installer_wait_promotion_cancellation_preserves_previous_installation ... ok
+test artifact::tests::installer_wait_cancellation_and_revocation_do_not_wait_for_another_process ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 249 filtered out; finished in 0.11s
+

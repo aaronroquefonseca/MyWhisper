@@ -1,0 +1,15 @@
+dbus-daemon[4]: [session uid=1000 pid=4 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=10 comm="/nix/store/4b9ndivzsi1qn5z1hg452g856vxnyqxc-mywhis")
+dbus-daemon[4]: [session uid=1000 pid=4 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=22 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[4]: [session uid=1000 pid=4 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[4]: [session uid=1000 pid=4 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=22 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[4]: [session uid=1000 pid=4 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+fuse: device /dev/fuse not found. Kernel module not loaded?
+error: fuse init failed: Can't mount path /tmp/mywhisper-artifactnative-audit.pr6cxekl/runtime/doc
+
+(/usr/lib/xdg-desktop-portal:22): xdg-desktop-portal-WARNING **: 19:31:18.373: Document portal fuse mount point unknown: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name :1.3 was not provided by any .service files
+
+(/usr/lib/xdg-desktop-portal:22): xdg-desktop-portal-WARNING **: 19:31:18.377: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:22): xdg-desktop-portal-WARNING **: 19:31:18.377: The camera portal requires an access impl
+dbus-daemon[4]: [session uid=1000 pid=4 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+Actual Nix-packaged GTK artifact passed: visible window, executable resolver from actual wrapper PATH, normal WM_DELETE_WINDOW/zero exit, encrypted disposable database; no input/audio devices.

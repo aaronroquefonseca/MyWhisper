@@ -1,0 +1,14 @@
+warning: Git tree '/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1' is dirty
+evaluation warning: The xorg package set has been deprecated, 'xorg.xorgserver' has been renamed to 'xorg-server'
+this derivation will be built:
+  /nix/store/18wz67n7d7d92pa8mpjdhpn6d3ak91kg-mywhisper-symbolic-logo.drv
+building '/nix/store/18wz67n7d7d92pa8mpjdhpn6d3ak91kg-mywhisper-symbolic-logo.drv'...
+error: Cannot build '/nix/store/18wz67n7d7d92pa8mpjdhpn6d3ak91kg-mywhisper-symbolic-logo.drv'.
+       Reason: builder failed with exit code 127.
+       Output paths:
+         /nix/store/ib53q9mrlwrvsdjy5lvdzprxphsjz0bh-mywhisper-symbolic-logo
+       Last 2 log lines:
+       > dbus-daemon[47]: Failed to start message bus: Failed to bind socket "/tmp/dbus-lqWwzAQYgw": Read-only file system
+       > dbus-run-session: EOF reading address from bus daemon
+       For full logs, run:
+         nix log /nix/store/18wz67n7d7d92pa8mpjdhpn6d3ak91kg-mywhisper-symbolic-logo.drv

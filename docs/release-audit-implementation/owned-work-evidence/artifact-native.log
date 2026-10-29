@@ -1,0 +1,11 @@
+dbus-daemon[3007981]: [session uid=1000 pid=3007981 pidfd=5] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.0' (uid=1000 pid=3008229 comm="/nix/store/rc8fdhxxyyf473xp4z5pgg7bgsqafk6s-mywhis")
+dbus-daemon[3007981]: [session uid=1000 pid=3007981 pidfd=5] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.1' (uid=1000 pid=3008240 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3007981]: [session uid=1000 pid=3007981 pidfd=5] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[3007981]: [session uid=1000 pid=3007981 pidfd=5] Activating service name='org.freedesktop.portal.Documents' requested by ':1.1' (uid=1000 pid=3008240 comm="/usr/lib/xdg-desktop-portal")
+dbus-daemon[3007981]: [session uid=1000 pid=3007981 pidfd=5] Successfully activated service 'org.freedesktop.portal.Documents'
+
+(/usr/lib/xdg-desktop-portal:3008240): xdg-desktop-portal-WARNING **: 15:29:06.931: The location portal requires an access impl
+
+(/usr/lib/xdg-desktop-portal:3008240): xdg-desktop-portal-WARNING **: 15:29:06.931: The camera portal requires an access impl
+dbus-daemon[3007981]: [session uid=1000 pid=3007981 pidfd=5] Successfully activated service 'org.freedesktop.portal.Desktop'
+Actual Nix-packaged GTK artifact passed: visible window, executable resolver from actual wrapper PATH, normal close/zero exit, encrypted disposable database, no input/audio devices or capture

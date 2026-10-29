@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 1 test
+test transcribe::tests::short_worker_pressure_preserves_capture_and_completion ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 251 filtered out; finished in 0.08s
+

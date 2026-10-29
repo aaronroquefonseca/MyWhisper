@@ -1,0 +1,11 @@
+Take care of PR #19 and keep working on it.
+
+Objectives: finish microphone formats/ownership and hotkey semantics for R14, R23–R27 and R33. Parent is #18; coordinate contract changes with that agent before restacking.
+
+Previous issues: multichannel samples were treated as mono; callbacks copied unbounded audio and could feed a newer recorder; held modifiers leaked across devices/disconnects; capture suspension had stale nonce acknowledgements and replay; saved mute was applied after listener startup.
+
+Chosen strategy: bounded timestamped per-owner capture buffers, explicit device/session ownership, per-device key state, canonical physical-key mapping and cross-process nonce/lock suspension. Preference application and test helpers are wired; locked all-target compilation passes.
+
+Next: verify mixed activation modes, rapid press/release, mute/reconfigure/disconnect, repeated suspension/replacement and correct Down/Up/FD cleanup. Preserve the already-merged controlled native fixture and assertions from #5 when reconciling dispatch changes. Run F32/I16/U16 × mono/stereo/multichannel gates, then physical device changes/non-US layouts and actual service capture suspension. Coordinate input-edge cancellation/admission with #22; measure callback allocation, contention and recovery rather than raising worker/time budgets.
+
+Keep this PR draft until its scope and required checks are actually complete. Preserve supported behavior, user data, all meaningful assertions and the current version/license/workflows. Use disposable encrypted stores, identities, HOME/XDG/session state, synthetic transcripts and test-only keys. Do not add ignores, suppress failures, enlarge limits to hide symptoms, merge, tag, release or deploy. Update the finding ownership/evidence and review the complete resulting diff. Historical probes assert buggy behavior and are evidence only.

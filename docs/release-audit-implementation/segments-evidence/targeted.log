@@ -1,0 +1,17 @@
+   Compiling mywhisper v0.9.3 (/home/aaronroque/.t3/worktrees/MyWhisper/t3code-720c4be1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.18s
+     Running unittests src/lib.rs (target/debug/deps/mywhisper-bbc82b8c1ab1e023)
+
+running 10 tests
+test store::segments::tests::authenticated_but_malformed_complete_records_cannot_merge_or_advance ... ok
+test store::segments::tests::changed_source_abandons_partial_snapshot_and_merges_only_current_data ... ok
+test store::segments::tests::clear_history_tombstones_partial_identity_and_prevents_restaging_speech ... ok
+test store::segments::tests::corrupt_final_part_rolls_back_and_correct_retry_finishes ... ok
+test store::segments::tests::idle_and_backward_clock_restart_partial_progress_without_losing_source ... ok
+test store::segments::tests::malformed_progress_and_policy_loss_never_publish_or_keep_partial_speech ... ok
+test store::segments::tests::oversized_unicode_record_resumes_after_reopen_and_commits_once ... ok
+test store::segments::tests::reset_revocation_and_untrust_remove_both_directions_and_deny_old_work ... ok
+test store::segments::tests::retention_redacts_pending_identity_before_clock_or_idle_cleanup ... ok
+test store::segments::tests::staging_and_decoded_string_limits_reject_without_allocating_the_budget ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 237 filtered out; finished in 39.77s

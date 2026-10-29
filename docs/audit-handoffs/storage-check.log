@@ -1,0 +1,196 @@
+Command: ['python3', 'scripts/disposable.py', 'MYWHISPER_AUDIT_ROOT', 'extraction', 'env', 'CARGO_HOME=/home/aaronroque/.cargo', 'RUSTUP_HOME=/home/aaronroque/.rustup', 'cargo', 'check', '--locked', '--all-targets']
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Checking mywhisper v0.9.4 (/home/aaronroque/.cache/mywhisper-audit-handoffs.8uhx8ltp/storage)
+warning: function `callback_recorder` is never used
+   --> src/audio.rs:162:15
+    |
+162 | pub(crate) fn callback_recorder() -> Result<Option<Arc<Mutex<Recorder>>>, ()> {
+    |               ^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `capture_failed` is never used
+   --> src/audio.rs:169:15
+    |
+169 | pub(crate) fn capture_failed() -> bool {
+    |               ^^^^^^^^^^^^^^
+
+warning: function `sync_on_startup_owned` is never used
+    --> src/net.rs:1783:15
+     |
+1783 | pub(crate) fn sync_on_startup_owned(
+     |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: variant `Launch` is never constructed
+   --> src/runtime.rs:356:5
+    |
+354 | enum ReaperMessage {
+    |      ------------- variant in this enum
+355 |     Join(OwnedThread),
+356 |     Launch(Job),
+    |     ^^^^^^
+
+warning: static `PROCESS_LAUNCH` is never used
+   --> src/runtime.rs:360:8
+    |
+360 | static PROCESS_LAUNCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    |        ^^^^^^^^^^^^^^
+
+warning: struct `LaunchPermit` is never constructed
+   --> src/runtime.rs:362:8
+    |
+362 | struct LaunchPermit;
+    |        ^^^^^^^^^^^^
+
+warning: function `submit_process_launch` is never used
+   --> src/runtime.rs:371:15
+    |
+371 | pub(crate) fn submit_process_launch(job: impl FnOnce() + Send + 'static) -> Result<(), String> {
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `CapturedUtterance` is never constructed
+   --> src/store.rs:148:19
+    |
+148 | pub(crate) struct CapturedUtterance<'a> {
+    |                   ^^^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> src/store.rs:575:19
+     |
+ 347 | impl Store {
+     | ---------- methods in this implementation
+...
+ 575 |     pub(crate) fn capture_epoch(&self) -> rusqlite::Result<i64> {
+     |                   ^^^^^^^^^^^^^
+...
+ 589 |     pub(crate) fn file_identity(&self) -> Option<(u64, u64)> {
+     |                   ^^^^^^^^^^^^^
+...
+ 593 |     pub(crate) fn policy_reads_only(&self) -> rusqlite::Result<()> {
+     |                   ^^^^^^^^^^^^^^^^^
+...
+ 600 |     pub(crate) fn capture_settings(&self) -> rusqlite::Result<(AppSettings, i64)> {
+     |                   ^^^^^^^^^^^^^^^^
+...
+1298 |     pub(crate) fn persist_capture(
+     |                   ^^^^^^^^^^^^^^^
+...
+1450 |     pub(crate) fn pending_reset_nonce(&self) -> rusqlite::Result<Option<String>> {
+     |                   ^^^^^^^^^^^^^^^^^^^
+...
+1460 |     pub(crate) fn completed_reset(&self, nonce: &str) -> rusqlite::Result<bool> {
+     |                   ^^^^^^^^^^^^^^^
+...
+1470 |     pub(crate) fn begin_reset(&self, nonce: &str) -> rusqlite::Result<()> {
+     |                   ^^^^^^^^^^^
+...
+1504 |     pub(crate) fn complete_reset(&self, nonce: &str) -> rusqlite::Result<()> {
+     |                   ^^^^^^^^^^^^^^
+...
+1523 |     pub(crate) fn adopt_settings_baseline(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+1544 |     pub(crate) fn maintain_retention_at(&self, now: i64) -> rusqlite::Result<(usize, usize)> {
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `try_lock` is never used
+  --> src/private_fs.rs:37:8
+   |
+37 | pub fn try_lock(path: &Path) -> io::Result<File> {
+   |        ^^^^^^^^
+
+warning: function `read_bounded` is never used
+  --> src/private_fs.rs:70:8
+   |
+70 | pub fn read_bounded(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
+   |        ^^^^^^^^^^^^
+
+warning: struct `HttpResolver` is never constructed
+   --> src/address.rs:169:19
+    |
+169 | pub(crate) struct HttpResolver;
+    |                   ^^^^^^^^^^^^
+
+warning: function `http_addresses` is never used
+   --> src/address.rs:181:10
+    |
+181 | async fn http_addresses(host: &str) -> Result<Vec<SocketAddr>, String> {
+    |          ^^^^^^^^^^^^^^
+
+warning: function `run` is never used
+  --> src/child.rs:91:15
+   |
+91 | pub(crate) fn run(
+   |               ^^^
+
+warning: struct `RetentionMaintenance` is never constructed
+ --> src/maintenance.rs:9:19
+  |
+9 | pub(crate) struct RetentionMaintenance {
+  |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: associated functions `start` and `spawn` are never used
+  --> src/maintenance.rs:15:19
+   |
+14 | impl RetentionMaintenance {
+   | ------------------------- associated functions in this implementation
+15 |     pub(crate) fn start(path: PathBuf) -> Result<Self, String> {
+   |                   ^^^^^
+...
+37 |     fn spawn(interval: Duration, mut pass: impl FnMut() + Send + 'static) -> Result<Self, String> {
+   |        ^^^^^
+
+warning: unused `Result` that must be used
+   --> src/service.rs:188:17
+    |
+188 |                 crate::net::watch_discovered(db_path, identity.creds(), discovered.clone(), stop);
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+188 |                 let _ = crate::net::watch_discovered(db_path, identity.creds(), discovered.clone(), stop);
+    |                 +++++++
+
+warning: `mywhisper` (lib) generated 17 warnings
+warning: multiple methods are never used
+    --> src/store.rs:589:19
+     |
+ 347 | impl Store {
+     | ---------- methods in this implementation
+...
+ 589 |     pub(crate) fn file_identity(&self) -> Option<(u64, u64)> {
+     |                   ^^^^^^^^^^^^^
+...
+ 593 |     pub(crate) fn policy_reads_only(&self) -> rusqlite::Result<()> {
+     |                   ^^^^^^^^^^^^^^^^^
+...
+1450 |     pub(crate) fn pending_reset_nonce(&self) -> rusqlite::Result<Option<String>> {
+     |                   ^^^^^^^^^^^^^^^^^^^
+...
+1460 |     pub(crate) fn completed_reset(&self, nonce: &str) -> rusqlite::Result<bool> {
+     |                   ^^^^^^^^^^^^^^^
+...
+1470 |     pub(crate) fn begin_reset(&self, nonce: &str) -> rusqlite::Result<()> {
+     |                   ^^^^^^^^^^^
+...
+1504 |     pub(crate) fn complete_reset(&self, nonce: &str) -> rusqlite::Result<()> {
+     |                   ^^^^^^^^^^^^^^
+...
+1523 |     pub(crate) fn adopt_settings_baseline(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `start` is never used
+  --> src/maintenance.rs:15:19
+   |
+14 | impl RetentionMaintenance {
+   | ------------------------- associated function in this implementation
+15 |     pub(crate) fn start(path: PathBuf) -> Result<Self, String> {
+   |                   ^^^^^
+
+warning: `mywhisper` (lib test) generated 8 warnings (6 duplicates)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.94s
+Exit: 0

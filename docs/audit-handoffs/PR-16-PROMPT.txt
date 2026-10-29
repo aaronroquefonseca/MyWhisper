@@ -1,0 +1,11 @@
+Take care of PR #16 and keep working on it.
+
+Objectives: finish the GTK ownership portion of R46, retain the previous focus widget through reentrant dispatch, then release retired widgets and windows. Preserve selectable text and supported overlay behavior.
+
+Previous issues: destroying the previous focus widget during a selectable-label transition caused fatal gtk_widget_is_ancestor criticals. A separate X11 failure came from calling the Wayland-only layer-shell capability probe.
+
+Chosen strategy: retain owners through dispatch and release outside active borrows; check the display backend before probing layer shell. This is an independent main-based draft. Locked all-target compilation and strict Clippy passed after extraction, but current native/regression/full release checks remain.
+
+Next: run the sixteen-transition native ownership regression in both themes, verify actual destruction and unchanged broad UI behavior, and extend populated-row/navigation/language leak coverage. Coordinate the remaining dictionary/page callback work with #23. Do not treat a passing compile as final memory/lifecycle acceptance.
+
+Keep this PR draft until its scope and required checks are actually complete. Preserve supported behavior, user data, all meaningful assertions and the current version/license/workflows. Use disposable encrypted stores, identities, HOME/XDG/session state, synthetic transcripts and test-only keys. Do not add ignores, suppress failures, enlarge limits to hide symptoms, merge, tag, release or deploy. Update the finding ownership/evidence and review the complete resulting diff. Historical probes assert buggy behavior and are evidence only.

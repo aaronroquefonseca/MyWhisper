@@ -1,0 +1,43 @@
+gpgv: Signature made Fri Sep 11 08:10:35 2026 CEST
+gpgv:                using RSA key 882DCFE48E2051D48E2562ABF3B607488DB35A47
+gpgv: Good signature from "CachyOS <admin@cachyos.org>"
+NVIDIA GeForce RTX 3090, 615.71.09
+cuda 13.4.2-1
+cudnn 9.27.0.42-1.1
+Actual Cohere/CUDA model download, runtime readiness, server-owned GPU memory, synthetic inference and cleanup gate begins.
+verified download progress: 64959408/1699791751 bytes
+verified download progress: 91504640/1699791751 bytes
+verified download progress: 176340992/1699791751 bytes
+verified download progress: 255410176/1699791751 bytes
+verified download progress: 337346560/1699791751 bytes
+verified download progress: 401846274/1699791751 bytes
+verified download progress: 486580212/1699791751 bytes
+verified download progress: 570982400/1699791751 bytes
+verified download progress: 661177956/1699791751 bytes
+verified download progress: 749125632/1699791751 bytes
+verified download progress: 817381365/1699791751 bytes
+verified download progress: 898441972/1699791751 bytes
+verified download progress: 964689920/1699791751 bytes
+verified download progress: 1053869544/1699791751 bytes
+verified download progress: 1131560960/1699791751 bytes
+verified download progress: 1206925651/1699791751 bytes
+verified download progress: 1295646720/1699791751 bytes
+verified download progress: 1383473908/1699791751 bytes
+verified download progress: 1473757184/1699791751 bytes
+verified download progress: 1552819404/1699791751 bytes
+verified download progress: 1637122048/1699791751 bytes
+installing verified artifact
+atomic installation completed
+verified download progress: 8948/254858007 bytes
+verified download progress: 31473664/254858007 bytes
+verified download progress: 78255103/254858007 bytes
+verified download progress: 132382720/254858007 bytes
+verified download progress: 188760064/254858007 bytes
+verified download progress: 244756164/254858007 bytes
+installing verified artifact
+atomic installation completed
+[stt] sherpa-offline probe: 0.5s silence
+[stt] sherpa-offline probe ok
+Real local runtime passed: model=cohere-transcribe-03-2026 backend=cuda synthetic speech recognized; elapsed=158.6s; disposable resources removed on exit
+[stt] stopped sherpa-offline
+Actual Cohere CUDA gate passed; private driver/model/synthetic-audio state removed; installed libraries untouched.

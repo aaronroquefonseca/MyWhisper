@@ -1,0 +1,9 @@
+[stt] press: armed (whisper-server)
+[stt] release: engine ready, transcribing (0.0s window)
+[stt] release: 16000 samples @ 16000 Hz
+Original inference is active; warming changed language now
+[stt] whisper key changed; replacing
+[stt] primary failed (whisper /inference: invalid request (check endpoint and authentication configuration)); trying next
+[stt] transcription failed: all STT options failed; last: whisper /inference: invalid request (check endpoint and authentication configuration)
+Changed-language warmup: Ok(()); original finalization: Ok(Failed)
+[stt] stopped whisper
