@@ -17,6 +17,13 @@
 //! - Local / NVIDIA offline-or-unmarked (parakeet TDT) and Local /
 //!   Oruk (orukeet) → `sherpa-onnx-offline-websocket-server`, whole
 //!   utterance after release.
+//! - Local / Qwen, transformers runtime → sidecar `qwen_server.py`
+//!   HTTP `POST /inference` after release (offline decode).
+//! - Local / Qwen, vLLM runtime → the same sidecar, true realtime:
+//!   16 kHz chunks stream during the hotkey hold (`/stream/*`),
+//!   decoding continues after release if the engine lags, paste
+//!   happens when the final arrives. Dictionary words ride the
+//!   upstream `context` bias in both modes.
 //! - Local / Cohere → unsupported: `offline-websocket-server`
 //!   v1.13.8 exposes no `cohere-transcribe-*` flags (library-only
 //!   model). Clear error, revisit when the server grows flags.
@@ -53,7 +60,10 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use crate::audio::{self, ENGINE_RATE, MIN_SAMPLES_16K, Recorder, Resampler, wav_bytes_16k};
-use crate::settings::{GpuBackendSetting, LocalSttProvider, SherpaBackendSetting, SttSettings};
+use crate::settings::{
+    GpuBackendSetting, LocalSttProvider, QwenBackendSetting, QwenVramSetting, SherpaBackendSetting,
+    SttSettings,
+};
 use crate::stt;
 
 // ---------------------------------------------------------------- ports
@@ -61,6 +71,14 @@ use crate::stt;
 const WHISPER_PORT: u16 = 8080;
 const SHERPA_ONLINE_PORT: u16 = 6006;
 const SHERPA_OFFLINE_PORT: u16 = 6007;
+/// Qwen sidecar default (clear of whisper/sherpa/self-hosted ports).
+const QWEN_PORT: u16 = 8011;
+/// vLLM engine init (weights + KV cache + warmup) takes ~40 s for
+/// the 1.7B model before it binds; the native servers answer in
+/// milliseconds. Cold starts must wait it out instead of failing at
+/// the shared 20 s budget (the child stays supervised, so a timeout
+/// error on first use would be pure UX damage).
+const QWEN_START_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Effective server bind + port override, resolved from settings
 /// once per utterance/ensure (see Network section). One server runs
@@ -114,6 +132,18 @@ pub enum Plan {
         model: PathBuf,
         lang: String,
     },
+    /// Qwen3-ASR sidecar, transformers runtime: whole utterance over
+    /// HTTP after release (no live streaming on this runtime).
+    QwenHttp {
+        model_dir: PathBuf,
+        lang: String,
+    },
+    /// Qwen3-ASR sidecar, vLLM runtime: live `/stream/*` session
+    /// during the hold, final read after release.
+    QwenStream {
+        model_dir: PathBuf,
+        lang: String,
+    },
     CloudOpenAiCompat {
         base: String,
         key: String,
@@ -141,7 +171,10 @@ pub enum Plan {
 
 impl Plan {
     pub fn streaming(&self) -> bool {
-        matches!(self, Plan::SherpaOnline { .. } | Plan::SelfHostedWs { .. })
+        matches!(
+            self,
+            Plan::SherpaOnline { .. } | Plan::SelfHostedWs { .. } | Plan::QwenStream { .. }
+        )
     }
 
     pub fn describe(&self) -> String {
@@ -157,6 +190,12 @@ impl Plan {
             }
             Plan::WhistleCli { model, .. } => {
                 format!("whistle ({})", model.display())
+            }
+            Plan::QwenHttp { model_dir, .. } => {
+                format!("qwen-offline ({})", model_dir.display())
+            }
+            Plan::QwenStream { model_dir, .. } => {
+                format!("qwen-stream ({})", model_dir.display())
             }
             Plan::CloudOpenAiCompat { base, model, .. } => {
                 format!("cloud {base} ({model})")
@@ -357,6 +396,24 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
              (library-only model); pick another local provider for now"
                 .to_string(),
         ),
+        LocalSttProvider::Qwen => {
+            let entry = stt::find_model(&s.qwen_model)
+                .ok_or_else(|| format!("unknown qwen model {:?}", s.qwen_model))?;
+            let dir = stt::model_dir(data_dir, entry);
+            require_qwen_files(&dir, entry)?;
+            // Backend picks the sidecar mode: vLLM streams live,
+            // transformers decodes whole utterances after release.
+            match s.qwen_backend {
+                QwenBackendSetting::Vllm => Ok(Plan::QwenStream {
+                    model_dir: dir,
+                    lang: s.language.clone(),
+                }),
+                QwenBackendSetting::Transformers => Ok(Plan::QwenHttp {
+                    model_dir: dir,
+                    lang: s.language.clone(),
+                }),
+            }
+        }
     }
 }
 
@@ -369,6 +426,15 @@ fn require_transducer_files(dir: &Path, id: &str) -> Result<(), String> {
     ] {
         if !dir.join(f).exists() {
             return Err(missing(&format!("parakeet model {id} ({f})")));
+        }
+    }
+    Ok(())
+}
+
+fn require_qwen_files(dir: &Path, entry: &stt::ModelEntry) -> Result<(), String> {
+    for f in entry.required_files {
+        if !dir.join(f).exists() {
+            return Err(missing(&format!("qwen model {} ({f})", entry.id)));
         }
     }
     Ok(())
@@ -483,7 +549,10 @@ pub fn reap_stale_servers(data_dir: &Path) {
     }
     for (name, pid) in &map {
         let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        if cmdline.contains("whisper-server") || cmdline.contains("sherpa-onnx") {
+        if cmdline.contains("whisper-server")
+            || cmdline.contains("sherpa-onnx")
+            || cmdline.contains("qwen/server.py")
+        {
             eprintln!("[stt] reaping stale {name} (pid {pid})");
             unsafe {
                 libc_kill(*pid);
@@ -493,7 +562,7 @@ pub fn reap_stale_servers(data_dir: &Path) {
     let _ = std::fs::remove_file(&path);
     // Untracked strays: exact server binaries alive at boot that no
     // pidfile named. Single-instance engine ⇒ not another run's.
-    for name in ["whisper", "sherpa-offline", "sherpa-online"] {
+    for name in ["whisper", "sherpa-offline", "sherpa-online", "qwen"] {
         for pid in find_server_pids(server_binary_marker(name)) {
             eprintln!("[stt] boot: killing untracked {name} (pid {pid})");
             unsafe {
@@ -503,14 +572,17 @@ pub fn reap_stale_servers(data_dir: &Path) {
     }
 }
 
-/// Exact server binary per supervised name. Exact match matters:
-/// the packs ship dozens of `sherpa-onnx-*` CLI tools that must
-/// never be mistaken for servers (adopt/reap/scan).
+/// Exact sidecar script path fragment per supervised name. This
+/// matches the child's argv (`.../bin/qwen/server.py`): a bare
+/// `qwen_server.py` never appears there (the file on disk is
+/// `server.py`), and matching it would leave Qwen permanently
+/// "external" — unadoptable, unreapable, unstoppable.
 fn server_binary_marker(name: &str) -> &str {
     match name {
         "whisper" => "whisper-server",
         "sherpa-offline" => "sherpa-onnx-offline-websocket-server",
         "sherpa-online" => "sherpa-onnx-online-websocket-server",
+        "qwen" => "qwen/server.py",
         other => other,
     }
 }
@@ -565,6 +637,7 @@ pub fn server_status(data_dir: &Path, net: &ServerNet) -> Vec<(String, bool)> {
         ("whisper", engine_port(net, WHISPER_PORT)),
         ("sherpa-offline", engine_port(net, SHERPA_OFFLINE_PORT)),
         ("sherpa-online", engine_port(net, SHERPA_ONLINE_PORT)),
+        ("qwen", engine_port(net, QWEN_PORT)),
     ] {
         if !port_open(port) {
             continue;
@@ -572,7 +645,9 @@ pub fn server_status(data_dir: &Path, net: &ServerNet) -> Vec<(String, bool)> {
         let pid_alive = map.get(name).map(|pid| {
             let cmdline =
                 std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-            cmdline.contains("whisper-server") || cmdline.contains("sherpa-onnx")
+            cmdline.contains("whisper-server")
+                || cmdline.contains("sherpa-onnx")
+                || cmdline.contains("qwen/server.py")
         });
         // Local map (same process) is authoritative when present.
         let local = servers().lock().ok().and_then(|mut m| {
@@ -609,7 +684,10 @@ pub fn drop_servers(data_dir: &Path) {
         .unwrap_or_default();
     for (name, pid) in &leftovers {
         let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        if cmdline.contains("whisper-server") || cmdline.contains("sherpa-onnx") {
+        if cmdline.contains("whisper-server")
+            || cmdline.contains("sherpa-onnx")
+            || cmdline.contains("qwen/server.py")
+        {
             unsafe {
                 libc_kill(*pid);
             }
@@ -701,6 +779,7 @@ fn ensure_server(
     name: &str,
     key: String,
     port: u16,
+    start_timeout: Duration,
     spawn: impl FnOnce() -> Result<Child, String>,
     probe: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
@@ -813,8 +892,11 @@ fn ensure_server(
                  see /tmp/mywhisper-{name}.log (missing shared libs?)"
             ));
         }
-        if start.elapsed() >= SERVER_START_TIMEOUT {
-            return Err(format!("server on port {port} did not answer in 20 s"));
+        if start.elapsed() >= start_timeout {
+            return Err(format!(
+                "server on port {port} did not answer in {} s",
+                start_timeout.as_secs()
+            ));
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -931,6 +1013,7 @@ fn ensure_whisper(
         "whisper",
         key,
         whisper_port,
+        SERVER_START_TIMEOUT,
         || {
             let (out, err) = server_logs("whisper-server");
             let mut cmd = Command::new(&bin);
@@ -1132,6 +1215,7 @@ fn ensure_sherpa_offline(
         "sherpa-offline",
         key,
         offline_port,
+        SERVER_START_TIMEOUT,
         || {
             let f = |n: &str| dir_s.join(n).to_string_lossy().to_string();
             let (out, err) = server_logs("sherpa-offline-server");
@@ -1195,6 +1279,7 @@ fn ensure_sherpa_online(
         "sherpa-online",
         key,
         online_port,
+        SERVER_START_TIMEOUT,
         || {
             let f = |n: &str| dir_s.join(n).to_string_lossy().to_string();
             let (out, err) = server_logs("sherpa-online-server");
@@ -1300,6 +1385,417 @@ fn probe_sherpa_online(port: u16) -> Result<(), String> {
     let text = s.finish()?;
     eprintln!("[stt] sherpa-online probe ok (reply: {text:?})");
     Ok(())
+}
+
+// ------------------------------------------------------- Qwen sidecar
+//
+// Qwen3-ASR runs in the managed Python 3.12 runtime (see
+// `stt::QWEN_PACKS` + `crate::qwen_runtime`) under the embedded
+// `qwen_server.py` sidecar: stdlib HTTP + the upstream `qwen-asr`
+// package, no extra daemons. The script is written to
+// `<data>/bin/qwen/server.py` on ensure (rewritten when the embedded
+// source changes, hashed into the server key so the child
+// respawns). The port joins the key (custom-port switches respawn
+// instead of reusing a foreign listener). The model loads before
+// serving, so TCP-ready means ready to decode — same contract as
+// whisper-server.
+
+pub const QWEN_SERVER_SOURCE: &str = include_str!("qwen_server.py");
+
+/// User-visible sidecar path (`<data>/bin/qwen/server.py`).
+pub fn qwen_server_path(data_dir: &Path) -> PathBuf {
+    stt::models_dir(data_dir)
+        .parent()
+        .unwrap_or(data_dir)
+        .join("bin")
+        .join("qwen")
+        .join("server.py")
+}
+
+fn qwen_pack_for(backend: QwenBackendSetting) -> Result<&'static stt::QwenPack, String> {
+    let want = match backend {
+        QwenBackendSetting::Transformers => "qwen-transformers",
+        QwenBackendSetting::Vllm => "qwen-vllm",
+    };
+    stt::QWEN_PACKS
+        .iter()
+        .find(|p| p.id == want)
+        .ok_or_else(|| format!("unknown qwen pack {want}"))
+}
+
+fn qwen_python(data_dir: &Path, backend: QwenBackendSetting) -> Result<PathBuf, String> {
+    // Strict: the dropdown is the single selector. No silent fallback
+    // to another backend (same rule as the whisper/sherpa pickers).
+    // Distinguish missing runtime (download it) from an incompatible
+    // leftover (old system-python/3.14 install: remove + reinstall).
+    let pack = qwen_pack_for(backend)?;
+    let python = stt::qwen_venv_python(data_dir, pack);
+    if !python.exists() {
+        return Err(missing(&format!("{} runtime pack", pack.id)));
+    }
+    if !stt::qwen_installed(data_dir, pack) {
+        let dir = stt::qwen_runtime_dir(data_dir, pack);
+        let has_marker = dir.join(".installed").exists();
+        if has_marker {
+            return Err(format!(
+                "{} runtime is incompatible (older installer or interrupted install): \
+                 remove it in Settings and reinstall (download it in Settings → Speech to Text)",
+                pack.id
+            ));
+        }
+        return Err(missing(&format!("{} runtime pack", pack.id)));
+    }
+    Ok(python)
+}
+
+fn qwen_backend_arg(backend: QwenBackendSetting) -> &'static str {
+    match backend {
+        QwenBackendSetting::Transformers => "transformers",
+        QwenBackendSetting::Vllm => "vllm",
+    }
+}
+
+fn qwen_server_key(
+    python: &Path,
+    model_dir: &Path,
+    backend: QwenBackendSetting,
+    mem: &str,
+    max_len: &str,
+    port: u16,
+) -> String {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(QWEN_SERVER_SOURCE.as_bytes());
+    let script_hash: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!(
+        "{}|{}|{}|{}|mem={mem}|len={max_len}|port={port}",
+        python.display(),
+        model_dir.display(),
+        qwen_backend_arg(backend),
+        script_hash
+    )
+}
+
+fn ensure_qwen(
+    data_dir: &Path,
+    backend: QwenBackendSetting,
+    vram: QwenVramSetting,
+    model_dir: &Path,
+    net: &ServerNet,
+) -> Result<(), String> {
+    let python = qwen_python(data_dir, backend)?;
+    // Compact fits the 0.6B model only (measured: 1.7B refuses to
+    // boot under a 0.25 share). Fail here with an actionable picker
+    // hint instead of a vLLM OOM deep in the log.
+    let model_id = model_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if backend == QwenBackendSetting::Vllm
+        && vram == QwenVramSetting::Compact
+        && model_id != "qwen3-asr-0.6b"
+    {
+        return Err("Qwen3-ASR 1.7B needs the Balanced (or larger) GPU footprint; Compact fits the 0.6B model".to_string());
+    }
+    // (Re)write the sidecar when the embedded source moved on.
+    let script = qwen_server_path(data_dir);
+    let rewrite = std::fs::read_to_string(&script).unwrap_or_default() != QWEN_SERVER_SOURCE;
+    if rewrite {
+        if let Some(parent) = script.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
+        }
+        std::fs::write(&script, QWEN_SERVER_SOURCE).map_err(|e| format!("write sidecar: {e}"))?;
+    }
+    let qwen_port = engine_port(net, QWEN_PORT);
+    let (mem, max_len) = qwen_vram_profile(vram);
+    let key = qwen_server_key(&python, model_dir, backend, &mem, &max_len, qwen_port);
+    let (python_s, script_s, dir_s) = (python.clone(), script.clone(), model_dir.to_path_buf());
+    let backend_s = qwen_backend_arg(backend);
+    let qwen_host = net.host;
+    ensure_server(
+        data_dir,
+        "qwen",
+        key,
+        qwen_port,
+        QWEN_START_TIMEOUT,
+        || {
+            let (out, err) = server_logs("qwen-server");
+            let mut cmd = Command::new(&python_s);
+            kill_on_parent_death(&mut cmd);
+            cmd.args([
+                script_s.to_string_lossy().as_ref(),
+                "--model",
+                &dir_s.to_string_lossy(),
+                "--backend",
+                backend_s,
+                "--host",
+                qwen_host,
+                "--port",
+                &qwen_port.to_string(),
+            ])
+            .stdin(Stdio::null())
+            .stdout(out)
+            .stderr(err)
+            // Local snapshot only: never reach for the network when a
+            // file is missing (fail fast instead of downloading).
+            .env("HF_HUB_OFFLINE", "1")
+            .env("TRANSFORMERS_OFFLINE", "1")
+            // Dictation-sized context: the upstream 64k default costs
+            // gigabytes of KV cache and tens of seconds of engine
+            // init for no ASR benefit. Explicit operator override
+            // still wins; otherwise the footprint preset decides.
+            .env("QWEN_GPU_MEM_UTIL", mem.clone())
+            .env("QWEN_MAX_MODEL_LEN", max_len.clone())
+            .env_remove("PYTHONHOME")
+            .env_remove("PYTHONPATH")
+            .spawn()
+            .map_err(|e| format!("spawn qwen sidecar: {e}"))
+        },
+        move || probe_qwen(qwen_port),
+    )
+}
+
+/// vLLM sizing for the sidecar from the footprint preset: operator
+/// process env wins per knob, otherwise the preset profile.
+fn qwen_vram_profile(vram: QwenVramSetting) -> (String, String) {
+    let (share, len) = vram.profile();
+    let mem = std::env::var("QWEN_GPU_MEM_UTIL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| share.to_string());
+    let max_len = std::env::var("QWEN_MAX_MODEL_LEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| len.to_string());
+    (mem, max_len)
+}
+
+/// Readiness probe: /health answers, then 0.5 s of silence decodes
+/// within the budget. Catches "port open, model still loading".
+fn probe_qwen(port: u16) -> Result<(), String> {
+    eprintln!("[stt] qwen probe: /health + 0.5s silence");
+    let client = http_client()?;
+    let res = client
+        .get(format!("http://127.0.0.1:{port}/health"))
+        .send()
+        .map_err(|e| format!("qwen /health: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("qwen /health: http {}", res.status()));
+    }
+    let silence = vec![0.0f32; 8000];
+    let text = qwen_transcribe_inner(&silence, None, "auto", port)?;
+    eprintln!("[stt] qwen probe ok (reply: {text:?})");
+    Ok(())
+}
+
+fn qwen_pcm_b64(samples_16k: &[f32]) -> String {
+    use base64::Engine as _;
+    let mut bytes = Vec::with_capacity(samples_16k.len() * 4);
+    for s in samples_16k {
+        bytes.extend_from_slice(&s.to_le_bytes());
+    }
+    base64::engine::general_purpose::STANDARD.encode(&bytes)
+}
+
+/// POST one JSON body to the sidecar; errors quote the sidecar's
+/// `{"error"}` message when present.
+fn qwen_post(port: u16, path: &str, body: serde_json::Value) -> Result<serde_json::Value, String> {
+    let res = http_client()?
+        .post(format!("http://127.0.0.1:{port}{path}"))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&body).map_err(|e| format!("qwen body: {e}"))?)
+        .send()
+        .map_err(|e| format!("qwen {path}: {e}"))?;
+    let text = res.text().map_err(|e| format!("qwen body: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("qwen json: {e}"))?;
+    if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+        return Err(format!("qwen {path}: {err}"));
+    }
+    Ok(v)
+}
+
+fn qwen_transcribe_inner(
+    samples_16k: &[f32],
+    context: Option<&str>,
+    lang: &str,
+    port: u16,
+) -> Result<String, String> {
+    let v = qwen_post(
+        port,
+        "/inference",
+        serde_json::json!({
+            "pcm_b64": qwen_pcm_b64(samples_16k),
+            "sample_rate": ENGINE_RATE,
+            "language": lang,
+            "context": context.unwrap_or(""),
+        }),
+    )?;
+    Ok(v.get("text")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string())
+}
+
+/// Whole-utterance decode against the Qwen sidecar. `words` become
+/// the upstream `context` bias (capped like every other prompt
+/// channel); `lang` is the ISO code ("auto" = detect).
+pub fn qwen_transcribe(
+    samples_16k: &[f32],
+    words: &[String],
+    lang: &str,
+    port: u16,
+) -> Result<String, String> {
+    let context = crate::textnorm::dictionary_prompt(words, crate::textnorm::QWEN_CONTEXT_CHARS);
+    qwen_transcribe_inner(samples_16k, context.as_deref(), lang, port)
+}
+
+/// Live session over the sidecar `/stream/*` endpoints (vLLM
+/// runtime): 16 kHz float32 goes out during the hold in ~1 s posts,
+/// the final is read after `finish`. Partials feed the pill preview.
+pub struct QwenStreamSession {
+    port: u16,
+    session: String,
+    /// Live pill preview: publish partials on change.
+    pub preview: bool,
+}
+
+impl QwenStreamSession {
+    pub fn open(port: u16, lang: &str, context: Option<&str>) -> Result<Self, String> {
+        let v = qwen_post(
+            port,
+            "/stream/start",
+            serde_json::json!({"language": lang, "context": context.unwrap_or("")}),
+        )?;
+        let session = v
+            .get("session")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| "qwen /stream/start has no session".to_string())?
+            .to_string();
+        Ok(Self {
+            port,
+            session,
+            preview: false,
+        })
+    }
+
+    pub fn send_chunk(&mut self, samples_16k: &[f32]) -> Result<(), String> {
+        if samples_16k.is_empty() {
+            return Ok(());
+        }
+        let v = qwen_post(
+            self.port,
+            "/stream/chunk",
+            serde_json::json!({
+                "session": self.session,
+                "pcm_b64": qwen_pcm_b64(samples_16k),
+            }),
+        )?;
+        let partial = v.get("text").and_then(|t| t.as_str()).unwrap_or("");
+        if !partial.trim().is_empty() {
+            eprintln!("[stt] qwen partial: {partial}");
+            if self.preview {
+                set_live_text(partial.trim().to_string());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn finish(self) -> Result<String, String> {
+        let v = qwen_post(
+            self.port,
+            "/stream/finish",
+            serde_json::json!({"session": self.session}),
+        )?;
+        Ok(v.get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string())
+    }
+}
+
+/// Qwen streaming pump: realtime ~1 s posts while held (the sidecar
+/// decodes incrementally on the vLLM runtime), tail drain + finish on
+/// stop. Runs on its own thread, reports through `tx` exactly once.
+fn pump_qwen(
+    mut session: QwenStreamSession,
+    rec: Arc<Mutex<Recorder>>,
+    stop: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+    settled: Arc<AtomicBool>,
+    tx: mpsc::Sender<Result<String, String>>,
+) {
+    let mut resampler: Option<(u32, Resampler)> = None;
+    let mut pending: Vec<f32> = Vec::new();
+    // Rate is learned from the tap; recreate the resampler if the
+    // device changed mid-stream.
+    let mut feed = |chunk: Vec<i16>, tail: bool| -> Result<(), String> {
+        if !chunk.is_empty() {
+            let rate = rec.lock().map(|r| r.rate()).unwrap_or(0);
+            if resampler.as_ref().map(|(r, _)| *r) != Some(rate) {
+                resampler = Some((rate, Resampler::new(rate.max(1))));
+            }
+            pending.extend(resampler.as_mut().unwrap().1.process(&chunk));
+        }
+        // ~1 s posts while held; everything left on the tail.
+        while pending.len() >= 16_000 || (tail && !pending.is_empty()) {
+            let n = pending.len().clamp(1, 16_000);
+            let post: Vec<f32> = pending.drain(..n).collect();
+            session.send_chunk(&post)?;
+        }
+        Ok(())
+    };
+    let mut consumed = 0usize;
+    while !stop.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
+        // Catch-up: while over ~1 s behind live, burst without pacing
+        // so the stream converges to realtime (see pump_online).
+        let behind_secs = rec
+            .lock()
+            .map(|r| (r.len().saturating_sub(consumed) as f64) / 16_000.0)
+            .unwrap_or(0.0);
+        if behind_secs <= 1.0 {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        // Snapshot, not drain: a failed stream falls back to file
+        // engines with the whole utterance intact.
+        let snap = rec.lock().map(|r| r.snapshot()).unwrap_or_default();
+        let chunk = if snap.len() > consumed {
+            snap[consumed..].to_vec()
+        } else {
+            Vec::new()
+        };
+        consumed = snap.len();
+        if let Err(e) = feed(chunk, false) {
+            let _ = tx.send(Err(e));
+            return;
+        }
+    }
+    if cancel.load(Ordering::Relaxed) {
+        let _ = tx.send(Err("cancelled".to_string()));
+        return;
+    }
+    // Settled audio only: drain what the loop missed past release
+    // before finalizing the stream.
+    wait_settled(&settled);
+    let tail = rec
+        .lock()
+        .map(|r| {
+            let snap = r.snapshot();
+            if snap.len() > consumed {
+                snap[consumed..].to_vec()
+            } else {
+                Vec::new()
+            }
+        })
+        .unwrap_or_default();
+    if let Err(e) = feed(tail, true) {
+        let _ = tx.send(Err(e));
+        return;
+    }
+    let _ = tx.send(session.finish());
 }
 
 /// Online (streaming) session: chunks go out during the hold, the
@@ -2252,6 +2748,8 @@ struct LiveUtterance {
     data_dir: PathBuf,
     backend: GpuBackendSetting,
     sherpa_backend: SherpaBackendSetting,
+    qwen_backend: QwenBackendSetting,
+    qwen_vram: QwenVramSetting,
     /// VAD snapshot at press: trim + silence-skip for file-based
     /// engines. Streaming pumps send everything (server-side
     /// endpointing owns that path).
@@ -2340,6 +2838,8 @@ pub fn begin_utterance(
     let data_dir = data_dir.to_path_buf();
     let backend = stt.gpu_backend;
     let sherpa_backend = stt.sherpa_backend;
+    let qwen_backend = stt.qwen_backend;
+    let qwen_vram = stt.qwen_vram;
     let warm_net = server_net(&stt);
     // Background warmup; the release worker re-ensures anyway.
     // Pool-submitted: a saturated system skips warmup instead of
@@ -2348,7 +2848,15 @@ pub fn begin_utterance(
         let plan = plan.clone();
         let data_dir = data_dir.clone();
         if let Err(e) = crate::runtime::submit("stt-warmup", move || {
-            if let Err(e) = ensure_servers(&plan, &data_dir, backend, sherpa_backend, &warm_net) {
+            if let Err(e) = ensure_servers(
+                &plan,
+                &data_dir,
+                backend,
+                sherpa_backend,
+                qwen_backend,
+                qwen_vram,
+                &warm_net,
+            ) {
                 eprintln!("[stt] warmup: {e}");
             }
         }) {
@@ -2401,37 +2909,81 @@ pub fn begin_utterance(
         None
     };
     let result_rx = if plan.streaming() {
-        let online_port = engine_port(&server_net(&stt), SHERPA_ONLINE_PORT);
-        let open = match &plan {
-            Plan::SelfHostedWs { url } => OnlineSession::open_with_url(url, INFERENCE_TIMEOUT),
-            _ => OnlineSession::open_with(online_port, INFERENCE_TIMEOUT),
-        };
-        match open.map(|mut session| {
-            session.preview = stt.live_preview;
-            session
-        }) {
-            Ok(session) => {
-                let (tx, rx) = mpsc::channel();
-                let rec = recorder.clone();
-                let stop_pump = stop.clone();
-                let cancel_pump = cancel.clone();
-                let pump_settled = settled.clone();
-                if let Err(e) = crate::runtime::submit("stt-pump", move || {
-                    pump_online(session, rec, stop_pump, cancel_pump, pump_settled, tx);
-                }) {
-                    eprintln!("[stt] press: {e}");
-                    audio::set_recorder(None);
-                    return;
+        // Qwen live sessions speak the sidecar `/stream/*` endpoints
+        // (vLLM runtime); every other streaming plan is sherpa WS.
+        if matches!(plan, Plan::QwenStream { .. }) {
+            let qwen_port = engine_port(&server_net(&stt), QWEN_PORT);
+            let (lang, context) = match &plan {
+                Plan::QwenStream { lang, .. } => {
+                    let words = load_hint_words(&data_dir);
+                    let context = crate::textnorm::dictionary_prompt(
+                        &words,
+                        crate::textnorm::QWEN_CONTEXT_CHARS,
+                    );
+                    (lang.clone(), context)
                 }
-                Some(rx)
+                _ => unreachable!(),
+            };
+            match QwenStreamSession::open(qwen_port, &lang, context.as_deref()).map(|mut s| {
+                s.preview = stt.live_preview;
+                s
+            }) {
+                Ok(session) => {
+                    let (tx, rx) = mpsc::channel();
+                    let rec = recorder.clone();
+                    let stop_pump = stop.clone();
+                    let cancel_pump = cancel.clone();
+                    let pump_settled = settled.clone();
+                    if let Err(e) = crate::runtime::submit("qwen-pump", move || {
+                        pump_qwen(session, rec, stop_pump, cancel_pump, pump_settled, tx);
+                    }) {
+                        eprintln!("[stt] press: {e}");
+                        audio::set_recorder(None);
+                        return;
+                    }
+                    Some(rx)
+                }
+                Err(e) => {
+                    // Same cold-start rule as sherpa online: keep
+                    // recording; the release worker boots the server
+                    // and the one-shot fallback transcribes.
+                    eprintln!("[stt] press: qwen session failed, recording anyway: {e}");
+                    None
+                }
             }
-            Err(e) => {
-                // Server down at press: do NOT abort. Keep recording;
-                // the release worker boots the server (ensure) and
-                // the one-shot fallback transcribes. First cold
-                // press costs model-load latency, never the text.
-                eprintln!("[stt] press: online session failed, recording anyway: {e}");
-                None
+        } else {
+            let online_port = engine_port(&server_net(&stt), SHERPA_ONLINE_PORT);
+            let open = match &plan {
+                Plan::SelfHostedWs { url } => OnlineSession::open_with_url(url, INFERENCE_TIMEOUT),
+                _ => OnlineSession::open_with(online_port, INFERENCE_TIMEOUT),
+            };
+            match open.map(|mut session| {
+                session.preview = stt.live_preview;
+                session
+            }) {
+                Ok(session) => {
+                    let (tx, rx) = mpsc::channel();
+                    let rec = recorder.clone();
+                    let stop_pump = stop.clone();
+                    let cancel_pump = cancel.clone();
+                    let pump_settled = settled.clone();
+                    if let Err(e) = crate::runtime::submit("stt-pump", move || {
+                        pump_online(session, rec, stop_pump, cancel_pump, pump_settled, tx);
+                    }) {
+                        eprintln!("[stt] press: {e}");
+                        audio::set_recorder(None);
+                        return;
+                    }
+                    Some(rx)
+                }
+                Err(e) => {
+                    // Server down at press: do NOT abort. Keep recording;
+                    // the release worker boots the server (ensure) and
+                    // the one-shot fallback transcribes. First cold
+                    // press costs model-load latency, never the text.
+                    eprintln!("[stt] press: online session failed, recording anyway: {e}");
+                    None
+                }
             }
         }
     } else {
@@ -2499,6 +3051,8 @@ pub fn begin_utterance(
         data_dir,
         backend,
         sherpa_backend,
+        qwen_backend,
+        qwen_vram,
         vad_enabled: stt.vad_enabled,
         vad_gate: stt.vad_threshold,
         keep_audio,
@@ -2822,6 +3376,8 @@ fn finish_session(
         &sess.data_dir,
         sess.backend,
         sess.sherpa_backend,
+        sess.qwen_backend,
+        sess.qwen_vram,
         &sess.net,
     )
     .ok();
@@ -2831,6 +3387,8 @@ fn finish_session(
             &sess.data_dir,
             sess.backend,
             sess.sherpa_backend,
+            sess.qwen_backend,
+            sess.qwen_vram,
             &sess.net,
         ) {
             eprintln!("[stt] fallback {name} not ready: {e}");
@@ -2999,6 +3557,12 @@ fn transcribe_blocking(
             }
             s.finish()
         }
+        Plan::QwenHttp { lang, .. } | Plan::QwenStream { lang, .. } => {
+            // Release without a pump (cold press, transformers
+            // runtime, or stream failure): one-shot over /inference,
+            // which both sidecar backends serve.
+            qwen_transcribe(f32s, words, lang, engine_port(net, QWEN_PORT))
+        }
         Plan::SelfHostedWs { url } => {
             let mut s = OnlineSession::open_with_url(url, INFERENCE_TIMEOUT)?;
             for chunk in f32s.chunks(8000) {
@@ -3051,9 +3615,19 @@ pub fn ensure_for_plan(
     data_dir: &Path,
     gpu_backend: GpuBackendSetting,
     sherpa_backend: SherpaBackendSetting,
+    qwen_backend: QwenBackendSetting,
+    qwen_vram: QwenVramSetting,
     net: &ServerNet,
 ) -> Result<(), String> {
-    ensure_servers(plan, data_dir, gpu_backend, sherpa_backend, net)
+    ensure_servers(
+        plan,
+        data_dir,
+        gpu_backend,
+        sherpa_backend,
+        qwen_backend,
+        qwen_vram,
+        net,
+    )
 }
 
 fn ensure_servers(
@@ -3061,6 +3635,8 @@ fn ensure_servers(
     data_dir: &Path,
     gpu_backend: GpuBackendSetting,
     sherpa_backend: SherpaBackendSetting,
+    qwen_backend: QwenBackendSetting,
+    qwen_vram: QwenVramSetting,
     net: &ServerNet,
 ) -> Result<(), String> {
     match plan {
@@ -3072,6 +3648,9 @@ fn ensure_servers(
         }
         Plan::SherpaOffline { model_dir, lang } => {
             ensure_sherpa_offline(data_dir, sherpa_backend, model_dir, lang, net)
+        }
+        Plan::QwenHttp { model_dir, .. } | Plan::QwenStream { model_dir, .. } => {
+            ensure_qwen(data_dir, qwen_backend, qwen_vram, model_dir, net)
         }
         // CLI per utterance: nothing to keep running.
         // Self-hosted WS: foreign by definition, never spawned.
@@ -3939,6 +4518,169 @@ mod tests {
         s.whisper_model = "nope".to_string();
         s.local_provider = LocalSttProvider::OpenAi;
         assert!(plan_for(&s, Path::new("/nonexistent")).is_err());
+    }
+
+    #[test]
+    fn plan_qwen_needs_snapshot_and_backend() {
+        use crate::settings::QwenBackendSetting;
+        // Missing snapshot under /nonexistent → actionable error naming
+        // the selected registry model (both backends).
+        let mut s = SttSettings {
+            local_provider: LocalSttProvider::Qwen,
+            qwen_backend: QwenBackendSetting::Transformers,
+            ..Default::default()
+        };
+        let err = plan_for(&s, Path::new("/nonexistent")).unwrap_err();
+        assert!(err.contains("qwen3-asr-1.7b"), "{err}");
+        s.qwen_backend = QwenBackendSetting::Vllm;
+        let err = plan_for(&s, Path::new("/nonexistent")).unwrap_err();
+        assert!(err.contains("qwen3-asr-1.7b"), "{err}");
+        // Backend selects the plan shape (offline vs streaming).
+        // Build a disposable snapshot so plan resolution succeeds.
+        let data = std::env::temp_dir().join(format!("qwen-plan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let entry = stt::find_model("qwen3-asr-0.6b").unwrap();
+        let dir = stt::model_dir(&data, entry);
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in entry.required_files {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        s.qwen_model = "qwen3-asr-0.6b".to_string();
+        s.qwen_backend = QwenBackendSetting::Transformers;
+        assert!(matches!(
+            plan_for(&s, &data).unwrap(),
+            Plan::QwenHttp { .. }
+        ));
+        s.qwen_backend = QwenBackendSetting::Vllm;
+        let plan = plan_for(&s, &data).unwrap();
+        assert!(matches!(plan, Plan::QwenStream { .. }));
+        assert!(plan.streaming());
+        // Unknown model id → unknown error, not a panic.
+        s.qwen_model = "nope".to_string();
+        assert!(plan_for(&s, &data).is_err());
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn qwen_streaming_flag_and_describe() {
+        let offline = Plan::QwenHttp {
+            model_dir: PathBuf::from("/x"),
+            lang: "auto".to_string(),
+        };
+        let live = Plan::QwenStream {
+            model_dir: PathBuf::from("/x"),
+            lang: "auto".to_string(),
+        };
+        assert!(!offline.streaming());
+        assert!(live.streaming());
+        assert!(offline.describe().contains("qwen-offline"));
+        assert!(live.describe().contains("qwen-stream"));
+    }
+
+    #[test]
+    fn qwen_context_uses_dictionary_budget() {
+        let words = vec!["alpha".to_string(), "beta".to_string()];
+        let ctx = crate::textnorm::dictionary_prompt(&words, crate::textnorm::QWEN_CONTEXT_CHARS);
+        assert_eq!(ctx.as_deref(), Some("alpha, beta"));
+        assert!(
+            crate::textnorm::dictionary_prompt(&[], crate::textnorm::QWEN_CONTEXT_CHARS).is_none()
+        );
+    }
+
+    #[test]
+    fn qwen_server_key_pins_port_and_source() {
+        use crate::settings::{QwenBackendSetting, QwenVramSetting};
+        let key = |backend, vram: QwenVramSetting, port| {
+            let (mem, len) = qwen_vram_profile(vram);
+            qwen_server_key(
+                Path::new("/bin/qwen-transformers/venv/bin/python"),
+                Path::new("/models/qwen/qwen3-asr-1.7b"),
+                backend,
+                &mem,
+                &len,
+                port,
+            )
+        };
+        let a = key(
+            QwenBackendSetting::Transformers,
+            QwenVramSetting::Balanced,
+            8011,
+        );
+        let b = key(
+            QwenBackendSetting::Transformers,
+            QwenVramSetting::Balanced,
+            9090,
+        );
+        assert_ne!(a, b, "custom port must respawn, not reuse");
+        assert!(a.contains("port=8011"));
+        let c = key(QwenBackendSetting::Vllm, QwenVramSetting::Balanced, 8011);
+        assert_ne!(a, c, "backend switch must respawn");
+        let d = key(QwenBackendSetting::Vllm, QwenVramSetting::Compact, 8011);
+        assert_ne!(c, d, "footprint switch must respawn");
+        assert!(d.contains("mem=0.25") && d.contains("len=4096"));
+    }
+
+    #[test]
+    fn qwen_vram_profiles_are_ordered() {
+        use crate::settings::QwenVramSetting;
+        let (cm, cl) = qwen_vram_profile(QwenVramSetting::Compact);
+        let (bm, bl) = qwen_vram_profile(QwenVramSetting::Balanced);
+        let (lm, ll) = qwen_vram_profile(QwenVramSetting::Large);
+        assert!(cm.parse::<f64>().unwrap() < bm.parse::<f64>().unwrap());
+        assert!(bm.parse::<f64>().unwrap() < lm.parse::<f64>().unwrap());
+        assert!(cl.parse::<u32>().unwrap() < bl.parse::<u32>().unwrap());
+        assert!(bl.parse::<u32>().unwrap() < ll.parse::<u32>().unwrap());
+    }
+
+    #[test]
+    fn qwen_marker_matches_spawned_argv() {
+        // The sidecar is spawned as `<venv>/bin/python
+        // <data>/bin/qwen/server.py ...`: the marker must hit that
+        // argv, or Qwen can never be managed (adopt/status/reap/drop
+        // all miss it and it reads "external" forever).
+        let argv = "/home/u/.local/share/mywhisper/bin/qwen/server.py --model x --backend vllm";
+        assert!(
+            argv.contains(server_binary_marker("qwen")),
+            "marker must match spawned argv"
+        );
+        assert!(
+            !argv.contains("qwen_server.py"),
+            "old marker never matched the real argv"
+        );
+        // No cross-talk with the native servers' markers.
+        for other in [
+            "/usr/bin/whisper-server --model m",
+            "sherpa-onnx-online-websocket-server --port 6006",
+            "sherpa-onnx-offline-websocket-server --port 6007",
+        ] {
+            assert!(
+                !other.contains(server_binary_marker("qwen")),
+                "qwen marker must not hit {other}"
+            );
+            assert!(
+                !argv.contains(server_binary_marker("whisper"))
+                    && !argv.contains(server_binary_marker("sherpa-online")),
+                "native markers must not hit the sidecar argv"
+            );
+        }
+    }
+
+    #[test]
+    fn qwen_gets_patient_start_budget() {
+        // vLLM binds after weights + KV cache + warmup (~40 s for
+        // 1.7B); the shared 20 s budget failed every cold start.
+        assert!(QWEN_START_TIMEOUT >= Duration::from_secs(120));
+        assert_eq!(SERVER_START_TIMEOUT, Duration::from_secs(20));
+    }
+
+    #[test]
+    fn qwen_python_refuses_without_runtime() {
+        use crate::settings::QwenBackendSetting;
+        // No venv on disk → actionable missing-runtime error (the UI
+        // offers Download), never a bare spawn failure.
+        let err =
+            qwen_python(Path::new("/nonexistent"), QwenBackendSetting::Transformers).unwrap_err();
+        assert!(err.contains("qwen-transformers"), "{err}");
     }
 
     #[test]
