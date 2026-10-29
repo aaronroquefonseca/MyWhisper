@@ -4,8 +4,8 @@ use gtk4::{Application, Box as GtkBox, Button, Label, Orientation, Window};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 /// Recording indicator lifecycle: microphone feedback, transcription,

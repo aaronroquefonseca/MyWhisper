@@ -23,10 +23,10 @@
 //! (e.g. cpal) can replace [`SimMic`] without touching the widget.
 
 use crate::mic::MicInput;
+use gtk4::DrawingArea;
 use gtk4::cairo;
 use gtk4::glib;
 use gtk4::prelude::*;
-use gtk4::DrawingArea;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -655,7 +655,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, st: &VizState) {
     let total = pitch * hs.len() as f64 - BAR_GAP;
     let free = width - x - total;
     let x0 = x + free / 2.0; // keep bars centered in remaining space
-                             // Bars grow symmetrically from the vertical center.
+    // Bars grow symmetrically from the vertical center.
     let mid = height / 2.0;
 
     // NOTE: ornament painting above may replace the cairo source

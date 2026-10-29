@@ -430,7 +430,10 @@ impl MicInput {
             // A second deactivate must not re-log as a fresh arm when
             // the earlier deadline won.
             if self.warm_until != Some(deadline) {
-                eprintln!("[mic] hold {hold_ms}ms (max warm {}s, settle)", cfg.warm_secs);
+                eprintln!(
+                    "[mic] hold {hold_ms}ms (max warm {}s, settle)",
+                    cfg.warm_secs
+                );
             }
             self.warm_until = Some(deadline);
         }
