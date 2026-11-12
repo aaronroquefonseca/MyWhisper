@@ -796,6 +796,42 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Could not reach the model. Check its name and server URL.",
             "No se pudo acceder al modelo. Comprueba su nombre y la URL del servidor.",
         ),
+        "action.test" => ("Test", "Probar"),
+        "action.test.draft.stt" => ("Test new engine", "Probar motor nuevo"),
+        "action.test.draft.lm" => ("Test new model", "Probar modelo nuevo"),
+        "provider_test.testing" => ("Testing…", "Probando…"),
+        "provider_test.pass" => (
+            "Passed in {ms} ms · {excerpt}",
+            "Correcto en {ms} ms · {excerpt}",
+        ),
+        "provider_test.fail" => (
+            "Failed in {ms} ms · {detail}",
+            "Falló en {ms} ms · {detail}",
+        ),
+        "provider_test.need_url" => (
+            "Enter a server URL to test.",
+            "Introduce una URL del servidor para probar.",
+        ),
+        "provider_test.need_model" => {
+            ("Enter a model to test.", "Introduce un modelo para probar.")
+        }
+        "provider_test.bad_url" => (
+            "Fix the server URL to test.",
+            "Corrige la URL del servidor para probar.",
+        ),
+        "provider_test.need_key" => (
+            "Enter an API key to test.",
+            "Introduce una clave API para probar.",
+        ),
+        "provider_test.local_ok" => ("Installed · {id}", "Instalado · {id}"),
+        "provider_test.local_missing" => (
+            "Not downloaded · {id} — download it below.",
+            "No descargado · {id}: descárgalo abajo.",
+        ),
+        "provider_test.local_na" => (
+            "Local engines can't be tested yet — use Ollama.",
+            "Los motores locales aún no se pueden probar: usa Ollama.",
+        ),
         "feedback.copyfailed" => (
             "Could not copy. Check your clipboard tool in Text delivery.",
             "No se pudo copiar. Comprueba la herramienta en Entrega de texto.",
