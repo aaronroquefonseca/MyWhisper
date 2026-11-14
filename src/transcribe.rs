@@ -1995,6 +1995,7 @@ fn openai_dictionary_hint(base: &str, words: &[String]) -> Vec<(&'static str, St
             .map(|w| w.trim())
             .filter(|w| !w.is_empty())
             .map(|word| ("context_bias", word.to_string()))
+            .take(100)
             .collect();
     }
     crate::textnorm::dictionary_prompt(words, budget)
@@ -2080,12 +2081,24 @@ fn deepgram_transcribe(
         } else {
             "keywords"
         };
+        // Deepgram does not expose its tokenizer. Use a conservative UTF-8
+        // byte budget (including term separators), below its 500-token cap.
+        let mut remaining = if parameter == "keyterm" {
+            450
+        } else {
+            usize::MAX
+        };
         for word in words
             .iter()
             .map(|w| w.trim())
             .filter(|w| !w.is_empty())
             .take(100)
         {
+            let cost = word.len().saturating_add(1);
+            if cost > remaining {
+                break;
+            }
+            remaining -= cost;
             query.append_pair(parameter, word);
         }
     }
@@ -3971,6 +3984,43 @@ mod tests {
             assert_eq!(terms, ["ACME & José", "Widget"]);
             assert!(!url.query_pairs().any(|(key, _)| key == "language"));
         }
+    }
+
+    #[test]
+    fn remote_dictionary_respects_provider_limits() {
+        let words: Vec<_> = (0..101).map(|i| format!("term{i}")).collect();
+        let hints = openai_dictionary_hint("https://api.mistral.ai/v1", &words);
+        assert_eq!(hints.len(), 100);
+        assert_eq!(hints.last().unwrap().1, "term99");
+        // Far fewer than 100 entries can exceed Nova-3's token limit.
+        let phrases = vec!["rare ".repeat(100); 6];
+        let mut words = vec!["José".to_string()];
+        words.extend(phrases);
+        let request = capture_transcription(
+            |base| Plan::CloudDeepgram {
+                base,
+                key: "test-key".into(),
+                model: "nova-3".into(),
+                lang: "auto".into(),
+            },
+            r#"{"results":{"channels":[{"alternatives":[{"transcript":"hello"}]}]}}"#,
+            &words,
+        );
+        let path = request
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap();
+        let url = reqwest::Url::parse(&format!("http://localhost{path}")).unwrap();
+        let terms: Vec<_> = url
+            .query_pairs()
+            .filter(|(key, _)| key == "keyterm")
+            .map(|(_, value)| value.into_owned())
+            .collect();
+        assert_eq!(terms, ["José"]);
+        assert!(terms.iter().map(|term| term.len() + 1).sum::<usize>() <= 450);
     }
 
     #[test]

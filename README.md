@@ -22,7 +22,8 @@ For fast local PR testing and PR-based release notes, see
   ws/wss, optional bearer token), cloud (OpenAI/Groq/Mistral/Gemini/
   Deepgram). One local server at a time; lazy start with catch-up.
   Dictionary words accompany HTTP transcription requests as provider-specific
-  spelling hints (subject to provider budgets; Deepgram: first 100 terms).
+  spelling hints (subject to provider budgets; Mistral/Deepgram: up to 100
+  terms, with an additional conservative byte budget for Deepgram Nova-3).
   Sherpa ws/wss uses server-configured hotwords; its wire protocol has no
   per-request dictionary field. Snippet replacements stay on this device.
 - **Sync**: serverless device-to-device over encrypted TCP
