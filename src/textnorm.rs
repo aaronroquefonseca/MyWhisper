@@ -78,15 +78,16 @@ pub fn dictionary_prompt(words: &[String], max_chars: usize) -> Option<String> {
     if cleaned.is_empty() {
         return None;
     }
-    let full = cleaned.join(", ");
-    if full.len() <= max_chars {
-        return Some(full);
+    let mut prompt = String::new();
+    for word in cleaned {
+        let separator = if prompt.is_empty() { "" } else { ", " };
+        if prompt.len() + separator.len() + word.len() > max_chars {
+            break;
+        }
+        prompt.push_str(separator);
+        prompt.push_str(word);
     }
-    let head = &full[..max_chars];
-    match head.rfind(',') {
-        Some(i) => Some(head[..i].to_string()),
-        None => Some(head.to_string()),
-    }
+    (!prompt.is_empty()).then_some(prompt)
 }
 
 fn fold_char(c: char) -> char {
@@ -302,6 +303,17 @@ pub fn expand_snippets(text: &str, snippets: &[(String, String)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dictionary_budget_preserves_complete_utf8_entries() {
+        let words = vec!["José".into(), "ééé".into()];
+        assert_eq!(dictionary_prompt(&words, 10), Some("José".into()));
+        assert_eq!(dictionary_prompt(&words, 3), None);
+        assert_eq!(
+            dictionary_prompt(&["a,b".into(), "next".into()], 5),
+            Some("a,b".into())
+        );
+    }
 
     #[test]
     fn prompt_joins_and_trims_at_comma() {

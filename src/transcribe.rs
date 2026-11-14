@@ -1979,12 +1979,36 @@ fn lang_param(lang: &str) -> Option<&str> {
     }
 }
 
+fn openai_dictionary_hint(base: &str, words: &[String]) -> Vec<(&'static str, String)> {
+    let host = reqwest::Url::parse(base)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned));
+    let is_mistral = host.as_deref() == Some("api.mistral.ai");
+    let budget = if host.as_deref() == Some("api.groq.com") {
+        crate::textnorm::GROQ_PROMPT_CHARS
+    } else {
+        crate::textnorm::WHISPER_PROMPT_CHARS
+    };
+    if is_mistral {
+        return words
+            .iter()
+            .map(|w| w.trim())
+            .filter(|w| !w.is_empty())
+            .map(|word| ("context_bias", word.to_string()))
+            .collect();
+    }
+    crate::textnorm::dictionary_prompt(words, budget)
+        .map(|hint| ("prompt", hint))
+        .into_iter()
+        .collect()
+}
+
 fn openai_compat_transcribe(
     base: &str,
     key: &str,
     model: &str,
     lang: &str,
-    prompt: Option<&str>,
+    words: &[String],
     wav: &[u8],
 ) -> Result<String, String> {
     let base = base.trim_end_matches('/');
@@ -2001,11 +2025,8 @@ fn openai_compat_transcribe(
     if let Some(l) = lang_param(lang) {
         fields.push(("language", l));
     }
-    if let Some(p) = prompt
-        && !p.is_empty()
-    {
-        fields.push(("prompt", p));
-    }
+    let hint = openai_dictionary_hint(base, words);
+    fields.extend(hint.iter().map(|(name, value)| (*name, value.as_str())));
     let body = multipart_body(
         boundary,
         &fields,
@@ -2039,18 +2060,37 @@ fn deepgram_transcribe(
     key: &str,
     model: &str,
     lang: &str,
+    words: &[String],
     wav: &[u8],
 ) -> Result<String, String> {
-    let mut url = format!(
+    let mut url = reqwest::Url::parse(&format!(
         "{}/v1/listen?model={}&smart_format=true",
         base.trim_end_matches('/'),
         model
-    );
-    if let Some(l) = lang_param(lang) {
-        url.push_str(&format!("&language={l}"));
+    ))
+    .map_err(|e| format!("deepgram URL: {e}"))?;
+    {
+        let mut query = url.query_pairs_mut();
+        if let Some(l) = lang_param(lang) {
+            query.append_pair("language", l);
+        }
+        // Nova-3 uses plain keyterms; older models use keyword boosting.
+        let parameter = if model.starts_with("nova-3") {
+            "keyterm"
+        } else {
+            "keywords"
+        };
+        for word in words
+            .iter()
+            .map(|w| w.trim())
+            .filter(|w| !w.is_empty())
+            .take(100)
+        {
+            query.append_pair(parameter, word);
+        }
     }
     let res = http_client()?
-        .post(&url)
+        .post(url)
         .header("Authorization", format!("Token {key}"))
         .header("Content-Type", "audio/wav")
         .body(wav.to_vec())
@@ -2068,27 +2108,16 @@ fn deepgram_transcribe(
         .ok_or_else(|| "deepgram reply has no transcript".to_string())
 }
 
-fn gemini_transcribe(key: &str, model: &str, lang: &str, wav: &[u8]) -> Result<String, String> {
-    use base64::Engine as _;
+fn gemini_transcribe(
+    key: &str,
+    model: &str,
+    lang: &str,
+    words: &[String],
+    wav: &[u8],
+) -> Result<String, String> {
     let url =
         format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
-    let prompt = if let Some(l) = lang_param(lang) {
-        format!("Transcribe this {l} audio exactly. Return only the transcription, no commentary.")
-    } else {
-        "Transcribe this audio exactly. Return only the transcription, no commentary.".to_string()
-    };
-    let body = serde_json::json!({
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {"inline_data": {
-                    "mime_type": "audio/wav",
-                    "data": base64::engine::general_purpose::STANDARD.encode(wav),
-                }},
-            ],
-        }],
-        "generationConfig": {"temperature": 0.0},
-    });
+    let body = gemini_transcription_body(lang, words, wav);
     let res = http_client()?
         .post(&url)
         .header("x-goog-api-key", key)
@@ -2114,6 +2143,33 @@ fn gemini_transcribe(key: &str, model: &str, lang: &str, wav: &[u8]) -> Result<S
         })
         .unwrap_or_default();
     Ok(text.trim().to_string())
+}
+
+fn gemini_transcription_body(lang: &str, words: &[String], wav: &[u8]) -> serde_json::Value {
+    use base64::Engine as _;
+    let mut prompt = if let Some(l) = lang_param(lang) {
+        format!("Transcribe this {l} audio exactly. Return only the transcription, no commentary.")
+    } else {
+        "Transcribe this audio exactly. Return only the transcription, no commentary.".to_string()
+    };
+    if let Some(hints) =
+        crate::textnorm::dictionary_prompt(words, crate::textnorm::WHISPER_PROMPT_CHARS)
+    {
+        prompt.push_str("\nSpelling hints (use only when spoken in the audio): ");
+        prompt.push_str(&hints);
+    }
+    serde_json::json!({
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {"inline_data": {
+                    "mime_type": "audio/wav",
+                    "data": base64::engine::general_purpose::STANDARD.encode(wav),
+                }},
+            ],
+        }],
+        "generationConfig": {"temperature": 0.0},
+    })
 }
 
 // ----------------------------------------------------------- orchestration
@@ -3013,20 +3069,7 @@ fn transcribe_blocking(
             lang,
         } => {
             let wav = wav_bytes_16k(&audio::f32_to_i16(f32s));
-            // Groq caps prompts at 890 chars; whisper-family takes
-            // 900; anything else gets no prompt (no channel).
-            let budget = if base.contains("groq.com") {
-                Some(crate::textnorm::GROQ_PROMPT_CHARS)
-            } else if base.contains("openai.com")
-                || base.contains("127.0.0.1")
-                || base.contains("localhost")
-            {
-                Some(crate::textnorm::WHISPER_PROMPT_CHARS)
-            } else {
-                None
-            };
-            let prompt = budget.and_then(|b| crate::textnorm::dictionary_prompt(words, b));
-            openai_compat_transcribe(base, key, model, lang, prompt.as_deref(), &wav)
+            openai_compat_transcribe(base, key, model, lang, words, &wav)
         }
         Plan::CloudDeepgram {
             base,
@@ -3035,11 +3078,11 @@ fn transcribe_blocking(
             lang,
         } => {
             let wav = wav_bytes_16k(&audio::f32_to_i16(f32s));
-            deepgram_transcribe(base, key, model, lang, &wav)
+            deepgram_transcribe(base, key, model, lang, words, &wav)
         }
         Plan::CloudGemini { key, model, lang } => {
             let wav = wav_bytes_16k(&audio::f32_to_i16(f32s));
-            gemini_transcribe(key, model, lang, &wav)
+            gemini_transcribe(key, model, lang, words, &wav)
         }
     }
 }
@@ -3787,6 +3830,166 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(r#"{"segments":[{"text":"foo "},{"text":"bar"}]}"#).unwrap();
         assert_eq!(whisper_json_text(&v), "foo bar");
+    }
+
+    /// Capture a real HTTP request, including its complete multipart body.
+    fn capture_transcription(
+        plan: impl FnOnce(String) -> Plan,
+        reply: &'static str,
+        words: &[String],
+    ) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 4096];
+            loop {
+                let count = socket.read(&mut buffer).unwrap();
+                assert_ne!(count, 0);
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]);
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                reply.len(),
+                reply
+            )
+            .unwrap();
+            String::from_utf8_lossy(&request).into_owned()
+        });
+        let result = transcribe_blocking(
+            &plan(base),
+            &[0.0; 16],
+            words,
+            &server_net(&SttSettings::default()),
+        );
+        let request = server.join().unwrap();
+        assert_eq!(result.unwrap(), "hello");
+        request
+    }
+
+    #[test]
+    fn remote_http_sends_dictionary() {
+        let words = vec!["  Acme  ".into(), "José".into(), " ".into()];
+        for words in [&words[..], &[][..]] {
+            let request = capture_transcription(
+                |base| Plan::CloudOpenAiCompat {
+                    base: format!("{base}/v1"),
+                    key: String::new(),
+                    model: "remote-model".into(),
+                    lang: "es".into(),
+                },
+                r#"{"text":"hello"}"#,
+                words,
+            );
+            assert!(request.starts_with("POST /v1/audio/transcriptions "));
+            assert!(request.contains("name=\"file\"; filename=\"audio.wav\""));
+            assert!(request.contains("name=\"language\"\r\n\r\nes"));
+            assert_eq!(request.contains("name=\"prompt\""), !words.is_empty());
+            if !words.is_empty() {
+                assert!(request.contains("Acme, José"));
+            }
+        }
+        // Remote hostnames/IPs must behave like loopback servers.
+        for base in [
+            "https://stt.example.net/v1",
+            "http://192.168.1.20:8000",
+            "http://[::1]:8000",
+        ] {
+            assert_eq!(
+                openai_dictionary_hint(base, &words),
+                vec![("prompt", "Acme, José".into())]
+            );
+        }
+        assert_eq!(
+            openai_dictionary_hint("https://api.mistral.ai/v1", &words),
+            vec![
+                ("context_bias", "Acme".into()),
+                ("context_bias", "José".into())
+            ]
+        );
+        let long = vec!["a".repeat(890), "b".into()];
+        assert_eq!(
+            openai_dictionary_hint("https://api.groq.com/openai/v1", &long)[0]
+                .1
+                .len(),
+            890
+        );
+        assert_eq!(
+            openai_dictionary_hint("https://stt.example.net", &long)[0]
+                .1
+                .len(),
+            893
+        );
+    }
+
+    #[test]
+    fn deepgram_sends_encoded_dictionary_terms() {
+        for (model, parameter) in [("nova-3", "keyterm"), ("nova-2", "keywords")] {
+            let request = capture_transcription(
+                |base| Plan::CloudDeepgram {
+                    base,
+                    key: "test-key".into(),
+                    model: model.into(),
+                    lang: "auto".into(),
+                },
+                r#"{"results":{"channels":[{"alternatives":[{"transcript":"hello"}]}]}}"#,
+                &["ACME & José".into(), " ".into(), "Widget".into()],
+            );
+            let path = request
+                .lines()
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap();
+            let url = reqwest::Url::parse(&format!("http://localhost{path}")).unwrap();
+            let terms: Vec<_> = url
+                .query_pairs()
+                .filter(|(key, _)| key == parameter)
+                .map(|(_, value)| value.into_owned())
+                .collect();
+            assert_eq!(terms, ["ACME & José", "Widget"]);
+            assert!(!url.query_pairs().any(|(key, _)| key == "language"));
+        }
+    }
+
+    #[test]
+    fn gemini_sends_dictionary_with_audio() {
+        let body = gemini_transcription_body("es", &["José".into()], b"audio");
+        let prompt = body["contents"][0]["parts"][0]["text"].as_str().unwrap();
+        assert!(prompt.contains("es audio"));
+        assert!(prompt.contains("Spelling hints (use only when spoken in the audio): José"));
+        assert_eq!(
+            body["contents"][0]["parts"][1]["inline_data"]["data"],
+            "YXVkaW8="
+        );
+        let empty = gemini_transcription_body("auto", &[], b"");
+        assert!(
+            !empty["contents"][0]["parts"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Spelling hints")
+        );
     }
 
     #[test]
