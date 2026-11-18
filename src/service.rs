@@ -265,6 +265,13 @@ pub fn spawn_sync_watcher(
     });
 }
 
+/// Apply saved input preferences before the listener accepts events.
+pub fn apply_input_preferences(settings: &crate::settings::AppSettings) {
+    crate::transcribe::set_hotkeys_listening(settings.hotkeys.hotkeys_enabled);
+    crate::sound::set_enabled(settings.preferences.dictation_sounds);
+    crate::media::set_enabled(settings.preferences.pause_media_on_dictation);
+}
+
 /// Watch the database for hotkey changes (written by any frontend)
 /// and restart the listener with pill hooks when they move.
 pub fn spawn_hotkey_watcher(
@@ -319,10 +326,8 @@ pub fn spawn_hotkey_watcher(
                 }
             }
             let settings = store.load_settings();
+            apply_input_preferences(&settings);
             let hotkeys = settings.hotkeys;
-            crate::transcribe::set_hotkeys_listening(hotkeys.hotkeys_enabled);
-            crate::sound::set_enabled(settings.preferences.dictation_sounds);
-            crate::media::set_enabled(settings.preferences.pause_media_on_dictation);
             let current = (
                 hotkeys
                     .effective_hotkeys()

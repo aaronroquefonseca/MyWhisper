@@ -172,10 +172,11 @@ fn run_headless(
     // the same hooks whenever the DB changes.
     let db_path = paths.db_file();
     let store = mywhisper::store::Store::open(&db_path).expect("open state.db");
-    let initial = store.load_settings().hotkeys;
+    let initial = store.load_settings();
+    mywhisper::service::apply_input_preferences(&initial);
     mywhisper::hotkey::start_dictation(
-        initial.effective_hotkeys(),
-        initial.smart_tap_ms,
+        initial.hotkeys.effective_hotkeys(),
+        initial.hotkeys.smart_tap_ms,
         down.clone(),
         up.clone(),
         cancel.clone(),
