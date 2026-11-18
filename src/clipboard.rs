@@ -6,7 +6,7 @@
 //! (`ydotool` package + running `ydotoold` + input group). The chord
 //! is configurable: Ctrl+Shift+V (default), Ctrl+V, Shift+Insert.
 
-use crate::settings::{CopyBackend, PasteBackend, PasteCombo, Preferences};
+use crate::settings::{PasteBackend, PasteCombo, Preferences};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -57,172 +57,145 @@ pub fn probe() -> BackendStatus {
     }
 }
 
-/// Current clipboard content with its MIME type. Text and binary
-/// (e.g. images) both survive the pipeline; anything beyond one
-/// MIME type degrades to text/plain-or-first (wl-copy serves one
-/// type per process, so multi-type offers can't be fully rebuilt).
-#[derive(Debug, Clone)]
-pub enum SavedClipboard {
-    Text(String),
-    Raw { mime: String, bytes: Vec<u8> },
-}
+/// One CLI call: program, args, stdin → stdout on success. Injected so
+/// tests drive the pipeline with fakes instead of the real clipboard.
+type Run<'a> = &'a mut dyn FnMut(&str, &[&str], Option<&[u8]>) -> Result<Vec<u8>, String>;
 
-/// Read helper with a timeout so a misbehaving selection owner
-/// can't stall dictation.
-fn paste_bytes(mime: Option<&str>) -> Option<Vec<u8>> {
-    if !have("wl-paste") {
-        return None;
+/// Real runner: bounded by `timeout` so a misbehaving selection owner
+/// or input daemon can't stall dictation; fails unless the command
+/// exits 0 (wl-copy forks its server only after taking the selection).
+fn exec(program: &str, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>, String> {
+    if !have(program) {
+        let pkg = match program {
+            "wl-copy" | "wl-paste" => "wl-clipboard",
+            other => other,
+        };
+        return Err(format!("{program} not found (install {pkg})"));
     }
     let mut cmd = Command::new("timeout");
-    cmd.args(["5", "wl-paste", "--no-newline"]);
-    if let Some(m) = mime {
-        cmd.args(["--type", m]);
-    }
-    let out = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() || out.stdout.is_empty() {
-        return None;
-    }
-    Some(out.stdout)
-}
-
-fn offered_types() -> Vec<String> {
-    let out = Command::new("timeout")
-        .args(["5", "wl-paste", "--list-types"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-    match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-/// Snapshot the current clipboard (text or binary) for later restore.
-pub fn save_clipboard() -> Option<SavedClipboard> {
-    let types = offered_types();
-    if types.is_empty() {
-        return None;
-    }
-    // Prefer text/plain when offered: cheapest and exact.
-    if types.iter().any(|t| t == "text/plain") {
-        return paste_bytes(Some("text/plain"))
-            .and_then(|b| String::from_utf8(b).ok())
-            .map(SavedClipboard::Text);
-    }
-    // Single non-text offer (e.g. image/png): keep raw bytes.
-    let mime = types.into_iter().next()?;
-    paste_bytes(Some(&mime)).map(|bytes| SavedClipboard::Raw { mime, bytes })
-}
-
-/// Put a snapshot back. Restored content is never marked sensitive:
-/// it was the user's normal clipboard before we borrowed it.
-pub fn restore_clipboard(saved: &SavedClipboard) -> Result<(), String> {
-    match saved {
-        SavedClipboard::Text(t) => copy_with(CopyBackend::WlCopy, t, false),
-        SavedClipboard::Raw { mime, bytes } => {
-            if !have("wl-copy") {
-                return Err("wl-copy not found (install wl-clipboard)".to_string());
-            }
-            let mut child = Command::new("wl-copy")
-                .args(["--type", mime, "--"])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|e| format!("spawn wl-copy: {e}"))?;
-            child
-                .stdin
-                .take()
-                .ok_or_else(|| "wl-copy stdin unavailable".to_string())?
-                .write_all(bytes)
-                .map_err(|e| format!("write clipboard: {e}"))?;
-            // wl-copy forks a server to hold the clipboard; the
-            // direct child exits fast. Reap without a dedicated
-            // thread per dictation (see `reap`).
-            reap(child);
-            Ok(())
-        }
+    cmd.arg("5").arg(program).args(args).stderr(Stdio::null());
+    cmd.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
+    // Only wl-paste prints; a piped stdout would also be inherited by
+    // wl-copy's forked server and block the read until it exits.
+    cmd.stdout(if program == "wl-paste" {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
+    let mut child = cmd.spawn().map_err(|e| format!("spawn {program}: {e}"))?;
+    // Pipe dropped at statement end → EOF; the child is reaped even if
+    // the write failed.
+    let wrote = match (stdin, child.stdin.take()) {
+        (Some(bytes), Some(mut pipe)) => pipe
+            .write_all(bytes)
+            .map_err(|e| format!("write {program}: {e}")),
+        (Some(_), None) => Err(format!("{program} stdin unavailable")),
+        (None, _) => Ok(()),
+    };
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("wait {program}: {e}"))?;
+    wrote?;
+    if out.status.success() {
+        Ok(out.stdout)
+    } else {
+        Err(format!("{program} failed ({})", out.status))
     }
 }
 
-/// Current clipboard text, if any. Used to restore the previous
-/// content when the transcription shouldn't stay in the clipboard.
-pub fn previous_text() -> Option<String> {
-    match save_clipboard() {
-        Some(SavedClipboard::Text(t)) => Some(t),
-        _ => None,
+/// MIME a password manager (or `wl-copy --sensitive`) adds so history
+/// managers skip the entry.
+const SENSITIVE_HINT: &str = "x-kde-passwordManagerHint";
+
+/// Text offers in preference order (XWayland apps use the X atoms).
+const TEXT_TYPES: [&str; 5] = [
+    "text/plain;charset=utf-8",
+    "text/plain",
+    "UTF8_STRING",
+    "STRING",
+    "TEXT",
+];
+
+/// Clipboard content saved for restore. `mime: None` = text (wl-copy
+/// re-offers every text alias). wl-copy serves one type per process,
+/// so a multi-type offer keeps only its text (or first real) type.
+#[derive(Debug, Clone, PartialEq)]
+struct Snapshot {
+    mime: Option<String>,
+    bytes: Vec<u8>,
+    sensitive: bool,
+}
+
+fn paste_type(run: Run, mime: &str) -> Option<Vec<u8>> {
+    run("wl-paste", &["--no-newline", "--type", mime], None)
+        .ok()
+        .filter(|b| !b.is_empty())
+}
+
+/// Snapshot the current clipboard. `None` = empty or unreadable; the
+/// restore then clears instead of leaving the transcript behind.
+fn snapshot(run: Run) -> Option<Snapshot> {
+    let listed = run("wl-paste", &["--list-types"], None).ok()?;
+    let types: Vec<String> = String::from_utf8_lossy(&listed)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let sensitive = types.iter().any(|t| t == SENSITIVE_HINT);
+    if let Some(t) = TEXT_TYPES.iter().find(|t| types.iter().any(|o| o == *t)) {
+        let bytes = paste_type(run, t)?;
+        return Some(Snapshot {
+            mime: None,
+            bytes,
+            sensitive,
+        });
     }
-}
-
-/// Write text to the Wayland clipboard.
-pub fn copy_text(text: &str, hide_from_history: bool) -> Result<(), String> {
-    copy_with(CopyBackend::WlCopy, text, hide_from_history)
-}
-
-fn copy_with(backend: CopyBackend, text: &str, hide: bool) -> Result<(), String> {
-    match backend {
-        CopyBackend::WlCopy => {
-            if !have("wl-copy") {
-                return Err("wl-copy not found (install wl-clipboard)".to_string());
-            }
-            let mut cmd = Command::new("wl-copy");
-            if hide {
-                // Sensitive hint: history managers skip such entries.
-                cmd.arg("--sensitive");
-            }
-            cmd.arg("--")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            let mut child = cmd.spawn().map_err(|e| format!("spawn wl-copy: {e}"))?;
-            child
-                .stdin
-                .take()
-                .ok_or_else(|| "wl-copy stdin unavailable".to_string())?
-                .write_all(text.as_bytes())
-                .map_err(|e| format!("write clipboard: {e}"))?;
-            // wl-copy forks a server to hold the clipboard; the
-            // direct child exits fast. Reap without a dedicated
-            // thread per dictation (see `reap`).
-            reap(child);
-            Ok(())
-        }
-    }
-}
-
-/// Reap a short-lived child. Pooled normally; a saturated system
-/// leaks one zombie (logged) instead of panicking.
-fn reap(child: std::process::Child) {
-    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
-    let s = slot.clone();
-    if crate::runtime::submit("reap", move || {
-        if let Ok(mut g) = s.lock()
-            && let Some(mut c) = g.take()
-        {
-            let _ = c.wait();
-        }
+    let mime = types
+        .into_iter()
+        .find(|t| t.contains('/') && t != SENSITIVE_HINT)?;
+    let bytes = paste_type(run, &mime)?;
+    Some(Snapshot {
+        mime: Some(mime),
+        bytes,
+        sensitive,
     })
-    .is_err()
-    {
-        eprintln!("[clipboard] saturated; leaking one wl-copy zombie");
+}
+
+fn wl_copy(run: Run, mime: Option<&str>, bytes: &[u8], sensitive: bool) -> Result<(), String> {
+    let mut args = Vec::new();
+    if sensitive {
+        // Sensitive hint: history managers skip such entries.
+        args.push("--sensitive");
     }
+    if let Some(m) = mime {
+        args.extend(["--type", m]);
+    }
+    args.push("--");
+    run("wl-copy", &args, Some(bytes)).map(|_| ())
+}
+
+/// Put a snapshot back (sensitive stays sensitive); nothing saved →
+/// clear, so the borrowed transcript never lingers.
+fn restore(run: Run, saved: Option<&Snapshot>) -> Result<(), String> {
+    match saved {
+        Some(s) => wl_copy(run, s.mime.as_deref(), &s.bytes, s.sensitive),
+        None => run("wl-copy", &["--clear"], None).map(|_| ()),
+    }
+}
+
+/// Write text to the Wayland clipboard; Ok only once wl-copy owns it.
+pub fn copy_text(text: &str, hide_from_history: bool) -> Result<(), String> {
+    wl_copy(&mut exec, None, text.as_bytes(), hide_from_history)
 }
 
 /// Inject the configured paste chord into the focused window.
-pub fn paste(backend: PasteBackend, combo: PasteCombo) -> Result<(), String> {
+fn paste(run: Run, backend: PasteBackend, combo: PasteCombo) -> Result<(), String> {
     match backend {
         PasteBackend::Wtype => {
-            if !have("wtype") {
-                return Err("wtype not found (install wtype)".to_string());
-            }
             let args: &[&str] = match combo {
                 PasteCombo::CtrlShiftV => &[
                     "-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl",
@@ -230,24 +203,9 @@ pub fn paste(backend: PasteBackend, combo: PasteCombo) -> Result<(), String> {
                 PasteCombo::CtrlV => &["-M", "ctrl", "-k", "v", "-m", "ctrl"],
                 PasteCombo::ShiftInsert => &["-M", "shift", "-k", "Insert", "-m", "shift"],
             };
-            Command::new("wtype")
-                .args(args)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map_err(|e| format!("spawn wtype: {e}"))
-                .and_then(|s| {
-                    if s.success() {
-                        Ok(())
-                    } else {
-                        Err("wtype failed".to_string())
-                    }
-                })
+            run("wtype", args, None).map(|_| ())
         }
         PasteBackend::Ydotool => {
-            if !have("ydotool") {
-                return Err("ydotool not found (install ydotool)".to_string());
-            }
             // `ydotool key` takes KEYCODE:STATE pairs (see
             // input-event-codes.h), NOT names: 29 ctrl, 42 shift,
             // 47 v, 110 insert. Unknown tokens are silently
@@ -260,19 +218,9 @@ pub fn paste(backend: PasteBackend, combo: PasteCombo) -> Result<(), String> {
             };
             let mut args = vec!["key"];
             args.extend(seq.split(' '));
-            Command::new("ydotool")
-                .args(&args)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map_err(|e| format!("spawn ydotool: {e} (is ydotoold running?)"))
-                .and_then(|s| {
-                    if s.success() {
-                        Ok(())
-                    } else {
-                        Err("ydotool failed (is ydotoold running?)".to_string())
-                    }
-                })
+            run("ydotool", &args, None)
+                .map(|_| ())
+                .map_err(|e| format!("{e} (is ydotoold running?)"))
         }
     }
 }
@@ -284,40 +232,53 @@ pub fn paste(backend: PasteBackend, combo: PasteCombo) -> Result<(), String> {
 /// - auto-paste on + keep off: save previous clipboard, copy,
 ///   inject chord, restore previous (target app already consumed
 ///   the paste). Never fails dictation, only reports.
+///
+/// PRIMARY is never written, so there is nothing to restore there.
 pub fn run_pipeline(text: &str, prefs: &Preferences) {
+    match deliver_with(&mut exec, text, prefs) {
+        Ok(msg) => eprintln!("[clipboard] {msg}"),
+        Err(e) => eprintln!("[clipboard] {e}"),
+    }
+}
+
+fn deliver_with(run: Run, text: &str, prefs: &Preferences) -> Result<&'static str, String> {
     if !prefs.auto_paste && !prefs.keep_transcription_in_clipboard {
-        return;
+        return Ok("nothing to do");
     }
-    let restore = if prefs.keep_transcription_in_clipboard {
-        None
-    } else {
-        save_clipboard()
-    };
-    if let Err(e) = copy_text(text, prefs.hide_from_history) {
-        eprintln!("[clipboard] copy failed: {e}");
-        return;
-    }
+    let borrowed = !prefs.keep_transcription_in_clipboard;
+    let saved = if borrowed { snapshot(run) } else { None };
+    // A borrowed transcript is transient: keep it out of history even
+    // when the user lets kept transcripts in.
+    wl_copy(
+        run,
+        None,
+        text.as_bytes(),
+        prefs.hide_from_history || borrowed,
+    )
+    .map_err(|e| format!("copy failed: {e}"))?;
     eprintln!("[clipboard] copied ({} chars)", text.len());
     if !prefs.auto_paste {
-        return;
+        return Ok("kept in clipboard");
     }
     // Let the hotkey release settle so its modifiers don't leak into
     // the injected chord.
     std::thread::sleep(Duration::from_millis(120));
-    if let Err(e) = paste(prefs.paste_backend, prefs.paste_combo) {
-        eprintln!("[clipboard] paste failed: {e} (text stays in clipboard)");
-        return;
-    }
+    paste(run, prefs.paste_backend, prefs.paste_combo)
+        .map_err(|e| format!("paste failed: {e} (text stays in clipboard)"))?;
     eprintln!("[clipboard] pasted via {:?}", prefs.paste_backend);
-    if let Some(prev) = restore {
-        // Target consumed the paste; give the user their clipboard back.
-        std::thread::sleep(Duration::from_millis(250));
-        if let Err(e) = restore_clipboard(&prev) {
-            eprintln!("[clipboard] restore failed: {e}");
-        } else {
-            eprintln!("[clipboard] previous clipboard restored");
-        }
+    if !borrowed {
+        return Ok("transcription kept in clipboard");
     }
+    // shortcut: a fixed delay, not proof the target read the paste;
+    // a consumption signal needs our own data-control client.
+    std::thread::sleep(Duration::from_millis(250));
+    // Restore only while we still own the clipboard: a newer copy wins.
+    // shortcut: check-then-set, a copy inside that window is overwritten.
+    if paste_type(run, "text/plain").as_deref() != Some(text.as_bytes()) {
+        return Ok("clipboard changed since paste; not restoring");
+    }
+    restore(run, saved.as_ref()).map_err(|e| format!("restore failed: {e}"))?;
+    Ok("previous clipboard restored")
 }
 
 #[cfg(test)]
@@ -329,5 +290,166 @@ mod tests {
         assert!(copy_backend_deps().contains("wl-copy"));
         assert!(paste_backend_deps(PasteBackend::Wtype).contains("wtype"));
         assert!(paste_backend_deps(PasteBackend::Ydotool).contains("ydotool"));
+    }
+
+    /// In-memory clipboard standing in for wl-copy/wl-paste/wtype.
+    #[derive(Default)]
+    struct Fake {
+        types: Vec<String>,
+        bytes: Vec<u8>,
+        calls: Vec<String>,
+        fail: Option<&'static str>,
+        /// User copy landing while the chord is injected.
+        on_paste: Option<(Vec<String>, Vec<u8>)>,
+    }
+
+    impl Fake {
+        fn holding(types: &[&str], bytes: &[u8]) -> Self {
+            Self {
+                types: types.iter().map(|t| t.to_string()).collect(),
+                bytes: bytes.to_vec(),
+                ..Self::default()
+            }
+        }
+
+        fn run(
+            &mut self,
+            program: &str,
+            args: &[&str],
+            stdin: Option<&[u8]>,
+        ) -> Result<Vec<u8>, String> {
+            self.calls.push(format!("{program} {}", args.join(" ")));
+            if self.fail == Some(program) {
+                return Err(format!("{program} failed"));
+            }
+            match (program, args) {
+                ("wl-paste", ["--list-types"]) if self.types.is_empty() => Err("empty".into()),
+                ("wl-paste", ["--list-types"]) => Ok(self.types.join("\n").into_bytes()),
+                ("wl-paste", [.., t]) if self.types.iter().any(|o| o == t) => {
+                    Ok(self.bytes.clone())
+                }
+                ("wl-paste", _) => Err("type not offered".into()),
+                ("wl-copy", ["--clear"]) => {
+                    self.types.clear();
+                    self.bytes.clear();
+                    Ok(Vec::new())
+                }
+                ("wl-copy", _) => {
+                    self.types = match args.iter().position(|a| *a == "--type") {
+                        Some(i) => vec![args[i + 1].to_string()],
+                        None => vec!["text/plain;charset=utf-8".into(), "text/plain".into()],
+                    };
+                    if args.contains(&"--sensitive") {
+                        self.types.push(SENSITIVE_HINT.into());
+                    }
+                    self.bytes = stdin.expect("wl-copy reads stdin").to_vec();
+                    Ok(Vec::new())
+                }
+                _ => {
+                    if let Some((types, bytes)) = self.on_paste.take() {
+                        self.types = types;
+                        self.bytes = bytes;
+                    }
+                    Ok(Vec::new())
+                }
+            }
+        }
+
+        fn deliver(&mut self, prefs: &Preferences) -> Result<&'static str, String> {
+            deliver_with(&mut |p, a, s| self.run(p, a, s), "dictated", prefs)
+        }
+
+        fn pasted(&self) -> bool {
+            self.calls.iter().any(|c| c.starts_with("wtype"))
+        }
+    }
+
+    fn borrowed(hide_from_history: bool) -> Preferences {
+        Preferences {
+            hide_from_history,
+            ..Preferences::default()
+        }
+    }
+
+    #[test]
+    fn failed_copy_never_pastes_the_old_clipboard() {
+        let mut fake = Fake::holding(&["text/plain"], b"old");
+        fake.fail = Some("wl-copy");
+        let err = fake.deliver(&borrowed(true)).unwrap_err();
+        assert!(err.starts_with("copy failed"), "{err}");
+        assert!(!fake.pasted());
+        assert_eq!(fake.bytes, b"old");
+    }
+
+    #[test]
+    fn failed_paste_reports_error() {
+        let mut fake = Fake::holding(&["text/plain"], b"old");
+        fake.fail = Some("wtype");
+        assert!(
+            fake.deliver(&borrowed(true))
+                .unwrap_err()
+                .starts_with("paste failed")
+        );
+    }
+
+    #[test]
+    fn borrowed_transcript_is_sensitive_and_text_restored() {
+        let mut fake = Fake::holding(&["text/html", "UTF8_STRING"], b"old");
+        assert_eq!(
+            fake.deliver(&borrowed(false)),
+            Ok("previous clipboard restored")
+        );
+        // Copied with the hint even though history hiding is off.
+        assert!(fake.calls.contains(&"wl-copy --sensitive --".to_string()));
+        assert_eq!(fake.bytes, b"old");
+        assert!(fake.types.contains(&"text/plain".to_string()));
+        assert!(!fake.types.contains(&SENSITIVE_HINT.to_string()));
+    }
+
+    #[test]
+    fn empty_clipboard_is_cleared_not_left_with_transcript() {
+        let mut fake = Fake::default();
+        assert_eq!(
+            fake.deliver(&borrowed(true)),
+            Ok("previous clipboard restored")
+        );
+        assert!(fake.calls.contains(&"wl-copy --clear".to_string()));
+        assert!(fake.types.is_empty() && fake.bytes.is_empty());
+    }
+
+    #[test]
+    fn binary_and_sensitive_offers_restore_as_they_were() {
+        let mut fake = Fake::holding(&["image/png", SENSITIVE_HINT], b"\x89PNG");
+        assert_eq!(
+            fake.deliver(&borrowed(true)),
+            Ok("previous clipboard restored")
+        );
+        assert_eq!(fake.types, ["image/png", SENSITIVE_HINT]);
+        assert_eq!(fake.bytes, b"\x89PNG");
+    }
+
+    #[test]
+    fn user_copy_during_delivery_is_not_overwritten() {
+        let mut fake = Fake::holding(&["text/plain"], b"old");
+        fake.on_paste = Some((vec!["text/plain".into()], b"newer".to_vec()));
+        assert_eq!(
+            fake.deliver(&borrowed(true)),
+            Ok("clipboard changed since paste; not restoring")
+        );
+        assert_eq!(fake.bytes, b"newer");
+    }
+
+    #[test]
+    fn kept_transcript_follows_history_setting_and_stays() {
+        let prefs = Preferences {
+            keep_transcription_in_clipboard: true,
+            hide_from_history: false,
+            ..Preferences::default()
+        };
+        let mut fake = Fake::holding(&["text/plain"], b"old");
+        assert_eq!(fake.deliver(&prefs), Ok("transcription kept in clipboard"));
+        assert!(fake.calls.contains(&"wl-copy --".to_string()));
+        assert_eq!(fake.bytes, b"dictated");
+        assert!(!fake.calls.iter().any(|c| c.contains("--list-types")));
     }
 }
