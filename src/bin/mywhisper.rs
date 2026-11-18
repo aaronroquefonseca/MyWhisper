@@ -187,7 +187,7 @@ fn run_headless(
         up.clone(),
         cancel.clone(),
     );
-    mywhisper::service::spawn_hotkey_watcher(db_path.clone(), down, up, cancel);
+    mywhisper::service::spawn_hotkey_watcher(db_path.clone(), &initial.hotkeys, down, up, cancel);
     mywhisper::service::spawn_stt_watcher(db_path.clone());
     mywhisper::service::spawn_pill_watcher(db_path.clone(), tx.clone());
     // Fixed task runtime first: every background job below flows

@@ -276,13 +276,24 @@ pub fn apply_input_preferences(settings: &crate::settings::AppSettings) {
 /// and restart the listener with pill hooks when they move.
 pub fn spawn_hotkey_watcher(
     db_path: PathBuf,
+    initial: &crate::settings::HotkeySettings,
     down: DictationHook,
     up: DictationHook,
     cancel: DictationHook,
 ) {
+    let signature = |settings: &crate::settings::HotkeySettings| {
+        (
+            settings
+                .effective_hotkeys()
+                .into_iter()
+                .map(|binding| (binding.combo, binding.mode))
+                .collect::<Vec<_>>(),
+            settings.smart_tap_ms,
+        )
+    };
+    // The service already started the listener with this snapshot.
+    let mut last = signature(initial);
     std::thread::spawn(move || {
-        let mut last: (Vec<(String, crate::settings::ActivationMode)>, u64) = (Vec::new(), 0);
-        let mut first = true;
         // Stale GUI commands from before this boot die unrun.
         if let Ok(store) = Store::open(&db_path) {
             let _ = store.take_server_cmd();
@@ -328,20 +339,10 @@ pub fn spawn_hotkey_watcher(
             let settings = store.load_settings();
             apply_input_preferences(&settings);
             let hotkeys = settings.hotkeys;
-            let current = (
-                hotkeys
-                    .effective_hotkeys()
-                    .iter()
-                    .map(|b| (b.combo.clone(), b.mode))
-                    .collect::<Vec<_>>(),
-                hotkeys.smart_tap_ms,
-            );
+            let current = signature(&hotkeys);
             if current != last {
-                last = current.clone();
-                if !first {
-                    eprintln!("[service] hotkeys changed, restarting listener");
-                }
-                first = false;
+                last = current;
+                eprintln!("[service] hotkeys changed, restarting listener");
                 crate::hotkey::start_dictation(
                     hotkeys.effective_hotkeys(),
                     hotkeys.smart_tap_ms,
