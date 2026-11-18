@@ -1360,9 +1360,10 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
             None => "-".to_string(),
         };
         sig.push_str(&format!(
-            "{}:{}:{};",
+            "{}:{}:{}:{};",
             m.id,
             stt::is_installed(&data_dir, m),
+            stt::has_stale_staging(&data_dir, m),
             phase
         ));
     }
@@ -1482,6 +1483,10 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
                         });
                     }
                     col.append(&retry);
+                    // Failed Bark installs keep staged files for reuse.
+                    if stt::has_stale_staging(&data_dir, m) {
+                        col.append(&model_delete_button(state, m.id));
+                    }
                 }
                 _ => {
                     let bar = gtk4::ProgressBar::new();
@@ -1527,20 +1532,7 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
                 }
                 card.append(&use_btn);
             }
-            let del = Button::with_label(tr("action.delete"));
-            {
-                let state = state.clone();
-                let id = m.id;
-                connect_download_delete(&del, move || {
-                    if let Some(data_dir) = state.db_path.parent()
-                        && let Some(entry) = stt::find_model(id)
-                    {
-                        return stt::delete_model(data_dir, entry);
-                    }
-                    Ok(())
-                });
-            }
-            card.append(&del);
+            card.append(&model_delete_button(state, m.id));
         } else {
             let dl_btn = Button::with_label(tr("action.download"));
             {
@@ -1556,9 +1548,28 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
                 });
             }
             card.append(&dl_btn);
+            if stt::has_stale_staging(&data_dir, m) {
+                card.append(&model_delete_button(state, m.id));
+            }
         }
         container.append(&card);
     }
+}
+
+/// Delete (with confirmation) an installed model, or a Bark model's
+/// staged files left by a failed or cancelled install.
+fn model_delete_button(state: &Rc<AppState>, id: &'static str) -> Button {
+    let del = Button::with_label(tr("action.delete"));
+    let state = state.clone();
+    connect_download_delete(&del, move || {
+        if let Some(data_dir) = state.db_path.parent()
+            && let Some(entry) = crate::stt::find_model(id)
+        {
+            return crate::stt::delete_model(data_dir, entry);
+        }
+        Ok(())
+    });
+    del
 }
 
 fn set_bar_state(bar: &gtk4::ProgressBar, dl: &crate::stt::DlSnapshot) {

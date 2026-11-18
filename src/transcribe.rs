@@ -408,11 +408,15 @@ fn bark_pack_for_dir(model_dir: &Path) -> Option<&'static stt::BarkPack> {
 /// Bark frontend: leading silence per the pack's eval condition
 /// (16 kHz samples), and sherpa's `<unk>` rendering removed (the
 /// reference decoding leaves it out). Other models pass through.
-fn bark_input(samples: &[f32], model_dir: &Path) -> Vec<f32> {
+/// Borrows the input when no pad applies (every non-Bark model).
+fn bark_input<'a>(samples: &'a [f32], model_dir: &Path) -> std::borrow::Cow<'a, [f32]> {
     let pad = bark_pack_for_dir(model_dir).map_or(0, |p| p.leading_silence_ms as usize * 16);
+    if pad == 0 {
+        return std::borrow::Cow::Borrowed(samples);
+    }
     let mut out = vec![0.0f32; pad];
     out.extend_from_slice(samples);
-    out
+    std::borrow::Cow::Owned(out)
 }
 
 fn bark_output(text: String, model_dir: &Path) -> String {
@@ -3839,9 +3843,9 @@ mod tests {
         let audio = [0.5f32; 10];
         assert_eq!(bark_input(&audio, bark).len(), 4_000 + 10);
         assert_eq!(bark_input(&audio, plus).len(), 4_000 + 10);
-        assert_eq!(bark_input(&audio, clean), audio);
-        assert_eq!(bark_input(&audio, para), audio);
-        assert_eq!(bark_input(&audio, foreign), audio);
+        for dir in [clean, para, foreign] {
+            assert!(matches!(bark_input(&audio, dir), std::borrow::Cow::Borrowed(s) if s == audio));
+        }
         assert_eq!(bark_output("hello <unk>".into(), bark), "hello");
         assert_eq!(bark_output("a <unk>  b".into(), clean), "a b");
         assert_eq!(bark_output("hello <unk>".into(), para), "hello <unk>");
@@ -3852,12 +3856,14 @@ mod tests {
         let entry = stt::find_model(id).unwrap();
         let dir = stt::model_dir(data, entry);
         std::fs::create_dir_all(&dir).unwrap();
-        for pin in stt::bark_pack(id).unwrap().files {
+        let pack = stt::bark_pack(id).unwrap();
+        for pin in pack.files {
             std::fs::File::create(dir.join(pin.name))
                 .unwrap()
                 .set_len(pin.bytes)
                 .unwrap();
         }
+        stt::write_bark_marker(&dir, pack).unwrap();
         dir
     }
 

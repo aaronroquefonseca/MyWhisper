@@ -155,3 +155,8 @@ ONNX int8 conversions by `velddev` pinned to exact commits. Each pack installs
 with its NOTICE, LICENSE and conversion README, and Settings shows the source,
 license, modification note and warranty disclaimer. The models are provided
 as-is, without warranties.
+
+Downgrading below the first Bark release: older builds read a Bark selection
+as NVIDIA. Saving any setting there drops the Bark choice, so after upgrading
+again NVIDIA stays selected; installed Bark packs remain on disk and can be
+chosen again from the Bark tab.

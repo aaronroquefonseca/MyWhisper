@@ -1353,6 +1353,25 @@ mod tests {
         assert_eq!(reloaded.stt.local_provider, LocalSttProvider::Bark);
         assert_eq!(reloaded.stt.bark_model, "bark-3.0-plus");
         assert_eq!(reloaded.stt.whisper_model, "small");
+
+        // A pre-Bark build that saves drops the fields it does not
+        // know. Documented downgrade outcome: the re-upgraded build
+        // loads NVIDIA with the default Bark id, nothing else lost.
+        let mut old_save: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let stt = old_save["stt"].as_object_mut().unwrap();
+        stt.remove("local_vendor");
+        stt.remove("bark_model");
+        store
+            .conn
+            .execute(
+                "UPDATE kv SET value = ?1 WHERE key = 'settings'",
+                [old_save.to_string()],
+            )
+            .unwrap();
+        let upgraded = store.load_settings();
+        assert_eq!(upgraded.stt.local_provider, LocalSttProvider::Nvidia);
+        assert_eq!(upgraded.stt.bark_model, "bark-3.0-clean");
+        assert_eq!(upgraded.stt.whisper_model, "small");
     }
 
     #[test]

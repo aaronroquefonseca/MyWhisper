@@ -621,9 +621,10 @@ pub fn model_dir(data_dir: &Path, entry: &ModelEntry) -> PathBuf {
 
 /// Whisper: the .bin exists and (when known) matches expected bytes.
 /// Parakeet: all required files exist under the model dir.
-/// Bark: every pinned file has its exact size. Hashes are checked by
-/// the installer before the pack dir appears (atomic rename), so a
-/// stat per file is enough here (called on every UI refresh).
+/// Bark: the installer's `.verified` marker matches every pinned
+/// file's current size + mtime (see `bark_fingerprint`). Hashes are
+/// checked by the installer before the pack dir appears, so a stat
+/// per file is enough here (called on every UI refresh).
 pub fn is_installed(data_dir: &Path, entry: &ModelEntry) -> bool {
     let dir = model_dir(data_dir, entry);
     match entry.kind {
@@ -637,11 +638,7 @@ pub fn is_installed(data_dir: &Path, entry: &ModelEntry) -> bool {
                 None => meta.len() > 0,
             }
         }
-        ModelKind::Bark => bark_pack(entry.id).is_some_and(|pack| {
-            pack.files.iter().all(|f| {
-                std::fs::metadata(dir.join(f.name)).is_ok_and(|m| m.is_file() && m.len() == f.bytes)
-            })
-        }),
+        ModelKind::Bark => bark_pack(entry.id).is_some_and(|pack| bark_pack_verified(&dir, pack)),
         ModelKind::Parakeet | ModelKind::Whistle => {
             entry.required_files.iter().all(|f| dir.join(f).exists())
         }
@@ -796,6 +793,52 @@ pub fn download_model(
 const BARK_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const BARK_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Marker the installer writes once every pinned file hashed clean.
+const BARK_MARKER: &str = ".verified";
+
+/// `name size mtime_ns` per pinned file; `None` when one is missing or
+/// has the wrong size. Any rewrite of a file (even same-size) moves its
+/// mtime, so a stale marker sends the pack back through the installer,
+/// which re-hashes the files on its worker thread and keeps good ones.
+fn bark_fingerprint(dir: &Path, pack: &BarkPack) -> Option<String> {
+    let mut out = String::new();
+    for pin in pack.files {
+        let meta = std::fs::metadata(dir.join(pin.name)).ok()?;
+        if !meta.is_file() || meta.len() != pin.bytes {
+            return None;
+        }
+        let mtime = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        out.push_str(&format!("{} {} {mtime}\n", pin.name, pin.bytes));
+    }
+    Some(out)
+}
+
+fn bark_pack_verified(dir: &Path, pack: &BarkPack) -> bool {
+    bark_fingerprint(dir, pack)
+        .is_some_and(|f| std::fs::read_to_string(dir.join(BARK_MARKER)).is_ok_and(|m| m == f))
+}
+
+/// Record `dir`'s current files as verified (installer, and tests that
+/// fake an install).
+pub(crate) fn write_bark_marker(dir: &Path, pack: &BarkPack) -> Result<(), String> {
+    let marker = bark_fingerprint(dir, pack).ok_or("bark marker: pack incomplete")?;
+    std::fs::write(dir.join(BARK_MARKER), marker).map_err(|e| format!("bark marker: {e}"))
+}
+
+/// Leftover staged Bark files (failed or cancelled install) that no
+/// running download owns; Settings offers to discard them.
+pub fn has_stale_staging(data_dir: &Path, entry: &ModelEntry) -> bool {
+    entry.kind == ModelKind::Bark
+        && bark_staging_dir(&model_dir(data_dir, entry)).exists()
+        && !download_state(entry.id)
+            .is_some_and(|d| matches!(d.phase, DlPhase::Downloading | DlPhase::Installing))
+}
+
 /// Verified files of an unfinished install, beside the final dir.
 fn bark_staging_dir(dest: &Path) -> PathBuf {
     let name = dest
@@ -815,7 +858,8 @@ fn sha256_hex(hasher: sha2::Sha256) -> String {
 }
 
 /// Whether `path` is exactly the pinned file (size, then SHA-256).
-fn matches_pin(path: &Path, pin: &PinnedFile) -> bool {
+/// A cancel mid-hash answers `false`; the caller checks the flag.
+fn matches_pin(path: &Path, pin: &PinnedFile, cancel: &AtomicBool) -> bool {
     use sha2::Digest;
     if !std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == pin.bytes) {
         return false;
@@ -826,6 +870,9 @@ fn matches_pin(path: &Path, pin: &PinnedFile) -> bool {
     let mut hasher = sha2::Sha256::new();
     let mut buf = [0u8; 65536];
     loop {
+        if cancel.load(Ordering::SeqCst) {
+            return false;
+        }
         match file.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => hasher.update(&buf[..n]),
@@ -851,6 +898,18 @@ fn download_bark_pack(
 ) -> Result<(), String> {
     let staging = bark_staging_dir(dest);
     std::fs::create_dir_all(&staging).map_err(|e| format!("mkdir: {e}"))?;
+    // A pack whose marker went stale: its files go back to staging so
+    // the loop below re-hashes them and refetches only what changed.
+    if dest.exists() {
+        for pin in pack.files {
+            let (from, to) = (dest.join(pin.name), staging.join(pin.name));
+            if from.is_file() && !to.exists() {
+                let _ = std::fs::rename(from, to);
+            }
+        }
+        std::fs::remove_dir_all(dest).map_err(|e| format!("replace old install: {e}"))?;
+    }
+    let cancelled = || cancel.load(Ordering::SeqCst);
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(BARK_CONNECT_TIMEOUT)
         .timeout(read_timeout)
@@ -859,8 +918,11 @@ fn download_bark_pack(
     let total = Some(pack.files.iter().map(|f| f.bytes).sum());
     let mut received = 0u64;
     for pin in pack.files {
+        if cancelled() {
+            return Err("cancelled".to_string());
+        }
         let path = staging.join(pin.name);
-        if matches_pin(&path, pin) {
+        if matches_pin(&path, pin, cancel) {
             received += pin.bytes;
             on_event(DownloadEvent::Progress { received, total });
             continue;
@@ -877,7 +939,7 @@ fn download_bark_pack(
         });
         if let Err(e) = fetched {
             let _ = std::fs::remove_file(&part);
-            return Err(if cancel.load(Ordering::SeqCst) {
+            return Err(if cancelled() {
                 "cancelled".to_string()
             } else {
                 e
@@ -885,8 +947,10 @@ fn download_bark_pack(
         }
     }
     on_event(DownloadEvent::Installing);
-    if dest.exists() {
-        std::fs::remove_dir_all(dest).map_err(|e| format!("replace old install: {e}"))?;
+    // The rename preserves mtimes, so the marker stays valid in `dest`.
+    write_bark_marker(&staging, pack)?;
+    if cancelled() {
+        return Err("cancelled".to_string());
     }
     std::fs::rename(&staging, dest).map_err(|e| format!("install: {e}"))?;
     on_event(DownloadEvent::Done);
@@ -1178,7 +1242,19 @@ mod tests {
                 .set_len(pin.bytes)
                 .unwrap();
         }
+        assert!(!is_installed(data.path(), entry), "no verified marker");
+        write_bark_marker(&dir, pack).unwrap();
         assert!(is_installed(data.path(), entry));
+        // Same size, rewritten: the mtime no longer matches the marker.
+        let tokens = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join("tokens.txt"))
+            .unwrap();
+        tokens
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+        assert!(!is_installed(data.path(), entry), "same-size rewrite");
+        write_bark_marker(&dir, pack).unwrap();
         std::fs::write(dir.join("tokens.txt"), b"").unwrap();
         assert!(!is_installed(data.path(), entry), "empty tokens.txt");
         std::fs::remove_file(dir.join("tokens.txt")).unwrap();
@@ -1344,6 +1420,76 @@ mod tests {
         assert_eq!(std::fs::read(dest.join("tokens.txt")).unwrap(), b"a 0\n");
         assert!(!staging.exists());
         assert!(leftover_parts(&dest).is_empty());
+        assert!(bark_pack_verified(&dest, &pack));
+
+        // A flipped byte (same size) invalidates the marker; reinstall
+        // re-hashes in place, keeps the encoder and refetches tokens.
+        use std::os::unix::fs::FileExt;
+        let tokens = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dest.join("tokens.txt"))
+            .unwrap();
+        tokens.write_all_at(b"z", 0).unwrap();
+        tokens
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+        assert!(!bark_pack_verified(&dest, &pack));
+        let base = serve(vec![("tokens.txt", Route::Body(b"a 0\n".to_vec()))]);
+        install(&dest, &pack, &base, &cancel).unwrap();
+        assert_eq!(std::fs::read(dest.join("tokens.txt")).unwrap(), b"a 0\n");
+        assert!(bark_pack_verified(&dest, &pack));
+    }
+
+    #[test]
+    fn bark_cancel_after_a_cached_file_does_not_publish() {
+        let root = tempfile::tempdir().unwrap();
+        let dest = root.path().join("bark").join("bark-fixture");
+        let staging = bark_staging_dir(&dest);
+        let pack = fixture_pack(vec![
+            pin("encoder.int8.onnx", b"weights"),
+            pin("tokens.txt", b"a 0\n"),
+        ]);
+        // Both files already staged and valid: no request is needed.
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("encoder.int8.onnx"), b"weights").unwrap();
+        std::fs::write(staging.join("tokens.txt"), b"a 0\n").unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        // Cancel lands right after the first cached file verifies.
+        let cb: DownloadCallback = Arc::new(move |_| flag.store(true, Ordering::SeqCst));
+        let err = download_bark_pack(
+            &dest,
+            &pack,
+            "http://127.0.0.1:9",
+            std::time::Duration::from_secs(1),
+            &cancel,
+            &cb,
+        )
+        .unwrap_err();
+        assert_eq!(err, "cancelled");
+        assert!(!dest.exists());
+        assert!(staging.join("encoder.int8.onnx").exists());
+
+        // Cancel after every file verified still blocks the publish.
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        let cb: DownloadCallback = Arc::new(move |ev| {
+            if matches!(ev, DownloadEvent::Progress { received, total } if Some(received) == total)
+            {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+        let err = download_bark_pack(
+            &dest,
+            &pack,
+            "http://127.0.0.1:9",
+            std::time::Duration::from_secs(1),
+            &cancel,
+            &cb,
+        )
+        .unwrap_err();
+        assert_eq!(err, "cancelled");
+        assert!(!dest.exists());
     }
 
     #[test]
@@ -1399,7 +1545,8 @@ mod tests {
             for pin in bark_pack(entry.id).unwrap().files {
                 assert!(matches_pin(
                     &model_dir(data.path(), entry).join(pin.name),
-                    pin
+                    pin,
+                    &cancel
                 ));
             }
         }
