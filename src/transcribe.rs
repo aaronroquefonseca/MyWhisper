@@ -203,34 +203,7 @@ pub fn plans_for(s: &SttSettings, data_dir: &Path) -> Result<Vec<(String, Plan)>
     let mut out = Vec::new();
     let mut errors = Vec::new();
     for entry in s.chain() {
-        let plan = match entry.kind {
-            crate::settings::SttEntryKind::Local => local_plan(s, data_dir),
-            crate::settings::SttEntryKind::SelfHosted => {
-                let url = entry.url.trim().trim_end_matches('/').to_string();
-                if url.is_empty() {
-                    Err("self-hosted URL is empty".to_string())
-                } else if entry.streaming && is_ws_url(&url) {
-                    // Streaming sherpa protocol (our sherpa-online
-                    // servers speak it, including spawned ones).
-                    // Never spawned here: foreign by definition.
-                    Ok(Plan::SelfHostedWs { url })
-                } else {
-                    Ok(Plan::CloudOpenAiCompat {
-                        base: url,
-                        key: entry.api_key.trim().to_string(),
-                        model: if entry.model.trim().is_empty() {
-                            "default".to_string()
-                        } else {
-                            entry.model.clone()
-                        },
-                        lang: s.language.clone(),
-                    })
-                }
-            }
-            crate::settings::SttEntryKind::Cloud => {
-                cloud_plan_for(&entry.provider, &entry.model, &entry.api_key, &s.language)
-            }
-        };
+        let plan = entry_plan(s, entry, data_dir);
         match plan {
             Ok(p) => out.push((entry.name.clone(), p)),
             Err(e) => errors.push(format!("{}: {e}", entry.name)),
@@ -244,6 +217,44 @@ pub fn plans_for(s: &SttSettings, data_dir: &Path) -> Result<Vec<(String, Plan)>
         });
     }
     Ok(out)
+}
+
+/// One chain entry's plan: the single routing rule shared by
+/// dictation and the settings Test button. Local entries resolve
+/// against the live local configuration (files verified).
+pub fn entry_plan(
+    s: &SttSettings,
+    entry: &crate::settings::SttChainEntry,
+    data_dir: &Path,
+) -> Result<Plan, String> {
+    match entry.kind {
+        crate::settings::SttEntryKind::Local => local_plan(s, data_dir),
+        crate::settings::SttEntryKind::SelfHosted => {
+            let url = entry.url.trim().trim_end_matches('/').to_string();
+            if url.is_empty() {
+                Err("self-hosted URL is empty".to_string())
+            } else if entry.streaming && is_ws_url(&url) {
+                // Streaming sherpa protocol (our sherpa-online
+                // servers speak it, including spawned ones).
+                // Never spawned here: foreign by definition.
+                Ok(Plan::SelfHostedWs { url })
+            } else {
+                Ok(Plan::CloudOpenAiCompat {
+                    base: url,
+                    key: entry.api_key.trim().to_string(),
+                    model: if entry.model.trim().is_empty() {
+                        "default".to_string()
+                    } else {
+                        entry.model.clone()
+                    },
+                    lang: s.language.clone(),
+                })
+            }
+        }
+        crate::settings::SttEntryKind::Cloud => {
+            cloud_plan_for(&entry.provider, &entry.model, &entry.api_key, &s.language)
+        }
+    }
 }
 
 fn cloud_plan_for(provider: &str, model: &str, key: &str, lang: &str) -> Result<Plan, String> {
@@ -912,6 +923,27 @@ fn whisper_binary(data_dir: &Path, backend: GpuBackendSetting) -> Result<PathBuf
         Ok(bin)
     } else {
         Err(missing(&format!("{want} runtime pack")))
+    }
+}
+
+/// The engine binary `plan` would start, checked without starting it
+/// (the settings Test uses this; dictation's `ensure_*` does the same).
+pub fn plan_runtime_ready(plan: &Plan, s: &SttSettings, data_dir: &Path) -> Result<(), String> {
+    match plan {
+        Plan::WhisperHttp { .. } => whisper_binary(data_dir, s.gpu_backend).map(drop),
+        Plan::SherpaOnline { .. } => sherpa_binary(
+            data_dir,
+            s.sherpa_backend,
+            "sherpa-onnx-online-websocket-server",
+        )
+        .map(drop),
+        Plan::SherpaOffline { .. } => sherpa_binary(
+            data_dir,
+            s.sherpa_backend,
+            "sherpa-onnx-offline-websocket-server",
+        )
+        .map(drop),
+        _ => Ok(()),
     }
 }
 
@@ -2061,6 +2093,31 @@ fn openai_dictionary_hint(base: &str, words: &[String]) -> Vec<(&'static str, St
         .collect()
 }
 
+/// Transcription endpoint for an OpenAI-compatible base, built from
+/// parsed path segments so the host and query are never rewritten: a
+/// path ending in a `...transcriptions` segment is used as-is,
+/// otherwise `v1/audio/transcriptions` is appended (`v1` once, even
+/// when the base already ends in it).
+pub fn openai_transcriptions_url(base: &str) -> Result<reqwest::Url, String> {
+    let mut url = reqwest::Url::parse(base.trim()).map_err(|e| format!("server URL: {e}"))?;
+    if url.cannot_be_a_base() {
+        return Err("server URL has no path".to_string());
+    }
+    // Work on the serialized path so an existing prefix keeps its exact
+    // encoding (`%20` stays `%20`) and inner slashes; only append.
+    let prefix = url.path().trim_end_matches('/').to_string();
+    let last = prefix.rsplit('/').next().unwrap_or("");
+    let path = if last.ends_with("transcriptions") {
+        prefix
+    } else if last == "v1" {
+        format!("{prefix}/audio/transcriptions")
+    } else {
+        format!("{prefix}/v1/audio/transcriptions")
+    };
+    url.set_path(&path);
+    Ok(url)
+}
+
 fn openai_compat_transcribe(
     base: &str,
     key: &str,
@@ -2070,13 +2127,7 @@ fn openai_compat_transcribe(
     wav: &[u8],
 ) -> Result<String, String> {
     let base = base.trim_end_matches('/');
-    let url = if base.ends_with("transcriptions") {
-        base.to_string()
-    } else {
-        format!("{base}/v1/audio/transcriptions")
-    };
-    // Some OpenAI-compatible servers live under /v1 already.
-    let url = url.replace("/v1/v1/", "/v1/");
+    let url = openai_transcriptions_url(base).map_err(|e| format!("cloud transcribe: {e}"))?;
     let boundary = "mywhispercloud";
     // "auto" = omit: the API auto-detects when no language is sent.
     let mut fields = vec![("model", model)];
@@ -2091,7 +2142,7 @@ fn openai_compat_transcribe(
         Some(("file", "audio.wav", "audio/wav", wav)),
     );
     let mut req = http_client()?
-        .post(&url)
+        .post(url)
         .header(
             "Content-Type",
             format!("multipart/form-data; boundary={boundary}"),
