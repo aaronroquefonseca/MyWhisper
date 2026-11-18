@@ -14,6 +14,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub const ENGINE_RATE: u32 = 16_000;
 /// Utterances shorter than this are dropped (key taps, mic blips).
 pub const MIN_SAMPLES_16K: usize = 4_800; // 0.3 s
+const MAX_CAPTURE_SECONDS: usize = 15 * 60;
+const MAX_CAPTURE_SAMPLES: usize = 64 * 1024 * 1024; // 128 MiB of PCM
+const MAX_CAPTURE_SLICES: usize = 512 * 1024;
 
 /// One utterance being captured. Every pushed slice is stamped
 /// with its arrival time so release can truncate the buffer at the
@@ -27,6 +30,7 @@ pub struct Recorder {
     rate: u32,
     consumed: usize,
     active: bool,
+    overflowed: bool,
 }
 
 impl Recorder {
@@ -36,14 +40,35 @@ impl Recorder {
         self.rate = rate;
         self.consumed = 0;
         self.active = true;
+        self.overflowed = false;
     }
 
     pub fn push(&mut self, samples: &[i16]) {
-        if self.active {
-            self.samples.extend_from_slice(samples);
-            self.ends
-                .push((self.samples.len(), std::time::Instant::now()));
+        if !self.active || samples.is_empty() {
+            return;
         }
+        let rate = if self.rate == 0 {
+            ENGINE_RATE
+        } else {
+            self.rate
+        };
+        let limit = (rate as usize)
+            .saturating_mul(MAX_CAPTURE_SECONDS)
+            .min(MAX_CAPTURE_SAMPLES);
+        let needed = self.samples.len().saturating_add(samples.len());
+        if needed > limit || self.ends.len() == MAX_CAPTURE_SLICES {
+            self.active = false;
+            self.overflowed = true;
+            return;
+        }
+        if needed > self.samples.capacity() {
+            // Grow geometrically without reserving past the PCM limit.
+            let capacity = needed.max(self.samples.capacity() * 2).min(limit);
+            self.samples.reserve_exact(capacity - self.samples.len());
+        }
+        self.samples.extend_from_slice(samples);
+        self.ends
+            .push((self.samples.len(), std::time::Instant::now()));
     }
 
     /// Samples appended since the last drain (streaming pumps).
@@ -58,10 +83,20 @@ impl Recorder {
         self.samples.clone()
     }
 
+    /// Copy only the part a streaming consumer has not read yet.
+    pub fn samples_since(&self, consumed: usize) -> Vec<i16> {
+        self.samples.get(consumed..).unwrap_or_default().to_vec()
+    }
+
+    pub fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
     /// Whole utterance at its capture rate; deactivates.
     pub fn finish(&mut self) -> (Vec<i16>, u32) {
         self.active = false;
         self.ends.clear();
+        self.consumed = 0;
         (std::mem::take(&mut self.samples), self.rate)
     }
 
@@ -75,10 +110,12 @@ impl Recorder {
     /// speech; its tail is milliseconds of room tone the VAD/file
     /// path trims and streaming ignores). Drops everything after.
     pub fn settle_release(&mut self, release: std::time::Instant) {
+        self.active = false;
         if let Some(pos) = self.ends.iter().position(|(_, t)| *t > release) {
             let end = self.ends[pos].0;
             self.samples.truncate(end);
             self.ends.truncate(pos + 1);
+            self.consumed = self.consumed.min(end);
         }
     }
 
@@ -334,11 +371,35 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(15));
         r.push(&[2i16; 100]); // straddler: kept
         r.push(&[3i16; 100]); // post-release: dropped
+        assert_eq!(r.drain_new().len(), 300);
         r.settle_release(t_release);
+        r.push(&[4i16; 100]);
         // Pre-release slice + straddler survive, later slice gone.
         assert_eq!(r.samples.len(), 200);
         assert!(r.samples.iter().take(100).all(|s| *s == 1));
         assert!(r.samples.iter().skip(100).all(|s| *s == 2));
+        assert!(r.drain_new().is_empty());
+        assert_eq!(r.samples_since(100), [2; 100]);
+        assert!(r.samples_since(300).is_empty());
+    }
+
+    #[test]
+    fn recorder_caps_capture_without_silently_accepting_partial_audio() {
+        let mut r = Recorder::default();
+        r.start(1);
+        r.push(&[1; MAX_CAPTURE_SECONDS]);
+        assert!(!r.overflowed());
+        assert_eq!(r.samples_since(MAX_CAPTURE_SECONDS - 1), [1]);
+        r.push(&[2]);
+        assert!(r.overflowed());
+        assert_eq!(r.len(), MAX_CAPTURE_SECONDS);
+        r.push(&[3]);
+        assert_eq!(r.samples_since(MAX_CAPTURE_SECONDS - 1), [1]);
+
+        r.start(1);
+        assert!(!r.overflowed());
+        r.push(&[4]);
+        assert_eq!(r.finish(), (vec![4], 1));
     }
 
     #[test]

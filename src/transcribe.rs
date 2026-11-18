@@ -3008,9 +3008,19 @@ impl Drop for WhistleStream {
     }
 }
 
+const CAPTURE_LIMIT_REACHED: &str = "recording exceeded the capture limit; no transcript produced";
+
+fn pending_audio(rec: &Mutex<Recorder>, consumed: usize) -> Result<(Vec<i16>, u32), String> {
+    let recorder = rec.lock().map_err(|_| "capture lock poisoned")?;
+    if recorder.overflowed() {
+        return Err(CAPTURE_LIMIT_REACHED.to_string());
+    }
+    Ok((recorder.samples_since(consumed), recorder.rate()))
+}
+
 /// Whistle FIFO pump: source-rate PCM straight to the live decoder
-/// (no resample — needle takes any rate). Snapshot feeding keeps the
-/// recorder whole for the file fallback.
+/// (no resample — needle takes any rate). Read only new samples and
+/// keep the recorder whole for the file fallback.
 fn pump_whistle(
     mut stream: WhistleStream,
     rec: Arc<Mutex<Recorder>>,
@@ -3034,26 +3044,19 @@ fn pump_whistle(
         if behind_secs <= 1.0 {
             std::thread::sleep(Duration::from_millis(200));
         }
-        // Snapshot, not drain: a failed stream falls back to file
-        // engines with the whole utterance intact.
-        let (snap_len, chunk, rate) = rec
-            .lock()
-            .map(|r| {
-                let snap = r.snapshot();
-                let chunk = if snap.len() > consumed {
-                    snap[consumed..].to_vec()
-                } else {
-                    Vec::new()
-                };
-                (snap.len(), chunk, r.rate())
-            })
-            .unwrap_or_default();
+        let (chunk, rate) = match pending_audio(&rec, consumed) {
+            Ok(pending) => pending,
+            Err(error) => {
+                let _ = tx.send(Err(error));
+                return;
+            }
+        };
         if chunk.is_empty() || rate == 0 {
             // Nothing new, or tap hasn't reported a rate yet: keep
             // the backlog for the next tick.
             continue;
         }
-        consumed = snap_len;
+        consumed += chunk.len();
         if let Err(e) = stream.feed(&chunk, rate) {
             let _ = tx.send(Err(e));
             return;
@@ -3072,22 +3075,15 @@ fn pump_whistle(
     // Settled audio only (see wait_settled): drain what the loop
     // missed past release before finalizing the stream.
     wait_settled(&settled);
-    {
-        let (chunk, rate) = rec
-            .lock()
-            .map(|r| {
-                let snap = r.snapshot();
-                let chunk = if snap.len() > consumed {
-                    snap[consumed..].to_vec()
-                } else {
-                    Vec::new()
-                };
-                (chunk, r.rate())
-            })
-            .unwrap_or_default();
+    let tail = pending_audio(&rec, consumed).and_then(|(chunk, rate)| {
         if !chunk.is_empty() && rate != 0 {
-            let _ = stream.feed(&chunk, rate);
+            stream.feed(&chunk, rate)?;
         }
+        Ok(())
+    });
+    if let Err(error) = tail {
+        let _ = tx.send(Err(error));
+        return;
     }
     let _ = tx.send(stream.finish());
 }
@@ -3471,6 +3467,19 @@ fn run_spec(
         .unwrap_or_default();
     let prompt = crate::textnorm::dictionary_prompt(&words, crate::textnorm::WHISPER_PROMPT_CHARS);
     let mut resampler: Option<(u32, Resampler)> = None;
+    let mut append_pending =
+        |consumed: &mut usize, buffer: &mut Vec<f32>| -> Result<bool, String> {
+            let (chunk, rate) = pending_audio(&rec, *consumed)?;
+            if chunk.is_empty() || rate == 0 {
+                return Ok(false);
+            }
+            if resampler.as_ref().map(|(r, _)| *r) != Some(rate) {
+                resampler = Some((rate, Resampler::new(rate)));
+            }
+            buffer.extend(resampler.as_mut().unwrap().1.process(&chunk));
+            *consumed += chunk.len();
+            Ok(true)
+        };
     let mut buffer: Vec<f32> = Vec::new();
     let mut consumed = 0usize;
     let mut prev_hyp = String::new();
@@ -3481,17 +3490,11 @@ fn run_spec(
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        let snap = rec.lock().map(|r| r.snapshot()).unwrap_or_default();
-        if snap.len() <= consumed {
-            continue;
+        match append_pending(&mut consumed, &mut buffer) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(_) => return,
         }
-        let rate = rec.lock().map(|r| r.rate()).unwrap_or(0);
-        if resampler.as_ref().map(|(r, _)| *r) != Some(rate) {
-            resampler = Some((rate, Resampler::new(rate.max(1))));
-        }
-        let fresh = resampler.as_mut().unwrap().1.process(&snap[consumed..]);
-        consumed = snap.len();
-        buffer.extend_from_slice(&fresh);
         if buffer.len() < SPEC_FIRST_PASS {
             continue;
         }
@@ -3515,17 +3518,8 @@ fn run_spec(
     // Settled audio only (see wait_settled): the tail decode covers
     // the utterance exactly up to release.
     wait_settled(&settled);
-    {
-        let snap = rec.lock().map(|r| r.snapshot()).unwrap_or_default();
-        if snap.len() > consumed {
-            let rate = rec.lock().map(|r| r.rate()).unwrap_or(0);
-            if resampler.as_ref().map(|(r, _)| *r) != Some(rate) {
-                resampler = Some((rate, Resampler::new(rate.max(1))));
-            }
-            if let Some(rs) = resampler.as_mut() {
-                buffer.extend_from_slice(&rs.1.process(&snap[consumed..]));
-            }
-        }
+    if append_pending(&mut consumed, &mut buffer).is_err() {
+        return;
     }
     let _ = tx.send((committed.0, committed.1, buffer));
 }
@@ -4003,13 +3997,14 @@ fn pump_online(
     let mut resampler: Option<(u32, Resampler)> = None;
     // Rate is learned from the tap; recreate the resampler if the
     // device changed mid-stream.
-    let mut feed = |chunk: Vec<i16>| -> Result<(), String> {
-        if chunk.is_empty() {
+    let mut feed = |consumed: &mut usize| -> Result<(), String> {
+        let (chunk, rate) = pending_audio(&rec, *consumed)?;
+        if chunk.is_empty() || rate == 0 {
             return Ok(());
         }
-        let rate = rec.lock().map(|r| r.rate()).unwrap_or(0);
+        *consumed += chunk.len();
         if resampler.as_ref().map(|(r, _)| *r) != Some(rate) {
-            resampler = Some((rate, Resampler::new(rate.max(1))));
+            resampler = Some((rate, Resampler::new(rate)));
         }
         let f32c = resampler.as_mut().unwrap().1.process(&chunk);
         if f32c.is_empty() {
@@ -4024,21 +4019,12 @@ fn pump_online(
         // backpressure paces us once caught up.
         let behind_secs = rec
             .lock()
-            .map(|r| (r.len().saturating_sub(consumed) as f64) / 16_000.0)
+            .map(|r| (r.len().saturating_sub(consumed) as f64) / f64::from(r.rate().max(1)))
             .unwrap_or(0.0);
         if behind_secs <= 1.0 {
             std::thread::sleep(Duration::from_millis(200));
         }
-        // Snapshot, not drain: a failed stream falls back to file
-        // engines with the whole utterance intact.
-        let snap = rec.lock().map(|r| r.snapshot()).unwrap_or_default();
-        let chunk = if snap.len() > consumed {
-            snap[consumed..].to_vec()
-        } else {
-            Vec::new()
-        };
-        consumed = snap.len();
-        if let Err(e) = feed(chunk) {
+        if let Err(e) = feed(&mut consumed) {
             let _ = tx.send(Err(e));
             return;
         }
@@ -4050,22 +4036,9 @@ fn pump_online(
         let _ = tx.send(Err("cancelled".to_string()));
         return;
     }
-    // Settled audio only (see wait_settled): the release tail is
-    // complete and truncated at release, so this snapshot is the
-    // whole utterance up to release — no torn tail, no extra wait.
+    // The release tail is settled and truncated before the final send.
     wait_settled(&settled);
-    let tail = rec
-        .lock()
-        .map(|r| {
-            let snap = r.snapshot();
-            if snap.len() > consumed {
-                snap[consumed..].to_vec()
-            } else {
-                Vec::new()
-            }
-        })
-        .unwrap_or_default();
-    if let Err(e) = feed(tail) {
+    if let Err(e) = feed(&mut consumed) {
         let _ = tx.send(Err(e));
         return;
     }
@@ -4223,7 +4196,7 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
         loop {
             let past = recorder
                 .lock()
-                .map(|r| r.last_stamp().map(|t| t > t_cut).unwrap_or(false))
+                .map(|r| r.overflowed() || r.last_stamp().is_some_and(|t| t > t_cut))
                 .unwrap_or(true);
             if past || waited >= cap_ms {
                 break;
@@ -4235,7 +4208,7 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
             .lock()
             .map(|mut r| r.settle_release(t_cut))
             .unwrap_or_default();
-        audio::set_recorder(None);
+        audio::clear_recorder_if(&recorder);
         settled.store(true, Ordering::Relaxed);
         let on_done = Arc::new(Mutex::new(on_done));
         let od = on_done.clone();
@@ -4298,6 +4271,18 @@ fn finish_session(
     sess: LiveUtterance,
     words: &[String],
 ) -> Result<Option<FinishedTranscript>, String> {
+    if sess
+        .recorder
+        .lock()
+        .map_err(|_| "capture lock poisoned")?
+        .overflowed()
+    {
+        sess.cancel.store(true, Ordering::Relaxed);
+        if let Some(spec) = &sess.spec {
+            spec.stop.store(true, Ordering::Relaxed);
+        }
+        return Err(CAPTURE_LIMIT_REACHED.to_string());
+    }
     let secs = sess.started.elapsed().as_secs_f64();
     // Accepted inference owns the engine for its duration (blocking
     // lease): reconciliation / warmups / keep-warm defer instead of
@@ -4350,7 +4335,7 @@ fn finish_session(
             Err(e) if e == "cancelled" => return Ok(None),
             Err(e) => {
                 // Stream failed mid-hold: the recorder is intact
-                // (snapshot pump), fall through to file engines.
+                // after streaming, so fall through to file engines.
                 eprintln!("[stt] stream failed ({e}); falling back to file");
             }
         }
@@ -4368,8 +4353,8 @@ fn finish_session(
     }
     // Speculative path: the spec thread owns a resampled buffer and
     // internal agreement; finalize only the unconfirmed tail. Joined
-    // BEFORE the recorder drains so its final snapshot holds the whole
-    // settled utterance. Any failure or empty result falls through to
+    // BEFORE the recorder drains so it can read all remaining settled
+    // samples. Any failure or empty result falls through to
     // the full recording + fallback chain.
     if let Some(spec) = sess.spec {
         spec.stop.store(true, Ordering::Relaxed);
@@ -11203,6 +11188,35 @@ mod tests {
                 port_override: Some(free_port()),
             },
         }
+    }
+
+    #[test]
+    fn capture_limit_rejects_preview_and_final_transcription() {
+        let root = tempfile::tempdir().unwrap();
+        let recorder = Arc::new(Mutex::new(Recorder::default()));
+        {
+            let mut capture = recorder.lock().unwrap();
+            capture.start(1);
+            capture.push(&[1; 1000]);
+        }
+        assert_eq!(
+            pending_audio(&recorder, 0).unwrap_err(),
+            CAPTURE_LIMIT_REACHED
+        );
+        let (_done_tx, done_rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let spec = SpecHandle {
+            stop: stop.clone(),
+            done_rx,
+        };
+        let sess = stopped_whisper_session(root.path(), recorder, spec, 9);
+        let cancel = sess.cancel.clone();
+        assert_eq!(
+            finish_session(sess, &[]).unwrap_err(),
+            CAPTURE_LIMIT_REACHED
+        );
+        assert!(stop.load(Ordering::Relaxed));
+        assert!(cancel.load(Ordering::Relaxed));
     }
 
     /// Finding: a speculative tail decode failing (ownership error after
