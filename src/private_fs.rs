@@ -27,17 +27,25 @@ fn lock_file(path: &Path) -> io::Result<File> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open(path)?;
-    if !file.metadata()?.is_file() {
+    let meta = file.metadata()?;
+    if !meta.is_file() {
         return Err(io::Error::other("private lock is not a regular file"));
     }
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    if meta.permissions().mode() & 0o7777 != 0o600 {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
     Ok(file)
 }
 
-#[cfg(test)]
-pub fn try_lock(path: &Path) -> io::Result<File> {
+pub(crate) fn try_lock(path: &Path) -> io::Result<File> {
     let file = lock_file(path)?;
     file.try_lock_exclusive()?;
+    Ok(file)
+}
+
+pub(crate) fn try_lock_shared(path: &Path) -> io::Result<File> {
+    let file = lock_file(path)?;
+    FileExt::try_lock_shared(&file)?;
     Ok(file)
 }
 

@@ -544,6 +544,11 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "opt.calm" => ("Calm", "Calma"),
         // Hotkeys capture UI
         "hotkeys.record" => ("Capture keys", "Capturar teclas"),
+        "hotkeys.suspending" => ("Pausing shortcuts…", "Pausando atajos…"),
+        "hotkeys.suspendfailed" => (
+            "Could not pause global shortcuts.",
+            "No se pudieron pausar los atajos globales.",
+        ),
         "hotkeys.recording" => ("Press keys… (Esc cancels)", "Pulsa teclas… (Esc cancela)"),
         "hotkeys.presskeys" => ("Press keys", "Pulsa teclas"),
         "hotkeys.invalidcombo" => (

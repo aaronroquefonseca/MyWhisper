@@ -548,6 +548,8 @@ pub enum PillCmd {
     Hide,
     /// Escape midway: hide at once, discard worker lands the row.
     Cancel,
+    /// The hotkey listener has stopped dispatching for this capture.
+    ShortcutCaptureReady([u8; 16]),
     /// Worker finished (success/empty/fail): hide if generation matches.
     Done(u64),
     Apply(crate::settings::PillPrefs),

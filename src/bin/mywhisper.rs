@@ -174,6 +174,12 @@ fn run_headless(
     let store = mywhisper::store::Store::open(&db_path).expect("open state.db");
     let initial = store.load_settings();
     mywhisper::service::apply_input_preferences(&initial);
+    mywhisper::hotkey::configure_capture_suspend(&paths.data_dir, {
+        let tx = tx.clone();
+        move |nonce| {
+            let _ = tx.send(PillCmd::ShortcutCaptureReady(nonce));
+        }
+    });
     mywhisper::hotkey::start_dictation(
         initial.hotkeys.effective_hotkeys(),
         initial.hotkeys.smart_tap_ms,
@@ -366,6 +372,13 @@ fn run_headless(
                                 }
                                 let _ = tx_done.send(PillCmd::Done(gen_at_cancel));
                             });
+                        }
+                        PillCmd::ShortcutCaptureReady(nonce) => {
+                            if let Err(error) =
+                                mywhisper::hotkey::acknowledge_capture_suspend(nonce)
+                            {
+                                eprintln!("[hotkey] capture acknowledgement: {error}");
+                            }
                         }
                         PillCmd::Done(gen_at_release) => {
                             // Completion race (Show arrived after send):

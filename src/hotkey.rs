@@ -21,6 +21,10 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+mod capture;
+pub(crate) use capture::CaptureRequest;
+pub use capture::{acknowledge_capture_suspend, configure_capture_suspend};
+
 /// Extensible action set. Only dictation exists today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HotkeyAction {
@@ -466,8 +470,10 @@ fn poll_events<D: KeyDevice>(
     held: &mut HeldKeys,
     watched: &mut [Watched],
     on_event: &BindingCallback,
-) {
+    dispatch: bool,
+) -> bool {
     let mut dead = Vec::new();
+    let mut pending = false;
     for (i, (path, dev)) in devices.iter_mut().enumerate() {
         let events = match dev.events() {
             Ok(events) => events,
@@ -478,6 +484,7 @@ fn poll_events<D: KeyDevice>(
                 continue;
             }
         };
+        pending |= !events.is_empty();
         for ev in events {
             let EventSummary::Key(_, key, value) = ev.destructure() else {
                 continue;
@@ -489,7 +496,7 @@ fn poll_events<D: KeyDevice>(
             };
             // Track physical releases during mute so an old held key
             // cannot leak into the next enabled period.
-            if !crate::transcribe::hotkeys_listening() {
+            if !dispatch || !crate::transcribe::hotkeys_listening() {
                 continue;
             }
             let pressed = value == 1;
@@ -527,6 +534,7 @@ fn poll_events<D: KeyDevice>(
         let (path, _) = devices.remove(i);
         disconnect_keyboard(&path, held, watched, on_event);
     }
+    pending
 }
 
 /// Blocking listener. Rereads the device dir every few seconds for
@@ -548,18 +556,36 @@ fn run_loop(
     let mut reported = false;
     let mut rescan_in = 0u32;
     let mut listening = crate::transcribe::hotkeys_listening();
+    let suspension = capture::SUSPENSION.get();
+    let mut suspended_before = false;
+    let mut notified = None;
     loop {
         if HOTKEY_GEN.load(Ordering::SeqCst) != generation {
             on_event(HotkeyEvent::Cancel, None);
             return; // superseded
         }
+        // Hold the shared lock through dispatch. Settings acquires an
+        // exclusive lock before asking this loop to stop accepting keys.
+        let capture_gate = suspension.map(|s| crate::private_fs::try_lock_shared(&s.path));
+        let suspended = capture_gate.as_ref().is_some_and(Result::is_err);
         update_listening(
-            crate::transcribe::hotkeys_listening(),
+            !suspended && crate::transcribe::hotkeys_listening(),
             &mut listening,
             &mut watched,
             &on_event,
         );
-        if rescan_in == 0 {
+        if suspended {
+            if let Some(suspension) = suspension
+                && let Some(nonce) = suspension.request()
+                && notified != Some(nonce)
+            {
+                (suspension.ready)(nonce);
+                notified = Some(nonce);
+            }
+        } else {
+            notified = None;
+        }
+        if rescan_in == 0 && !watched.is_empty() {
             let (found, denied) = open_keyboards();
             // Merge by node path: keep existing fds (with their
             // kernel-buffered events and held state), add only new
@@ -594,8 +620,17 @@ fn run_loop(
             }
             rescan_in = 100; // ~5s at 50ms polls
         }
-        rescan_in -= 1;
-        poll_events(&mut devices, &mut held, &mut watched, &on_event);
+        rescan_in = rescan_in.saturating_sub(1);
+        // Captured keys may still be queued when Settings ends recording.
+        // Resume dispatch only after draining the buffered events.
+        let pending = poll_events(
+            &mut devices,
+            &mut held,
+            &mut watched,
+            &on_event,
+            !suspended && !suspended_before,
+        );
+        suspended_before = suspended || (suspended_before && pending);
         // Watchdog: a Push hold wedged by a lost release is
         // force-released instead of sticking dictation on forever.
         for (binding, w) in watched.iter_mut().enumerate() {
@@ -609,6 +644,7 @@ fn run_loop(
                 on_event(HotkeyEvent::Up(w.action, w.mode), Some(binding));
             }
         }
+        drop(capture_gate);
         std::thread::sleep(Duration::from_millis(50));
     }
 }
@@ -662,7 +698,9 @@ fn start_with_bindings(
     }
     if watched.is_empty() {
         eprintln!("[hotkey] no valid bindings, listener idle");
-        return;
+        if capture::SUSPENSION.get().is_none() {
+            return;
+        }
     }
     // Dedicated loop: Builder-based so saturation logs instead of
     // panicking the caller (which may be the GTK-adjacent watcher).
@@ -794,30 +832,6 @@ pub fn start_dictation(
     let on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static> =
         Arc::new(|st| eprintln!("[hotkey] status: {st:?}"));
     start_with_bindings(map, on_event, on_status);
-}
-
-/// Log-only hooks for standalone GUI mode (no pill in this process).
-fn log_hooks() -> (DictationHook, DictationHook, DictationHook) {
-    (
-        Arc::new(|| eprintln!("[hotkey] dictation START (pipeline hook)")),
-        Arc::new(|| eprintln!("[hotkey] dictation STOP (pipeline hook)")),
-        Arc::new(|| eprintln!("[hotkey] dictation CANCEL (pipeline hook)")),
-    )
-}
-
-/// (Re)start the listener from live settings with log-only hooks.
-/// Standalone GUI mode uses this; the service passes pill hooks to
-/// `start_dictation` instead.
-pub fn apply_from_settings(state: &crate::app::AppState) {
-    let hotkeys = state.settings.borrow().hotkeys.clone();
-    let (down, up, cancel) = log_hooks();
-    start_dictation(
-        hotkeys.dictation_hotkeys,
-        hotkeys.smart_tap_ms,
-        down,
-        up,
-        cancel,
-    );
 }
 
 #[cfg(test)]
@@ -1064,6 +1078,54 @@ mod tests {
     }
 
     #[test]
+    fn draining_capture_keys_never_dispatches_the_recorded_shortcut() {
+        use crate::settings::ActivationMode::Push;
+
+        let press = evdev::InputEvent::new(EventType::KEY.0, KeyCode::KEY_F13.0, 1);
+        let release = evdev::InputEvent::new(EventType::KEY.0, KeyCode::KEY_F13.0, 0);
+        let mut devices = vec![(
+            PathBuf::from("keyboard"),
+            SyntheticKeyboard(
+                [vec![press], vec![release], Vec::new(), vec![press, release]].into(),
+            ),
+        )];
+        let mut held = HeldKeys::default();
+        let mut watched = [Watched {
+            action: HotkeyAction::DictationToggle,
+            combo: parse_combo("F13").unwrap(),
+            mode: Push,
+            press: None,
+        }];
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let callback: BindingCallback = Arc::new(move |event, _| sink.lock().unwrap().push(event));
+        assert!(poll_events(
+            &mut devices,
+            &mut held,
+            &mut watched,
+            &callback,
+            false
+        ));
+        assert!(poll_events(
+            &mut devices,
+            &mut held,
+            &mut watched,
+            &callback,
+            false
+        ));
+        assert!(!poll_events(
+            &mut devices,
+            &mut held,
+            &mut watched,
+            &callback,
+            false
+        ));
+        assert!(seen.lock().unwrap().is_empty());
+        poll_events(&mut devices, &mut held, &mut watched, &callback, true);
+        assert_edges(&seen.lock().unwrap());
+    }
+
+    #[test]
     fn held_modifier_chord_only_rearms_on_a_required_press() {
         use crate::settings::ActivationMode::Push;
 
@@ -1093,9 +1155,9 @@ mod tests {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = seen.clone();
         let callback: BindingCallback = Arc::new(move |event, _| sink.lock().unwrap().push(event));
-        poll_events(&mut devices, &mut held, &mut watched, &callback);
+        poll_events(&mut devices, &mut held, &mut watched, &callback, true);
         assert!(seen.lock().unwrap().is_empty());
-        poll_events(&mut devices, &mut held, &mut watched, &callback);
+        poll_events(&mut devices, &mut held, &mut watched, &callback, true);
         assert_eq!(
             *seen.lock().unwrap(),
             [HotkeyEvent::Down(HotkeyAction::DictationToggle, Push)]
@@ -1140,8 +1202,8 @@ mod tests {
         let on_event: BindingCallback =
             Arc::new(move |event, index| sink.lock().unwrap().push((event, index)));
 
-        poll_events(&mut devices, &mut held, &mut watched, &on_event);
-        poll_events(&mut devices, &mut held, &mut watched, &on_event);
+        poll_events(&mut devices, &mut held, &mut watched, &on_event, true);
+        poll_events(&mut devices, &mut held, &mut watched, &on_event, true);
         assert!(held.all.contains(&ctrl));
         assert!(held.all.contains(&trigger));
         assert_eq!(
@@ -1156,7 +1218,7 @@ mod tests {
         disconnect_keyboard(&primary, &mut held, &mut watched, &on_event);
         assert!(held.all.is_empty());
         assert!(watched[0].press.is_none());
-        poll_events(&mut devices, &mut held, &mut watched, &on_event);
+        poll_events(&mut devices, &mut held, &mut watched, &on_event, true);
         assert_eq!(
             *seen.lock().unwrap(),
             [
@@ -1177,7 +1239,7 @@ mod tests {
                 SyntheticKeyboard([vec![key(ctrl, 1)]].into()),
             ),
         );
-        poll_events(&mut devices, &mut held, &mut watched, &on_event);
+        poll_events(&mut devices, &mut held, &mut watched, &on_event, true);
         devices.remove(0);
         disconnect_keyboard(&modifier, &mut held, &mut watched, &on_event);
         assert_eq!(
@@ -1269,7 +1331,13 @@ mod tests {
         let record_edge = callback.clone();
         let binding_callback: BindingCallback = Arc::new(move |event, _| record_edge(event));
         for _ in 0..4 {
-            poll_events(&mut devices, &mut held, &mut watched, &binding_callback);
+            poll_events(
+                &mut devices,
+                &mut held,
+                &mut watched,
+                &binding_callback,
+                true,
+            );
         }
         assert_edges(&seen.lock().unwrap());
         if std::env::var_os("MYWHISPER_NATIVE_HOTKEY_GATE").is_some() {
