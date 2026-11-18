@@ -1328,7 +1328,12 @@ fn refill_hotkey_list(list: &GtkBox, state: &Rc<AppState>, persist: &Rc<dyn Fn()
 // cancels.
 
 /// Canonical modifier slot: 0 Ctrl, 1 Alt, 2 Shift, 3 Super.
-fn capture_modifier(key: gtk4::gdk::Key) -> Option<usize> {
+fn capture_modifier(key: gtk4::gdk::Key, keycode: u32) -> Option<usize> {
+    if let Some(code) = keycode.checked_sub(8) {
+        return u16::try_from(code)
+            .ok()
+            .and_then(crate::hotkey::modifier_slot_for_evdev_code);
+    }
     use gtk4::gdk::Key as K;
     if key == K::Control_L || key == K::Control_R {
         Some(0)
@@ -1348,38 +1353,14 @@ fn capture_modifier(key: gtk4::gdk::Key) -> Option<usize> {
     }
 }
 
-/// Map a GDK key to our combo token vocabulary (same strings
-/// `hotkey::parse_combo` accepts). `None` = unsupported key;
-/// modifiers return `None` here (handled as modifiers, not keys).
-fn capture_token(key: gtk4::gdk::Key) -> Option<String> {
-    if capture_modifier(key).is_some() {
-        return None;
-    }
-    let name = key.name()?.to_string();
-    let upper = name.to_ascii_uppercase().replace('_', "");
-    // F-keys and well-known names pass through normalized.
-    const KNOWN: &[&str] = &[
-        "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14",
-        "F15", "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24", "TAB", "UP", "DOWN",
-        "LEFT", "RIGHT", "HOME", "END", "INSERT", "DELETE", "PAGEUP", "PAGEDOWN",
-    ];
-    if KNOWN.contains(&upper.as_str()) {
-        return Some(upper);
-    }
-    match upper.as_str() {
-        "SPACE" => Some("Space".to_string()),
-        "RETURN" => Some("Enter".to_string()),
-        "BACKSPACE" => Some("Backspace".to_string()),
-        "ESCAPE" => Some("Escape".to_string()),
-        _ if name.len() == 1 => {
-            let c = name.chars().next().unwrap();
-            Some(if c.is_ascii_alphabetic() {
-                c.to_ascii_uppercase().to_string()
-            } else {
-                c.to_string()
-            })
-        }
-        _ => None,
+/// Use the physical key when GTK supplied one. Keyvals are a fallback
+/// only for events without a hardware keycode.
+fn capture_token(key: gtk4::gdk::Key, keycode: u32) -> Option<&'static str> {
+    match keycode.checked_sub(8) {
+        Some(code) => u16::try_from(code)
+            .ok()
+            .and_then(crate::hotkey::token_for_evdev_code),
+        None => crate::hotkey::canonical_key_token(key.name()?.as_str()),
     }
 }
 
@@ -1539,32 +1520,24 @@ fn attach_hotkey_capture(
                     cap.pressed.borrow_mut()[slot] = true;
                 }
             }
-            if let Some(slot) = capture_modifier(key) {
+            if let Some(slot) = capture_modifier(key, keycode) {
                 cap.held.borrow_mut()[slot] = true;
                 cap.pressed.borrow_mut()[slot] = true;
                 cap.live_label();
                 return gtk4::glib::Propagation::Stop;
             }
             // Bare Escape (nothing held) cancels.
-            use gtk4::gdk::Key as K;
             let held = *cap.held.borrow();
-            if key == K::Escape && !held.iter().any(|h| *h) {
+            let token = capture_token(key, keycode);
+            if token == Some("Escape") && !held.iter().any(|h| *h) {
                 cap.stop();
                 crate::hotkey::apply_from_settings(&state);
                 return gtk4::glib::Propagation::Stop;
             }
-            // Hardware keycode first (XKB keycode = evdev + 8): this is
-            // the same vocabulary the listener uses, immune to layout
-            // keysyms like XF86Tools-on-an-F13-key. Keyval name only
-            // as fallback.
-            let token = keycode
-                .checked_sub(8)
-                .and_then(|c| crate::hotkey::token_for_evdev_code(c as u16).map(str::to_string))
-                .or_else(|| capture_token(key));
             eprintln!("[hotkey] capture saw keycode={keycode} token={token:?}");
             match token {
                 Some(token) => {
-                    let combo = combo_string(&held, Some(&token));
+                    let combo = combo_string(&held, Some(token));
                     let mode = match add_mode.selected() {
                         1 => crate::settings::ActivationMode::Tap,
                         2 => crate::settings::ActivationMode::Smart,
@@ -1585,11 +1558,11 @@ fn attach_hotkey_capture(
         let list = list.clone();
         let persist = persist.clone();
         let add_mode = add_mode.clone();
-        ctl.connect_key_released(move |_, key, _, _| {
+        ctl.connect_key_released(move |_, key, keycode, _| {
             if !cap.capturing.get() {
                 return;
             }
-            if let Some(slot) = capture_modifier(key) {
+            if let Some(slot) = capture_modifier(key, keycode) {
                 cap.held.borrow_mut()[slot] = false;
                 // All modifiers released with no regular key seen:
                 // finalize a modifier-only combo.
@@ -5342,6 +5315,7 @@ mod tests {
     fn shortcut_conflicts_use_parsed_keys_instead_of_spelling() {
         assert!(same_shortcut("ctrl+alt+d", "Alt+Control+D"));
         assert!(same_shortcut("Super+Ctrl", "Control+Super"));
+        assert!(same_shortcut("Ctrl+Minus", "Control+-"));
         assert!(!same_shortcut("F13", "F14"));
         assert!(!same_shortcut("", ""));
         assert!(!same_shortcut("Ctrl+D", "Ctrl+Shift+D"));
@@ -5367,16 +5341,21 @@ mod tests {
     #[test]
     fn capture_maps_keys_to_combo_tokens() {
         use gtk4::gdk::Key as K;
-        assert_eq!(capture_modifier(K::Control_L), Some(0));
-        assert_eq!(capture_modifier(K::Super_R), Some(3));
-        assert_eq!(capture_modifier(K::F13), None);
-        assert_eq!(capture_token(K::F13).as_deref(), Some("F13"));
-        assert_eq!(capture_token(K::space).as_deref(), Some("Space"));
-        assert_eq!(capture_token(K::Return).as_deref(), Some("Enter"));
-        // Single chars normalize to uppercase.
-        assert_eq!(capture_token(K::d).as_deref(), Some("D"));
-        // Modifiers are not keys.
-        assert_eq!(capture_token(K::Shift_L), None);
+        assert_eq!(capture_modifier(K::Control_L, 0), Some(0));
+        assert_eq!(capture_modifier(K::Super_R, 0), Some(3));
+        assert_eq!(capture_modifier(K::F13, 0), None);
+        assert_eq!(capture_token(K::F13, 0), Some("F13"));
+        assert_eq!(capture_token(K::space, 0), Some("Space"));
+        assert_eq!(capture_token(K::Return, 0), Some("Enter"));
+        assert_eq!(capture_token(K::d, 0), Some("D"));
+        assert_eq!(capture_token(K::Shift_L, 0), None);
+        // Use the physical key even when its symbol differs by layout.
+        assert_eq!(capture_token(K::z, 38), Some("A"));
+        assert_eq!(capture_token(K::z, 54), Some("C"));
+        assert_eq!(capture_modifier(K::z, 62), Some(2));
+        assert_eq!(capture_modifier(K::ISO_Level3_Shift, 108), Some(1));
+        assert_eq!(capture_token(K::a, u32::MAX), None);
+        assert_eq!(capture_token(K::a, 8), None);
         // Every emitted token must survive the listener parser.
         for token in ["F13", "Space", "Enter", "D", "Escape", "Tab"] {
             let combo = combo_string(&[true, false, true, false], Some(token));
