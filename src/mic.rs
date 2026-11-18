@@ -253,6 +253,19 @@ where
     out.store((rms * 8.0).clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
 }
 
+fn downmix_cpal<T: Copy>(
+    input: &[T],
+    channels: usize,
+    to_pcm: impl Fn(T) -> i16,
+    mono: &mut Vec<i16>,
+) {
+    mono.clear();
+    mono.extend(input.chunks_exact(channels).map(|frame| {
+        let sum: i32 = frame.iter().map(|&sample| i32::from(to_pcm(sample))).sum();
+        (sum / channels as i32) as i16
+    }));
+}
+
 impl CpalMic {
     /// Open the default input device (fallback when parec is
     /// unavailable; the server routes the default source).
@@ -274,6 +287,11 @@ impl CpalMic {
 
         let level_bits = Arc::new(AtomicU32::new(0.0f32.to_bits()));
         let rate = cfg.sample_rate();
+        let channels = usize::from(cfg.channels());
+        if channels == 0 {
+            return Err("input device has no channels".to_string());
+        }
+        let mut mono = Vec::new();
         let stream = match cfg.sample_format() {
             cpal::SampleFormat::F32 => {
                 let bits = level_bits.clone();
@@ -281,12 +299,13 @@ impl CpalMic {
                     cfg.into(),
                     move |data: &[f32], _| {
                         push_rms(data, &bits);
-                        // f32 [-1,1] -> s16 for the capture tap.
-                        let pcm: Vec<i16> = data
-                            .iter()
-                            .map(|s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
-                            .collect();
-                        tap_samples(&pcm, rate);
+                        downmix_cpal(
+                            data,
+                            channels,
+                            |sample| (sample.clamp(-1.0, 1.0) * 32767.0) as i16,
+                            &mut mono,
+                        );
+                        tap_samples(&mono, rate);
                     },
                     |e| eprintln!("[poc] mic stream error: {e}"),
                     None,
@@ -298,7 +317,12 @@ impl CpalMic {
                     cfg.into(),
                     move |data: &[i16], _| {
                         push_rms(data, &bits);
-                        tap_samples(data, rate);
+                        if channels == 1 {
+                            tap_samples(data, rate);
+                        } else {
+                            downmix_cpal(data, channels, |sample| sample, &mut mono);
+                            tap_samples(&mono, rate);
+                        }
                     },
                     |e| eprintln!("[poc] mic stream error: {e}"),
                     None,
@@ -310,9 +334,13 @@ impl CpalMic {
                     cfg.into(),
                     move |data: &[u16], _| {
                         push_rms(data, &bits);
-                        let pcm: Vec<i16> =
-                            data.iter().map(|s| (*s as i32 - 32768) as i16).collect();
-                        tap_samples(&pcm, rate);
+                        downmix_cpal(
+                            data,
+                            channels,
+                            |sample| (i32::from(sample) - 32768) as i16,
+                            &mut mono,
+                        );
+                        tap_samples(&mono, rate);
                     },
                     |e| eprintln!("[poc] mic stream error: {e}"),
                     None,
@@ -573,6 +601,27 @@ impl Default for MicInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cpal_interleaved_frames_keep_duration_and_order() {
+        let mut mono = Vec::new();
+        downmix_cpal(&[500i16, 1500, -2000, 1000], 2, |sample| sample, &mut mono);
+        assert_eq!(mono, [1000, -500]);
+        downmix_cpal(
+            &[1.0f32, -1.0, 0.0, 1.0, 1.0, 1.0],
+            3,
+            |sample| (sample * 32767.0) as i16,
+            &mut mono,
+        );
+        assert_eq!(mono, [0, 32767]);
+        downmix_cpal(
+            &[32768u16, 32768, 32768, 65535, 65535, 65535],
+            3,
+            |sample| (i32::from(sample) - 32768) as i16,
+            &mut mono,
+        );
+        assert_eq!(mono, [0, 32767]);
+    }
 
     /// Built-in picker: onboard names win, USB/HDMI lose.
     #[test]
