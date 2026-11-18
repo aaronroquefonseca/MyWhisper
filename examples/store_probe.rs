@@ -3,6 +3,21 @@
 use mywhisper::{device::DeviceIdentity, paths::AppPaths, store::Store};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
+fn secret_service() -> Result<dbus_secret_service::SecretService, dbus_secret_service::Error> {
+    dbus_secret_service::SecretService::connect(dbus_secret_service::EncryptionType::Dh)
+}
+
+fn key_attributes() -> std::collections::HashMap<&'static str, &'static str> {
+    std::collections::HashMap::from([("service", "mywhisper"), ("username", "state-db")])
+}
+
+/// Unlocked database-key items, matched like the app's own lookup.
+fn key_items(
+    service: &dbus_secret_service::SecretService,
+) -> Result<Vec<dbus_secret_service::Item<'_>>, dbus_secret_service::Error> {
+    Ok(service.search_items(key_attributes())?.unlocked)
+}
+
 struct ProbeShutdown(std::path::PathBuf);
 impl Drop for ProbeShutdown {
     fn drop(&mut self) {
@@ -74,15 +89,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             store.checkpoint()?;
         }
         Some("missing-key-recovery") => {
-            let entry = keyring::Entry::new("mywhisper", "state-db")?;
-            let secret = entry.get_password()?;
-            entry.delete_credential()?;
+            let service = secret_service()?;
+            let [item] = <[_; 1]>::try_from(key_items(&service)?)
+                .map_err(|_| "expected exactly one database key")?;
+            let secret = item.get_secret()?;
+            item.delete()?;
             assert!(Store::open(&paths.db_file()).is_err());
             assert!(
-                matches!(entry.get_password(), Err(keyring::Error::NoEntry)),
+                key_items(&service)?.is_empty(),
                 "failed open must not create a replacement key"
             );
-            entry.set_password(&secret)?;
+            service.get_default_collection()?.create_item(
+                "keyring:state-db@mywhisper",
+                key_attributes(),
+                &secret,
+                false,
+                "text/plain; charset=utf8",
+            )?;
             assert_eq!(Store::open(&paths.db_file())?.load_words()?.len(), 8);
         }
         Some("sync-lifecycle") => sync_lifecycle(&paths)?,
@@ -139,40 +162,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         Some("duplicate-key-recovery") => {
-            use std::collections::HashMap;
-            let entry = keyring::Entry::new("mywhisper", "state-db")?;
-            let original = entry.get_password()?;
-            let service = secret_service::blocking::SecretService::connect(
-                secret_service::EncryptionType::Dh,
-            )?;
+            let service = secret_service()?;
+            let [item] = <[_; 1]>::try_from(key_items(&service)?)
+                .map_err(|_| "expected exactly one database key")?;
+            let original = item.get_secret()?;
             let collection = service.get_default_collection()?;
             let duplicate = collection.create_item(
                 "Disposable interrupted provision",
-                HashMap::from([("service", "mywhisper"), ("username", "state-db")]),
+                key_attributes(),
                 "77".repeat(32).as_bytes(),
                 false,
                 "text/plain; charset=utf8",
             )?;
-            assert!(
-                entry.get_password().is_err(),
-                "native keyring must expose the duplicate ambiguity"
+            assert_eq!(
+                key_items(&service)?.len(),
+                2,
+                "keyring must expose the duplicate ambiguity"
             );
             assert_eq!(Store::open(&paths.db_file())?.load_words()?.len(), 8);
-            assert!(
-                entry.get_password().is_err(),
+            assert_eq!(
+                key_items(&service)?.len(),
+                2,
                 "database recovery must preserve both key candidates"
             );
             duplicate.delete()?;
-            assert_eq!(entry.get_password()?, original);
+            let [item] = <[_; 1]>::try_from(key_items(&service)?)
+                .map_err(|_| "expected the original database key")?;
+            assert_eq!(item.get_secret()?, original);
             println!(
                 "Disposable duplicate-key recovery selected the existing database key without overwriting either secret."
             );
         }
         Some("locked-keyring") => {
-            let service = secret_service::blocking::SecretService::connect(
-                secret_service::EncryptionType::Dh,
-            )?;
-            service.get_default_collection()?.lock()?;
+            secret_service()?.get_default_collection()?.lock()?;
             let before = std::fs::read(paths.db_file())?;
             let start = std::time::Instant::now();
             let error = match Store::open(&paths.db_file()) {

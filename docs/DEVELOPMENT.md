@@ -110,9 +110,11 @@ feature PR authors must supply.
 Review that PR before merging. Expand a title into several bullets when needed,
 keep the PR link, and add migrations/breaking information from the descriptions.
 Ordinary Markdown paragraphs, `*`/`-` lists and nested headings are supported.
-Only the release-version headings have a machine-readable convention; their
-plain, bracketed, linked and dated forms are accepted. Feature PR authors do not
-need to edit them. Generated GitHub notes are a starting point for review; direct
+Release-version headings must use `## [VERSION](https://github.com/OWNER/REPO/releases/tag/vVERSION) - YYYY-MM-DD`;
+older heading forms remain readable in historical sections. Keep the generated
+`###` categories from `.github/release.yml`, and add a one-line upgrade action
+to entries marked **Breaking:** or **Security:**. Feature PR authors do not
+need to edit release headings. Generated GitHub notes are a starting point for review; direct
 commits or important details absent from titles need a maintainer's addition.
 
 The Actions preparation job uses `GITHUB_TOKEN` by default. Enable
@@ -147,8 +149,9 @@ If preparation has already merged but the version is still untagged, run
 `refresh_notes` in Actions. This opens a new preparation PR for the same version.
 It regenerates notes from the previous published release; review the diff and
 retain any manually expanded details. Use `--notes-file` to supply reviewed notes
-instead. Existing version headings and historical sections are preserved, and
-refresh refuses versions that already have a remote tag.
+instead. Refresh emits the current version heading with the preparation date
+and release link, preserves historical sections, and refuses versions that
+already have a remote tag.
 
 The archive checksum cannot be known before the build. CI therefore generates
 and attaches a final `PKGBUILD` with the checked archive's checksum, and includes
