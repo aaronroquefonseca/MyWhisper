@@ -230,7 +230,7 @@ pub fn spawn_sync_watcher(
             };
             let settings = store.load_settings();
             let want = (
-                settings.sync.enabled,
+                store.sync_enabled(),
                 settings.sync.listen_port,
                 settings.sync.device_name.clone(),
                 settings.sync.advertise,

@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use super::app::AppState;
 use super::app_settings::persist_prefs;
+use crate::device::short_id;
 use crate::i18n::{tr, trf};
 
 std::thread_local! {
@@ -45,14 +46,6 @@ fn list_signature(state: &AppState) -> String {
         discovered,
         busy
     )
-}
-
-fn short_id(node_id: &str) -> String {
-    if node_id.len() > 16 {
-        format!("{}…{}", &node_id[..8], &node_id[node_id.len() - 4..])
-    } else {
-        node_id.to_string()
-    }
 }
 
 fn ago(epoch_secs: i64) -> String {
@@ -528,9 +521,20 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
     svc_switch.set_valign(gtk4::Align::Center);
     {
         let state = state.clone();
-        svc_switch.connect_state_set(move |_, active| {
+        svc_switch.connect_state_set(move |switch, active| {
             state.settings.borrow_mut().sync.enabled = active;
-            persist_prefs(state.clone())();
+            let saved = state.store.save_settings(&state.settings.borrow());
+            if let Err(e) = saved {
+                // The service reads the stored switch: show that, not
+                // the value that failed to save.
+                eprintln!("[app] sync switch save failed: {e}");
+                super::app::notify(tr("feedback.savefailed"));
+                let persisted = state.store.sync_enabled();
+                state.settings.borrow_mut().sync.enabled = persisted;
+                let switch = switch.clone();
+                gtk4::glib::idle_add_local_once(move || switch.set_active(persisted));
+                return gtk4::glib::Propagation::Stop;
+            }
             gtk4::glib::Propagation::Proceed
         });
     }
