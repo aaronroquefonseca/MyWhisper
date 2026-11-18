@@ -654,6 +654,12 @@ pub fn whisper_file_stem(id: &str) -> &str {
 }
 
 pub fn delete_model(data_dir: &Path, entry: &ModelEntry) -> std::io::Result<()> {
+    // A stale Delete button must not remove files a running retry owns.
+    if download_state(entry.id)
+        .is_some_and(|d| matches!(d.phase, DlPhase::Downloading | DlPhase::Installing))
+    {
+        return Err(std::io::Error::other("download in progress"));
+    }
     let dir = model_dir(data_dir, entry);
     // Bark keeps verified files of an interrupted install for reuse.
     for dir in [bark_staging_dir(&dir), dir] {
@@ -796,9 +802,9 @@ const BARK_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30
 /// Marker the installer writes once every pinned file hashed clean.
 const BARK_MARKER: &str = ".verified";
 
-/// `name size mtime_ns` per pinned file; `None` when one is missing or
-/// has the wrong size. Any rewrite of a file (even same-size) moves its
-/// mtime, so a stale marker sends the pack back through the installer,
+/// `name size mtime_ns ctime_ns` per pinned file; `None` when one is
+/// missing or has the wrong size. Any write moves ctime (even one that
+/// restores mtime), so a stale marker sends the pack back through the installer,
 /// which re-hashes the files on its worker thread and keeps good ones.
 fn bark_fingerprint(dir: &Path, pack: &BarkPack) -> Option<String> {
     let mut out = String::new();
@@ -813,7 +819,18 @@ fn bark_fingerprint(dir: &Path, pack: &BarkPack) -> Option<String> {
             .duration_since(std::time::UNIX_EPOCH)
             .ok()?
             .as_nanos();
-        out.push_str(&format!("{} {} {mtime}\n", pin.name, pin.bytes));
+        // ctime can't be set by userspace; rename keeps it.
+        #[cfg(unix)]
+        let ctime = {
+            use std::os::unix::fs::MetadataExt;
+            (meta.ctime(), meta.ctime_nsec())
+        };
+        #[cfg(not(unix))]
+        let ctime = (0i64, 0i64);
+        out.push_str(&format!(
+            "{} {} {mtime} {}.{}\n",
+            pin.name, pin.bytes, ctime.0, ctime.1
+        ));
     }
     Some(out)
 }
@@ -926,6 +943,10 @@ fn download_bark_pack(
             received += pin.bytes;
             on_event(DownloadEvent::Progress { received, total });
             continue;
+        }
+        // A cancel mid-hash is not a mismatch: keep the staged file.
+        if cancelled() {
+            return Err("cancelled".to_string());
         }
         let _ = std::fs::remove_file(&path);
         let part = staging.join(format!("{}.part", pin.name));
@@ -1422,17 +1443,21 @@ mod tests {
         assert!(leftover_parts(&dest).is_empty());
         assert!(bark_pack_verified(&dest, &pack));
 
-        // A flipped byte (same size) invalidates the marker; reinstall
-        // re-hashes in place, keeps the encoder and refetches tokens.
+        // A flipped byte (same size, original mtime restored) still
+        // invalidates the marker through ctime; reinstall re-hashes in
+        // place, keeps the encoder and refetches tokens.
         use std::os::unix::fs::FileExt;
+        let mtime = std::fs::metadata(dest.join("tokens.txt"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
         let tokens = std::fs::OpenOptions::new()
             .write(true)
             .open(dest.join("tokens.txt"))
             .unwrap();
         tokens.write_all_at(b"z", 0).unwrap();
-        tokens
-            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
-            .unwrap();
+        tokens.set_modified(mtime).unwrap();
         assert!(!bark_pack_verified(&dest, &pack));
         let base = serve(vec![("tokens.txt", Route::Body(b"a 0\n".to_vec()))]);
         install(&dest, &pack, &base, &cancel).unwrap();
