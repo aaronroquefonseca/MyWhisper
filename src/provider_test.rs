@@ -259,6 +259,7 @@ pub fn local_model_id(s: &SttSettings) -> String {
         LocalSttProvider::Oruk => "orukeet-v0.1.0".to_string(),
         LocalSttProvider::Cohere => "cohere-transcribe-03-2026".to_string(),
         LocalSttProvider::Whistle => "whistle-v1".to_string(),
+        LocalSttProvider::Bark => s.bark_model.clone(),
     }
 }
 
