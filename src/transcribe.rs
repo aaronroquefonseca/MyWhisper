@@ -17,6 +17,12 @@
 //! - Local / NVIDIA offline-or-unmarked (parakeet TDT) and Local /
 //!   Oruk (orukeet) → `sherpa-onnx-offline-websocket-server`, whole
 //!   utterance after release.
+//! - Local / Bark (bark-3.0, plus, clean) → the same offline server:
+//!   the velddev ONNX builds keep the NeMo transducer layout, so no
+//!   new runtime. Only installed, registry-pinned Bark packs route
+//!   here; English is fixed in the plan, never written to settings.
+//!   Leading silence follows each pack's eval condition and `<unk>`
+//!   is stripped for Bark only.
 //! - Local / Cohere → unsupported: `offline-websocket-server`
 //!   v1.13.8 exposes no `cohere-transcribe-*` flags (library-only
 //!   model). Clear error, revisit when the server grows flags.
@@ -197,34 +203,7 @@ pub fn plans_for(s: &SttSettings, data_dir: &Path) -> Result<Vec<(String, Plan)>
     let mut out = Vec::new();
     let mut errors = Vec::new();
     for entry in s.chain() {
-        let plan = match entry.kind {
-            crate::settings::SttEntryKind::Local => local_plan(s, data_dir),
-            crate::settings::SttEntryKind::SelfHosted => {
-                let url = entry.url.trim().trim_end_matches('/').to_string();
-                if url.is_empty() {
-                    Err("self-hosted URL is empty".to_string())
-                } else if entry.streaming && is_ws_url(&url) {
-                    // Streaming sherpa protocol (our sherpa-online
-                    // servers speak it, including spawned ones).
-                    // Never spawned here: foreign by definition.
-                    Ok(Plan::SelfHostedWs { url })
-                } else {
-                    Ok(Plan::CloudOpenAiCompat {
-                        base: url,
-                        key: entry.api_key.trim().to_string(),
-                        model: if entry.model.trim().is_empty() {
-                            "default".to_string()
-                        } else {
-                            entry.model.clone()
-                        },
-                        lang: s.language.clone(),
-                    })
-                }
-            }
-            crate::settings::SttEntryKind::Cloud => {
-                cloud_plan_for(&entry.provider, &entry.model, &entry.api_key, &s.language)
-            }
-        };
+        let plan = entry_plan(s, entry, data_dir);
         match plan {
             Ok(p) => out.push((entry.name.clone(), p)),
             Err(e) => errors.push(format!("{}: {e}", entry.name)),
@@ -238,6 +217,44 @@ pub fn plans_for(s: &SttSettings, data_dir: &Path) -> Result<Vec<(String, Plan)>
         });
     }
     Ok(out)
+}
+
+/// One chain entry's plan: the single routing rule shared by
+/// dictation and the settings Test button. Local entries resolve
+/// against the live local configuration (files verified).
+pub fn entry_plan(
+    s: &SttSettings,
+    entry: &crate::settings::SttChainEntry,
+    data_dir: &Path,
+) -> Result<Plan, String> {
+    match entry.kind {
+        crate::settings::SttEntryKind::Local => local_plan(s, data_dir),
+        crate::settings::SttEntryKind::SelfHosted => {
+            let url = entry.url.trim().trim_end_matches('/').to_string();
+            if url.is_empty() {
+                Err("self-hosted URL is empty".to_string())
+            } else if entry.streaming && is_ws_url(&url) {
+                // Streaming sherpa protocol (our sherpa-online
+                // servers speak it, including spawned ones).
+                // Never spawned here: foreign by definition.
+                Ok(Plan::SelfHostedWs { url })
+            } else {
+                Ok(Plan::CloudOpenAiCompat {
+                    base: url,
+                    key: entry.api_key.trim().to_string(),
+                    model: if entry.model.trim().is_empty() {
+                        "default".to_string()
+                    } else {
+                        entry.model.clone()
+                    },
+                    lang: s.language.clone(),
+                })
+            }
+        }
+        crate::settings::SttEntryKind::Cloud => {
+            cloud_plan_for(&entry.provider, &entry.model, &entry.api_key, &s.language)
+        }
+    }
 }
 
 fn cloud_plan_for(provider: &str, model: &str, key: &str, lang: &str) -> Result<Plan, String> {
@@ -331,6 +348,22 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
                 lang: s.language.clone(),
             })
         }
+        LocalSttProvider::Bark => {
+            // Registry-pinned Bark ids only: a foreign id in bark_model
+            // must not route another family's dir through Bark.
+            let entry = stt::find_model(&s.bark_model)
+                .filter(|m| m.kind == stt::ModelKind::Bark)
+                .ok_or_else(|| format!("unknown bark model {:?}", s.bark_model))?;
+            if !stt::is_installed(data_dir, entry) {
+                return Err(missing(&format!("bark model {}", entry.id)));
+            }
+            // English-only family: the lock lives here, not in the
+            // shared dictation language other chain entries use.
+            Ok(Plan::SherpaOffline {
+                model_dir: stt::model_dir(data_dir, entry),
+                lang: "en".to_string(),
+            })
+        }
         LocalSttProvider::Whistle => {
             let entry = stt::find_model("whistle-v1").ok_or_else(|| missing("whistle"))?;
             let dir = stt::model_dir(data_dir, entry);
@@ -372,6 +405,39 @@ fn require_transducer_files(dir: &Path, id: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Bark pack served from `model_dir` (`<data>/models/bark/<id>`).
+fn bark_pack_for_dir(model_dir: &Path) -> Option<&'static stt::BarkPack> {
+    let family = model_dir.parent()?.file_name()?;
+    if family != "bark" {
+        return None;
+    }
+    stt::bark_pack(model_dir.file_name()?.to_str()?)
+}
+
+/// Bark frontend: leading silence per the pack's eval condition
+/// (16 kHz samples), and sherpa's `<unk>` rendering removed (the
+/// reference decoding leaves it out). Other models pass through.
+/// Borrows the input when no pad applies (every non-Bark model).
+fn bark_input<'a>(samples: &'a [f32], model_dir: &Path) -> std::borrow::Cow<'a, [f32]> {
+    let pad = bark_pack_for_dir(model_dir).map_or(0, |p| p.leading_silence_ms as usize * 16);
+    if pad == 0 {
+        return std::borrow::Cow::Borrowed(samples);
+    }
+    let mut out = vec![0.0f32; pad];
+    out.extend_from_slice(samples);
+    std::borrow::Cow::Owned(out)
+}
+
+fn bark_output(text: String, model_dir: &Path) -> String {
+    if bark_pack_for_dir(model_dir).is_none() {
+        return text;
+    }
+    text.replace("<unk>", "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 // ------------------------------------------------------- server lifetime
@@ -857,6 +923,27 @@ fn whisper_binary(data_dir: &Path, backend: GpuBackendSetting) -> Result<PathBuf
         Ok(bin)
     } else {
         Err(missing(&format!("{want} runtime pack")))
+    }
+}
+
+/// The engine binary `plan` would start, checked without starting it
+/// (the settings Test uses this; dictation's `ensure_*` does the same).
+pub fn plan_runtime_ready(plan: &Plan, s: &SttSettings, data_dir: &Path) -> Result<(), String> {
+    match plan {
+        Plan::WhisperHttp { .. } => whisper_binary(data_dir, s.gpu_backend).map(drop),
+        Plan::SherpaOnline { .. } => sherpa_binary(
+            data_dir,
+            s.sherpa_backend,
+            "sherpa-onnx-online-websocket-server",
+        )
+        .map(drop),
+        Plan::SherpaOffline { .. } => sherpa_binary(
+            data_dir,
+            s.sherpa_backend,
+            "sherpa-onnx-offline-websocket-server",
+        )
+        .map(drop),
+        _ => Ok(()),
     }
 }
 
@@ -2006,6 +2093,31 @@ fn openai_dictionary_hint(base: &str, words: &[String]) -> Vec<(&'static str, St
         .collect()
 }
 
+/// Transcription endpoint for an OpenAI-compatible base, built from
+/// parsed path segments so the host and query are never rewritten: a
+/// path ending in a `...transcriptions` segment is used as-is,
+/// otherwise `v1/audio/transcriptions` is appended (`v1` once, even
+/// when the base already ends in it).
+pub fn openai_transcriptions_url(base: &str) -> Result<reqwest::Url, String> {
+    let mut url = reqwest::Url::parse(base.trim()).map_err(|e| format!("server URL: {e}"))?;
+    if url.cannot_be_a_base() {
+        return Err("server URL has no path".to_string());
+    }
+    // Work on the serialized path so an existing prefix keeps its exact
+    // encoding (`%20` stays `%20`) and inner slashes; only append.
+    let prefix = url.path().trim_end_matches('/').to_string();
+    let last = prefix.rsplit('/').next().unwrap_or("");
+    let path = if last.ends_with("transcriptions") {
+        prefix
+    } else if last == "v1" {
+        format!("{prefix}/audio/transcriptions")
+    } else {
+        format!("{prefix}/v1/audio/transcriptions")
+    };
+    url.set_path(&path);
+    Ok(url)
+}
+
 fn openai_compat_transcribe(
     base: &str,
     key: &str,
@@ -2015,13 +2127,7 @@ fn openai_compat_transcribe(
     wav: &[u8],
 ) -> Result<String, String> {
     let base = base.trim_end_matches('/');
-    let url = if base.ends_with("transcriptions") {
-        base.to_string()
-    } else {
-        format!("{base}/v1/audio/transcriptions")
-    };
-    // Some OpenAI-compatible servers live under /v1 already.
-    let url = url.replace("/v1/v1/", "/v1/");
+    let url = openai_transcriptions_url(base).map_err(|e| format!("cloud transcribe: {e}"))?;
     let boundary = "mywhispercloud";
     // "auto" = omit: the API auto-detects when no language is sent.
     let mut fields = vec![("model", model)];
@@ -2036,7 +2142,7 @@ fn openai_compat_transcribe(
         Some(("file", "audio.wav", "audio/wav", wav)),
     );
     let mut req = http_client()?
-        .post(&url)
+        .post(url)
         .header(
             "Content-Type",
             format!("multipart/form-data; boundary={boundary}"),
@@ -2347,6 +2453,15 @@ struct LiveUtterance {
 
 static LIVE: OnceLock<Mutex<Option<LiveUtterance>>> = OnceLock::new();
 static BUSY: AtomicBool = AtomicBool::new(false);
+static DELIVERY: Mutex<()> = Mutex::new(());
+
+/// Take the delivery turn, then free the worker: the next utterance
+/// may transcribe meanwhile but cannot deliver before this one ends.
+fn delivery_turn<'a>(busy: &AtomicBool, turn: &'a Mutex<()>) -> std::sync::MutexGuard<'a, ()> {
+    let guard = turn.lock().unwrap_or_else(|p| p.into_inner());
+    busy.store(false, Ordering::SeqCst);
+    guard
+}
 
 /// Latest live-preview text for the pill drain loop. Pumps overwrite
 /// on change; the drain takes (clears). Empty = nothing new.
@@ -2843,7 +2958,7 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
                 })
                 .unwrap_or_default();
             let out = finish_session(sess, &words);
-            BUSY.store(false, Ordering::SeqCst);
+            let _turn = delivery_turn(&BUSY, &DELIVERY);
             match out {
                 Ok(Some((text, secs, wav))) => {
                     engine_ok();
@@ -3053,8 +3168,10 @@ fn transcribe_blocking(
                 engine_port(net, WHISPER_PORT),
             )
         }
-        Plan::SherpaOffline { .. } => {
-            sherpa_offline_transcribe(f32s, engine_port(net, SHERPA_OFFLINE_PORT))
+        Plan::SherpaOffline { model_dir, .. } => {
+            let samples = bark_input(f32s, model_dir);
+            let text = sherpa_offline_transcribe(&samples, engine_port(net, SHERPA_OFFLINE_PORT))?;
+            Ok(bark_output(text, model_dir))
         }
         Plan::WhistleCli {
             engine,
@@ -3728,6 +3845,110 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bark_frontend_pad_and_unk() {
+        let bark = Path::new("/data/models/bark/bark-3.0");
+        let plus = Path::new("/data/models/bark/bark-3.0-plus");
+        let clean = Path::new("/data/models/bark/bark-3.0-clean");
+        let para = Path::new("/data/models/parakeet/parakeet-tdt-0.6b-v3");
+        // Not a Bark dir even though the id is: the family dir decides.
+        let foreign = Path::new("/data/models/parakeet/bark-3.0");
+        let audio = [0.5f32; 10];
+        assert_eq!(bark_input(&audio, bark).len(), 4_000 + 10);
+        assert_eq!(bark_input(&audio, plus).len(), 4_000 + 10);
+        for dir in [clean, para, foreign] {
+            assert!(matches!(bark_input(&audio, dir), std::borrow::Cow::Borrowed(s) if s == audio));
+        }
+        assert_eq!(bark_output("hello <unk>".into(), bark), "hello");
+        assert_eq!(bark_output("a <unk>  b".into(), clean), "a b");
+        assert_eq!(bark_output("hello <unk>".into(), para), "hello <unk>");
+    }
+
+    /// Sparse files at the pinned sizes stand in for an installed pack.
+    fn fake_bark_install(data: &Path, id: &str) -> PathBuf {
+        let entry = stt::find_model(id).unwrap();
+        let dir = stt::model_dir(data, entry);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pack = stt::bark_pack(id).unwrap();
+        for pin in pack.files {
+            std::fs::File::create(dir.join(pin.name))
+                .unwrap()
+                .set_len(pin.bytes)
+                .unwrap();
+        }
+        stt::write_bark_marker(&dir, pack).unwrap();
+        dir
+    }
+
+    #[test]
+    fn bark_plan_is_english_without_touching_settings() {
+        let data = tempfile::tempdir().unwrap();
+        let dir = fake_bark_install(data.path(), "bark-3.0-clean");
+        let s = SttSettings {
+            local_provider: LocalSttProvider::Bark,
+            language: "es".to_string(),
+            ..Default::default()
+        };
+        match local_plan(&s, data.path()).unwrap() {
+            Plan::SherpaOffline { model_dir, lang } => {
+                assert_eq!(model_dir, dir);
+                assert_eq!(lang, "en");
+            }
+            other => panic!("unexpected plan {other:?}"),
+        }
+        // The shared language stays the user's choice for other entries.
+        assert_eq!(s.language, "es");
+    }
+
+    #[test]
+    fn bark_plan_rejects_foreign_ids_and_incomplete_packs() {
+        let data = tempfile::tempdir().unwrap();
+        let mut s = SttSettings {
+            local_provider: LocalSttProvider::Bark,
+            ..Default::default()
+        };
+        // A non-Bark registry id with its files present must not route.
+        let para = stt::find_model("parakeet-tdt-0.6b-v3").unwrap();
+        let para_dir = stt::model_dir(data.path(), para);
+        std::fs::create_dir_all(&para_dir).unwrap();
+        for f in para.required_files {
+            std::fs::write(para_dir.join(f), b"x").unwrap();
+        }
+        for id in ["parakeet-tdt-0.6b-v3", "tiny", "../parakeet/x", "nope"] {
+            s.bark_model = id.to_string();
+            let err = local_plan(&s, data.path()).unwrap_err();
+            assert!(err.contains("unknown bark model"), "{id}: {err}");
+        }
+        // Bark id, but an empty tokens.txt is not an install.
+        s.bark_model = "bark-3.0".to_string();
+        let dir = fake_bark_install(data.path(), "bark-3.0");
+        std::fs::write(dir.join("tokens.txt"), b"").unwrap();
+        assert!(local_plan(&s, data.path()).is_err());
+    }
+
+    #[test]
+    fn delivery_turns_keep_utterance_order() {
+        let busy = AtomicBool::new(true);
+        let turn = Mutex::new(());
+        let first = delivery_turn(&busy, &turn);
+        assert!(
+            !busy.load(Ordering::SeqCst),
+            "next utterance may transcribe"
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                assert!(!busy.swap(true, Ordering::SeqCst));
+                let _second = delivery_turn(&busy, &turn);
+                tx.send(()).unwrap();
+            });
+            assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+            assert!(busy.load(Ordering::SeqCst), "held until its turn");
+            drop(first);
+            rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+    }
 
     #[test]
     fn server_net_defaults_and_overrides() {

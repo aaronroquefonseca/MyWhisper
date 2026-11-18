@@ -393,6 +393,10 @@ impl Store {
             .ok();
         let mut settings: AppSettings = json
             .and_then(|j| serde_json::from_str(&j).ok())
+            .and_then(|mut v| {
+                restore_local_vendor(&mut v);
+                serde_json::from_value(v).ok()
+            })
             .unwrap_or_default();
         // Pre-list configs seed one entry from legacy fields.
         settings.language_models.ensure_seed();
@@ -425,9 +429,11 @@ impl Store {
     /// every settings save would mint fresh versions and could clobber
     /// a peer's concurrent edit on the next sync.
     pub fn save_settings(&self, settings: &AppSettings) -> rusqlite::Result<()> {
-        let json = serde_json::to_string(settings).map_err(|e| {
+        let mut value = serde_json::to_value(settings).map_err(|e| {
             rusqlite::Error::ToSqlConversionFailure(format!("settings serialize: {e}").into())
         })?;
+        stash_local_vendor(&mut value);
+        let json = value.to_string();
         self.conn.execute(
             "INSERT INTO kv (key, value) VALUES ('settings', ?1)
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
@@ -1234,6 +1240,39 @@ pub struct PeerGossip {
     pub last_seen: i64,
 }
 
+/// Rollback safety for `stt.local_provider`. Builds that predate a
+/// provider fail the whole settings blob on its name and fall back to
+/// defaults, so such providers persist as one those builds parse (same
+/// sherpa servers) with the real name in `local_vendor`, a field old
+/// builds ignore. Add new providers here; this build restores them on
+/// load and, for names it does not know, keeps the stored fallback.
+const LEGACY_LOCAL_PROVIDERS: &[(&str, &str)] = &[("Bark", "Nvidia")];
+
+fn stash_local_vendor(settings: &mut serde_json::Value) {
+    let Some(stt) = settings.get_mut("stt").and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    let current = stt.get("local_provider").and_then(|v| v.as_str());
+    if let Some((name, legacy)) = LEGACY_LOCAL_PROVIDERS
+        .iter()
+        .find(|(name, _)| Some(*name) == current)
+    {
+        stt.insert("local_vendor".into(), (*name).into());
+        stt.insert("local_provider".into(), (*legacy).into());
+    }
+}
+
+fn restore_local_vendor(settings: &mut serde_json::Value) {
+    let Some(stt) = settings.get_mut("stt").and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    if let Some(vendor) = stt.remove("local_vendor")
+        && serde_json::from_value::<crate::settings::LocalSttProvider>(vendor.clone()).is_ok()
+    {
+        stt.insert("local_provider".into(), vendor);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1500,6 +1539,98 @@ mod tests {
         assert_eq!(store.take_server_cmd().as_deref(), Some("stop"));
         // Consumed: second read finds nothing.
         assert_eq!(store.take_server_cmd(), None);
+    }
+
+    #[test]
+    fn bark_settings_stay_readable_by_pre_bark_builds() {
+        use crate::settings::LocalSttProvider;
+        let store = Store::open_memory().unwrap();
+        let mut s = store.load_settings();
+        s.stt.local_provider = LocalSttProvider::Bark;
+        s.stt.bark_model = "bark-3.0-plus".to_string();
+        s.stt.whisper_model = "small".to_string();
+        store.save_settings(&s).unwrap();
+
+        let raw: String = store
+            .conn
+            .query_row("SELECT value FROM kv WHERE key = 'settings'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        // A pre-Bark reader: strict provider enum, unknown fields ignored.
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        enum OldProvider {
+            OpenAi,
+            Nvidia,
+            Oruk,
+            Cohere,
+            Whistle,
+        }
+        #[derive(serde::Deserialize)]
+        struct OldStt {
+            local_provider: OldProvider,
+        }
+        #[derive(serde::Deserialize)]
+        struct OldSettings {
+            stt: OldStt,
+        }
+        let old: OldSettings = serde_json::from_str(&raw).unwrap();
+        assert_eq!(old.stt.local_provider, OldProvider::Nvidia);
+
+        let reloaded = store.load_settings();
+        assert_eq!(reloaded.stt.local_provider, LocalSttProvider::Bark);
+        assert_eq!(reloaded.stt.bark_model, "bark-3.0-plus");
+        assert_eq!(reloaded.stt.whisper_model, "small");
+
+        // A pre-Bark build that saves drops the fields it does not
+        // know. Documented downgrade outcome: the re-upgraded build
+        // loads NVIDIA with the default Bark id, nothing else lost.
+        let mut old_save: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let stt = old_save["stt"].as_object_mut().unwrap();
+        stt.remove("local_vendor");
+        stt.remove("bark_model");
+        store
+            .conn
+            .execute(
+                "UPDATE kv SET value = ?1 WHERE key = 'settings'",
+                [old_save.to_string()],
+            )
+            .unwrap();
+        let upgraded = store.load_settings();
+        assert_eq!(upgraded.stt.local_provider, LocalSttProvider::Nvidia);
+        assert_eq!(upgraded.stt.bark_model, "bark-3.0-clean");
+        assert_eq!(upgraded.stt.whisper_model, "small");
+    }
+
+    #[test]
+    fn unknown_local_provider_keeps_the_rest_of_the_settings() {
+        use crate::settings::LocalSttProvider;
+        let store = Store::open_memory().unwrap();
+        let mut s = store.load_settings();
+        s.stt.whisper_model = "small".to_string();
+        let mut value = serde_json::to_value(&s).unwrap();
+        // A newer build's provider, stashed or written directly.
+        value["stt"]["local_vendor"] = "FutureVendor".into();
+        value["stt"]["local_provider"] = "Nvidia".into();
+        let write = |v: &serde_json::Value| {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO kv (key, value) VALUES ('settings', ?1)
+                     ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                    [v.to_string()],
+                )
+                .unwrap();
+        };
+        write(&value);
+        let loaded = store.load_settings();
+        assert_eq!(loaded.stt.local_provider, LocalSttProvider::Nvidia);
+        assert_eq!(loaded.stt.whisper_model, "small");
+        value["stt"]["local_provider"] = "FutureVendor".into();
+        write(&value);
+        let loaded = store.load_settings();
+        assert_eq!(loaded.stt.local_provider, LocalSttProvider::OpenAi);
+        assert_eq!(loaded.stt.whisper_model, "small");
     }
 
     #[test]
