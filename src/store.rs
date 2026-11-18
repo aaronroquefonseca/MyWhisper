@@ -1596,8 +1596,13 @@ mod tests {
         // An older build opened the file in between: it runs again.
         old_build_delete(&store, &kept);
         assert_eq!(store.redact_old_tombstones().unwrap(), 2);
-        // Truncating checkpoint empties the WAL that held old pages.
-        assert!(store.truncate_wal().unwrap());
+        // Wait for the migration's checkpoint instead of racing it
+        // with a second TRUNCATE, which can immediately return busy.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while WAL_TRUNCATES.lock().unwrap().contains_key(&path) {
+            assert!(std::time::Instant::now() < deadline, "checkpoint timed out");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let wal = dir.path().join("state.db-wal");
         assert_eq!(std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0), 0);
     }
