@@ -870,6 +870,33 @@ pub(crate) fn clear_reconcile_leaving_pause() {
 ///   until a deliberate settings change or user press.
 static SERVER_START_LOCK: Mutex<()> = Mutex::new(());
 static SERVER_INSTANCE: AtomicU64 = AtomicU64::new(0);
+/// Explicit-Stop epoch: bumped by every `drop_servers` under
+/// `SERVER_START_LOCK`. Presses capture it at admission; a newer Stop
+/// revokes that utterance's right to start a server on release.
+static STOP_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// Local audio gate: only a ready supervised child whose own socket
+/// listens on `port` may receive audio (never a foreign listener that
+/// happens to answer there).
+fn owned_ready_listener(name: &str, port: u16) -> Result<(), String> {
+    let pid = {
+        let mut map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
+        match map.get_mut(name) {
+            Some(s) if s.ready => match s.child.try_wait() {
+                Ok(None) => s.child.id(),
+                _ => return Err(format!("owned {name} server exited; audio not sent")),
+            },
+            _ => return Err(format!("no ready owned {name} server; audio not sent")),
+        }
+    };
+    if proc_start_ticks(pid).is_some_and(|t| proc_listening_on(pid, t, port)) {
+        Ok(())
+    } else {
+        Err(format!(
+            "port {port} is not served by the owned {name} server; audio not sent"
+        ))
+    }
+}
 
 /// Idle policy rechecked inside startup admission (under
 /// `SERVER_START_LOCK`, so no capture can slip between the check and
@@ -888,6 +915,10 @@ enum ActiveDefer {
     /// so useful warming during the requesting recording is preserved
     /// while stale queued warmups can never kill a newer server.
     Owned(u64),
+    /// Release worker for an utterance admitted at Stop epoch `e`: like
+    /// `Never`, but a newer explicit Stop forbids starting a server
+    /// (reusing an already-ready one stays allowed).
+    Utterance(u64),
 }
 
 struct StartupGuard {
@@ -1036,7 +1067,7 @@ fn proc_listening_on(pid: u32, started: u64, port: u16) -> bool {
 /// PID + port, read from `/proc/<pid>/net/tcp`. Used to verify the
 /// Whisper bind host actually flips when LAN exposure toggles.
 /// IPv4 only (synthetic + real servers bind IPv4 loopback/wildcard).
-#[allow(dead_code)]
+#[cfg(test)]
 fn proc_listen_addrs(pid: u32, port: u16) -> Vec<String> {
     let mut out = Vec::new();
     let Some(text) = proc_file_text(&format!("/proc/{pid}/net/tcp"), 1024 * 1024) else {
@@ -1071,16 +1102,19 @@ fn proc_listen_addrs(pid: u32, port: u16) -> Vec<String> {
 fn hotwords_hash(data_dir: &Path, model_dir: &Path) -> String {
     let words = load_hint_words(data_dir);
     let (_file, args) = sherpa_hotwords(data_dir, model_dir, &words);
-    {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut h = DefaultHasher::new();
-        args.join("\n").hash(&mut h);
-        let mut sorted = words.clone();
-        sorted.sort();
-        sorted.join("\n").hash(&mut h);
-        format!("{:x}", h.finish())
-    }
+    hotwords_digest(&args, &words)
+}
+
+/// Hash of the exact hotwords args + words a server is launched with.
+fn hotwords_digest(args: &[String], words: &[String]) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    args.join("\n").hash(&mut h);
+    let mut sorted = words.to_vec();
+    sorted.sort();
+    sorted.join("\n").hash(&mut h);
+    format!("{:x}", h.finish())
 }
 
 /// Discard stale status metadata. PID files are never authority to
@@ -1117,6 +1151,7 @@ pub fn server_status(data_dir: &Path, net: &ServerNet) -> Vec<(String, bool)> {
         }
     }
     let mut out = Vec::new();
+    let configured: Vec<u16> = distinct.iter().map(|(p, _)| *p).collect();
     for (port, _names) in distinct {
         if !port_open(port) {
             continue;
@@ -1157,6 +1192,17 @@ pub fn server_status(data_dir: &Path, net: &ServerNet) -> Vec<(String, bool)> {
             None => out.push((format!("unknown :{port}"), false)),
         }
     }
+    // Owned servers still listening on a port the settings no longer
+    // name (launched for earlier settings): visible, so they can be
+    // stopped instead of staying warm unseen.
+    for (rec_name, rec) in &records {
+        if !configured.contains(&rec.port)
+            && !out.iter().any(|(n, _)| n == rec_name)
+            && proc_listening_on(rec.pid, rec.start_ticks, rec.port)
+        {
+            out.push((rec_name.clone(), true));
+        }
+    }
     out
 }
 
@@ -1186,6 +1232,7 @@ pub fn drop_servers(data_dir: &Path) {
         Ok(g) => g,
         Err(_) => return,
     };
+    STOP_EPOCH.fetch_add(1, Ordering::AcqRel);
     drop_servers_locked(data_dir);
     // Record Stop intent even when nothing was running: an empty map
     // still bumps the generation above, so a reconcile parked before
@@ -1416,13 +1463,13 @@ fn ensure_server(
         }
         // Authoritative idle/ownership revalidation: no capture admitted
         // ahead of us is killed by the removals below.
-        if defer != ActiveDefer::Never {
+        if matches!(defer, ActiveDefer::IfAnyActive | ActiveDefer::Owned(_)) {
             let live_active = live().lock().map(|g| g.is_some()).unwrap_or(true);
             let busy = BUSY.load(Ordering::SeqCst);
             let leased = ENGINE_LEASED.load(Ordering::Acquire);
             let active = ACTIVE_UTTERANCES.load(Ordering::Acquire);
             let occupied = match defer {
-                ActiveDefer::Never => false,
+                ActiveDefer::Never | ActiveDefer::Utterance(_) => false,
                 ActiveDefer::IfAnyActive => live_active || busy || leased || active > 0,
                 // Own utterance counts as one: other overlapping captures
                 // or inference hangovers still defer, but the requesting
@@ -1440,6 +1487,16 @@ fn ensure_server(
             }
         }
         let mut map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
+        // Stop mid-hold: the release may reuse a ready server for this
+        // exact key, but never start (or replace) one after a newer Stop.
+        if let ActiveDefer::Utterance(epoch) = defer
+            && STOP_EPOCH.load(Ordering::Acquire) != epoch
+            && !map.get_mut(name).is_some_and(|s| {
+                s.ready && s.key == key && s.child.try_wait().is_ok_and(|e| e.is_none())
+            })
+        {
+            return Err("stopped since this utterance began; not restarting".to_string());
+        }
         // Single STT server at a time (one local configuration): any
         // OTHER *owned* server dies here, on every ensure — reuse or
         // spawn. Fallback chains still work serially (each plan ensures
@@ -1593,21 +1650,27 @@ fn wait_ready(
     // cuda binary with no CUDA libs exits 127 in ms — no 20 s mystery).
     let start = Instant::now();
     loop {
-        if port_open(port) {
-            break;
-        }
         if server_generation() != baseline {
             return Err(format!("{name} startup ownership was revoked"));
         }
-        let exited = {
+        let (exited, pid) = {
             let mut map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
             match map.get_mut(name) {
-                Some(s) if s.instance == instance => s.child.try_wait().ok().flatten(),
+                Some(s) if s.instance == instance => {
+                    (s.child.try_wait().ok().flatten(), s.child.id())
+                }
                 _ => {
                     return Err(format!("{name} startup ownership was revoked"));
                 }
             }
         };
+        // Ready only when OUR child owns the listening socket: a foreign
+        // process binding the port first must never pass for the engine.
+        if exited.is_none()
+            && proc_start_ticks(pid).is_some_and(|t| proc_listening_on(pid, t, port))
+        {
+            break;
+        }
         if let Some(status) = exited {
             return Err(format!(
                 "{name} exited during startup ({status}); \
@@ -1767,6 +1830,136 @@ pub fn needle_engine_path(data_dir: &Path) -> PathBuf {
     data_dir.join("bin").join("needle").join("needle")
 }
 
+/// Launch keys, shared by the `ensure_*` spawns and `launch_drift` so
+/// both always agree on what "this configuration's server" is.
+/// Bind host is launch identity for whisper: toggling LAN exposure must
+/// rebind.
+fn whisper_key(bin: &Path, model: &Path, lang: &str, net: &ServerNet) -> String {
+    format!(
+        "{}|{}|{lang}|host={}",
+        bin.display(),
+        model.display(),
+        net.host
+    )
+}
+
+/// Cohere is the only offline model taking a language (required:
+/// exactly one of its 14 codes). Detected by model dir; the dropdown
+/// guarantees a valid code, "en" as backstop.
+fn cohere_lang(model_dir: &Path, lang: &str) -> Option<String> {
+    let cohere = model_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().contains("cohere"))
+        .unwrap_or(false);
+    cohere.then(|| {
+        let valid = crate::stt::model_languages("cohere-transcribe-03-2026");
+        if valid.contains(&lang) {
+            lang.to_string()
+        } else {
+            "en".to_string()
+        }
+    })
+}
+
+/// Sherpa has no bind flag (always 0.0.0.0): host is intentionally
+/// absent from identity (documented upstream limitation). Hotwords
+/// identity includes word content (not just args paths) so dictionary
+/// edits replace the server and pick up the new file.
+fn sherpa_offline_key(
+    bin: &Path,
+    model_dir: &Path,
+    hw_hash: &str,
+    cohere_lang: Option<&str>,
+) -> String {
+    format!(
+        "{}|{}|{hw_hash}|{}",
+        bin.display(),
+        model_dir.display(),
+        cohere_lang.unwrap_or("")
+    )
+}
+
+/// `(server name, full supervised key)` the plan would launch, exactly
+/// as `ensure_server` stores it (port included). `None` for non-local
+/// plans or when the runtime pack is missing.
+fn launch_key(
+    plan: &Plan,
+    data_dir: &Path,
+    gpu: GpuBackendSetting,
+    sherpa: SherpaBackendSetting,
+    net: &ServerNet,
+) -> Option<(&'static str, String)> {
+    let (name, key, port) = match plan {
+        Plan::WhisperHttp { model_bin, lang } => (
+            "whisper",
+            whisper_key(&whisper_binary(data_dir, gpu).ok()?, model_bin, lang, net),
+            engine_port(net, WHISPER_PORT),
+        ),
+        Plan::SherpaOffline { model_dir, lang } => (
+            "sherpa-offline",
+            sherpa_offline_key(
+                &sherpa_binary(data_dir, sherpa, "sherpa-onnx-offline-websocket-server").ok()?,
+                model_dir,
+                &hotwords_hash(data_dir, model_dir),
+                cohere_lang(model_dir, lang).as_deref(),
+            ),
+            engine_port(net, SHERPA_OFFLINE_PORT),
+        ),
+        Plan::SherpaOnline { model_dir } => (
+            "sherpa-online",
+            format!(
+                "{}|{}|{}",
+                sherpa_binary(data_dir, sherpa, "sherpa-onnx-online-websocket-server")
+                    .ok()?
+                    .display(),
+                model_dir.display(),
+                hotwords_hash(data_dir, model_dir)
+            ),
+            engine_port(net, SHERPA_ONLINE_PORT),
+        ),
+        _ => return None,
+    };
+    Some((name, format!("{key}|port={port}")))
+}
+
+/// A supervised server is running whose launch identity is not the
+/// current settings' local plan (e.g. a press warmed B, then A was
+/// restored before the watcher saw B). Cold (empty map) never drifts,
+/// so intentional cold state is kept. An uncomputable local identity
+/// (missing pack) is not drift: reconciling could not fix it anyway.
+pub fn launch_drift(stt: &SttSettings, data_dir: &Path) -> bool {
+    let running: Vec<(String, String)> = match servers().lock() {
+        Ok(map) => map
+            .iter()
+            .map(|(n, s)| (n.clone(), s.key.clone()))
+            .collect(),
+        Err(_) => return false,
+    };
+    if running.is_empty() {
+        return false;
+    }
+    let local_on = stt
+        .entries
+        .iter()
+        .any(|e| matches!(e.kind, crate::settings::SttEntryKind::Local) && e.enabled);
+    let local = local_on
+        .then(|| plans_for(stt, data_dir).ok())
+        .flatten()
+        .and_then(|plans| plans.into_iter().map(|(_, p)| p).find(local_server));
+    let Some(plan) = local else {
+        return true;
+    };
+    let net = server_net(stt);
+    let Some((want_name, want_key)) =
+        launch_key(&plan, data_dir, stt.gpu_backend, stt.sherpa_backend, &net)
+    else {
+        return false;
+    };
+    running
+        .iter()
+        .any(|(name, key)| name != want_name || *key != want_key)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ensure_whisper(
     data_dir: &Path,
@@ -1779,13 +1972,7 @@ fn ensure_whisper(
     expected_fp: Option<String>,
 ) -> Result<(), String> {
     let bin = whisper_binary(data_dir, backend)?;
-    // Bind host is launch identity: toggling LAN exposure must rebind.
-    let key = format!(
-        "{}|{}|{lang}|host={}",
-        bin.display(),
-        model.display(),
-        net.host
-    );
+    let key = whisper_key(&bin, model, lang, net);
     let model_arg = model.to_string_lossy().to_string();
     let lang_arg = lang.to_string();
     let ld_path = server_ld_path(data_dir, &bin);
@@ -1970,44 +2157,14 @@ fn ensure_sherpa_offline(
     expected_fp: Option<String>,
 ) -> Result<(), String> {
     let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-offline-websocket-server")?;
-    // Cohere is the only offline model taking a language (required:
-    // exactly one of its 14 codes). Detected by model dir; the
-    // dropdown guarantees a valid code, "en" as backstop.
-    let cohere = model_dir
-        .file_name()
-        .map(|n| n.to_string_lossy().contains("cohere"))
-        .unwrap_or(false);
-    let cohere_lang = if cohere {
-        let valid = crate::stt::model_languages("cohere-transcribe-03-2026");
-        Some(if valid.contains(&lang) {
-            lang.to_string()
-        } else {
-            "en".to_string()
-        })
-    } else {
-        None
-    };
-    // Sherpa has no bind flag (always 0.0.0.0): host is intentionally
-    // absent from identity (documented upstream limitation).
-    // Hotwords identity includes word content (not just args paths) so
-    // dictionary edits replace the server and pick up the new file.
+    let cohere_lang = cohere_lang(model_dir, lang);
     let words = load_hint_words(data_dir);
     let (_hw_file, hw_args) = sherpa_hotwords(data_dir, model_dir, &words);
-    let hw_hash = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut h = DefaultHasher::new();
-        hw_args.join("\n").hash(&mut h);
-        let mut sorted = words.clone();
-        sorted.sort();
-        sorted.join("\n").hash(&mut h);
-        format!("{:x}", h.finish())
-    };
-    let key = format!(
-        "{}|{}|{hw_hash}|{}",
-        bin.display(),
-        model_dir.display(),
-        cohere_lang.as_deref().unwrap_or("")
+    let key = sherpa_offline_key(
+        &bin,
+        model_dir,
+        &hotwords_digest(&hw_args, &words),
+        cohere_lang.as_deref(),
     );
     let (bin_s, dir_s) = (bin.clone(), model_dir.to_path_buf());
     let offline_port = engine_port(net, SHERPA_OFFLINE_PORT);
@@ -2071,17 +2228,12 @@ fn ensure_sherpa_online(
     let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-online-websocket-server")?;
     let words = load_hint_words(data_dir);
     let (_hw_file, hw_args) = sherpa_hotwords(data_dir, model_dir, &words);
-    let hw_hash = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut h = DefaultHasher::new();
-        hw_args.join("\n").hash(&mut h);
-        let mut sorted = words.clone();
-        sorted.sort();
-        sorted.join("\n").hash(&mut h);
-        format!("{:x}", h.finish())
-    };
-    let key = format!("{}|{}|{hw_hash}", bin.display(), model_dir.display());
+    let key = format!(
+        "{}|{}|{}",
+        bin.display(),
+        model_dir.display(),
+        hotwords_digest(&hw_args, &words)
+    );
     let (bin_s, dir_s) = (bin.clone(), model_dir.to_path_buf());
     let online_port = engine_port(net, SHERPA_ONLINE_PORT);
     ensure_server(
@@ -2233,6 +2385,12 @@ impl OnlineSession {
             read_timeout,
             preview: false,
         })
+    }
+
+    /// Audio-carrying session to our own sherpa-online server only.
+    fn open_owned(port: u16, read_timeout: Duration) -> Result<Self, String> {
+        owned_ready_listener("sherpa-online", port)?;
+        Self::open_with(port, read_timeout)
     }
 
     pub fn open_with(port: u16, read_timeout: Duration) -> Result<Self, String> {
@@ -2778,6 +2936,7 @@ fn pump_whistle(
 
 /// Offline (whole-utterance) transcription over one WS connection.
 pub fn sherpa_offline_transcribe(samples_16k: &[f32], port: u16) -> Result<String, String> {
+    owned_ready_listener("sherpa-offline", port)?;
     sherpa_offline_transcribe_inner(samples_16k, INFERENCE_TIMEOUT, port)
 }
 
@@ -2834,6 +2993,7 @@ fn whisper_json_text(v: &serde_json::Value) -> String {
 }
 
 pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>, port: u16) -> Result<String, String> {
+    owned_ready_listener("whisper", port)?;
     let boundary = "mywhisperwav";
     let mut fields = vec![("temperature", "0.0"), ("response_format", "json")];
     let prompt_owned;
@@ -3244,6 +3404,8 @@ struct LiveUtterance {
     release_delay_ms: u64,
     /// Server bind + ports snapshot at press (Network section).
     net: ServerNet,
+    /// `STOP_EPOCH` at press admission (see `ActiveDefer::Utterance`).
+    stop_epoch: u64,
 }
 
 static LIVE: OnceLock<Mutex<Option<LiveUtterance>>> = OnceLock::new();
@@ -3287,17 +3449,80 @@ pub fn begin_utterance(
     data_dir: &Path,
     release_delay_ms: u64,
 ) {
+    begin_utterance_for(
+        register_press(),
+        stt_param,
+        keep_audio,
+        data_dir,
+        release_delay_ms,
+    );
+}
+
+/// Press tickets: the GTK thread registers each press synchronously
+/// (`register_press`) before handing it to the pool; release/cancel
+/// close every ticket issued so far (`close_pending_presses`). A press
+/// whose ticket closed before it published its capture tears down
+/// instead of leaving the recorder armed with no session to release.
+static PRESS_SEQ: AtomicU64 = AtomicU64::new(0);
+static PRESS_CLOSED: AtomicU64 = AtomicU64::new(0);
+
+/// Register a press on the thread that orders press/release events.
+pub fn register_press() -> u64 {
+    PRESS_SEQ.fetch_add(1, Ordering::AcqRel) + 1
+}
+
+fn close_pending_presses() {
+    PRESS_CLOSED.fetch_max(PRESS_SEQ.load(Ordering::Acquire), Ordering::AcqRel);
+}
+
+fn press_closed(ticket: u64) -> bool {
+    PRESS_CLOSED.load(Ordering::Acquire) >= ticket
+}
+
+#[cfg(test)]
+static PRESS_ADMISSION_PAUSE: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> =
+    Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn set_press_admission_pause(tx: mpsc::Sender<()>, rx: mpsc::Receiver<()>) {
+    *PRESS_ADMISSION_PAUSE.lock().unwrap() = Some((tx, rx));
+}
+
+/// `begin_utterance` for a press registered via `register_press`.
+pub fn begin_utterance_for(
+    ticket: u64,
+    stt_param: crate::settings::SttSettings,
+    keep_audio: bool,
+    data_dir: &Path,
+    release_delay_ms: u64,
+) {
     // Coordinated admission (order START_LOCK -> LIVE): stale handling,
     // current-Store re-read, ACTIVE increment, owner assignment and
     // generation capture are atomic wrt reconciliation check+stop (same
     // order, ms-short). The re-read guarantees a capture beginning here
     // never pins params that predate a concurrent provider switch; the
     // owner id lets this press's warmup prove the capture is still live
-    // when it reaches startup admission.
-    let (stt, generation, owner): (crate::settings::SttSettings, u64, u64);
+    // when it reaches startup admission. The Store read happens under
+    // START_LOCK only, never under LIVE: the synchronous GTK release
+    // needs LIVE and must not wait on SQLite.
+    let (stt, generation, owner, stop_epoch): (crate::settings::SttSettings, u64, u64, u64);
     {
         let _admission = SERVER_START_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let current = crate::store::Store::open(&data_dir.join("state.db"))
+            .map(|store| store.load_settings().stt)
+            .unwrap_or_else(|_| stt_param.clone());
+        #[cfg(test)]
+        if let Some((entered, proceed_)) =
+            PRESS_ADMISSION_PAUSE.lock().ok().and_then(|mut g| g.take())
+        {
+            let _ = entered.send(());
+            let _ = proceed_.recv_timeout(Duration::from_secs(10));
+        }
         let mut live_guard = live().lock().unwrap_or_else(|p| p.into_inner());
+        if press_closed(ticket) {
+            eprintln!("[stt] press: released before capture armed; ignoring");
+            return;
+        }
         if let Some(sess) = live_guard.take() {
             eprintln!("[stt] previous utterance never ended; closing it");
             sess.stop.store(true, Ordering::Relaxed);
@@ -3306,13 +3531,12 @@ pub fn begin_utterance(
             revoke_owner(sess.owner);
             active_dec();
         }
-        let current = crate::store::Store::open(&data_dir.join("state.db"))
-            .map(|store| store.load_settings().stt)
-            .unwrap_or_else(|_| stt_param.clone());
+        drop(live_guard);
         stt = current;
         active_inc();
         owner = admit_owner();
         generation = server_generation();
+        stop_epoch = STOP_EPOCH.load(Ordering::Acquire);
     }
     CANCELLED.store(false, Ordering::Relaxed);
     let mut plans = match plans_for(&stt, data_dir) {
@@ -3421,7 +3645,7 @@ pub fn begin_utterance(
         let online_port = engine_port(&server_net(&stt), SHERPA_ONLINE_PORT);
         let open = match &plan {
             Plan::SelfHostedWs { url } => OnlineSession::open_with_url(url, INFERENCE_TIMEOUT),
-            _ => OnlineSession::open_with(online_port, INFERENCE_TIMEOUT),
+            _ => OnlineSession::open_owned(online_port, INFERENCE_TIMEOUT),
         };
         match open.map(|mut session| {
             session.preview = stt.live_preview;
@@ -3505,7 +3729,25 @@ pub fn begin_utterance(
         }
         _ => None,
     };
-    *live().lock().unwrap() = Some(LiveUtterance {
+    let mut live_guard = live().lock().unwrap_or_else(|p| p.into_inner());
+    if press_closed(ticket) {
+        // Released/cancelled while arming: never publish. Same teardown
+        // as cancel (pumps abort, warmup ownership revoked).
+        drop(live_guard);
+        eprintln!("[stt] press: released while arming; discarding capture");
+        stop.store(true, Ordering::Relaxed);
+        cancel.store(true, Ordering::Relaxed);
+        settled.store(true, Ordering::Relaxed);
+        if let Some(spec) = &spec {
+            spec.stop.store(true, Ordering::Relaxed);
+        }
+        audio::clear_recorder_if(&recorder);
+        revoke_owner(owner);
+        active_dec();
+        return;
+    }
+    *live_guard = Some(LiveUtterance {
+        stop_epoch,
         owner,
         recorder,
         stop,
@@ -3617,6 +3859,7 @@ fn pump_online(
 /// row (setting-gated, see below). The pill hides immediately; the
 /// row lands via the normal home refresh.
 pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
+    close_pending_presses();
     let sess = live().lock().unwrap().take();
     audio::set_recorder(None);
     let Some(sess) = sess else {
@@ -3692,6 +3935,7 @@ pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
 /// thread: returns immediately. `on_done` fires on the worker when the
 /// pill may hide (success, empty, or failure alike).
 pub fn end_utterance(on_done: impl FnOnce() + Send + 'static) {
+    close_pending_presses();
     end_utterance_inner(false, Some(Box::new(on_done)));
 }
 
@@ -3845,19 +4089,23 @@ fn finish_session(
     // Engine warmup finishes here (cold first press waits, later
     // ones sail through an already-running server). Cloud plans are
     // no-ops here; failures are per-plan below, not fatal.
-    ensure_servers(
+    // Failure is per-plan: local audio I/O below is gated on a ready,
+    // socket-verified owned server, so a failed ensure (foreign port,
+    // Stop since press) never sends audio anywhere.
+    if let Err(e) = ensure_servers(
         &sess.plan,
         &sess.data_dir,
         sess.backend,
         sess.sherpa_backend,
         &sess.net,
         None,
-        ActiveDefer::Never,
+        ActiveDefer::Utterance(sess.stop_epoch),
         // Accepted session plan: executes even if watcher settings moved
         // meanwhile (authority separation); generation/lease still apply.
         None,
-    )
-    .ok();
+    ) {
+        eprintln!("[stt] primary not ready: {e}");
+    }
     for (name, plan) in &sess.fallbacks {
         if let Err(e) = ensure_servers(
             plan,
@@ -3866,7 +4114,7 @@ fn finish_session(
             sess.sherpa_backend,
             &sess.net,
             None,
-            ActiveDefer::Never,
+            ActiveDefer::Utterance(sess.stop_epoch),
             None,
         ) {
             eprintln!("[stt] fallback {name} not ready: {e}");
@@ -4029,7 +4277,7 @@ fn transcribe_blocking(
         Plan::SherpaOnline { .. } => {
             // Release without a pump (shouldn't happen): one-shot.
             let mut s =
-                OnlineSession::open_with(engine_port(net, SHERPA_ONLINE_PORT), INFERENCE_TIMEOUT)?;
+                OnlineSession::open_owned(engine_port(net, SHERPA_ONLINE_PORT), INFERENCE_TIMEOUT)?;
             for chunk in f32s.chunks(8000) {
                 s.send_chunk(chunk)?;
             }
@@ -4349,6 +4597,9 @@ pub fn reconcile_servers(
         {
             return Ok(true);
         }
+        // START_LOCK keeps new presses out; release only empties LIVE.
+        // Drop LIVE before any Store read so GTK release never waits.
+        drop(live_guard);
         // Carried authority revalidated under admission: a queued call
         // whose witness predates a control transition defers instead of
         // destroying on stale intent. `None` (synchronous direct
@@ -4371,7 +4622,6 @@ pub fn reconcile_servers(
         if cur_fp != fp {
             return Ok(true);
         }
-        drop(live_guard);
         if owned_servers_running(data_dir) {
             drop_servers_locked(data_dir);
         } else {
@@ -4445,6 +4695,9 @@ pub fn reconcile_servers(
         {
             return Ok(true);
         }
+        // START_LOCK keeps new presses out; release only empties LIVE.
+        // Drop LIVE before any Store read so GTK release never waits.
+        drop(live_guard);
         // A Stop-suppressed outcome also records an application decision
         // (the watcher settles instead of retrying), so it needs the same
         // admission validation: a stale call must never settle the
@@ -4459,6 +4712,11 @@ pub fn reconcile_servers(
             }
             if current_fingerprint(data_dir) != fp {
                 return Ok(true);
+            }
+            // Stopped config stays cold, but a server launched for other
+            // settings (press between saves) must not stay warm under it.
+            if launch_drift(stt, data_dir) {
+                drop_servers_locked(data_dir);
             }
             return Ok(false);
         }
@@ -4636,6 +4894,8 @@ pub fn reconcile_lazy_switch(
     {
         return Ok(true);
     }
+    // See `reconcile_servers`: never hold LIVE across Store reads.
+    drop(live_guard);
     // Carried authority revalidated under admission: a queued call whose
     // witness predates a control transition defers instead of destroying
     // on stale intent. `None` (synchronous direct callers) skips the
@@ -4656,7 +4916,6 @@ pub fn reconcile_lazy_switch(
     if current_fingerprint(data_dir) != fp {
         return Ok(true);
     }
-    drop(live_guard);
     drop_servers_locked(data_dir);
     // The watcher invokes this only for an observed fingerprint move, so
     // applying it expires any older Stop suppression; returning to a
@@ -10411,5 +10670,329 @@ mod tests {
         assert!(port_open(port2));
         drop_servers(root.path());
         wait_gone(pid2);
+    }
+
+    // ---- PR #11 round: audio ownership, Stop epoch, drift, press admission ----
+
+    /// Foreign listener that records whether any byte was ever sent to
+    /// it (bare TCP connects, like `port_open`, carry no audio).
+    fn foreign_recorder(root: &Path) -> (Child, u16, PathBuf) {
+        let ready = root.join("foreign.port");
+        let marker = root.join("foreign.got-bytes");
+        let child = Command::new("python3")
+            .args([
+                "-c",
+                "import socket,sys\n\
+                 s=socket.socket()\n\
+                 s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n\
+                 s.bind(('127.0.0.1',0))\n\
+                 s.listen(16)\n\
+                 open(sys.argv[1],'w').write(str(s.getsockname()[1]))\n\
+                 while True:\n\
+                 \x20c,_=s.accept()\n\
+                 \x20c.settimeout(1)\n\
+                 \x20try:\n\
+                 \x20\x20d=c.recv(1)\n\
+                 \x20except Exception:\n\
+                 \x20\x20d=b''\n\
+                 \x20if d:\n\
+                 \x20\x20open(sys.argv[2],'w').write('x')\n\
+                 \x20c.close()\n",
+            ])
+            .arg(&ready)
+            .arg(&marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let port = loop {
+            if let Ok(t) = std::fs::read_to_string(&ready)
+                && let Ok(p) = t.trim().parse::<u16>()
+            {
+                break p;
+            }
+            assert!(Instant::now() < deadline, "foreign fixture failed");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        (child, port, marker)
+    }
+
+    fn release_and_wait() {
+        let (tx, rx) = mpsc::channel::<()>();
+        end_utterance(move || {
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(Duration::from_secs(30)).unwrap();
+    }
+
+    #[test]
+    fn foreign_listener_never_receives_local_audio() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let (mut foreign, port, marker) = foreign_recorder(root.path());
+        let net = ServerNet {
+            host: "127.0.0.1",
+            port_override: Some(port),
+        };
+        // Every local audio path (file engines, one-shot online, spec
+        // passes via `whisper_transcribe`) refuses a non-owned listener.
+        let audio = vec![0.1f32; 16_000];
+        for plan in [
+            Plan::WhisperHttp {
+                model_bin: root.path().join("m.bin"),
+                lang: "en".into(),
+            },
+            Plan::SherpaOffline {
+                model_dir: root.path().to_path_buf(),
+                lang: "en".into(),
+            },
+            Plan::SherpaOnline {
+                model_dir: root.path().to_path_buf(),
+            },
+        ] {
+            let err = transcribe_blocking(&plan, &audio, &[], &net).unwrap_err();
+            assert!(err.contains("audio not sent"), "{err}");
+        }
+        assert!(whisper_transcribe(b"RIFF", None, port).is_err());
+        assert!(OnlineSession::open_owned(port, Duration::from_secs(1)).is_err());
+        // Real press/release with whisper configured on the foreign port:
+        // ensure refuses the port and the release sends nothing.
+        let writer = seed_whisper_tiny(root.path());
+        install_fake_whisper_http(root.path());
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port.to_string();
+        settings.stt.vad_enabled = false;
+        settings.stt.spec_enabled = false;
+        writer.save_settings(&settings).unwrap();
+        begin_utterance(writer.load_settings().stt, false, root.path(), 0);
+        assert!(has_live());
+        crate::audio::tap_samples(&vec![2000i16; 16_000], 16_000);
+        release_and_wait();
+        // Socket-level evidence: the foreign process never saw a byte.
+        std::thread::sleep(Duration::from_millis(1200));
+        assert!(!marker.exists(), "audio reached a foreign listener");
+        assert!(!servers().lock().unwrap().contains_key("whisper"));
+        assert!(foreign.try_wait().unwrap().is_none(), "foreign was touched");
+        let _ = foreign.kill();
+        let _ = foreign.wait();
+        assert_eq!(active_count(), 0);
+        drop_servers(root.path());
+    }
+
+    #[test]
+    fn stop_mid_hold_release_does_not_relaunch() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let writer = seed_whisper_tiny(root.path());
+        install_fake_whisper_http(root.path());
+        let port = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port.to_string();
+        writer.save_settings(&settings).unwrap();
+        // Press: the owner-bound warmup brings whisper up mid-hold.
+        begin_utterance(writer.load_settings().stt, false, root.path(), 0);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !port_open(port) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(port_open(port), "press warmup did not start whisper");
+        // Explicit Stop mid-hold, then release with zero audio.
+        drop_servers(root.path());
+        wait_port_closed(port);
+        release_and_wait();
+        assert!(!port_open(port), "release undid the Stop");
+        assert!(!servers().lock().unwrap().contains_key("whisper"));
+        // A press admitted after the Stop may start the engine again.
+        begin_utterance(writer.load_settings().stt, false, root.path(), 0);
+        release_and_wait();
+        assert!(port_open(port), "post-Stop press could not start");
+        assert_eq!(active_count(), 0);
+        drop_servers(root.path());
+        wait_port_closed(port);
+    }
+
+    #[test]
+    fn restored_settings_reconcile_stray_press_server() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let writer = seed_whisper_tiny(root.path());
+        install_fake_whisper_http(root.path());
+        let data_dir = root.path().to_path_buf();
+        let db_path = data_dir.join("state.db");
+        // A (lazy, cold) applied by the watcher.
+        let (port_a, port_b) = (free_port(), free_port());
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = false;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let stt_a = writer.load_settings().stt;
+        let mut last_primary = stt_primary_id(&stt_a, &data_dir);
+        let mut last_auto = false;
+        // Save B and warm it via a press before any watcher tick.
+        settings.stt.server_port = port_b.to_string();
+        writer.save_settings(&settings).unwrap();
+        let stt_b = writer.load_settings().stt;
+        let plan_b = plan_for(&stt_b, &data_dir).unwrap();
+        ensure_for_plan(
+            &plan_b,
+            &data_dir,
+            stt_b.gpu_backend,
+            stt_b.sherpa_backend,
+            &server_net(&stt_b),
+        )
+        .unwrap();
+        assert!(port_open(port_b));
+        // Restore A before the watcher saw B.
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let net_a = server_net(&writer.load_settings().stt);
+        // B on its previous port is visible (Stop available), not hidden.
+        assert_eq!(
+            server_status(&data_dir, &net_a),
+            vec![("whisper".to_string(), true)]
+        );
+        // Unchanged settings, drifted instance: the tick stops B and
+        // leaves A cold (lazy).
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        wait_port_closed(port_b);
+        assert!(!port_open(port_b), "stray B stayed warm");
+        assert!(!port_open(port_a), "lazy A was warmed");
+        assert!(server_status(&data_dir, &net_a).is_empty());
+        // A server matching current settings is not drift: no churn.
+        let stt_a = writer.load_settings().stt;
+        ensure_for_plan(
+            &plan_for(&stt_a, &data_dir).unwrap(),
+            &data_dir,
+            stt_a.gpu_backend,
+            stt_a.sherpa_backend,
+            &net_a,
+        )
+        .unwrap();
+        let pid_a = servers().lock().unwrap()["whisper"].child.id();
+        assert!(!launch_drift(&stt_a, &data_dir));
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(port_open(port_a));
+        assert_eq!(servers().lock().unwrap()["whisper"].child.id(), pid_a);
+        drop_servers(root.path());
+        wait_gone(pid_a);
+    }
+
+    #[test]
+    fn release_during_press_admission_is_prompt_and_disarms() {
+        let _guard = serial();
+        let _ = crate::runtime::init();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let writer = seed_whisper_tiny(root.path());
+        let stt = writer.load_settings().stt;
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+        set_press_admission_pause(entered_tx, proceed_rx);
+        // Ticket in event order (GTK thread), arm on a worker.
+        let ticket = register_press();
+        let data = root.path().to_path_buf();
+        let press = std::thread::spawn(move || begin_utterance_for(ticket, stt, false, &data, 0));
+        // Press parked where it reads the Store (stand-in for a slow
+        // SQLite writer): release must not wait on it.
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let t0 = Instant::now();
+        release_and_wait();
+        assert!(
+            t0.elapsed() < Duration::from_millis(500),
+            "release blocked on press admission: {:?}",
+            t0.elapsed()
+        );
+        proceed_tx.send(()).unwrap();
+        press.join().unwrap();
+        // The released press never publishes or leaves capture armed.
+        assert!(!has_live(), "released press published a live capture");
+        assert!(!crate::audio::recorder_armed(), "capture left armed");
+        assert_eq!(active_count(), 0);
+        // A later press is unaffected.
+        begin_utterance(writer.load_settings().stt, false, root.path(), 0);
+        assert!(has_live());
+        cancel_and_drain();
+        assert_eq!(active_count(), 0);
+        drop_servers(root.path());
+    }
+
+    #[test]
+    fn startup_readiness_requires_owned_socket() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let port = free_port();
+        // A foreign process wins the port after the pre-spawn check; our
+        // child never listens. TCP-accept alone must not mean ready.
+        let foreign: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
+        let slot = foreign.clone();
+        let err = ensure_server(
+            root.path(),
+            "whisper",
+            "k".into(),
+            port,
+            move || {
+                let f = Command::new("python3")
+                    .args([
+                        "-c",
+                        "import socket,sys,time\n\
+                         s=socket.socket()\n\
+                         s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n\
+                         s.bind(('127.0.0.1',int(sys.argv[1])))\n\
+                         s.listen(8)\n\
+                         time.sleep(20)",
+                    ])
+                    .arg(port.to_string())
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap();
+                *slot.lock().unwrap() = Some(f);
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !port_open(port) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Command::new("sleep")
+                    .arg("1")
+                    .spawn()
+                    .map_err(|e| e.to_string())
+            },
+            || panic!("foreign listener must not be probed"),
+            None,
+            ActiveDefer::Never,
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("exited during startup"), "{err}");
+        assert!(!servers().lock().unwrap().contains_key("whisper"));
+        let mut f = foreign.lock().unwrap().take().unwrap();
+        assert!(f.try_wait().unwrap().is_none(), "foreign was touched");
+        let _ = f.kill();
+        let _ = f.wait();
     }
 }

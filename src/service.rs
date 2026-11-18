@@ -459,14 +459,22 @@ pub fn stt_watcher_tick(
         witness: gen_snap,
         snapshot_fp: crate::transcribe::stt_fingerprint(&stt, data_dir),
     };
-    if curr_primary == *last_primary && curr_auto == *last_auto {
+    // Unchanged settings can still disagree with what runs: a press
+    // warmed B, then A was restored before this poll saw B. Reconcile
+    // that like a config move (cold state never drifts).
+    let unchanged = curr_primary == *last_primary && curr_auto == *last_auto;
+    let drift = unchanged && crate::transcribe::launch_drift(&stt, data_dir);
+    if unchanged && !drift {
         return;
     }
     if crate::transcribe::inference_active() {
         eprintln!("[service] STT switch deferred (active utterance)");
         return;
     }
-    if curr_primary != *last_primary {
+    if drift {
+        eprintln!("[service] running STT server differs from settings; reconciling");
+    }
+    if curr_primary != *last_primary || drift {
         // Configuration moved. Transient failures (foreign port,
         // missing runtime, admission contention) retry on the next
         // tick; only success advances the fingerprint. Active

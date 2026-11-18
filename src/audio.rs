@@ -107,6 +107,20 @@ pub fn set_recorder(rec: Option<Arc<Mutex<Recorder>>>) {
     *tap_slot().lock().unwrap() = rec;
 }
 
+#[cfg(test)]
+pub(crate) fn recorder_armed() -> bool {
+    tap_slot().lock().unwrap().is_some()
+}
+
+/// Disarm only if `rec` is still the armed recorder (a newer press may
+/// have armed its own meanwhile).
+pub fn clear_recorder_if(rec: &Arc<Mutex<Recorder>>) {
+    let mut slot = tap_slot().lock().unwrap();
+    if slot.as_ref().is_some_and(|r| Arc::ptr_eq(r, rec)) {
+        *slot = None;
+    }
+}
+
 /// Feed one slice of s16 mono at `rate` Hz into the armed recorder
 /// (no-op when disarmed). Mic threads call this, never block: a
 /// poisoned mutex just drops the slice.
