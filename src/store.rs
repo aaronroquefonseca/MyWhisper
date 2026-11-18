@@ -30,6 +30,7 @@ pub fn now_ms() -> i64 {
 const SCHEMA: &str = "
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
+PRAGMA secure_delete = ON;
 PRAGMA user_version = 2;
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
@@ -360,7 +361,16 @@ impl Store {
         )?;
         // Rows predating raw_text carry the final text as raw (the
         // pipeline was passthrough then, so this is exact).
-        let _ = conn.execute("UPDATE history SET raw_text = text WHERE raw_text = ''", []);
+        let _ = conn.execute(
+            "UPDATE history SET raw_text = text WHERE raw_text = '' AND text <> ''",
+            [],
+        );
+        // Older builds kept transcript text in tombstones; drop it.
+        conn.execute(
+            "UPDATE history SET text = '', raw_text = ''
+             WHERE deleted = 1 AND (text <> '' OR raw_text <> '')",
+            [],
+        )?;
         Ok(Self { conn })
     }
 
@@ -523,11 +533,14 @@ impl Store {
         .collect()
     }
 
-    /// Local delete: tombstone, so the row stays deleted across sync
-    /// (union-by-uuid would otherwise resurrect it from a peer).
+    /// Local delete: identity-only tombstone, so the row stays deleted
+    /// across sync (union-by-uuid would otherwise resurrect it from a
+    /// peer) while its transcript text is gone.
     pub fn delete_history(&self, uuid: &str) -> rusqlite::Result<()> {
-        self.conn
-            .execute("UPDATE history SET deleted = 1 WHERE uuid = ?1", [uuid])?;
+        self.conn.execute(
+            "UPDATE history SET deleted = 1, text = '', raw_text = '' WHERE uuid = ?1",
+            [uuid],
+        )?;
         bump_data_gen();
         bump_gen(&self.conn);
         Ok(())
@@ -544,9 +557,10 @@ impl Store {
     /// them would resurrect peers' rows on next sync). Returns rows
     /// removed.
     pub fn clear_history(&self) -> rusqlite::Result<usize> {
-        let n = self
-            .conn
-            .execute("UPDATE history SET deleted = 1 WHERE deleted = 0", [])?;
+        let n = self.conn.execute(
+            "UPDATE history SET deleted = 1, text = '', raw_text = '' WHERE deleted = 0",
+            [],
+        )?;
         bump_data_gen();
         bump_gen(&self.conn);
         Ok(n)
@@ -681,13 +695,19 @@ impl Store {
         Ok(uuid)
     }
 
-    /// Reset all user data: history (incl. tombstones), words,
-    /// snippets, stored settings. Devices/sync_meta survive (topology,
-    /// not data). Callers reset in-memory state + persist defaults.
-    pub fn reset_all_data(&self) -> rusqlite::Result<()> {
-        for table in ["history", "words", "snippets", "kv"] {
-            self.conn.execute(&format!("DELETE FROM {table}"), [])?;
+    /// Reset all user data: history, words, snippets, stored settings,
+    /// replaced by `fresh` in the same transaction. Tombstones survive
+    /// so paired devices cannot resurrect earlier deletions, and
+    /// devices/sync_meta survive (topology, not data). Callers reset
+    /// in-memory state to `fresh`.
+    pub fn reset_all_data(&self, fresh: &AppSettings) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for table in ["history", "words", "snippets"] {
+            tx.execute(&format!("DELETE FROM {table} WHERE deleted = 0"), [])?;
         }
+        tx.execute("DELETE FROM kv", [])?;
+        self.save_settings(fresh)?;
+        tx.commit()?;
         bump_data_gen();
         bump_gen(&self.conn);
         Ok(())
@@ -697,7 +717,8 @@ impl Store {
     /// Tombstones survive: dropping them would resurrect peers' rows.
     pub fn purge_old_history(&self, days: u32) -> rusqlite::Result<usize> {
         let count = self.conn.execute(
-            "UPDATE history SET deleted = 1 WHERE deleted = 0 AND recorded_at < strftime('%s', 'now', ?1)",
+            "UPDATE history SET deleted = 1, text = '', raw_text = ''
+             WHERE deleted = 0 AND recorded_at < strftime('%s', 'now', ?1)",
             [format!("-{days} days")],
         )?;
         if count > 0 {
@@ -839,15 +860,21 @@ impl Store {
         Ok(())
     }
 
-    /// Merge remote history: pure union on uuid, never conflicts.
+    /// Merge remote history: union on uuid. `deleted`/`discarded` only
+    /// ever turn on (OR-merge, order-independent), and tombstones never
+    /// keep transcript text, even when an older peer sends it.
     pub fn apply_history(&self, records: &[HistoryRecord]) -> rusqlite::Result<()> {
         for r in records {
             self.conn.execute(
                 "INSERT INTO history (uuid, text, raw_text, words, duration_secs, deleted, discarded, recorded_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 VALUES (?1, CASE WHEN ?6 THEN '' ELSE ?2 END, CASE WHEN ?6 THEN '' ELSE ?3 END,
+                         ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT (uuid) DO UPDATE
-                 SET deleted = excluded.deleted, discarded = excluded.discarded
-                 WHERE excluded.deleted = 1 OR excluded.discarded = 1",
+                 SET deleted = MAX(deleted, excluded.deleted),
+                     discarded = MAX(discarded, excluded.discarded),
+                     text = CASE WHEN excluded.deleted = 1 THEN '' ELSE text END,
+                     raw_text = CASE WHEN excluded.deleted = 1 THEN '' ELSE raw_text END
+                 WHERE excluded.deleted > deleted OR excluded.discarded > discarded",
                 (
                     &r.uuid,
                     &r.text,
@@ -1156,7 +1183,7 @@ impl Store {
     ) -> rusqlite::Result<usize> {
         let mut added = 0;
         for g in gossip {
-            if g.node_id == self_id {
+            if g.node_id == self_id || !crate::device::valid_node_id(&g.node_id) {
                 continue;
             }
             match self.get_peer(&g.node_id)? {
@@ -1210,6 +1237,207 @@ pub struct PeerGossip {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn history_content(store: &Store, uuid: &str) -> (String, String) {
+        store
+            .conn
+            .query_row(
+                "SELECT text, raw_text FROM history WHERE uuid = ?1",
+                [uuid],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+    }
+
+    fn record(uuid: &str, deleted: bool, discarded: bool) -> HistoryRecord {
+        HistoryRecord {
+            uuid: uuid.to_string(),
+            text: "secret".to_string(),
+            raw_text: "secret raw".to_string(),
+            words: 1,
+            duration_secs: 1,
+            deleted,
+            discarded,
+            recorded_at: 1,
+        }
+    }
+
+    #[test]
+    fn deletion_drops_transcript_content_locally_and_in_exports() {
+        let store = Store::open_memory().unwrap();
+        let one = store.add_history("raw one", "one", 2, 1, "node").unwrap();
+        let two = store.add_history("raw two", "two", 2, 1, "node").unwrap();
+        let three = store
+            .add_history("raw three", "three", 2, 1, "node")
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE history SET recorded_at = 1 WHERE uuid = ?1",
+                [&three],
+            )
+            .unwrap();
+        store.delete_history(&one).unwrap();
+        store.purge_old_history(1).unwrap();
+        store.clear_history().unwrap();
+        for uuid in [&one, &two, &three] {
+            assert_eq!(
+                history_content(&store, uuid),
+                (String::new(), String::new())
+            );
+        }
+        let exported = store.export_history().unwrap();
+        assert_eq!(exported.len(), 3);
+        assert!(
+            exported
+                .iter()
+                .all(|r| r.deleted && r.text.is_empty() && r.raw_text.is_empty())
+        );
+        // A tombstone arriving with content (older peer) is stored empty,
+        // whether the row is new or already known.
+        let peer = Store::open_memory().unwrap();
+        peer.apply_history(&[record("known", false, false)])
+            .unwrap();
+        peer.apply_history(&[record("known", true, false), record("new", true, false)])
+            .unwrap();
+        for uuid in ["known", "new"] {
+            assert_eq!(history_content(&peer, uuid), (String::new(), String::new()));
+        }
+    }
+
+    #[test]
+    fn opening_redacts_tombstones_written_by_older_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let store = Store::open(&path).unwrap();
+        let kept = store.add_history("raw kept", "kept", 1, 1, "node").unwrap();
+        let gone = store.add_history("raw gone", "gone", 1, 1, "node").unwrap();
+        // Old builds only flipped the flag.
+        store
+            .conn
+            .execute("UPDATE history SET deleted = 1 WHERE uuid = ?1", [&gone])
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            history_content(&store, &kept),
+            ("kept".to_string(), "raw kept".to_string())
+        );
+        assert_eq!(
+            history_content(&store, &gone),
+            (String::new(), String::new())
+        );
+    }
+
+    #[test]
+    fn history_flags_converge_in_any_order() {
+        let snapshots = [
+            record("x", false, false),
+            record("x", false, true),
+            record("x", true, false),
+            record("x", true, true),
+        ];
+        for first in &snapshots {
+            for second in &snapshots {
+                for third in &snapshots {
+                    let store = Store::open_memory().unwrap();
+                    for r in [first, second, third, first] {
+                        store.apply_history(std::slice::from_ref(r)).unwrap();
+                    }
+                    let (deleted, discarded): (bool, bool) = store
+                        .conn
+                        .query_row("SELECT deleted, discarded FROM history", [], |row| {
+                            Ok((row.get(0)?, row.get(1)?))
+                        })
+                        .unwrap();
+                    let seen = [first, second, third];
+                    assert_eq!(deleted, seen.iter().any(|r| r.deleted));
+                    assert_eq!(discarded, seen.iter().any(|r| r.discarded));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gossip_ignores_malformed_node_ids() {
+        let store = Store::open_memory().unwrap();
+        let good = "ab".repeat(32);
+        let gossip = |node_id: String| PeerGossip {
+            node_id,
+            name: "x".to_string(),
+            addresses: vec![],
+            last_seen: 0,
+        };
+        let added = store
+            .apply_gossip(
+                &[
+                    gossip("界".repeat(20)),
+                    gossip("AB".repeat(32)),
+                    gossip(good.clone()),
+                ],
+                true,
+                "self",
+            )
+            .unwrap();
+        assert_eq!(added, 1);
+        let peers = store.list_peers().unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].node_id, good);
+    }
+
+    #[test]
+    fn reset_keeps_deletions_and_turns_sync_off() {
+        let store = Store::open_memory().unwrap();
+        let peer = Store::open_memory().unwrap();
+        let word = |at, deleted| WordRecord {
+            word: "gone".to_string(),
+            updated_at: at,
+            updated_by: "node".to_string(),
+            deleted,
+        };
+        let snippet = |at, deleted| SnippetRecord {
+            trigger: "t".to_string(),
+            replacement: "r".to_string(),
+            updated_at: at,
+            updated_by: "node".to_string(),
+            deleted,
+        };
+        let deleted = store.add_history("raw", "deleted", 1, 1, "node").unwrap();
+        // The peer still holds live copies from before the deletions.
+        peer.apply_history(&store.export_history().unwrap())
+            .unwrap();
+        peer.apply_words(&[word(10, false)]).unwrap();
+        peer.apply_snippets(&[snippet(10, false)]).unwrap();
+        store.delete_history(&deleted).unwrap();
+        store.apply_words(&[word(20, true)]).unwrap();
+        store.apply_snippets(&[snippet(20, true)]).unwrap();
+        store.add_history("raw", "live", 1, 1, "node").unwrap();
+        store.upsert_peer("peer", "peer", "", true).unwrap();
+        let mut fresh = AppSettings::default();
+        fresh.sync.enabled = false;
+        store.reset_all_data(&fresh).unwrap();
+        assert!(store.load_history(10, true).unwrap().is_empty());
+        assert!(!store.load_settings().sync.enabled);
+        // Pairing is kept, as the reset dialog promises.
+        assert!(store.get_peer("peer").unwrap().unwrap().trusted);
+        // Earlier deletions still win against the stale peer.
+        store
+            .apply_history(&peer.export_history().unwrap())
+            .unwrap();
+        store.apply_words(&peer.export_words().unwrap()).unwrap();
+        store
+            .apply_snippets(&peer.export_snippets().unwrap())
+            .unwrap();
+        assert!(
+            store
+                .load_history(10, true)
+                .unwrap()
+                .iter()
+                .all(|h| h.uuid != deleted)
+        );
+        assert!(store.load_words().unwrap().is_empty());
+        assert!(store.load_snippets().unwrap().is_empty());
+    }
 
     #[test]
     fn activity_counts_all_history_and_only_measured_speed() {

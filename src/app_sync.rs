@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use super::app::AppState;
 use super::app_settings::persist_prefs;
+use crate::device::short_id;
 use crate::i18n::{tr, trf};
 
 std::thread_local! {
@@ -45,14 +46,6 @@ fn list_signature(state: &AppState) -> String {
         discovered,
         busy
     )
-}
-
-fn short_id(node_id: &str) -> String {
-    if node_id.len() > 16 {
-        format!("{}…{}", &node_id[..8], &node_id[node_id.len() - 4..])
-    } else {
-        node_id.to_string()
-    }
 }
 
 fn ago(epoch_secs: i64) -> String {
