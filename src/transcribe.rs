@@ -2045,26 +2045,21 @@ fn openai_dictionary_hint(base: &str, words: &[String]) -> Vec<(&'static str, St
 /// when the base already ends in it).
 pub fn openai_transcriptions_url(base: &str) -> Result<reqwest::Url, String> {
     let mut url = reqwest::Url::parse(base.trim()).map_err(|e| format!("server URL: {e}"))?;
-    let segments: Vec<String> = url
-        .path_segments()
-        .ok_or("server URL has no path")?
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
-    let last = segments.last().map(String::as_str);
-    let full = last.is_some_and(|s| s.ends_with("transcriptions"));
-    let under_v1 = last == Some("v1");
-    let mut path = url
-        .path_segments_mut()
-        .map_err(|_| "server URL has no path".to_string())?;
-    path.clear().extend(&segments);
-    if !full {
-        if !under_v1 {
-            path.push("v1");
-        }
-        path.extend(["audio", "transcriptions"]);
+    if url.cannot_be_a_base() {
+        return Err("server URL has no path".to_string());
     }
-    drop(path);
+    // Work on the serialized path so an existing prefix keeps its exact
+    // encoding (`%20` stays `%20`) and inner slashes; only append.
+    let prefix = url.path().trim_end_matches('/').to_string();
+    let last = prefix.rsplit('/').next().unwrap_or("");
+    let path = if last.ends_with("transcriptions") {
+        prefix
+    } else if last == "v1" {
+        format!("{prefix}/audio/transcriptions")
+    } else {
+        format!("{prefix}/v1/audio/transcriptions")
+    };
+    url.set_path(&path);
     Ok(url)
 }
 

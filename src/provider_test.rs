@@ -138,14 +138,15 @@ pub fn llm_destination(entry: &LlmEntry) -> String {
     }
 }
 
-/// Origin plus path (trailing `/` ignored): `/first` and `/second` on
-/// one server are different services.
+/// Origin, path (trailing `/` ignored) and query: `/first` vs
+/// `/second`, or `?tenant=a` vs `?tenant=b`, are different services.
 fn service(url: &str) -> String {
     match Url::parse(url.trim()) {
         Ok(u) => format!(
-            "{}{}",
+            "{}{}{}",
             u.origin().ascii_serialization(),
-            u.path().trim_end_matches('/')
+            u.path().trim_end_matches('/'),
+            u.query().map(|q| format!("?{q}")).unwrap_or_default()
         ),
         Err(_) => url.trim().to_string(),
     }
@@ -720,6 +721,20 @@ mod tests {
         assert_ne!(stt_destination(&s1), stt_destination(&s3));
         assert_ne!(stt_destination(&s1), stt_destination(&s4));
         assert_ne!(stt_destination(&a), stt_destination(&s1));
+        // Query-routed tenants are separate services too.
+        let ta = stt(
+            SttEntryKind::SelfHosted,
+            "",
+            "https://h:8000/v1?tenant=a",
+            "k",
+        );
+        let tb = stt(
+            SttEntryKind::SelfHosted,
+            "",
+            "https://h:8000/v1?tenant=b",
+            "k",
+        );
+        assert_ne!(stt_destination(&ta), stt_destination(&tb));
         let o = llm(
             LlmKind::Ollama,
             CloudLlm::OpenAI,
@@ -791,6 +806,13 @@ mod tests {
             t("https://api.groq.com/openai/v1/audio/transcriptions/"),
             "https://api.groq.com/openai/v1/audio/transcriptions"
         );
+        // An existing prefix keeps its encoding and inner slashes.
+        assert_eq!(
+            t("http://h/team%20alpha/v1"),
+            "http://h/team%20alpha/v1/audio/transcriptions"
+        );
+        assert_eq!(t("http://h//a/v1"), "http://h//a/v1/audio/transcriptions");
+        assert_eq!(t("http://h:8000"), "http://h:8000/v1/audio/transcriptions");
         let m = |base: &str| {
             models_url(&crate::transcribe::openai_transcriptions_url(base).unwrap()).to_string()
         };

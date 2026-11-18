@@ -2503,6 +2503,10 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
         let (test_box, test_btn, test_row) =
             TestRow::new(&format!("{} — {}", tr("action.test"), entry.name));
         test_row.reset(crate::provider_test::stt_blocker(entry));
+        // Local configuration the shown/running result belongs to.
+        let seen = Rc::new(RefCell::new(crate::provider_test::local_config(
+            &state.settings.borrow().stt,
+        )));
         if matches!(entry.kind, SttEntryKind::Local) {
             // The local configuration lives in the pills, model list and
             // runtime pickers below: any change there drops a shown or
@@ -2510,14 +2514,14 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
             let state = state.clone();
             let row = test_row.clone();
             let alive = test_box.downgrade();
-            let mut seen = crate::provider_test::local_config(&state.settings.borrow().stt);
+            let seen = seen.clone();
             gtk4::glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
                 if alive.upgrade().is_none() {
                     return gtk4::glib::ControlFlow::Break;
                 }
                 let now = crate::provider_test::local_config(&state.settings.borrow().stt);
-                if now != seen {
-                    seen = now;
+                if now != *seen.borrow() {
+                    *seen.borrow_mut() = now;
                     row.reset(None);
                 }
                 gtk4::glib::ControlFlow::Continue
@@ -2528,6 +2532,9 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
             let entry = entry.clone();
             test_btn.connect_clicked(move |_| {
                 let settings = state.settings.borrow().stt.clone();
+                // A test started after a change belongs to the new config,
+                // so the next poll must not drop its result.
+                *seen.borrow_mut() = crate::provider_test::local_config(&settings);
                 let data_dir = data_dir(&state);
                 let entry = entry.clone();
                 test_row
