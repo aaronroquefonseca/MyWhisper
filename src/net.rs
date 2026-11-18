@@ -49,6 +49,7 @@ const CHUNK: usize = 60000;
 /// any build) is larger; checked before allocating.
 const FRAME_CAP: usize = NOISE_BUF;
 const IO_TIMEOUT: Duration = Duration::from_secs(15);
+const GUARDED_WRITE_TIMEOUT: Duration = Duration::from_millis(50);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Anyone can open a Noise session, so until the peer is proven and
 /// trusted the session gets a total deadline and small messages only.
@@ -129,21 +130,49 @@ fn time_left(deadline: Instant, what: &str) -> Result<Duration, String> {
 
 /// `write_all` bounded by a total `deadline`, so a peer reading one
 /// byte at a time cannot hold the connection forever.
-fn write_frame(stream: &mut TcpStream, bytes: &[u8], deadline: Instant) -> Result<(), String> {
+fn write_frame(
+    stream: &mut TcpStream,
+    bytes: &[u8],
+    deadline: Instant,
+    permission: Option<FramePermission<'_>>,
+) -> Result<(), String> {
     if bytes.len() > FRAME_CAP {
         return Err("frame too large".to_string());
     }
     let mut out = (bytes.len() as u32).to_be_bytes().to_vec();
     out.extend_from_slice(bytes);
     let mut sent = 0;
+    let mut idle_deadline = Instant::now() + IO_TIMEOUT;
     while sent < out.len() {
+        let timeout = time_left(deadline.min(idle_deadline), "write")?;
         stream
-            .set_write_timeout(Some(time_left(deadline, "write")?))
+            .set_write_timeout(Some(if permission.is_some() {
+                timeout.min(GUARDED_WRITE_TIMEOUT)
+            } else {
+                timeout
+            }))
             .map_err(|e| format!("timeout: {e}"))?;
-        match stream.write(&out[sent..]) {
+        // Withdrawal and writes serialize across processes via SQLite.
+        // Release the writer after each bounded syscall, even on a stall.
+        let guard = permission.map(FramePermission::acquire).transpose()?;
+        let result = stream.write(&out[sent..]);
+        drop(guard);
+        match result {
             Ok(0) => return Err("write: connection closed".to_string()),
-            Ok(n) => sent += n,
+            Ok(n) => {
+                sent += n;
+                idle_deadline = Instant::now() + IO_TIMEOUT;
+            }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e)
+                if permission.is_some()
+                    && matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+            {
+                std::thread::sleep(Duration::from_millis(5))
+            }
             Err(e) => return Err(format!("write: {e}")),
         }
     }
@@ -229,7 +258,7 @@ impl NoiseStream {
                 let n = hs
                     .write_message(&[], &mut buf)
                     .map_err(|e| format!("handshake write: {e}"))?;
-                write_frame(&mut stream, &buf[..n], deadline)?;
+                write_frame(&mut stream, &buf[..n], deadline, None)?;
                 if hs.is_handshake_finished() {
                     break;
                 }
@@ -251,7 +280,7 @@ impl NoiseStream {
                 let n = hs
                     .write_message(&[], &mut buf)
                     .map_err(|e| format!("handshake write: {e}"))?;
-                write_frame(&mut stream, &buf[..n], deadline)?;
+                write_frame(&mut stream, &buf[..n], deadline, None)?;
             }
         }
         let hash = hs.get_handshake_hash().to_vec();
@@ -282,36 +311,41 @@ impl NoiseStream {
         self.deadline = message_deadline(0);
     }
 
-    fn write_chunk(&mut self, plaintext: &[u8]) -> Result<(), String> {
+    fn write_chunk(
+        &mut self,
+        plaintext: &[u8],
+        permission: Option<FramePermission<'_>>,
+    ) -> Result<(), String> {
         let mut buf = vec![0u8; plaintext.len() + 32];
         let n = self
             .transport
             .write_message(plaintext, &mut buf)
             .map_err(|e| format!("encrypt: {e}"))?;
-        write_frame(&mut self.stream, &buf[..n], self.deadline)
+        #[cfg(test)]
+        if permission.is_some() {
+            tests::before_send();
+        }
+        write_frame(&mut self.stream, &buf[..n], self.deadline, permission)
     }
 
     /// Send one logical message (chunked at 60 KiB plaintext).
     pub fn send_msg(&mut self, data: &[u8]) -> Result<(), String> {
-        self.send_msg_checked(data, || Ok(()))
+        self.send_msg_checked(data, None)
     }
 
-    /// `send_msg` that runs `check` before every frame and stops at its
-    /// first error, leaving the peer a truncated message it rejects.
+    /// Permission withdrawal truncates the message so the peer rejects it.
     fn send_msg_checked(
         &mut self,
         data: &[u8],
-        mut check: impl FnMut() -> Result<(), String>,
+        permission: Option<FramePermission<'_>>,
     ) -> Result<(), String> {
         if self.authed {
             self.deadline = message_deadline(data.len());
         }
         let total = data.len() as u64;
-        check()?;
-        self.write_chunk(&total.to_be_bytes())?;
+        self.write_chunk(&total.to_be_bytes(), permission)?;
         for chunk in data.chunks(CHUNK) {
-            check()?;
-            self.write_chunk(chunk)?;
+            self.write_chunk(chunk, permission)?;
         }
         Ok(())
     }
@@ -427,6 +461,21 @@ fn may_sync(store: &Store, node_id: &str, epoch: i64) -> Result<(), String> {
         return Err("sync permission changed during the round".to_string());
     }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct FramePermission<'a> {
+    store: &'a Store,
+    node_id: &'a str,
+    epoch: i64,
+}
+
+impl<'a> FramePermission<'a> {
+    fn acquire(self) -> Result<rusqlite::Transaction<'a>, String> {
+        let guard = self.store.begin_merge().map_err(|e| format!("send: {e}"))?;
+        may_sync(self.store, self.node_id, self.epoch)?;
+        Ok(guard)
+    }
 }
 
 /// Run one side of an exchange over an encrypted session.
@@ -582,14 +631,12 @@ pub fn exchange(
         peers: gossip_out(&store, &creds.node_id),
     })
     .map_err(|e| format!("encode: {e}"))?;
-    // Re-checked before every frame: a withdrawal mid-send stops it.
-    let send_ours = |session: &mut NoiseStream| {
-        session.send_msg_checked(&ours, || {
-            #[cfg(test)]
-            tests::before_send();
-            may_sync(&store, &peer.node_id, epoch)
-        })
+    let permission = FramePermission {
+        store: &store,
+        node_id: &peer.node_id,
+        epoch,
     };
+    let send_ours = |session: &mut NoiseStream| session.send_msg_checked(&ours, Some(permission));
     let theirs: Payload = if initiator {
         send_ours(session)?;
         session.recv_json()?
@@ -1433,9 +1480,10 @@ mod tests {
 
     #[test]
     fn permission_withdrawn_mid_payload_stops_the_send() {
-        // A's payload spans many frames; A turns sync off after two.
+        // A turns sync off after encryption of the final frame, before
+        // its bytes reach the socket. B must reject the partial payload.
         let (id_a, id_b, db_a, db_b) = paired();
-        add_bulk_history(&db_a, 1, CHUNK * 3);
+        add_bulk_history(&db_a, 1, CHUNK);
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
         let (hook_db, frames) = (db_a.clone(), Arc::new(AtomicUsize::new(0)));
@@ -1534,7 +1582,7 @@ mod tests {
         let mut session = unknown_session(port);
         // Header announces 1 MiB; the server refuses before reading it.
         session
-            .write_chunk(&(1024u64 * 1024).to_be_bytes())
+            .write_chunk(&(1024u64 * 1024).to_be_bytes(), None)
             .unwrap();
         let err = server.join().unwrap().unwrap_err();
         assert!(err.contains("too large"), "server err: {err}");
@@ -1543,9 +1591,9 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let server = serve_one(listener, db_a.clone(), id_a.creds());
         let mut session = unknown_session(port);
-        session.write_chunk(&10u64.to_be_bytes()).unwrap();
+        session.write_chunk(&10u64.to_be_bytes(), None).unwrap();
         for _ in 0..3 {
-            let _ = session.write_chunk(&[]);
+            let _ = session.write_chunk(&[], None);
         }
         let err = server.join().unwrap().unwrap_err();
         assert!(err.contains("empty chunk"), "server err: {err}");

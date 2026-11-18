@@ -487,30 +487,36 @@ impl Store {
     /// settings row that cannot be read or decoded means off. Only a
     /// fresh store with no settings yet gets the default.
     pub fn sync_enabled(&self) -> bool {
-        Self::saved_sync_enabled(&self.settings_json())
+        match self.saved_settings() {
+            Ok(Some(settings)) => settings.sync.enabled,
+            Ok(None) => crate::settings::SyncSettings::default().enabled,
+            Err(_) => false,
+        }
     }
 
-    fn settings_json(&self) -> rusqlite::Result<Option<serde_json::Value>> {
+    fn saved_settings(&self) -> rusqlite::Result<Option<AppSettings>> {
         self.conn
             .query_row("SELECT value FROM kv WHERE key = 'settings'", [], |row| {
                 let json: String = row.get(0)?;
-                // Invalid JSON is a saved null value for the permission check.
-                Ok(serde_json::from_str(&json).unwrap_or(serde_json::Value::Null))
+                let decode_error = |error: serde_json::Error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                };
+                let mut value: serde_json::Value =
+                    serde_json::from_str(&json).map_err(decode_error)?;
+                let sync_enabled = value.pointer("/sync/enabled").and_then(|v| v.as_bool());
+                restore_local_vendor(&mut value);
+                let mut settings: AppSettings =
+                    serde_json::from_value(value).map_err(decode_error)?;
+                // Saved settings require explicit permission even when an
+                // older valid blob relies on serde's default for this field.
+                settings.sync.enabled = sync_enabled == Some(true);
+                Ok(settings)
             })
             .optional()
-    }
-
-    fn saved_sync_enabled(json: &rusqlite::Result<Option<serde_json::Value>>) -> bool {
-        match json {
-            Ok(None) => crate::settings::SyncSettings::default().enabled,
-            Ok(Some(value)) => {
-                value
-                    .pointer("/sync/enabled")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(true)
-            }
-            Err(_) => false,
-        }
     }
 
     pub fn sync_epoch(&self) -> rusqlite::Result<i64> {
@@ -535,16 +541,14 @@ impl Store {
     // -- settings (JSON blob under kv['settings']) -------------------------
 
     pub fn load_settings(&self) -> AppSettings {
-        let json = self.settings_json();
-        let sync_enabled = Self::saved_sync_enabled(&json);
-        let mut settings: AppSettings = json
-            .ok()
-            .flatten()
-            .and_then(|mut v| {
-                restore_local_vendor(&mut v);
-                serde_json::from_value(v).ok()
-            })
-            .unwrap_or_default();
+        let mut settings = match self.saved_settings() {
+            Ok(settings) => settings.unwrap_or_default(),
+            Err(_) => {
+                let mut settings = AppSettings::default();
+                settings.sync.enabled = false;
+                settings
+            }
+        };
         // Pre-list configs seed one entry from legacy fields.
         settings.language_models.ensure_seed();
         settings.stt.ensure_seed();
@@ -555,7 +559,6 @@ impl Store {
                 e.thinking = Some(false);
             }
         }
-        settings.sync.enabled = sync_enabled;
         // Typed tables are authoritative for dictionary content.
         settings.dictionary.words = self.load_words().unwrap_or_default();
         settings.dictionary.snippets = self.load_snippets().unwrap_or_default();
@@ -1617,6 +1620,7 @@ mod tests {
             r#"{"sync":null}"#,
             r#"{"sync":[]}"#,
             r#"{"sync":{}}"#,
+            r#"{"sync":{"enabled":true}}"#,
         ] {
             store
                 .conn
@@ -1626,14 +1630,17 @@ mod tests {
             // The UI switch shows what the engine obeys.
             assert!(!store.load_settings().sync.enabled, "{blob}");
         }
+        let mut invalid = serde_json::to_value(AppSettings::default()).unwrap();
+        invalid["sync"]["listen_port"] = serde_json::json!("invalid");
         store
             .conn
             .execute(
                 "UPDATE kv SET value = ?1 WHERE key = 'settings'",
-                [r#"{"sync":{"enabled":true}}"#],
+                [invalid.to_string()],
             )
             .unwrap();
-        assert!(store.sync_enabled());
+        assert!(!store.sync_enabled());
+        assert!(!store.load_settings().sync.enabled);
         store.conn.execute_batch("DROP TABLE kv").unwrap();
         assert!(!store.sync_enabled());
     }
