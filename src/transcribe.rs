@@ -824,6 +824,104 @@ static SERVER_GENERATION: AtomicU64 = AtomicU64::new(0);
 pub fn server_generation() -> u64 {
     SERVER_GENERATION.load(Ordering::Acquire)
 }
+
+/// Local capture/finalization in flight. The service defers server
+/// control transitions (never destruction of active use) while set.
+pub(crate) fn inference_active() -> bool {
+    ACTIVE_SESSIONS.load(Ordering::Acquire) > 0 || FINAL_COUNT.load(Ordering::Acquire) > 0
+}
+
+/// Primary engine identity for live reconciliation: everything that
+/// selects or addresses the supervised server. Secrets never included.
+/// Compared as an opaque token; only inequality (with autostart) drives
+/// control transitions. Shared by the watcher (over settings) and the
+/// warm path (over an admitted plan) so both observe the same identity.
+pub(crate) fn plan_identity(
+    plan: &Plan,
+    gpu_backend: crate::settings::GpuBackendSetting,
+    sherpa_backend: crate::settings::SherpaBackendSetting,
+    net: &ServerNet,
+) -> String {
+    let backend = format!("{gpu_backend:?}/{sherpa_backend:?}");
+    let host = format!(
+        "{}|{}",
+        net.host,
+        net.port_override.map(|p| p.to_string()).unwrap_or_default()
+    );
+    match plan {
+        Plan::WhisperHttp { model_bin, lang } => {
+            format!("whisper|{}|{lang}|{backend}|{host}", model_bin.display())
+        }
+        Plan::SherpaOnline { model_dir } => {
+            format!("sherpa-online|{}|{backend}|{host}", model_dir.display())
+        }
+        Plan::SherpaOffline { model_dir, lang } => {
+            format!(
+                "sherpa-offline|{}|{lang}|{backend}|{host}",
+                model_dir.display()
+            )
+        }
+        Plan::WhistleCli {
+            engine,
+            model,
+            lang,
+        } => format!(
+            "whistle|{}|{}|{lang}|{host}",
+            engine.display(),
+            model.display()
+        ),
+        Plan::SelfHostedWs { url, .. } => format!("self-hosted|{url}"),
+        Plan::CloudOpenAiCompat {
+            base, model, lang, ..
+        } => {
+            format!("openai-compat|{base}|{model}|{lang}")
+        }
+        Plan::CloudDeepgram {
+            base, model, lang, ..
+        } => {
+            format!("deepgram|{base}|{model}|{lang}")
+        }
+        Plan::CloudGemini { model, lang, .. } => {
+            format!("gemini|{model}|{lang}")
+        }
+    }
+}
+
+/// Primary identity of current settings, or `"none"` when no plan
+/// resolves. See `plan_identity` for the covered fields.
+pub(crate) fn stt_primary_id(stt: &crate::settings::SttSettings, data_dir: &Path) -> String {
+    match plan_for(stt, data_dir) {
+        Ok(plan) => {
+            let net = server_net(stt);
+            plan_identity(&plan, stt.gpu_backend, stt.sherpa_backend, &net)
+        }
+        Err(_) => "none".to_string(),
+    }
+}
+
+/// A warmup whose admitted plan no longer matches live settings was
+/// superseded by a newer save: abort before touching servers. Press and
+/// deliver paths keep their admitted bundles (existing input-edge
+/// ownership); only speculative warming revalidates here.
+pub(crate) fn warmup_superseded(
+    plan: &Plan,
+    gpu_backend: crate::settings::GpuBackendSetting,
+    sherpa_backend: crate::settings::SherpaBackendSetting,
+    net: &ServerNet,
+    data_dir: &Path,
+) -> Result<(), String> {
+    let admitted = plan_identity(plan, gpu_backend, sherpa_backend, net);
+    let live = (|| {
+        let store = crate::store::Store::open_existing(&data_dir.join("state.db")).ok()?;
+        let settings = store.load_settings();
+        Some(stt_primary_id(&settings.stt, data_dir))
+    })();
+    match live {
+        Some(live) if live == admitted => Ok(()),
+        Some(_) => Err("control settings changed during warmup; superseded warmup aborted".into()),
+        None => Err("live settings unavailable; warmup deferred".into()),
+    }
+}
 struct StartupGuard {
     name: String,
     instance: u64,
@@ -2416,7 +2514,9 @@ fn sherpa_offline_transcribe_owned(
 
 fn whisper_json_text(v: &serde_json::Value) -> String {
     if let Some(t) = v.get("text").and_then(|t| t.as_str()) {
-        return t.trim().to_string();
+        // whisper.cpp's server joins segments with "\n" at timing cuts, not
+        // speaker intent; fold them back into one line.
+        return t.split_whitespace().collect::<Vec<_>>().join(" ");
     }
     // Fallback: concatenate per-segment texts.
     v.get("segments")
@@ -2486,12 +2586,37 @@ fn lang_param(lang: &str) -> Option<&str> {
     }
 }
 
+fn openai_dictionary_hint(base: &str, words: &[String]) -> Vec<(&'static str, String)> {
+    let host = reqwest::Url::parse(base)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned));
+    let is_mistral = host.as_deref() == Some("api.mistral.ai");
+    let budget = if host.as_deref() == Some("api.groq.com") {
+        crate::textnorm::GROQ_PROMPT_CHARS
+    } else {
+        crate::textnorm::WHISPER_PROMPT_CHARS
+    };
+    if is_mistral {
+        return words
+            .iter()
+            .map(|w| w.trim())
+            .filter(|w| !w.is_empty())
+            .map(|word| ("context_bias", word.to_string()))
+            .take(100)
+            .collect();
+    }
+    crate::textnorm::dictionary_prompt(words, budget)
+        .map(|hint| ("prompt", hint))
+        .into_iter()
+        .collect()
+}
+
 fn openai_compat_transcribe(
     base: &str,
     key: &str,
     model: &str,
     lang: &str,
-    prompt: Option<&str>,
+    words: &[String],
     wav: &[u8],
     operation: &Operation,
 ) -> Result<String, String> {
@@ -2510,11 +2635,8 @@ fn openai_compat_transcribe(
     if let Some(l) = lang_param(lang) {
         fields.push(("language", l));
     }
-    if let Some(p) = prompt
-        && !p.is_empty()
-    {
-        fields.push(("prompt", p));
-    }
+    let hint = openai_dictionary_hint(base, words);
+    fields.extend(hint.iter().map(|(name, value)| (*name, value.as_str())));
     let body = multipart_body(
         boundary,
         &fields,
@@ -2539,20 +2661,51 @@ fn deepgram_transcribe(
     key: &str,
     model: &str,
     lang: &str,
+    words: &[String],
     wav: &[u8],
     operation: &Operation,
 ) -> Result<String, String> {
     operation.check()?;
-    let mut url = format!(
+    let mut url = reqwest::Url::parse(&format!(
         "{}/v1/listen?model={}&smart_format=true",
         base.trim_end_matches('/'),
         model
-    );
-    if let Some(l) = lang_param(lang) {
-        url.push_str(&format!("&language={l}"));
+    ))
+    .map_err(|e| format!("deepgram URL: {e}"))?;
+    {
+        let mut query = url.query_pairs_mut();
+        if let Some(l) = lang_param(lang) {
+            query.append_pair("language", l);
+        }
+        // Nova-3 uses plain keyterms; older models use keyword boosting.
+        let parameter = if model.starts_with("nova-3") {
+            "keyterm"
+        } else {
+            "keywords"
+        };
+        // Deepgram does not expose its tokenizer. Use a conservative UTF-8
+        // byte budget (including term separators), below its 500-token cap.
+        let mut remaining = if parameter == "keyterm" {
+            450
+        } else {
+            usize::MAX
+        };
+        for word in words
+            .iter()
+            .map(|w| w.trim())
+            .filter(|w| !w.is_empty())
+            .take(100)
+        {
+            let cost = word.len().saturating_add(1);
+            if cost > remaining {
+                break;
+            }
+            remaining -= cost;
+            query.append_pair(parameter, word);
+        }
     }
     let text = crate::provider_io::post(
-        &url,
+        url.as_str(),
         &[
             ("Authorization", &format!("Token {key}")),
             ("Content-Type", "audio/wav"),
@@ -2573,19 +2726,34 @@ fn gemini_transcribe(
     key: &str,
     model: &str,
     lang: &str,
+    words: &[String],
     wav: &[u8],
     operation: &Operation,
 ) -> Result<String, String> {
     operation.check()?;
-    use base64::Engine as _;
     let url =
         format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
-    let prompt = if let Some(l) = lang_param(lang) {
+    let body = gemini_transcription_body(lang, words, wav);
+    let text = http_post_json(&url, &[("x-goog-api-key", key)], &body, operation)?;
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("gemini json: {}", crate::diagnostics::json(&e)))?;
+    crate::provider_contract::gemini_answer(&v).map(|text| text.trim().to_owned())
+}
+
+fn gemini_transcription_body(lang: &str, words: &[String], wav: &[u8]) -> serde_json::Value {
+    use base64::Engine as _;
+    let mut prompt = if let Some(l) = lang_param(lang) {
         format!("Transcribe this {l} audio exactly. Return only the transcription, no commentary.")
     } else {
         "Transcribe this audio exactly. Return only the transcription, no commentary.".to_string()
     };
-    let body = serde_json::json!({
+    if let Some(hints) =
+        crate::textnorm::dictionary_prompt(words, crate::textnorm::WHISPER_PROMPT_CHARS)
+    {
+        prompt.push_str("\nSpelling hints (use only when spoken in the audio): ");
+        prompt.push_str(&hints);
+    }
+    serde_json::json!({
         "contents": [{
             "parts": [
                 {"text": prompt},
@@ -2596,11 +2764,7 @@ fn gemini_transcribe(
             ],
         }],
         "generationConfig": {"temperature": 0.0},
-    });
-    let text = http_post_json(&url, &[("x-goog-api-key", key)], &body, operation)?;
-    let v: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| format!("gemini json: {}", crate::diagnostics::json(&e)))?;
-    crate::provider_contract::gemini_answer(&v).map(|text| text.trim().to_owned())
+    })
 }
 
 // ----------------------------------------------------------- orchestration
@@ -4038,20 +4202,7 @@ fn transcribe_blocking(
             lang,
         } => {
             let wav = wav_bytes_16k(&audio::f32_to_i16(f32s));
-            // Groq caps prompts at 890 chars; whisper-family takes
-            // 900; anything else gets no prompt (no channel).
-            let budget = if base.contains("groq.com") {
-                Some(crate::textnorm::GROQ_PROMPT_CHARS)
-            } else if base.contains("openai.com")
-                || base.contains("127.0.0.1")
-                || base.contains("localhost")
-            {
-                Some(crate::textnorm::WHISPER_PROMPT_CHARS)
-            } else {
-                None
-            };
-            let prompt = budget.and_then(|b| crate::textnorm::dictionary_prompt(words, b));
-            openai_compat_transcribe(base, key, model, lang, prompt.as_deref(), &wav, operation)
+            openai_compat_transcribe(base, key, model, lang, words, &wav, operation)
         }
         Plan::CloudDeepgram {
             base,
@@ -4060,11 +4211,11 @@ fn transcribe_blocking(
             lang,
         } => {
             let wav = wav_bytes_16k(&audio::f32_to_i16(f32s));
-            deepgram_transcribe(base, key, model, lang, &wav, operation)
+            deepgram_transcribe(base, key, model, lang, words, &wav, operation)
         }
         Plan::CloudGemini { key, model, lang } => {
             let wav = wav_bytes_16k(&audio::f32_to_i16(f32s));
-            gemini_transcribe(key, model, lang, &wav, operation)
+            gemini_transcribe(key, model, lang, words, &wav, operation)
         }
     }
 }
@@ -4105,10 +4256,12 @@ pub fn ensure_for_plan_at_generation(
 /// The local runtime slot is leased through readiness and actual inference.
 /// Optional warmup never steals it. Session owners wait with their authority
 /// and the existing inference budget, retaining their recording in RAM.
-struct EngineLease;
+/// The service reconciliation tick holds it across destructive control so
+/// admitted inference is never destroyed by a concurrent watcher decision.
+pub(crate) struct EngineLease;
 static ENGINE_LEASED: AtomicBool = AtomicBool::new(false);
 impl EngineLease {
-    fn acquire(operation: &Operation, wait: bool) -> Result<Self, String> {
+    pub(crate) fn acquire(operation: &Operation, wait: bool) -> Result<Self, String> {
         let deadline = Instant::now() + INFERENCE_TIMEOUT;
         loop {
             operation.check()?;
@@ -7240,6 +7393,595 @@ while True:
     }
 
     #[test]
+    fn fresh_admission_reuses_current_and_restarts_after_stop_with_cold_polls() {
+        let Some(_shutdown) = isolated_capture_probe(
+            "fresh_admission_reuses_current_and_restarts_after_stop_with_cold_polls",
+        ) else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        // P05/P08/P11-P13 adapted to the single-server model: the original
+        // server identity survives attempts and reuse; Stop wins with no
+        // resurrection; fresh admission starts normally; status polls track
+        // every phase (cold → live → live → cold → live → cold).
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().to_owned();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let net = ServerNet {
+            host: "127.0.0.1",
+            port_override: Some(port),
+        };
+        let key = "synthetic-fresh".to_string();
+        fn spawn_fake(port: u16) -> Result<crate::child::OwnedChild, String> {
+            use std::process::{Command, Stdio};
+            let mut command = Command::new("python3");
+            command
+                .args([
+                    "-m",
+                    "http.server",
+                    &port.to_string(),
+                    "--bind",
+                    "127.0.0.1",
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            crate::child::OwnedChild::spawn(&mut command).map_err(|e| e.to_string())
+        }
+        let whisper_live = || {
+            server_status(&data, &net)
+                .into_iter()
+                .find(|(name, _)| name == "whisper")
+                .map(|(_, live)| live)
+                .unwrap_or(false)
+        };
+        let gated = || {
+            let generation = server_generation();
+            Operation::unrestricted().with_permission(move || server_generation() == generation)
+        };
+        assert!(!whisper_live());
+        ensure_server(
+            &data,
+            "whisper",
+            key.clone(),
+            port,
+            move || spawn_fake(port),
+            || Ok(()),
+            &gated(),
+        )
+        .unwrap();
+        let pid1 = servers().lock().unwrap()["whisper"].child.0.id();
+        assert!(port_open(port));
+        assert!(whisper_live());
+        // Re-admission reuses the current server: no duplicate, same PID.
+        ensure_server(
+            &data,
+            "whisper",
+            key.clone(),
+            port,
+            move || spawn_fake(port),
+            || Ok(()),
+            &gated(),
+        )
+        .unwrap();
+        assert_eq!(servers().lock().unwrap()["whisper"].child.0.id(), pid1);
+        assert!(whisper_live());
+        // A stale admission is rejected before any mutation: original PID,
+        // listener and map entry survive, and no second listener appears.
+        let dead = Arc::new(AtomicBool::new(false));
+        dead.store(true, Ordering::Release);
+        let stale = Operation::cancellable(dead);
+        assert!(
+            ensure_server(
+                &data,
+                "whisper",
+                "synthetic-stale".into(),
+                port,
+                move || spawn_fake(port),
+                || Ok(()),
+                &stale
+            )
+            .is_err()
+        );
+        assert_eq!(servers().lock().unwrap()["whisper"].child.0.id(), pid1);
+        assert_eq!(servers().lock().unwrap().len(), 1);
+        assert!(port_open(port));
+        assert!(whisper_live());
+        // Stop wins: entry gone, child reaped, socket closed, polls cold.
+        drop_servers(root.path());
+        assert!(servers().lock().unwrap().is_empty());
+        assert!(!std::path::Path::new(&format!("/proc/{pid1}")).exists());
+        assert!(!port_open(port));
+        assert!(!whisper_live());
+        // Fresh admission after Stop starts normally with a new identity.
+        ensure_server(
+            &data,
+            "whisper",
+            key.clone(),
+            port,
+            move || spawn_fake(port),
+            || Ok(()),
+            &gated(),
+        )
+        .unwrap();
+        let pid2 = servers().lock().unwrap()["whisper"].child.0.id();
+        assert_ne!(pid1, pid2);
+        assert!(port_open(port));
+        assert!(whisper_live());
+        drop_servers(root.path());
+        assert!(!whisper_live());
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(servers().lock().unwrap().is_empty());
+    }
+
+    fn selfhosted_settings(url: String, auto: bool) -> crate::settings::SttSettings {
+        let mut settings = crate::settings::SttSettings::default();
+        settings.entries.truncate(1);
+        settings.entries[0].kind = crate::settings::SttEntryKind::SelfHosted;
+        settings.entries[0].url = url;
+        settings.entries[0].streaming = false;
+        settings.auto_start_server = auto;
+        settings
+    }
+
+    #[test]
+    fn stt_tick_ignores_unchanged_settings() {
+        let Some(_shutdown) = isolated_capture_probe("stt_tick_ignores_unchanged_settings") else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        let Some(_shutdown) = isolated_capture_probe("stt_tick_ignores_unchanged_settings") else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("state.db");
+        let writer = crate::store::Store::open(&db).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = selfhosted_settings("http://127.0.0.1:9".into(), true);
+        writer.save_settings(&settings).unwrap();
+        let mut last = None;
+        let mut stt_disabled = None;
+        crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+        let baseline = last.clone();
+        assert!(baseline.is_some());
+        crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+        assert_eq!(last, baseline);
+        assert!(servers().lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn stt_tick_disable_keeps_running_server_without_bounce() {
+        let Some(_shutdown) =
+            isolated_capture_probe("stt_tick_disable_keeps_running_server_without_bounce")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        let Some(_shutdown) =
+            isolated_capture_probe("stt_tick_disable_keeps_running_server_without_bounce")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        // P05 adapted: disabling autostart preserves the running server.
+        use std::process::{Command, Stdio};
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().to_owned();
+        let db = root.path().join("state.db");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let operation = Operation::unrestricted();
+        ensure_server(
+            &data,
+            "synthetic-keep",
+            "synthetic-keep".into(),
+            port,
+            || {
+                let mut command = Command::new("python3");
+                command
+                    .args([
+                        "-m",
+                        "http.server",
+                        &port.to_string(),
+                        "--bind",
+                        "127.0.0.1",
+                    ])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                crate::child::OwnedChild::spawn(&mut command).map_err(|e| e.to_string())
+            },
+            || Ok(()),
+            &operation,
+        )
+        .unwrap();
+        let pid = servers().lock().unwrap()["synthetic-keep"].child.0.id();
+        let writer = crate::store::Store::open(&db).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = selfhosted_settings("http://127.0.0.1:9".into(), true);
+        writer.save_settings(&settings).unwrap();
+        let mut last = None;
+        let mut stt_disabled = None;
+        crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+        assert!(last.is_some());
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = false;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+        assert_eq!(last.as_ref().map(|pair| pair.1), Some(false));
+        assert_eq!(
+            servers().lock().unwrap()["synthetic-keep"].child.0.id(),
+            pid
+        );
+        assert!(port_open(port));
+        drop_servers(root.path());
+    }
+
+    #[test]
+    fn stt_tick_toggle_on_warms_current_and_unresolvable_retries() {
+        let Some(_shutdown) =
+            isolated_capture_probe("stt_tick_toggle_on_warms_current_and_unresolvable_retries")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        let Some(_shutdown) =
+            isolated_capture_probe("stt_tick_toggle_on_warms_current_and_unresolvable_retries")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("state.db");
+        let writer = crate::store::Store::open(&db).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = selfhosted_settings("http://127.0.0.1:9".into(), false);
+        writer.save_settings(&settings).unwrap();
+        let mut last = None;
+        let mut stt_disabled = None;
+        crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+        let baseline = last.clone();
+        // Toggle on: foreign plan warms trivially (no spawn) and advances.
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+        assert_ne!(last, baseline);
+        assert_eq!(last.as_ref().map(|pair| pair.1), Some(true));
+        // Unresolvable primary: failure retries without advancing.
+        let mut settings = writer.load_settings();
+        settings.stt.entries.clear();
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+        assert_eq!(last.as_ref().map(|pair| pair.1), Some(true));
+        let primary = stt_primary_id(&writer.load_settings().stt, root.path());
+        assert_eq!(primary, "none");
+    }
+
+    #[test]
+    fn stt_tick_primary_change_lazy_stops_when_auto_off() {
+        let Some(_shutdown) =
+            isolated_capture_probe("stt_tick_primary_change_lazy_stops_when_auto_off")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        let Some(_shutdown) =
+            isolated_capture_probe("stt_tick_primary_change_lazy_stops_when_auto_off")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        // Primary moved while autostart is off: stale supervised servers
+        // must not serve; last advances to the lazy state.
+        use std::process::{Command, Stdio};
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().to_owned();
+        let db = root.path().join("state.db");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let operation = Operation::unrestricted();
+        ensure_server(
+            &data,
+            "synthetic-old",
+            "synthetic-old".into(),
+            port,
+            || {
+                let mut command = Command::new("python3");
+                command
+                    .args([
+                        "-m",
+                        "http.server",
+                        &port.to_string(),
+                        "--bind",
+                        "127.0.0.1",
+                    ])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                crate::child::OwnedChild::spawn(&mut command).map_err(|e| e.to_string())
+            },
+            || Ok(()),
+            &operation,
+        )
+        .unwrap();
+        let pid = servers().lock().unwrap()["synthetic-old"].child.0.id();
+        let writer = crate::store::Store::open(&db).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = selfhosted_settings("http://127.0.0.1:9".into(), false);
+        writer.save_settings(&settings).unwrap();
+        let mut last = None;
+        let mut stt_disabled = None;
+        crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+        let mut settings = writer.load_settings();
+        settings.stt.entries[0].url = "http://127.0.0.1:10".into();
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+        assert!(servers().lock().unwrap().is_empty());
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        assert!(!port_open(port));
+    }
+
+    #[test]
+    fn stt_tick_torn_snapshot_defers_without_advancing() {
+        let Some(_shutdown) =
+            isolated_capture_probe("stt_tick_torn_snapshot_defers_without_advancing")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        let Some(_shutdown) =
+            isolated_capture_probe("stt_tick_torn_snapshot_defers_without_advancing")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        // A control transition landing inside the settings snapshot window
+        // defers the tick: no application, no baseline advance.
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("state.db");
+        let writer = crate::store::Store::open(&db).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = selfhosted_settings("http://127.0.0.1:9".into(), false);
+        writer.save_settings(&settings).unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (proceed_tx, proceed_rx) = mpsc::channel();
+        *crate::service::RECONCILE_TICK_PAUSE.lock().unwrap() = Some((entered_tx, proceed_rx));
+        let tick_db = db.clone();
+        let worker = std::thread::spawn(move || {
+            let mut last = None;
+            let mut stt_disabled = None;
+            crate::service::stt_reconcile_tick(&tick_db, &mut last, &mut stt_disabled);
+            last
+        });
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        drop_servers(root.path());
+        proceed_tx.send(()).unwrap();
+        assert!(worker.join().unwrap().is_none());
+        assert!(
+            crate::service::RECONCILE_TICK_PAUSE
+                .lock()
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    struct ActiveHold {
+        previous: usize,
+    }
+    impl ActiveHold {
+        fn new() -> Self {
+            let previous = ACTIVE_SESSIONS.swap(1, Ordering::AcqRel);
+            Self { previous }
+        }
+    }
+    impl Drop for ActiveHold {
+        fn drop(&mut self) {
+            ACTIVE_SESSIONS.store(self.previous, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn stt_tick_defers_during_active_inference() {
+        let Some(_shutdown) = isolated_capture_probe("stt_tick_defers_during_active_inference")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        let Some(_shutdown) = isolated_capture_probe("stt_tick_defers_during_active_inference")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("state.db");
+        let writer = crate::store::Store::open(&db).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = selfhosted_settings("http://127.0.0.1:9".into(), false);
+        writer.save_settings(&settings).unwrap();
+        let mut last = None;
+        let mut stt_disabled = None;
+        crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+        let _active = ActiveHold::new();
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        writer.save_settings(&settings).unwrap();
+        crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+        assert_eq!(last.as_ref().map(|pair| pair.1), Some(false));
+        drop(_active);
+        crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+        assert_eq!(last.as_ref().map(|pair| pair.1), Some(true));
+    }
+
+    #[test]
+    fn stt_stop_stays_cold_across_unchanged_polls() {
+        // P02/P06/P09 adapted: a manual Stop with unchanged settings is
+        // never resurrected by later polls; Stop intent survives retries.
+        let Some(_shutdown) = isolated_capture_probe("stt_stop_stays_cold_across_unchanged_polls")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        use std::process::{Command, Stdio};
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().to_owned();
+        let db = root.path().join("state.db");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let operation = Operation::unrestricted();
+        ensure_server(
+            &data,
+            "synthetic-stop",
+            "synthetic-stop".into(),
+            port,
+            || {
+                let mut command = Command::new("python3");
+                command
+                    .args([
+                        "-m",
+                        "http.server",
+                        &port.to_string(),
+                        "--bind",
+                        "127.0.0.1",
+                    ])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                crate::child::OwnedChild::spawn(&mut command).map_err(|e| e.to_string())
+            },
+            || Ok(()),
+            &operation,
+        )
+        .unwrap();
+        let pid = servers().lock().unwrap()["synthetic-stop"].child.0.id();
+        let writer = crate::store::Store::open(&db).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = selfhosted_settings("http://127.0.0.1:9".into(), true);
+        writer.save_settings(&settings).unwrap();
+        let mut last = None;
+        let mut stt_disabled = None;
+        crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+        let baseline = last.clone();
+        drop_servers(root.path());
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        for _ in 0..3 {
+            crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+            assert!(servers().lock().unwrap().is_empty());
+            assert!(!port_open(port));
+            assert_eq!(last, baseline);
+        }
+    }
+
+    #[test]
+    fn warmup_superseded_detects_settings_moves() {
+        // Failure-4b predicate: a warmup admitted for X must abort once a
+        // pure settings save moves live intent to Y. Press/deliver paths
+        // keep admitted bundles (untouched); speculative warming (direct
+        // and deferred workers) revalidates through this predicate.
+        let Some(_shutdown) = isolated_capture_probe("warmup_superseded_detects_settings_moves")
+        else {
+            return;
+        };
+        let root = tempfile::tempdir().unwrap();
+        let writer = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = selfhosted_settings("http://127.0.0.1:9".into(), true);
+        writer.save_settings(&settings).unwrap();
+        let plan = plan_for(&settings.stt, root.path()).unwrap();
+        let net = server_net(&settings.stt);
+        assert!(
+            warmup_superseded(
+                &plan,
+                GpuBackendSetting::Cpu,
+                SherpaBackendSetting::Cpu,
+                &net,
+                root.path()
+            )
+            .is_ok()
+        );
+        let mut settings = writer.load_settings();
+        settings.stt.entries[0].url = "http://127.0.0.1:10".into();
+        writer.save_settings(&settings).unwrap();
+        let error = warmup_superseded(
+            &plan,
+            GpuBackendSetting::Cpu,
+            SherpaBackendSetting::Cpu,
+            &net,
+            root.path(),
+        )
+        .unwrap_err();
+        assert!(error.contains("superseded"), "{error}");
+        assert!(servers().lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn server_stop_command_and_tick_stay_quiet_together() {
+        // End-to-end command-loop coherence: an explicit stop command
+        // consumed in service order leaves nothing for the tick to
+        // resurrect, and later unchanged ticks stay cold.
+        let Some(_shutdown) =
+            isolated_capture_probe("server_stop_command_and_tick_stay_quiet_together")
+        else {
+            return;
+        };
+        crate::runtime::init().unwrap();
+        use std::process::{Command, Stdio};
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().to_owned();
+        let db = root.path().join("state.db");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let operation = Operation::unrestricted();
+        ensure_server(
+            &data,
+            "synthetic-cmd",
+            "synthetic-cmd".into(),
+            port,
+            || {
+                let mut command = Command::new("python3");
+                command
+                    .args([
+                        "-m",
+                        "http.server",
+                        &port.to_string(),
+                        "--bind",
+                        "127.0.0.1",
+                    ])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                crate::child::OwnedChild::spawn(&mut command).map_err(|e| e.to_string())
+            },
+            || Ok(()),
+            &operation,
+        )
+        .unwrap();
+        let writer = crate::store::Store::open(&db).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt = selfhosted_settings("http://127.0.0.1:9".into(), true);
+        writer.save_settings(&settings).unwrap();
+        let mut last = None;
+        let mut stt_disabled = None;
+        crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+        writer.set_server_cmd("stop").unwrap();
+        // Service order: consume the command (drop), then reconcile.
+        let command = writer.take_server_cmd().unwrap();
+        assert_eq!(command.as_deref(), Some("stop"));
+        drop_servers(root.path());
+        assert!(servers().lock().unwrap().is_empty());
+        crate::service::stt_reconcile_tick(&db, &mut last, &mut stt_disabled);
+        assert!(servers().lock().unwrap().is_empty());
+        assert!(!port_open(port));
+    }
+
+    #[test]
     fn delayed_release_cannot_detach_or_capture_samples_for_the_next_recording() {
         let Some(_shutdown) = isolated_capture_probe(
             "delayed_release_cannot_detach_or_capture_samples_for_the_next_recording",
@@ -8350,8 +9092,209 @@ while True:
         let v: serde_json::Value = serde_json::from_str(r#"{"text":" hi "}"#).unwrap();
         assert_eq!(whisper_json_text(&v), "hi");
         let v: serde_json::Value =
+            serde_json::from_str(r#"{"text":" open for this\n project.\n You can\n"}"#).unwrap();
+        assert_eq!(whisper_json_text(&v), "open for this project. You can");
+        let v: serde_json::Value =
             serde_json::from_str(r#"{"segments":[{"text":"foo "},{"text":"bar"}]}"#).unwrap();
         assert_eq!(whisper_json_text(&v), "foo bar");
+    }
+
+    /// Capture a real HTTP request, including its complete multipart body.
+    fn capture_transcription(
+        plan: impl FnOnce(String) -> Plan,
+        reply: &'static str,
+        words: &[String],
+    ) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 4096];
+            loop {
+                let count = socket.read(&mut buffer).unwrap();
+                assert_ne!(count, 0);
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]);
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                reply.len(),
+                reply
+            )
+            .unwrap();
+            String::from_utf8_lossy(&request).into_owned()
+        });
+        let result = transcribe_blocking(
+            &plan(base),
+            &[0.0; 16],
+            words,
+            &server_net(&SttSettings::default()),
+            &Operation::unrestricted(),
+        );
+        let request = server.join().unwrap();
+        assert_eq!(result.unwrap(), "hello");
+        request
+    }
+
+    #[test]
+    fn remote_http_sends_dictionary() {
+        let words = vec!["  Acme  ".into(), "José".into(), " ".into()];
+        for words in [&words[..], &[][..]] {
+            let request = capture_transcription(
+                |base| Plan::CloudOpenAiCompat {
+                    base: format!("{base}/v1"),
+                    key: String::new(),
+                    model: "remote-model".into(),
+                    lang: "es".into(),
+                },
+                r#"{"text":"hello"}"#,
+                words,
+            );
+            assert!(request.starts_with("POST /v1/audio/transcriptions "));
+            assert!(request.contains("name=\"file\"; filename=\"audio.wav\""));
+            assert!(request.contains("name=\"language\"\r\n\r\nes"));
+            assert_eq!(request.contains("name=\"prompt\""), !words.is_empty());
+            if !words.is_empty() {
+                assert!(request.contains("Acme, José"));
+            }
+        }
+        // Remote hostnames/IPs must behave like loopback servers.
+        for base in [
+            "https://stt.example.net/v1",
+            "http://192.168.1.20:8000",
+            "http://[::1]:8000",
+        ] {
+            assert_eq!(
+                openai_dictionary_hint(base, &words),
+                vec![("prompt", "Acme, José".into())]
+            );
+        }
+        assert_eq!(
+            openai_dictionary_hint("https://api.mistral.ai/v1", &words),
+            vec![
+                ("context_bias", "Acme".into()),
+                ("context_bias", "José".into())
+            ]
+        );
+        let long = vec!["a".repeat(890), "b".into()];
+        assert_eq!(
+            openai_dictionary_hint("https://api.groq.com/openai/v1", &long)[0]
+                .1
+                .len(),
+            890
+        );
+        assert_eq!(
+            openai_dictionary_hint("https://stt.example.net", &long)[0]
+                .1
+                .len(),
+            893
+        );
+    }
+
+    #[test]
+    fn deepgram_sends_encoded_dictionary_terms() {
+        for (model, parameter) in [("nova-3", "keyterm"), ("nova-2", "keywords")] {
+            let request = capture_transcription(
+                |base| Plan::CloudDeepgram {
+                    base,
+                    key: "test-key".into(),
+                    model: model.into(),
+                    lang: "auto".into(),
+                },
+                r#"{"results":{"channels":[{"alternatives":[{"transcript":"hello"}]}]}}"#,
+                &["ACME & José".into(), " ".into(), "Widget".into()],
+            );
+            let path = request
+                .lines()
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap();
+            let url = reqwest::Url::parse(&format!("http://localhost{path}")).unwrap();
+            let terms: Vec<_> = url
+                .query_pairs()
+                .filter(|(key, _)| key == parameter)
+                .map(|(_, value)| value.into_owned())
+                .collect();
+            assert_eq!(terms, ["ACME & José", "Widget"]);
+            assert!(!url.query_pairs().any(|(key, _)| key == "language"));
+        }
+    }
+
+    #[test]
+    fn remote_dictionary_respects_provider_limits() {
+        let words: Vec<_> = (0..101).map(|i| format!("term{i}")).collect();
+        let hints = openai_dictionary_hint("https://api.mistral.ai/v1", &words);
+        assert_eq!(hints.len(), 100);
+        assert_eq!(hints.last().unwrap().1, "term99");
+        // Far fewer than 100 entries can exceed Nova-3's token limit.
+        let phrases = vec!["rare ".repeat(100); 6];
+        let mut words = vec!["José".to_string()];
+        words.extend(phrases);
+        let request = capture_transcription(
+            |base| Plan::CloudDeepgram {
+                base,
+                key: "test-key".into(),
+                model: "nova-3".into(),
+                lang: "auto".into(),
+            },
+            r#"{"results":{"channels":[{"alternatives":[{"transcript":"hello"}]}]}}"#,
+            &words,
+        );
+        let path = request
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap();
+        let url = reqwest::Url::parse(&format!("http://localhost{path}")).unwrap();
+        let terms: Vec<_> = url
+            .query_pairs()
+            .filter(|(key, _)| key == "keyterm")
+            .map(|(_, value)| value.into_owned())
+            .collect();
+        assert_eq!(terms, ["José"]);
+        assert!(terms.iter().map(|term| term.len() + 1).sum::<usize>() <= 450);
+    }
+
+    #[test]
+    fn gemini_sends_dictionary_with_audio() {
+        let body = gemini_transcription_body("es", &["José".into()], b"audio");
+        let prompt = body["contents"][0]["parts"][0]["text"].as_str().unwrap();
+        assert!(prompt.contains("es audio"));
+        assert!(prompt.contains("Spelling hints (use only when spoken in the audio): José"));
+        assert_eq!(
+            body["contents"][0]["parts"][1]["inline_data"]["data"],
+            "YXVkaW8="
+        );
+        let empty = gemini_transcription_body("auto", &[], b"");
+        assert!(
+            !empty["contents"][0]["parts"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Spelling hints")
+        );
     }
 
     #[test]

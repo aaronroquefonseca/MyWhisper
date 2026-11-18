@@ -82,7 +82,14 @@ Ownership-v2 gates on the reconciled head: strict `clippy -D warnings`
 zero diagnostics, fmt clean, own manifest 273 tests (268 run / 5 ignored;
 parent 262 + this layer's 6), four hosted-identical disposable batches
 exact-once green, full unpartitioned suite 268/0/5 on healthy scratch,
-live nest wtype CtrlV/CtrlShiftV/ShiftInsert green, ydotool fails closed. Box finding OPEN: /tmp at 77% (co-tenant scratch,
+live nest wtype CtrlV/CtrlShiftV/ShiftInsert green, ydotool fails closed.
+Guest gate config `packaging/nixos/clipboard-guest.nix` (+ `clipboard-guest`
+flake check, app package parameterized for #15's candidate): Sway MIME
+round-trip, wtype + guest-ydotoold injection with byte equality,
+stuck-modifier sentinels, manager observation, guest-only isolation asserts;
+app-writer/fallback/mutter/hint-skip legs explicitly OPEN. Validated offline
+only (nix parse with dummy store, embedded-driver py_compile) — #15 is sole
+VM/store runner. Box finding OPEN: /tmp at 77% (co-tenant scratch,
 not mine to delete) makes full-suite staging writes fail with SQLite
 write-class errors in untouched store/sync tests; same tests pass solo on
 healthy scratch and in every batch — cause established, not waived, not

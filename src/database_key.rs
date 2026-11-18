@@ -3,112 +3,173 @@
 //! Provisioning is serialized by the caller's cross-process lock. New items
 //! never replace an existing key: a delayed interrupted CreateItem may leave
 //! duplicate candidates, but cannot overwrite the key used by a database.
-use futures_util::future::Either;
-use std::collections::HashMap;
+//!
+//! Linux talks to the D-Bus Secret Service directly through
+//! `dbus-secret-service` with a zero prompt timeout, so a locked collection
+//! fails fast instead of activating an unlock prompt. Lookups match the
+//! `service=mywhisper`/`username=state-db` attributes, so items written by the
+//! earlier zbus and `keyring-core` backends stay readable. macOS and Windows
+//! keep the native `keyring-core` stores.
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 const LOCKED: &str = "database keyring is locked; unlock the login keyring and retry";
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+))]
 const UNAVAILABLE: &str = "Secret Service unavailable; start or unlock the login keyring and retry";
+const MISSING: &str =
+    "encrypted database exists but its key is missing; restore the keyring secret";
 
 pub(crate) fn candidates(existing_encrypted: bool) -> Result<Vec<[u8; 32]>, String> {
-    async_io::block_on(async {
-        match futures_util::future::select(
-            Box::pin(async_io::Timer::after(TIMEOUT)),
-            Box::pin(fetch(existing_encrypted)),
-        )
-        .await
-        {
-            Either::Left((_, operation)) => {
-                drop(operation);
-                Err(
-                    "Secret Service deadline exceeded; unlock the login keyring and retry"
-                        .to_string(),
-                )
-            }
-            Either::Right((result, _)) => result.map_err(str::to_string),
-        }
+    bounded(move || fetch(existing_encrypted))
+}
+
+/// Blocking keyring calls run on a helper thread so the caller gets an answer
+/// within `TIMEOUT` even if the service stalls. An abandoned call can at most
+/// add a duplicate write-once candidate, which key selection tolerates.
+fn bounded(
+    operation: impl FnOnce() -> Result<Vec<[u8; 32]>, String> + Send + 'static,
+) -> Result<Vec<[u8; 32]>, String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("database-key".into())
+        .spawn(move || {
+            let _ = sender.send(operation());
+        })
+        .map_err(|_| "keyring worker unavailable".to_string())?;
+    receiver.recv_timeout(TIMEOUT).unwrap_or_else(|_| {
+        Err("Secret Service deadline exceeded; unlock the login keyring and retry".to_string())
     })
 }
 
-async fn fetch(existing_encrypted: bool) -> Result<Vec<[u8; 32]>, &'static str> {
-    let connection = zbus::connection::Builder::session()
-        .map_err(|_| UNAVAILABLE)?
-        .method_timeout(TIMEOUT)
-        .max_queued(16)
-        .build()
-        .await
-        .map_err(|_| UNAVAILABLE)?;
-    let operation = async {
-        let service = secret_service::SecretService::connect_with_existing(
-            secret_service::EncryptionType::Dh,
-            connection.clone(),
-        )
-        .await
-        .map_err(|_| UNAVAILABLE)?;
-        let attributes = || HashMap::from([("service", "mywhisper"), ("username", "state-db")]);
-        let found = service
-            .search_items(attributes())
-            .await
-            .map_err(|_| UNAVAILABLE)?;
-        if !found.locked.is_empty() {
-            return Err(LOCKED);
-        }
-        if found.unlocked.len() > 8 {
-            return Err("too many database keyring entries; repair duplicates before opening");
-        }
-        let mut keys = Vec::new();
-        for item in found.unlocked {
-            let bytes = item.get_secret().await.map_err(|_| UNAVAILABLE)?;
-            let key = std::str::from_utf8(&bytes)
-                .ok()
-                .and_then(crate::store::hex_decode_key)
-                .ok_or("keyring holds a malformed database key; original entry preserved")?;
-            if !keys.contains(&key) {
-                keys.push(key);
-            }
-        }
-        if !keys.is_empty() {
-            return Ok(keys);
-        }
-        if existing_encrypted {
-            return Err(
-                "encrypted database exists but its key is missing; restore the keyring secret",
-            );
-        }
-        let collection = service.get_default_collection().await.map_err(
-            |_| "default login keyring is unavailable; configure or unlock it and retry",
-        )?;
-        if collection.is_locked().await.map_err(|_| UNAVAILABLE)? {
-            return Err(LOCKED);
-        }
-        let mut key = [0u8; 32];
-        getrandom::fill(&mut key).map_err(|_| "secure random source unavailable")?;
-        let encoded = crate::store::hex_encode(&key);
-        let item = collection
-            .create_item_no_prompt(
-                "keyring:state-db@mywhisper",
-                attributes(),
-                encoded.as_bytes(),
-                false, // write once: interrupted requests cannot replace a key
-                "text/plain; charset=utf8",
-            )
-            .await
-            .map_err(|error| match error {
-                secret_service::Error::Prompt | secret_service::Error::Locked => LOCKED,
-                _ => UNAVAILABLE,
-            })?;
-        if item.get_secret().await.map_err(|_| UNAVAILABLE)? != encoded.as_bytes() {
-            return Err("database keyring write verification failed; database preserved");
-        }
-        Ok(vec![key])
-    };
-    operation.await
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+))]
+fn fetch(existing_encrypted: bool) -> Result<Vec<[u8; 32]>, String> {
+    fetch_with(existing_encrypted, dbus_secret_service::EncryptionType::Dh).map_err(str::to_string)
 }
 
-#[cfg(test)]
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+))]
+fn fetch_with(
+    existing_encrypted: bool,
+    encryption: dbus_secret_service::EncryptionType,
+) -> Result<Vec<[u8; 32]>, &'static str> {
+    use dbus_secret_service::{Error, SecretService};
+    use std::collections::HashMap;
+    // A zero prompt timeout returns Error::Prompt instead of activating a prompt.
+    let service =
+        SecretService::connect_with_max_prompt_timeout(encryption, 0).map_err(|_| UNAVAILABLE)?;
+    let attributes = || HashMap::from([("service", "mywhisper"), ("username", "state-db")]);
+    let found = service
+        .search_items(attributes())
+        .map_err(|_| UNAVAILABLE)?;
+    if !found.locked.is_empty() {
+        return Err(LOCKED);
+    }
+    if found.unlocked.len() > 8 {
+        return Err("too many database keyring entries; repair duplicates before opening");
+    }
+    let mut keys = Vec::new();
+    for item in found.unlocked {
+        let bytes = item.get_secret().map_err(|error| match error {
+            Error::Prompt | Error::Locked => LOCKED,
+            _ => UNAVAILABLE,
+        })?;
+        let key = std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(crate::store::hex_decode_key)
+            .ok_or("keyring holds a malformed database key; original entry preserved")?;
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    if !keys.is_empty() {
+        return Ok(keys);
+    }
+    if existing_encrypted {
+        return Err(MISSING);
+    }
+    let collection = service
+        .get_default_collection()
+        .map_err(|_| "default login keyring is unavailable; configure or unlock it and retry")?;
+    if collection.is_locked().map_err(|_| UNAVAILABLE)? {
+        return Err(LOCKED);
+    }
+    let mut key = [0u8; 32];
+    getrandom::fill(&mut key).map_err(|_| "secure random source unavailable")?;
+    let encoded = crate::store::hex_encode(&key);
+    let item = collection
+        .create_item(
+            "keyring:state-db@mywhisper",
+            attributes(),
+            encoded.as_bytes(),
+            false, // write once: interrupted requests cannot replace a key
+            "text/plain; charset=utf8",
+        )
+        .map_err(|error| match error {
+            Error::Prompt | Error::Locked => LOCKED,
+            _ => UNAVAILABLE,
+        })?;
+    if item.get_secret().map_err(|_| UNAVAILABLE)? != encoded.as_bytes() {
+        return Err("database keyring write verification failed; database preserved");
+    }
+    Ok(vec![key])
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows"))]
+fn fetch(existing_encrypted: bool) -> Result<Vec<[u8; 32]>, String> {
+    use std::sync::OnceLock;
+    static DONE: OnceLock<()> = OnceLock::new();
+    if DONE.get().is_none() {
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        let store = apple_native_keyring_store::keychain::Store::new();
+        #[cfg(target_os = "windows")]
+        let store = windows_native_keyring_store::Store::new();
+        keyring_core::set_default_store(store.map_err(|e| format!("keyring unavailable: {e}"))?);
+        let _ = DONE.set(());
+    }
+    let entry = keyring_core::Entry::new("mywhisper", "state-db")
+        .map_err(|e| format!("keyring unavailable: {e}"))?;
+    match entry.get_password() {
+        Ok(stored) => crate::store::hex_decode_key(&stored)
+            .map(|key| vec![key])
+            .ok_or_else(|| "keyring holds a malformed database key".to_string()),
+        Err(keyring_core::Error::NoEntry) if existing_encrypted => Err(MISSING.to_string()),
+        Err(keyring_core::Error::NoEntry) => {
+            let mut raw = [0u8; 32];
+            getrandom::fill(&mut raw).map_err(|e| format!("rng: {e}"))?;
+            entry
+                .set_password(&crate::store::hex_encode(&raw))
+                .map_err(|e| format!("keyring store failed: {e}"))?;
+            Ok(vec![raw])
+        }
+        Err(e) => Err(format!("keyring read failed: {e}")),
+    }
+}
+
+#[cfg(not(any(
+    all(
+        unix,
+        not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+    ),
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "windows"
+)))]
+fn fetch(_existing_encrypted: bool) -> Result<Vec<[u8; 32]>, String> {
+    Err("keyring unavailable: unsupported platform".to_string())
+}
+
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::io::Read;
     use std::process::{Command, Stdio};
     use std::sync::{
@@ -116,7 +177,9 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     use std::time::Instant;
-    use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+    use zbus::{OwnedObjectPath, OwnedVariant, Variant};
+
+    const CHILD_BUS: &str = "MYWHISPER_DATABASE_KEY_TEST_BUS";
 
     struct Service;
     #[zbus::interface(name = "org.freedesktop.Secret.Service")]
@@ -124,13 +187,27 @@ mod tests {
         fn open_session(
             &self,
             algorithm: &str,
-            _input: Value<'_>,
-        ) -> (OwnedValue, OwnedObjectPath) {
+            _input: Variant<'_>,
+        ) -> (OwnedVariant, OwnedObjectPath) {
             assert_eq!(algorithm, "plain");
             (
-                zbus::zvariant::Str::from("").into(),
+                Variant::from("").try_into().unwrap(),
                 "/disposable_session".try_into().unwrap(),
             )
+        }
+        fn search_items(
+            &self,
+            attributes: HashMap<String, String>,
+        ) -> (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) {
+            assert_eq!(
+                attributes.get("service").map(String::as_str),
+                Some("mywhisper")
+            );
+            assert_eq!(
+                attributes.get("username").map(String::as_str),
+                Some("state-db")
+            );
+            (Vec::new(), Vec::new())
         }
         fn read_alias(&self, alias: &str) -> OwnedObjectPath {
             assert_eq!(alias, "default");
@@ -138,7 +215,7 @@ mod tests {
         }
     }
 
-    #[derive(serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
+    #[derive(serde::Serialize, serde::Deserialize, zbus::Type)]
     struct Secret {
         session: OwnedObjectPath,
         parameters: Vec<u8>,
@@ -151,9 +228,13 @@ mod tests {
     }
     #[zbus::interface(name = "org.freedesktop.Secret.Collection")]
     impl Collection {
+        #[zbus(property)]
+        fn locked(&self) -> bool {
+            false
+        }
         fn create_item(
             &self,
-            _properties: HashMap<String, OwnedValue>,
+            _properties: HashMap<String, OwnedVariant>,
             _secret: Secret,
             replace: bool,
         ) -> (OwnedObjectPath, OwnedObjectPath) {
@@ -165,38 +246,16 @@ mod tests {
             )
         }
     }
+
     struct Prompt {
         prompted: Arc<AtomicUsize>,
-        dismissed: Arc<AtomicUsize>,
     }
     #[zbus::interface(name = "org.freedesktop.Secret.Prompt")]
     impl Prompt {
-        async fn prompt(
-            &self,
-            _window: &str,
-            #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
-        ) {
+        fn prompt(&self, _window: &str) {
             self.prompted.fetch_add(1, Ordering::SeqCst);
-            Self::completed(
-                &emitter,
-                false,
-                Value::from(zbus::zvariant::ObjectPath::try_from("/created_item").unwrap()),
-            )
-            .await
-            .unwrap();
         }
-        async fn dismiss(&self) {
-            // Waiting for acknowledgement must not let the operation future
-            // activate a prompt while dismissal is still pending.
-            async_io::Timer::after(Duration::from_millis(50)).await;
-            self.dismissed.fetch_add(1, Ordering::SeqCst);
-        }
-        #[zbus(signal)]
-        async fn completed(
-            emitter: &zbus::object_server::SignalEmitter<'_>,
-            dismissed: bool,
-            result: Value<'_>,
-        ) -> zbus::Result<()>;
+        fn dismiss(&self) {}
     }
 
     fn private_bus() -> (tempfile::TempDir, crate::child::OwnedChild, String) {
@@ -255,86 +314,64 @@ mod tests {
     }
 
     #[test]
-    fn create_item_prompt_is_dismissed_before_activation_and_its_future_is_cancelled() {
+    fn create_item_requiring_a_prompt_fails_locked_without_activating_it() {
         let (_root, _daemon, address) = private_bus();
-        async_io::block_on(async {
-            let calls = Arc::new(AtomicUsize::new(0));
-            let prompted = Arc::new(AtomicUsize::new(0));
-            let dismissed = Arc::new(AtomicUsize::new(0));
-            let server = zbus::connection::Builder::address(address.as_str())
-                .unwrap()
+        let calls = Arc::new(AtomicUsize::new(0));
+        let prompted = Arc::new(AtomicUsize::new(0));
+        let server = async_io::block_on(
+            zbus::connection::Builder::address(address.as_str())
                 .name("org.freedesktop.secrets")
-                .unwrap()
                 .serve_at("/org/freedesktop/secrets", Service)
-                .unwrap()
                 .serve_at(
                     "/disposable_collection",
                     Collection {
                         calls: calls.clone(),
                     },
                 )
-                .unwrap()
                 .serve_at(
                     "/disposable_prompt",
                     Prompt {
                         prompted: prompted.clone(),
-                        dismissed: dismissed.clone(),
                     },
                 )
-                .unwrap()
-                .build()
-                .await
-                .unwrap();
-            let client = zbus::connection::Builder::address(address.as_str())
-                .unwrap()
-                .method_timeout(Duration::from_secs(2))
-                .build()
-                .await
-                .unwrap();
-            let service = secret_service::SecretService::connect_with_existing(
-                secret_service::EncryptionType::Plain,
-                client,
-            )
-            .await
-            .unwrap();
-            let collection = service.get_default_collection().await.unwrap();
-            let attributes = || HashMap::from([("service", "mywhisper"), ("username", "state-db")]);
-            // Establish the fixture really activates a prompt without the
-            // guard, then assert the corrected behavior with the same calls.
-            collection
-                .create_item(
-                    "synthetic key",
-                    attributes(),
-                    b"synthetic",
-                    false,
-                    "text/plain",
-                )
-                .await
-                .unwrap();
-            assert_eq!(prompted.swap(0, Ordering::SeqCst), 1);
-            assert_eq!(calls.swap(0, Ordering::SeqCst), 1);
-            let error = match collection
-                .create_item_no_prompt(
-                    "synthetic key",
-                    attributes(),
-                    b"synthetic",
-                    false,
-                    "text/plain",
-                )
-                .await
-            {
-                Ok(_) => panic!("no-prompt creation succeeded unexpectedly"),
-                Err(error) => error,
-            };
-            assert!(matches!(error, secret_service::Error::Prompt));
-            assert_eq!(calls.load(Ordering::SeqCst), 1);
-            assert_eq!(dismissed.load(Ordering::SeqCst), 1);
-            assert_eq!(
-                prompted.load(Ordering::SeqCst),
-                0,
-                "operation continued while dismissal was pending"
-            );
-            drop(server);
+                .build(),
+        )
+        .unwrap();
+        // dbus-secret-service only connects to the session bus named by the
+        // environment, so the client runs in a child scoped to the private bus.
+        let output = crate::child::run(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "database_key::tests::provisioning_against_private_bus",
+                    "--ignored",
+                    "--test-threads=1",
+                ])
+                .env("DBUS_SESSION_BUS_ADDRESS", &address)
+                .env(CHILD_BUS, &address),
+            b"",
+            Duration::from_secs(20),
+            1 << 16,
+        )
+        .unwrap();
+        assert!(String::from_utf8_lossy(&output).contains("1 passed"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            prompted.load(Ordering::SeqCst),
+            0,
+            "unlock prompt activated"
+        );
+        drop(server);
+    }
+
+    #[test]
+    #[ignore = "child of create_item_requiring_a_prompt_fails_locked_without_activating_it"]
+    fn provisioning_against_private_bus() {
+        let address = std::env::var(CHILD_BUS).expect("private bus address");
+        assert_eq!(std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap(), address);
+        let result = bounded(|| {
+            fetch_with(false, dbus_secret_service::EncryptionType::Plain).map_err(str::to_string)
         });
+        assert_eq!(result, Err(LOCKED.to_string()));
     }
 }

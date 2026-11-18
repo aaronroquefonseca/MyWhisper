@@ -161,7 +161,7 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
 
 /// Database encryption key (32 bytes). Order: explicit env override
 /// (headless/testing) first, otherwise the OS keyring, creating and
-/// storing a random key on first run.
+/// storing a random key on first run. Backend details: `database_key`.
 fn db_key(path: &Path, existing_encrypted: bool) -> Result<[u8; 32], String> {
     if cfg!(test) {
         return Ok([42u8; 32]);
@@ -2858,6 +2858,18 @@ mod tests {
         }])
         .unwrap();
         assert_eq!(snippet(&a, "k").as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn db_key_hex_helpers_roundtrip() {
+        let raw = [0xabu8; 32];
+        let hex = hex_encode(&raw);
+        assert_eq!(hex.len(), 64);
+        assert_eq!(hex_decode_key(&hex).unwrap(), raw);
+        assert!(hex_decode_key("00").is_none());
+        assert!(hex_decode_key(&"zz".repeat(32)).is_none());
+        // Env override path parses the same 64-hex format.
+        assert!(hex_decode_key(&"00".repeat(32)).is_some());
     }
 }
 

@@ -135,6 +135,22 @@ Original report, full matrix, source map and historical evidence are owned by th
   Hosted lint goes green as the stack restacks bottom-up; #21 can adopt
   the current stable SHA now (APIs below are frozen for consumers).
 
+## Manifest correction + hosted SUCCESS
+
+- Hosted run `38626442482` (source `1344bd4`) failed REQUIRED
+  verify-manifest: checked-in inventory predated the installer modules
+  (42 installer tests missing, moved tests stale). Regenerated via
+  `partition-tests.py generate` on this source — no hand edits, no
+  weakened checks: 267 lib tests (262 run, 5 ignored), 5 empty
+  harnesses.
+- Local CI-equivalent sequence green: verify-manifest pass; 4 batches
+  (65/65/66/66) pass; verify-batches proves exactly-once + identical
+  ignored set; `test-partition.py` self-test passes; whole
+  unpartitioned suite 262/0/5.
+- Hosted run `38628178128` on corrected head `5edeeab`: **SUCCESS**
+  (full release checks: fmt, strict clippy zero, manifest, batches,
+  verifier, packaging, audit, builds).
+
 ## v2 ownership distribution IMPLEMENTED (strict-green)
 
 - Removed from this branch: `src/operation.rs` (contract + 3 tests,
