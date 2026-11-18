@@ -991,8 +991,8 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "¿Restablecer los datos de MyWhisper?",
         ),
         "confirm.reset.body" => (
-            "Deletes history, words, snippets, recordings, downloads, and settings on this device. Paired devices and device identity are kept. This cannot be undone.",
-            "Elimina historial, palabras, fragmentos, grabaciones, descargas y ajustes de este dispositivo. Se conservan los dispositivos emparejados y la identidad. No se puede deshacer.",
+            "Deletes history, words, snippets, recordings, downloads, and settings on this device. Paired devices and device identity are kept, and sync is turned off: turning it back on brings back what paired devices still have. This cannot be undone.",
+            "Elimina historial, palabras, fragmentos, grabaciones, descargas y ajustes de este dispositivo. Se conservan los dispositivos emparejados y la identidad, y la sincronización se desactiva: al reactivarla vuelve lo que aún tengan los dispositivos emparejados. No se puede deshacer.",
         ),
         "settings.saved" => (
             "Preferences save automatically",

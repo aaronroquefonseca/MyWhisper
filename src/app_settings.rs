@@ -5154,7 +5154,11 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
                 // the running service survive: the next dictation
                 // re-reads defaults from the fresh DB and reports missing
                 // models; restart the service for a fully clean slate.
-                if let Err(e) = state.store.reset_all_data() {
+                // Sync stays off until the user turns it back on, so
+                // paired devices cannot refill the cleared data unasked.
+                let mut fresh = crate::settings::AppSettings::default();
+                fresh.sync.enabled = false;
+                if let Err(e) = state.store.reset_all_data(&fresh) {
                     eprintln!("[system] reset db: {e}");
                     super::app::notify(tr("feedback.deletefailed"));
                     return;
@@ -5168,17 +5172,7 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
                         eprintln!("[system] reset {sub}: {e}");
                     }
                 }
-                {
-                    let mut settings = state.settings.borrow_mut();
-                    *settings = crate::settings::AppSettings::default();
-                    drop(settings);
-                }
-                if let Err(e) = state
-                    .store
-                    .save_settings(&crate::settings::AppSettings::default())
-                {
-                    eprintln!("[system] reset persist: {e}");
-                }
+                *state.settings.borrow_mut() = fresh;
                 eprintln!("[system] application data reset");
                 crate::i18n::set_lang(crate::i18n::UiLang::System);
                 apply_theme(crate::settings::Theme::System);

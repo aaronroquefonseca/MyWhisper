@@ -108,8 +108,9 @@ impl DeviceIdentity {
     }
 
     /// Verify a peer's session proof against its claimed node id.
+    /// `verify_strict` rejects weak (small-order) keys, which could
+    /// otherwise make one signature verify for any message.
     pub fn verify_session(node_id_hex: &str, handshake_hash: &[u8], sig: &[u8; 64]) -> bool {
-        use ed25519_dalek::Verifier;
         let raw = match hex_decode(node_id_hex) {
             Some(b) => b,
             None => return false,
@@ -119,7 +120,7 @@ impl DeviceIdentity {
             Err(_) => return false,
         };
         verifying
-            .verify(handshake_hash, &ed25519_dalek::Signature::from_bytes(sig))
+            .verify_strict(handshake_hash, &ed25519_dalek::Signature::from_bytes(sig))
             .is_ok()
     }
 
@@ -585,5 +586,27 @@ mod provisioning_tests {
             format!("{}…{}", "界".repeat(8), "界".repeat(4))
         );
         assert!(!valid_node_id(&"界".repeat(20)));
+    }
+
+    #[test]
+    fn session_proof_rejects_small_order_keys() {
+        // Identity point as the key, R = identity, s = 0: lax verification
+        // accepts this one signature for every message.
+        let mut weak = [0u8; 32];
+        weak[0] = 1;
+        let mut sig = [0u8; 64];
+        sig[0] = 1;
+        let node_id: String = weak.iter().map(|b| format!("{b:02x}")).collect();
+        let key = VerifyingKey::from_bytes(&weak).unwrap();
+        use ed25519_dalek::Verifier;
+        assert!(
+            key.verify(b"any session", &ed25519_dalek::Signature::from_bytes(&sig))
+                .is_ok()
+        );
+        assert!(!DeviceIdentity::verify_session(
+            &node_id,
+            b"any session",
+            &sig
+        ));
     }
 }
