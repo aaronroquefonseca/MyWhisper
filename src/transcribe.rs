@@ -2173,6 +2173,26 @@ fn local_http_client() -> Result<reqwest::blocking::Client, String> {
         .map_err(|e| format!("http client: {e}"))
 }
 
+/// True for localhost, 127.0.0.0/8 and ::1 (also IPv4-mapped loopback).
+fn is_loopback_url(url: &str) -> bool {
+    let Some(host) = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+    else {
+        return false;
+    };
+    // host_str brackets IPv6 and normalizes IPv4 shorthand (127.1).
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || match host.parse::<std::net::IpAddr>() {
+            Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback(),
+            Ok(std::net::IpAddr::V6(ip)) => {
+                ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+            }
+            Err(_) => false,
+        }
+}
+
 fn whisper_load(model: &Path, port: u16) -> Result<(), String> {
     let boundary = "mywhisperload";
     let body = multipart_body(boundary, &[("model", &model.to_string_lossy())], None);
@@ -2390,12 +2410,51 @@ fn ws_connect(port: u16, read_timeout: Duration) -> Result<Ws, String> {
     ws_connect_url(&format!("ws://127.0.0.1:{port}"), read_timeout)
 }
 
+/// Bound for TCP connect (per address) and, separately, the whole
+/// WS/TLS upgrade: a peer that accepts and never answers must not
+/// strand press/release.
+const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn ws_connect_url(url: &str, read_timeout: Duration) -> Result<Ws, String> {
-    let (ws, _) = tungstenite::connect(url).map_err(|e| format!("ws connect {url}: {e}"))?;
-    if let tungstenite::stream::MaybeTlsStream::Plain(s) = ws.get_ref() {
-        let _ = s.set_read_timeout(Some(read_timeout));
-        let _ = s.set_write_timeout(Some(Duration::from_secs(30)));
-    }
+    let fail = |e: String| format!("ws connect {url}: {e}");
+    let addrs = reqwest::Url::parse(url)
+        .map_err(|e| fail(e.to_string()))?
+        .socket_addrs(|| None)
+        .map_err(|e| fail(e.to_string()))?;
+    let mut last = "no address".to_string();
+    let stream = addrs
+        .iter()
+        .find_map(
+            |a| match std::net::TcpStream::connect_timeout(a, WS_HANDSHAKE_TIMEOUT) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    last = e.to_string();
+                    None
+                }
+            },
+        )
+        .ok_or_else(|| fail(last.clone()))?;
+    let sock = stream.try_clone().map_err(|e| fail(e.to_string()))?;
+    let _ = sock.set_nodelay(true);
+    let _ = sock.set_read_timeout(Some(WS_HANDSHAKE_TIMEOUT));
+    let _ = sock.set_write_timeout(Some(WS_HANDSHAKE_TIMEOUT));
+    // Per-op timeouts alone let a trickling peer stretch the upgrade:
+    // a watchdog shuts the socket at the deadline unless it finished.
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let watchdog = sock.try_clone().map_err(|e| fail(e.to_string()))?;
+    std::thread::spawn(move || {
+        if done_rx.recv_timeout(WS_HANDSHAKE_TIMEOUT) == Err(mpsc::RecvTimeoutError::Timeout) {
+            let _ = watchdog.shutdown(std::net::Shutdown::Both);
+        }
+    });
+    let res = tungstenite::client_tls_with_config(url, stream, None, None);
+    drop(done_tx);
+    let (ws, _) = res.map_err(|e| match e {
+        tungstenite::HandshakeError::Failure(f) => fail(f.to_string()),
+        tungstenite::HandshakeError::Interrupted(_) => fail("handshake timed out".into()),
+    })?;
+    let _ = sock.set_read_timeout(Some(read_timeout));
+    let _ = sock.set_write_timeout(Some(Duration::from_secs(30)));
     Ok(ws)
 }
 
@@ -4322,14 +4381,11 @@ fn finish_session(
             }
         }
     }
-    let (pcm, rate) = sess.recorder.lock().unwrap().finish();
-    if rate == 0 || pcm.is_empty() {
-        eprintln!("[stt] release: no audio captured (mic unavailable or sim source)");
-        return Ok(None);
-    }
     // Speculative path: the spec thread owns a resampled buffer and
-    // internal agreement; finalize only the unconfirmed tail. Any
-    // failure falls through to the full recording + fallback chain.
+    // internal agreement; finalize only the unconfirmed tail. Joined
+    // BEFORE the recorder drains so its final snapshot holds the whole
+    // settled utterance. Any failure or empty result falls through to
+    // the full recording + fallback chain.
     if let Some(spec) = sess.spec {
         spec.stop.store(true, Ordering::Relaxed);
         match spec.done_rx.recv() {
@@ -4343,32 +4399,46 @@ fn finish_session(
                     crate::speculative::unconfirmed_window(&buf, committed_len, sess.spec_overlap);
                 if tail.len() < MIN_SAMPLES_16K / 2 {
                     // Nothing (much) left: committed text is the answer.
-                    return Ok(
-                        empty_to_none(committed).map(|t| (t, secs, wav_of(&buf, sess.keep_audio)))
-                    );
-                }
-                let t0 = Instant::now();
-                let tail_wav = wav_bytes_16k(&audio::f32_to_i16(&tail));
-                let prompt = crate::textnorm::dictionary_prompt(
-                    words,
-                    crate::textnorm::WHISPER_PROMPT_CHARS,
-                );
-                match whisper_transcribe(&tail_wav, prompt, engine_port(&sess.net, WHISPER_PORT)) {
-                    Ok(tail_text) => {
-                        let merged = crate::speculative::merge_tail(&committed, &tail_text);
-                        eprintln!(
-                            "[stt] release: tail decode took {:.1}s",
-                            t0.elapsed().as_secs_f64()
-                        );
-                        return Ok(
-                            empty_to_none(merged).map(|t| (t, secs, wav_of(&buf, sess.keep_audio)))
-                        );
+                    if !committed.trim().is_empty() {
+                        return Ok(empty_to_none(committed)
+                            .map(|t| (t, secs, wav_of(&buf, sess.keep_audio))));
                     }
-                    Err(e) => eprintln!("[stt] spec tail failed ({e}); full recording"),
+                    eprintln!("[stt] spec produced no text; full recording");
+                } else {
+                    let t0 = Instant::now();
+                    let tail_wav = wav_bytes_16k(&audio::f32_to_i16(&tail));
+                    let prompt = crate::textnorm::dictionary_prompt(
+                        words,
+                        crate::textnorm::WHISPER_PROMPT_CHARS,
+                    );
+                    match whisper_transcribe(
+                        &tail_wav,
+                        prompt,
+                        engine_port(&sess.net, WHISPER_PORT),
+                    ) {
+                        Ok(tail_text) => {
+                            let merged = crate::speculative::merge_tail(&committed, &tail_text);
+                            eprintln!(
+                                "[stt] release: tail decode took {:.1}s",
+                                t0.elapsed().as_secs_f64()
+                            );
+                            if !merged.trim().is_empty() {
+                                return Ok(empty_to_none(merged)
+                                    .map(|t| (t, secs, wav_of(&buf, sess.keep_audio))));
+                            }
+                            eprintln!("[stt] spec produced no text; full recording");
+                        }
+                        Err(e) => eprintln!("[stt] spec tail failed ({e}); full recording"),
+                    }
                 }
             }
             Err(_) => eprintln!("[stt] spec thread died; full recording"),
         }
+    }
+    let (pcm, rate) = sess.recorder.lock().unwrap().finish();
+    if rate == 0 || pcm.is_empty() {
+        eprintln!("[stt] release: no audio captured (mic unavailable or sim source)");
+        return Ok(None);
     }
     eprintln!("[stt] release: {} samples @ {} Hz", pcm.len(), rate);
     let mut f32s = Resampler::resample_all(rate, &pcm);
@@ -5360,7 +5430,14 @@ fn http_post_json(
     body: &serde_json::Value,
 ) -> Result<String, String> {
     let text = serde_json::to_string(body).map_err(|e| format!("json body: {e}"))?;
-    let mut req = http_client()?
+    // Loopback cleanup (local Ollama) carries the transcript: never via a
+    // system proxy or redirect. Remote/LAN hosts keep proxy behaviour.
+    let client = if is_loopback_url(url) {
+        local_http_client()?
+    } else {
+        http_client()?
+    };
+    let mut req = client
         .post(url)
         .header("Content-Type", "application/json")
         .body(text);
@@ -11356,6 +11433,53 @@ mod tests {
         assert_eq!(active_count(), 0);
     }
 
+    /// Whisper primary with a Stop since press (no whisper may start, so
+    /// any whisper decode fails) and an HTTP fallback on `fallback_port`.
+    fn stopped_whisper_session(
+        root: &Path,
+        recorder: Arc<Mutex<Recorder>>,
+        spec: SpecHandle,
+        fallback_port: u16,
+    ) -> LiveUtterance {
+        LiveUtterance {
+            stop_epoch: STOP_EPOCH.load(Ordering::Acquire).wrapping_sub(1),
+            owner: 0,
+            recorder,
+            stop: Arc::new(AtomicBool::new(true)),
+            cancel: Arc::new(AtomicBool::new(false)),
+            spec: Some(spec),
+            result_rx: None,
+            whistle_rx: None,
+            plan: Plan::WhisperHttp {
+                model_bin: root.join("m.bin"),
+                lang: "en".into(),
+            },
+            fallbacks: vec![(
+                "http".into(),
+                Plan::CloudOpenAiCompat {
+                    base: format!("http://127.0.0.1:{fallback_port}"),
+                    key: String::new(),
+                    model: "default".into(),
+                    lang: "en".into(),
+                },
+            )],
+            started: Instant::now(),
+            data_dir: root.to_path_buf(),
+            backend: GpuBackendSetting::Cpu,
+            sherpa_backend: SherpaBackendSetting::Cpu,
+            vad_enabled: false,
+            vad_gate: 0.0,
+            keep_audio: false,
+            spec_overlap: 0,
+            settled: Arc::new(AtomicBool::new(true)),
+            release_delay_ms: 0,
+            net: ServerNet {
+                host: "127.0.0.1",
+                port_override: Some(free_port()),
+            },
+        }
+    }
+
     /// Finding: a speculative tail decode failing (ownership error after
     /// Stop) returned the error and never tried the HTTP fallback.
     #[test]
@@ -11377,47 +11501,61 @@ mod tests {
         spec_tx
             .send((String::new(), 0, vec![0.1f32; 32_000]))
             .unwrap();
-        let sess = LiveUtterance {
-            // Stop since press: no whisper may start, so the tail fails.
-            stop_epoch: STOP_EPOCH.load(Ordering::Acquire).wrapping_sub(1),
-            owner: 0,
-            recorder,
-            stop: Arc::new(AtomicBool::new(true)),
-            cancel: Arc::new(AtomicBool::new(false)),
-            spec: Some(SpecHandle {
-                stop: Arc::new(AtomicBool::new(false)),
-                done_rx: spec_rx,
-            }),
-            result_rx: None,
-            whistle_rx: None,
-            plan: Plan::WhisperHttp {
-                model_bin: root.path().join("m.bin"),
-                lang: "en".into(),
-            },
-            fallbacks: vec![(
-                "http".into(),
-                Plan::CloudOpenAiCompat {
-                    base: format!("http://127.0.0.1:{fallback_port}"),
-                    key: String::new(),
-                    model: "default".into(),
-                    lang: "en".into(),
-                },
-            )],
-            started: Instant::now(),
-            data_dir: root.path().to_path_buf(),
-            backend: GpuBackendSetting::Cpu,
-            sherpa_backend: SherpaBackendSetting::Cpu,
-            vad_enabled: false,
-            vad_gate: 0.0,
-            keep_audio: false,
-            spec_overlap: 0,
-            settled: Arc::new(AtomicBool::new(true)),
-            release_delay_ms: 0,
-            net: ServerNet {
-                host: "127.0.0.1",
-                port_override: Some(free_port()),
-            },
+        let spec = SpecHandle {
+            stop: Arc::new(AtomicBool::new(false)),
+            done_rx: spec_rx,
         };
+        let sess = stopped_whisper_session(root.path(), recorder, spec, fallback_port);
+        let (text, _, _) = finish_session(sess, &[]).unwrap().expect("no transcript");
+        assert_eq!(text, "full chain");
+        assert_eq!(fallback_hits.load(Ordering::SeqCst), 1);
+    }
+
+    /// Finding: release drained the recorder before the spec thread's
+    /// final snapshot, so a release before the first spec tick gave an
+    /// empty tail, no transcript, and never reached the fallback.
+    #[test]
+    fn spec_release_before_first_tick_reaches_fallback() {
+        let _guard = serial();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let fallback = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let fallback_port = fallback.local_addr().unwrap().port();
+        let fallback_hits = canned_http(fallback, openai_text_reply("full chain"));
+        let recorder = Arc::new(Mutex::new(Recorder::default()));
+        {
+            let mut r = recorder.lock().unwrap();
+            r.start(16_000);
+            r.push(&vec![2000i16; 32_000]);
+        }
+        // Real spec thread; its first tick lands after release.
+        let (spec_tx, spec_rx) = mpsc::channel();
+        let spec_stop = Arc::new(AtomicBool::new(false));
+        let (rec, sstop, data) = (
+            recorder.clone(),
+            spec_stop.clone(),
+            root.path().to_path_buf(),
+        );
+        std::thread::spawn(move || {
+            let config = SpecConfig {
+                update_secs: 1.0,
+                overlap: 0,
+                whisper_port: free_port(),
+            };
+            run_spec(
+                rec,
+                sstop,
+                data,
+                config,
+                spec_tx,
+                Arc::new(AtomicBool::new(true)),
+            );
+        });
+        let spec = SpecHandle {
+            stop: spec_stop,
+            done_rx: spec_rx,
+        };
+        let sess = stopped_whisper_session(root.path(), recorder, spec, fallback_port);
         let (text, _, _) = finish_session(sess, &[]).unwrap().expect("no transcript");
         assert_eq!(text, "full chain");
         assert_eq!(fallback_hits.load(Ordering::SeqCst), 1);
@@ -11605,5 +11743,150 @@ mod tests {
             0,
             "redirect followed"
         );
+    }
+
+    /// Finding: with HTTP_PROXY set, loopback Ollama cleanup sent the
+    /// transcript to the proxy. Remote hosts must keep using it. Env is
+    /// mutated only in a re-exec'd child running this test alone.
+    #[test]
+    fn loopback_cleanup_ignores_proxy() {
+        let ok = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok".to_string();
+        if let Ok(target) = std::env::var("MYWHISPER_CLEANUP_PROXY_TARGET") {
+            let body = serde_json::json!({"messages": "transcript"});
+            for host in ["127.0.0.1", "localhost"] {
+                let url = format!("http://{host}:{target}/api/chat");
+                assert_eq!(http_post_json(&url, &[], &body).unwrap(), "ok");
+            }
+            // TEST-NET host: only reachable through the proxy.
+            let remote = http_post_json("http://192.0.2.1/api/chat", &[], &body).unwrap();
+            assert_eq!(remote, "ok");
+            return;
+        }
+        for url in [
+            "http://127.0.0.5:1",
+            "http://localhost:11434",
+            "http://LOCALHOST",
+            "http://[::1]:11434",
+            "http://[::ffff:127.0.0.1]:1",
+        ] {
+            assert!(is_loopback_url(url), "{url}");
+        }
+        for url in [
+            "http://192.168.1.2:11434",
+            "http://ollama.lan",
+            "http://localhost.example.com",
+            "https://api.example.com",
+            "not a url",
+        ] {
+            assert!(!is_loopback_url(url), "{url}");
+        }
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_port = proxy.local_addr().unwrap().port();
+        let proxy_hits = canned_http(proxy, ok.clone());
+        let target = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let target_port = target.local_addr().unwrap().port();
+        let target_hits = canned_http(target, ok);
+        let proxy_url = format!("http://127.0.0.1:{proxy_port}");
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "transcribe::tests::loopback_cleanup_ignores_proxy",
+                "--nocapture",
+            ])
+            .env("MYWHISPER_CLEANUP_PROXY_TARGET", target_port.to_string())
+            .env("HTTP_PROXY", &proxy_url)
+            .env("http_proxy", &proxy_url)
+            .env("ALL_PROXY", &proxy_url)
+            .env("all_proxy", &proxy_url)
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "proxy child failed: {status}");
+        assert_eq!(target_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            proxy_hits.load(Ordering::SeqCst),
+            1,
+            "only remote via proxy"
+        );
+    }
+
+    /// Finding: a WS peer that accepts TCP and never answers the upgrade
+    /// stranded release (and BUSY) indefinitely: the socket timeout was
+    /// only set after the handshake returned.
+    #[test]
+    fn stalled_ws_upgrade_is_bounded_and_falls_back() {
+        use crate::settings::{SttChainEntry, SttEntryKind};
+        let _guard = serial();
+        let _ = crate::runtime::init();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        // Accepts every connection, holds it open, never answers.
+        let mute = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mute_port = mute.local_addr().unwrap().port();
+        let (accepted_tx, accepted_rx) = mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for conn in mute.incoming().flatten() {
+                held.push(conn);
+                let _ = accepted_tx.send(());
+            }
+        });
+        let fallback = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let fallback_port = fallback.local_addr().unwrap().port();
+        let fallback_hits = canned_http(fallback, openai_text_reply("fallback ok"));
+        let entry = |id: &str, url: String, streaming: bool| SttChainEntry {
+            id: id.into(),
+            name: id.into(),
+            kind: SttEntryKind::SelfHosted,
+            enabled: true,
+            provider: String::new(),
+            url,
+            model: String::new(),
+            api_key: String::new(),
+            streaming,
+        };
+        let writer = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt.entries = vec![
+            entry("ws", format!("ws://127.0.0.1:{mute_port}"), true),
+            entry("http", format!("http://127.0.0.1:{fallback_port}"), false),
+        ];
+        settings.stt.vad_enabled = false;
+        settings.stt.spec_enabled = false;
+        writer.save_settings(&settings).unwrap();
+        let stt = writer.load_settings().stt;
+        let data = root.path().to_path_buf();
+        let ticket = register_press();
+        let (press_tx, press_rx) = mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            begin_utterance_for(ticket, stt, false, &data, 0);
+            let _ = press_tx.send(());
+        });
+        accepted_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        crate::audio::tap_samples(&vec![2000i16; 16_000], 16_000);
+        // Release during the stalled upgrade; the one-shot retry stalls too.
+        let t0 = Instant::now();
+        let (out_tx, out_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = out_tx.send(take_and_finish());
+        });
+        let bound = WS_HANDSHAKE_TIMEOUT * 3;
+        let out = out_rx
+            .recv_timeout(bound)
+            .expect("release stranded by stalled upgrade");
+        assert!(t0.elapsed() < bound);
+        let (text, _, _) = out
+            .expect("release found no capture")
+            .unwrap()
+            .expect("no transcript");
+        assert_eq!(text, "fallback ok");
+        assert_eq!(fallback_hits.load(Ordering::SeqCst), 1);
+        press_rx
+            .recv_timeout(bound)
+            .expect("press stranded by stalled upgrade");
+        assert!(!has_live());
+        assert_eq!(active_count(), 0);
     }
 }
