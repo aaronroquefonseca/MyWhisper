@@ -796,6 +796,89 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Could not reach the model. Check its name and server URL.",
             "No se pudo acceder al modelo. Comprueba su nombre y la URL del servidor.",
         ),
+        "action.test" => ("Test", "Probar"),
+        "action.test.draft.stt" => ("Test new engine", "Probar motor nuevo"),
+        "action.test.draft.lm" => ("Test new model", "Probar modelo nuevo"),
+        "provider_test.testing" => ("Testing…", "Probando…"),
+        "provider_test.pass" => (
+            "Passed in {ms} ms · {detail}",
+            "Correcto en {ms} ms · {detail}",
+        ),
+        "provider_test.fail" => (
+            "Failed in {ms} ms · {detail}",
+            "Falló en {ms} ms · {detail}",
+        ),
+        "provider_test.need_url" => (
+            "Enter a server URL to test.",
+            "Introduce una URL del servidor para probar.",
+        ),
+        "provider_test.need_model" => {
+            ("Enter a model to test.", "Introduce un modelo para probar.")
+        }
+        "provider_test.bad_url" => (
+            "Fix the server URL to test.",
+            "Corrige la URL del servidor para probar.",
+        ),
+        "provider_test.need_key" => (
+            "Enter an API key to test.",
+            "Introduce una clave API para probar.",
+        ),
+        "provider_test.needs_streaming" => (
+            "Turn on Streaming to use a WebSocket server.",
+            "Activa Streaming para usar un servidor WebSocket.",
+        ),
+        "provider_test.unsupported" => (
+            "Dictation doesn't support this provider.",
+            "El dictado no admite este proveedor.",
+        ),
+        "provider_test.local_na" => (
+            "Local engines can't be tested yet — use Ollama.",
+            "Los motores locales aún no se pueden probar: usa Ollama.",
+        ),
+        "provider_test.installed" => (
+            "{model} is installed and ready.",
+            "{model} está instalado y listo.",
+        ),
+        "provider_test.not_installed" => (
+            "{model} isn't ready. Download it below or check its engine files.",
+            "{model} no está listo. Descárgalo abajo o revisa los archivos del motor.",
+        ),
+        "provider_test.model_ok" => ("{model} is available.", "{model} está disponible."),
+        "provider_test.key_ok" => (
+            "API key accepted ({model} not checked).",
+            "Clave API aceptada ({model} sin comprobar).",
+        ),
+        "provider_test.server_ok" => (
+            "Server answered ({model} not checked).",
+            "El servidor respondió ({model} sin comprobar).",
+        ),
+        "provider_test.reachable" => (
+            "Server reachable (connection only; transcription not checked).",
+            "Servidor accesible (solo conexión; transcripción sin comprobar).",
+        ),
+        "provider_test.model_missing" => (
+            "{model} wasn't found on this provider.",
+            "{model} no está disponible en este proveedor.",
+        ),
+        "provider_test.key_rejected" => ("API key rejected.", "Clave API rechazada."),
+        "provider_test.http" => (
+            "Server answered HTTP {code}.",
+            "El servidor respondió HTTP {code}.",
+        ),
+        "provider_test.redirected" => (
+            "Redirected to another address; not followed.",
+            "Redirigido a otra dirección; no se siguió.",
+        ),
+        "provider_test.timeout" => ("No answer in time.", "Sin respuesta a tiempo."),
+        "provider_test.unreachable" => (
+            "Couldn't connect to the server.",
+            "No se pudo conectar con el servidor.",
+        ),
+        "provider_test.network" => ("Network error.", "Error de red."),
+        "provider_test.bad_reply" => (
+            "Unexpected reply from the server.",
+            "Respuesta inesperada del servidor.",
+        ),
         "feedback.copyfailed" => (
             "Could not copy. Check your clipboard tool in Text delivery.",
             "No se pudo copiar. Comprueba la herramienta en Entrega de texto.",
