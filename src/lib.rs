@@ -7,6 +7,7 @@ pub mod app_sync;
 pub mod audio;
 pub mod clipboard;
 pub mod device;
+mod focus;
 pub mod hotkey;
 pub mod i18n;
 pub mod media;
@@ -20,6 +21,8 @@ pub mod runtime;
 /// Single source for the app version (Cargo.toml package
 /// version): settings UI, `--version`, log lines all use this.
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+mod diagnostics;
+mod provider_contract;
 pub mod service;
 pub mod settings;
 pub mod sound;
