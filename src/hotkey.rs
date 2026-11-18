@@ -62,6 +62,9 @@ type BindingCallback = Arc<dyn Fn(HotkeyEvent, Option<usize>) + Send + Sync + 's
 /// Generation counter: bumped on every (re)start so a stale loop
 /// exits instead of double-firing after settings change.
 static HOTKEY_GEN: AtomicU64 = AtomicU64::new(0);
+// A retiring loop must send its cancellation before the replacement
+// can dispatch a press to the same engine.
+static HOTKEY_LOOP: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // ---------------------------------------------------------------- parsing
 
@@ -372,18 +375,14 @@ fn mods_ok(combo: &Combo, held: &HashSet<KeyCode>) -> bool {
         && (!combo.super_ || super_held(held))
 }
 
-fn is_modifier(code: KeyCode) -> bool {
-    matches!(
-        code,
-        KeyCode::KEY_LEFTCTRL
-            | KeyCode::KEY_RIGHTCTRL
-            | KeyCode::KEY_LEFTALT
-            | KeyCode::KEY_RIGHTALT
-            | KeyCode::KEY_LEFTSHIFT
-            | KeyCode::KEY_RIGHTSHIFT
-            | KeyCode::KEY_LEFTMETA
-            | KeyCode::KEY_RIGHTMETA
-    )
+fn required_modifier(combo: &Combo, key: KeyCode) -> bool {
+    match key {
+        KeyCode::KEY_LEFTCTRL | KeyCode::KEY_RIGHTCTRL => combo.ctrl,
+        KeyCode::KEY_LEFTALT | KeyCode::KEY_RIGHTALT => combo.alt,
+        KeyCode::KEY_LEFTSHIFT | KeyCode::KEY_RIGHTSHIFT => combo.shift,
+        KeyCode::KEY_LEFTMETA | KeyCode::KEY_RIGHTMETA => combo.super_,
+        _ => false,
+    }
 }
 
 /// One watched binding: parsed combo + its action + its own mode +
@@ -453,6 +452,20 @@ fn disconnect_keyboard(
     }
 }
 
+fn update_listening(
+    listening: bool,
+    previous: &mut bool,
+    watched: &mut [Watched],
+    on_event: &BindingCallback,
+) {
+    if std::mem::replace(previous, listening) && !listening {
+        for binding in watched {
+            binding.press = None;
+        }
+        on_event(HotkeyEvent::Cancel, None);
+    }
+}
+
 /// Push holds wedged active longer than this are force-released.
 /// Tap bindings are exempt (toggled-on is a legitimate long state).
 /// 15 minutes: long-form dictation holds for many minutes, and the
@@ -512,7 +525,7 @@ fn poll_events<D: KeyDevice>(
                         pressed && mods_held,
                         !pressed && w.press.as_ref().is_some_and(|p| p.device == *path),
                     ),
-                    None if is_modifier(key) => (mods_held, !mods_held),
+                    None if required_modifier(c, key) => (pressed && mods_held, !mods_held),
                     _ => continue,
                 };
                 if began && w.press.is_none() {
@@ -544,14 +557,28 @@ fn run_loop(
     on_event: BindingCallback,
     on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static>,
 ) {
+    let _owner = HOTKEY_LOOP
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if HOTKEY_GEN.load(Ordering::SeqCst) != generation {
+        return;
+    }
     let mut held = HeldKeys::default();
     let mut devices: Vec<(std::path::PathBuf, Device)> = Vec::new();
     let mut reported = false;
     let mut rescan_in = 0u32;
+    let mut listening = crate::transcribe::hotkeys_listening();
     loop {
         if HOTKEY_GEN.load(Ordering::SeqCst) != generation {
+            on_event(HotkeyEvent::Cancel, None);
             return; // superseded
         }
+        update_listening(
+            crate::transcribe::hotkeys_listening(),
+            &mut listening,
+            &mut watched,
+            &on_event,
+        );
         if rescan_in == 0 {
             let (found, denied) = open_keyboards();
             // Merge by node path: keep existing fds (with their
@@ -633,7 +660,6 @@ fn start_with_bindings(
     on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static>,
 ) {
     let generation = HOTKEY_GEN.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
-    HOTKEY_GEN.store(generation, Ordering::SeqCst);
     let mut watched = Vec::new();
     for (action, binds) in bindings {
         for b in binds {
@@ -782,12 +808,6 @@ pub fn start_dictation(
             Some(ActivationEffect::Open) => down(),
             Some(ActivationEffect::Close) => up(),
             Some(ActivationEffect::Cancel) => cancel(),
-            None if event == HotkeyEvent::Cancel
-                && binding.is_none()
-                && crate::transcribe::has_live() =>
-            {
-                cancel();
-            }
             None => {}
         }
     });
@@ -935,6 +955,39 @@ mod tests {
         assert!(!mods_ok(&c, &held));
     }
 
+    #[test]
+    fn mute_retires_a_held_shortcut_once() {
+        use crate::settings::ActivationMode::Push;
+        use ActivationEffect::{Cancel, Open};
+
+        let action = HotkeyAction::DictationToggle;
+        let now = Instant::now();
+        let mut watched = [Watched {
+            action,
+            combo: parse_combo("F13").unwrap(),
+            mode: Push,
+            press: Some(KeyboardPress {
+                device: PathBuf::from("test-keyboard"),
+                started: now,
+            }),
+        }];
+        let state = Arc::new(std::sync::Mutex::new((Activation::default(), Vec::new())));
+        let captured = state.clone();
+        let callback: BindingCallback = Arc::new(move |event, binding| {
+            let (activation, effects) = &mut *captured.lock().unwrap();
+            effects.extend(activation.handle(event, binding, now, SMART_TAP_MS));
+        });
+        callback(HotkeyEvent::Down(action, Push), Some(0));
+        let mut listening = true;
+        update_listening(false, &mut listening, &mut watched, &callback);
+        update_listening(false, &mut listening, &mut watched, &callback);
+        assert!(watched[0].press.is_none());
+        update_listening(true, &mut listening, &mut watched, &callback);
+        callback(HotkeyEvent::Up(action, Push), Some(0));
+        callback(HotkeyEvent::Down(action, Push), Some(0));
+        assert_eq!(state.lock().unwrap().1, [Open, Cancel, Open]);
+    }
+
     /// Descriptor ownership uses deterministic files in every build. The required
     /// native companion additionally uses an exclusively grabbed owned keyboard.
     #[test]
@@ -1017,6 +1070,45 @@ mod tests {
                 .pop_front()
                 .ok_or_else(|| std::io::ErrorKind::WouldBlock.into())
         }
+    }
+
+    #[test]
+    fn held_modifier_chord_only_rearms_on_a_required_press() {
+        use crate::settings::ActivationMode::Push;
+
+        let path = PathBuf::from("keyboard");
+        let ctrl = KeyCode::KEY_LEFTCTRL;
+        let super_key = KeyCode::KEY_LEFTMETA;
+        let key = |code: KeyCode, value| evdev::InputEvent::new(EventType::KEY.0, code.0, value);
+        let mut held = HeldKeys::default();
+        held.update(&path, ctrl, true);
+        held.update(&path, super_key, true);
+        let mut devices = vec![(
+            path,
+            SyntheticKeyboard(
+                [
+                    vec![key(KeyCode::KEY_LEFTALT, 1)],
+                    vec![key(ctrl, 0), key(ctrl, 1)],
+                ]
+                .into(),
+            ),
+        )];
+        let mut watched = [Watched {
+            action: HotkeyAction::DictationToggle,
+            combo: parse_combo("Ctrl+Super").unwrap(),
+            mode: Push,
+            press: None,
+        }];
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let callback: BindingCallback = Arc::new(move |event, _| sink.lock().unwrap().push(event));
+        poll_events(&mut devices, &mut held, &mut watched, &callback);
+        assert!(seen.lock().unwrap().is_empty());
+        poll_events(&mut devices, &mut held, &mut watched, &callback);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [HotkeyEvent::Down(HotkeyAction::DictationToggle, Push)]
+        );
     }
 
     #[test]
