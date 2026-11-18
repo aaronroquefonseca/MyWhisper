@@ -932,7 +932,7 @@ fn fingerprint(dir: &Path, files: &[PinnedFile]) -> Option<String> {
             .duration_since(std::time::UNIX_EPOCH)
             .ok()?
             .as_nanos();
-        // ctime can't be set by userspace; rename keeps it.
+        // ctime can't be set by userspace; renaming the parent dir keeps it.
         #[cfg(unix)]
         let ctime = {
             use std::os::unix::fs::MetadataExt;
@@ -1003,11 +1003,20 @@ impl Asset {
     ) -> Result<(), String> {
         let cancelled = || cancel.load(Ordering::SeqCst);
         let cancel_err = || "cancelled".to_string();
+        if cancelled() {
+            return Err(cancel_err());
+        }
+        if self.dir.join(MARKER).is_file() && self.installed() {
+            on_event(DownloadEvent::Done);
+            return Ok(());
+        }
         let staging = self.staging();
         std::fs::create_dir_all(&staging).map_err(|e| format!("mkdir: {e}"))?;
-        // A stale install's files go back to staging so the loop below
-        // re-hashes them and refetches only what changed.
-        restage(&self.dir, &staging, self.files)?;
+        if !staging.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+            return Err("staging is not a directory".to_string());
+        }
+        let paths: Vec<_> = unique(self.files).map(|p| staging.join(p.name)).collect();
+        prune_staging(&staging, &paths).map_err(|e| format!("clean staging: {e}"))?;
         let total = match &self.archive {
             Some(a) => a.file.bytes,
             None => unique(self.files).map(|f| f.bytes).sum(),
@@ -1026,18 +1035,26 @@ impl Asset {
                 return Err(cancel_err());
             }
             let path = staging.join(pin.name);
-            if verified(&path, pin.name, self.files, cancel) {
-                if self.archive.is_none() {
-                    progress(pin.bytes);
+            if !verified(&path, pin.name, self.files, cancel) {
+                // A cancel mid-hash is not a mismatch: keep the staged file.
+                if cancelled() {
+                    return Err(cancel_err());
                 }
-                continue;
+                remove_if_present(&path)
+                    .map_err(|e| format!("discard staged {}: {e}", pin.name))?;
+                if !self.reuse_live_file(pin.name, &path, cancel)? {
+                    if cancelled() {
+                        return Err(cancel_err());
+                    }
+                    remove_if_present(&path)
+                        .map_err(|e| format!("discard staged {}: {e}", pin.name))?;
+                    missing.push(pin);
+                    continue;
+                }
             }
-            // A cancel mid-hash is not a mismatch: keep the staged file.
-            if cancelled() {
-                return Err(cancel_err());
+            if self.archive.is_none() {
+                progress(pin.bytes);
             }
-            let _ = std::fs::remove_file(&path);
-            missing.push(pin);
         }
         if !missing.is_empty() {
             let client = reqwest::blocking::Client::builder()
@@ -1054,7 +1071,7 @@ impl Asset {
                         &url,
                         &part,
                         pin.name,
-                        self.files,
+                        std::slice::from_ref(*pin),
                         cancel,
                         &mut progress,
                     )
@@ -1081,10 +1098,10 @@ impl Asset {
                     )
                     .and_then(|()| {
                         on_event(DownloadEvent::Installing);
-                        extract_pinned(&part, archive, self.files, &staging, cancel)
+                        extract_pinned(&part, archive, self.files, &missing, &staging, cancel)
                     });
-                    let _ = std::fs::remove_file(&part);
-                    result
+                    let cleanup = remove_if_present(&part);
+                    result.and(cleanup.map_err(|e| format!("discard archive: {e}")))
                 }
             };
             fetched.map_err(|e| if cancelled() { cancel_err() } else { e })?;
@@ -1106,17 +1123,39 @@ impl Asset {
         if cancelled() {
             return Err(cancel_err());
         }
-        if let Some(parent) = self.dir.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
-        }
-        std::fs::rename(&staging, &self.dir).map_err(|e| format!("install: {e}"))?;
+        publish_install(&staging, &self.dir).map_err(|e| format!("install: {e}"))?;
         on_event(DownloadEvent::Done);
         Ok(())
     }
 
-    /// Hash an install that has no marker yet in place: mark it
-    /// verified, or move its files to staging, so it stops counting as
-    /// installed and a download refetches only what failed.
+    /// Copy a candidate into staging so a failed or cancelled repair
+    /// leaves the live file and its metadata intact.
+    fn reuse_live_file(
+        &self,
+        name: &str,
+        staged: &Path,
+        cancel: &AtomicBool,
+    ) -> Result<bool, String> {
+        let live = self.dir.join(name);
+        if cancel.load(Ordering::SeqCst)
+            || !live.metadata().is_ok_and(|m| {
+                m.is_file()
+                    && self
+                        .files
+                        .iter()
+                        .any(|p| p.name == name && p.bytes == m.len())
+            })
+        {
+            return Ok(false);
+        }
+        std::fs::create_dir_all(staged.parent().unwrap())
+            .and_then(|()| std::fs::copy(&live, staged))
+            .map_err(|e| format!("stage {name} from live install: {e}"))?;
+        Ok(verified(staged, name, self.files, cancel))
+    }
+
+    /// Hash an install that has no marker yet in place. On mismatch,
+    /// record that it needs repair without moving any files.
     fn adopt(&self, cancel: &AtomicBool, on_event: &DownloadCallback) -> Result<(), String> {
         on_event(DownloadEvent::Installing);
         let before = fingerprint(&self.dir, self.files).ok_or("install incomplete")?;
@@ -1127,13 +1166,15 @@ impl Asset {
             if cancel.load(Ordering::SeqCst) {
                 return Err("cancelled".to_string());
             }
-            let staging = self.staging();
-            std::fs::create_dir_all(&staging).map_err(|e| format!("mkdir: {e}"))?;
-            restage(&self.dir, &staging, self.files)?;
+            std::fs::write(self.dir.join(MARKER), "verification failed\n")
+                .map_err(|e| format!("marker: {e}"))?;
             return Err(format!(
                 "{} failed verification; download it again",
                 pin.name
             ));
+        }
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".to_string());
         }
         // Hashes only vouch for the files as they were when hashed.
         if fingerprint(&self.dir, self.files).as_ref() != Some(&before) {
@@ -1143,22 +1184,58 @@ impl Asset {
     }
 }
 
-/// Move an existing install's pinned files into `staging` (where they
-/// are re-hashed before reuse) and drop the rest of it.
-fn restage(dest: &Path, staging: &Path, files: &[PinnedFile]) -> Result<(), String> {
-    if !dest.exists() {
-        return Ok(());
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
     }
-    for pin in unique(files) {
-        let (from, to) = (dest.join(pin.name), staging.join(pin.name));
-        if from.is_file() && !to.exists() {
-            if let Some(parent) = to.parent() {
-                let _ = std::fs::create_dir_all(parent);
+}
+
+/// Keep pinned file paths and their parent directories. A retry may
+/// find partial downloads or a marker left by an interrupted run.
+fn prune_staging(dir: &Path, pinned: &[PathBuf]) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            if pinned.iter().any(|p| p != &path && p.starts_with(&path)) {
+                prune_staging(&path, pinned)?;
+            } else {
+                std::fs::remove_dir_all(&path)?;
             }
-            let _ = std::fs::rename(from, to);
+        } else if !ty.is_file() || !pinned.contains(&path) {
+            std::fs::remove_file(&path)?;
         }
     }
-    std::fs::remove_dir_all(dest).map_err(|e| format!("replace old install: {e}"))
+    Ok(())
+}
+
+fn publish_install(staging: &Path, dest: &Path) -> std::io::Result<()> {
+    if !dest.try_exists()? {
+        return std::fs::rename(staging, dest);
+    }
+    let staged = std::ffi::CString::new(staging.as_os_str().as_encoded_bytes())?;
+    let live = std::ffi::CString::new(dest.as_os_str().as_encoded_bytes())?;
+    // SAFETY: Both pointers refer to live, NUL-terminated paths. Exchange
+    // commits both renames together or leaves both directories untouched.
+    if unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            staged.as_ptr(),
+            libc::AT_FDCWD,
+            live.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    // The previous install is now at staging. Cleanup is retryable.
+    if let Err(error) = std::fs::remove_dir_all(staging) {
+        tracing::warn!(%error, path = %staging.display(), "could not remove replaced install");
+    }
+    Ok(())
 }
 
 /// Leftover staged files (failed or cancelled install) that no running
@@ -1300,6 +1377,7 @@ fn extract_pinned(
     path: &Path,
     archive: &Archive,
     files: &[PinnedFile],
+    missing: &[&PinnedFile],
     staging: &Path,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
@@ -1316,6 +1394,10 @@ fn extract_pinned(
         if done.contains(&pin.name) {
             return Err(format!("archive repeats {}", pin.name));
         }
+        done.push(pin.name);
+        if !missing.iter().any(|p| p.name == pin.name) {
+            return Ok(());
+        }
         let part = staging.join(format!("{}.part", pin.name));
         copy_pinned(src, &part, pin.name, files, cancel, &mut |_| {})
             .and_then(|()| {
@@ -1325,7 +1407,6 @@ fn extract_pinned(
             .inspect_err(|_| {
                 let _ = std::fs::remove_file(&part);
             })?;
-        done.push(pin.name);
         Ok(())
     };
     let file = std::fs::File::open(path).map_err(|e| format!("open archive: {e}"))?;
@@ -1518,9 +1599,8 @@ fn all_assets(data_dir: &Path) -> Vec<Asset> {
 }
 
 /// Installs from before markers existed count at their pinned sizes;
-/// hash each once here, off the GTK thread, and mark it verified (or
-/// move it to staging when a file fails, so it reads as not installed
-/// and a download keeps what still verifies). Progress shows as an
+/// hash each once here, off the GTK thread, and mark it verified or in
+/// need of repair. A repair reuses files that still verify. Progress shows as an
 /// install in Settings, which also blocks Delete meanwhile.
 pub fn spawn_legacy_verification(
     data_dir: PathBuf,
@@ -2032,6 +2112,18 @@ mod tests {
         let pack = SHERPA_PACKS.iter().find(|p| p.id == "sherpa-cpu").unwrap();
         download_sherpa_pack(data.path(), pack, &cancel, &cb).expect("sherpa-cpu");
         assert!(sherpa_installed(data.path(), pack));
+        let sherpa = sherpa_asset(data.path(), pack);
+        assert_eq!(
+            std::fs::read_dir(sherpa.dir.join("lib")).unwrap().count(),
+            1
+        );
+        std::fs::remove_file(sherpa.dir.join(MARKER)).unwrap();
+        assert!(
+            sherpa.installed(),
+            "legacy pack with only runtime dependencies"
+        );
+        sherpa.adopt(&cancel, &cb).unwrap();
+        assert!(sherpa.installed());
     }
 
     #[test]
@@ -2245,20 +2337,75 @@ mod tests {
         assert!(!root.path().join("escape.txt").exists());
         assert!(!staging.exists());
 
-        // A changed file re-verifies from the archive; good files alone
-        // (no network: the server is gone) are reused as they are.
+        // A bad staged file with the same name must not hide a good live
+        // one. Failed repair must leave both live files and the marker.
+        let offline = archived(&dest, "http://127.0.0.1:9", archive_of(&good), files, false);
         std::fs::write(dest.join("tokens.txt"), b"b 0\n").unwrap();
         assert!(!asset.installed());
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::write(staging.join("encoder.int8.onnx"), b"weightz").unwrap();
+        let marker = std::fs::read(dest.join(MARKER)).unwrap();
+        assert!(run(&offline).is_err());
+        assert_eq!(std::fs::read(dest.join("tokens.txt")).unwrap(), b"b 0\n");
+        assert_eq!(std::fs::read(dest.join(MARKER)).unwrap(), marker);
+        let staged_encoder = staging.join("encoder.int8.onnx");
+        assert_eq!(std::fs::read(&staged_encoder).unwrap(), b"weights");
+
+        // Repair extracts only the missing member and publishes the
+        // exact staged encoder that already verified.
+        use std::os::unix::fs::MetadataExt;
+        let encoder_inode = staged_encoder.metadata().unwrap().ino();
         run(&asset).unwrap();
+        assert_eq!(
+            dest.join("encoder.int8.onnx").metadata().unwrap().ino(),
+            encoder_inode
+        );
         assert_eq!(std::fs::read(dest.join("tokens.txt")).unwrap(), b"a 0\n");
-        let offline = archived(&dest, "http://127.0.0.1:9", archive_of(&good), files, false);
         std::fs::remove_file(dest.join(MARKER)).unwrap();
         assert!(
             !offline.installed(),
             "bark-style asset: no marker, no install"
         );
+        // Interrupted extraction left valid members and a partial archive.
+        // Cached members let the retry skip the download entirely.
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::copy(dest.join("encoder.int8.onnx"), &staged_encoder).unwrap();
+        std::fs::copy(dest.join("tokens.txt"), staging.join("tokens.txt")).unwrap();
+        std::fs::write(staging.join(".archive.part"), b"incomplete").unwrap();
+        std::fs::write(staging.join("tokens.txt.part"), b"incomplete").unwrap();
+        std::fs::create_dir(staging.join("unexpected")).unwrap();
+        let flag = Arc::new(AtomicBool::new(false));
+        let cancel_on_publish = flag.clone();
+        let cb: DownloadCallback = Arc::new(move |event| {
+            if matches!(event, DownloadEvent::Installing) {
+                cancel_on_publish.store(true, Ordering::SeqCst);
+            }
+        });
+        assert_eq!(
+            offline.install(timeout, &flag, &cb).unwrap_err(),
+            "cancelled"
+        );
+        assert_eq!(
+            dest.join("encoder.int8.onnx").metadata().unwrap().ino(),
+            encoder_inode
+        );
         run(&offline).unwrap();
         assert!(offline.installed());
+        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 3);
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn precancelled_tiny_reinstall_keeps_verified_model() {
+        let data = tempfile::tempdir().unwrap();
+        let entry = find_model("tiny").unwrap();
+        let dir = fake_install(data.path(), entry.id);
+        let marker = std::fs::read(dir.join(MARKER)).unwrap();
+        let err = download_model(data.path(), entry, &AtomicBool::new(true), &noop()).unwrap_err();
+        assert_eq!(err, "cancelled");
+        assert!(is_installed(data.path(), entry));
+        assert_eq!(std::fs::read(dir.join(MARKER)).unwrap(), marker);
+        assert!(!has_stale_staging(data.path(), entry));
     }
 
     #[test]
@@ -2348,20 +2495,19 @@ mod tests {
         assert!(legacy.installed());
         assert!(dest.join(MARKER).exists());
 
-        // Same size, wrong bytes: counts until hashed, then moves to
-        // staging (keeping the good file) and reads as not installed.
+        // Same size, wrong bytes: counts until hashed, then reads as
+        // not installed while keeping the original files.
         std::fs::remove_file(dest.join(MARKER)).unwrap();
         std::fs::write(dest.join("tokens.txt"), b"b 0\n").unwrap();
         assert!(legacy.installed());
         let err = legacy.adopt(&cancel, &noop()).unwrap_err();
         assert!(err.contains("tokens.txt failed verification"), "{err}");
         assert!(!legacy.installed());
-        assert!(!dest.exists());
-        let staging = staging_dir(&dest);
         assert_eq!(
-            std::fs::read(staging.join("encoder.int8.onnx")).unwrap(),
+            std::fs::read(dest.join("encoder.int8.onnx")).unwrap(),
             b"weights-v2"
         );
+        assert!(!staging_dir(&dest).exists());
         // A download then refetches only the bad file.
         let base = serve(vec![("tokens.txt", Route::Body(b"a 0\n".to_vec()))]);
         install(&dest, files, &base, &cancel).unwrap();
@@ -2380,13 +2526,17 @@ mod tests {
             .unwrap()
             .set_len(entry.files[0].bytes)
             .unwrap();
+        let sidecar = dir.join("whistle.json");
+        std::fs::write(&sidecar, b"legacy sidecar").unwrap();
         assert!(is_installed(data.path(), entry));
         spawn_legacy_verification(data.path().to_path_buf())
             .unwrap()
             .join()
             .unwrap();
         assert!(!is_installed(data.path(), entry));
-        assert!(has_stale_staging(data.path(), entry));
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"legacy sidecar");
+        assert!(dir.join("whistle.cact").is_file());
+        assert!(!has_stale_staging(data.path(), entry));
         match download_state(entry.id).map(|d| d.phase) {
             Some(DlPhase::Failed(e)) => assert!(e.contains("failed verification"), "{e}"),
             other => panic!("unexpected {other:?}"),
@@ -2619,8 +2769,8 @@ pub fn cancel_gpu_download(id: &str) {
 
 /// sherpa-onnx server runtimes for parakeet/orukeet/cohere models
 /// (whisper models use the whisper-server packs above instead).
-/// Same v1.13.8 upstream OpenWhispr fetches. The servers and every
-/// shared library are pinned; the release's other tools are skipped.
+/// Same v1.13.8 upstream OpenWhispr fetches. The servers and their
+/// runtime libraries are pinned.
 pub const SHERPA_TAG: &str = "v1.13.8";
 
 #[derive(Debug, Clone)]
@@ -2723,16 +2873,7 @@ pub const SHERPA_PACKS: &[SherpaPack] = &[
                 27_026_609,
                 "4b3607aebd1784b26b6f9b20e4bd974c7ab8287043e4d095cb7d2cb40b5e566e",
             ),
-            pin(
-                "lib/libsherpa-onnx-c-api.so",
-                3_626_056,
-                "c067b18cd746e49eb5016ee428196d21e1df14c14a3c54f128c1ac95f6aaed50",
-            ),
-            pin(
-                "lib/libsherpa-onnx-cxx-api.so",
-                266_056,
-                "81b3c4ffdd19e3da9d4f7df7c41fde233506cb701a074b005c31234bf910b1e1",
-            ),
+            // ONNX Runtime is the only bundled library the CPU servers load.
         ],
         subdir: "sherpa-cpu",
         binaries: SHERPA_SERVERS,
@@ -2793,24 +2934,38 @@ pub fn start_sherpa_download(data_dir: PathBuf, id: &'static str) {
 
 // ---------------------------------------------------------------- needle engine
 //
-// Whistle's `needle` binary: one file per arch, no archive, from the
-// last needle3 commit that ships it (`main` no longer does). Hashes
-// are the upstream LFS oids.
+// Whistle's `needle` binary: one file per arch, no archive. The first
+// pin is the download from the last needle3 commit shipping the CLI.
+// The second accepts the previous build on disk. Both hashes are LFS oids.
 
 pub const NEEDLE_ENGINE_ID: &str = "needle-engine";
 
-const NEEDLE_REVISION: &str = "2ae11323dc000f5e70c49f7403efa6af12ba9e67";
+const NEEDLE_REVISION: &str = "d6c7d6a2e9655505e0f8e23339356dd1705900eb";
 
-const NEEDLE_X86_64: &[PinnedFile] = &[pin(
-    "needle",
-    1_541_680,
-    "f38dc4b0345d66b4e385734ad0f12af43ac6e2cfa1752d0795af5c137200c8e4",
-)];
-const NEEDLE_ARM64: &[PinnedFile] = &[pin(
-    "needle",
-    1_431_816,
-    "6fc25a97def475e1c7d1933a4a219d4e37076be77974e76dd331d9e0cd97f3cb",
-)];
+const NEEDLE_X86_64: &[PinnedFile] = &[
+    pin(
+        "needle",
+        1_550_176,
+        "77cd35ee75c53df8532b397e11ed7cf94a45d89a9f14f50881fd9c68ba54a2d0",
+    ),
+    pin(
+        "needle",
+        1_541_680,
+        "f38dc4b0345d66b4e385734ad0f12af43ac6e2cfa1752d0795af5c137200c8e4",
+    ),
+];
+const NEEDLE_ARM64: &[PinnedFile] = &[
+    pin(
+        "needle",
+        1_439_720,
+        "a7dd07f740763507edbca760dc7e7065b6da6b6bd6c3a05288ca974f14ce0fcb",
+    ),
+    pin(
+        "needle",
+        1_431_816,
+        "6fc25a97def475e1c7d1933a4a219d4e37076be77974e76dd331d9e0cd97f3cb",
+    ),
+];
 
 /// Release folder and pin of this arch's build.
 fn needle_build() -> Result<(&'static str, &'static [PinnedFile]), String> {
