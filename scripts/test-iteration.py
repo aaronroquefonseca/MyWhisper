@@ -61,7 +61,9 @@ class ReleasePreparation(Fixture):
         self.write(self.repo, "packaging/arch/PKGBUILD", "pkgver=0.9.3\npkgrel=2\nsha256sums=('" + "0" * 64 + "')\n")
         self.write(self.repo, "packaging/nixos/flake.nix", "version = manifest.package.version;\n")
         self.write(self.repo, "scripts/prepare-release.py", "# Synthetic installed release tooling.\n")
-        self.write(self.repo, "CHANGELOG.md", "# Changelog\n\n## 0.9.3\n\n- Released behavior.\n")
+        self.legacy_notes = ("## [0.9.3](https://github.com/fixture/project/releases/tag/v0.9.3) - 2026-10-09\n\n"
+                             "### Fixes\n\n- Released behavior.\n")
+        self.write(self.repo, "CHANGELOG.md", "# Changelog\n\n" + self.legacy_notes)
         self.git("init", "-q", "--initial-branch=main")
         self.git("config", "--local", "user.name", "Disposable")
         self.git("config", "--local", "user.email", "fixture@example.invalid")
@@ -77,7 +79,13 @@ class ReleasePreparation(Fixture):
         self.git("remote", "add", "origin", str(self.bare))
         self.git("push", "-q", "origin", "main", "--tags")
         self.sha = self.git("rev-parse", "HEAD")
-        self.notes = "## What's Changed\n* Improve privacy and startup by @fixture in https://example.invalid/pull/5\n\n"
+        self.notes = ("### Breaking changes\n\n* **Breaking:** Replace the fixture setting ([#1](https://example.invalid/pull/1)).\n"
+                      "  Upgrade action: rename the fixture setting.\n\n"
+                      "### Security\n\n* **Security:** Improve privacy by @fixture in https://example.invalid/pull/5\n"
+                      "  Upgrade action: restart the fixture.\n\n"
+                      "### New features\n\n* Add a fixture option ([#2](https://example.invalid/pull/2)).\n\n"
+                      "### Fixes\n\n* Fix startup ([#3](https://example.invalid/pull/3)).\n\n"
+                      "### Other improvements\n\n* Clarify fixture docs ([#4](https://example.invalid/pull/4)).\n\n")
         self.actual_run = prepare.run
         self.gh_calls = []
 
@@ -108,12 +116,18 @@ class ReleasePreparation(Fixture):
         with patch.object(prepare, "run", side_effect=self.commands), patch.object(sys, "argv", ["prepare-release.py", *args]):
             prepare.main()
 
+    def heading(self, candidate="0.9.4", release_date=None):
+        release_date = release_date or prepare.datetime.date.today().isoformat()
+        return f"## [{candidate}](https://github.com/fixture/project/releases/tag/v{candidate}) - {release_date}"
+
     def test_preview_preserves_checkout_and_remote_and_maps_prs(self):
         output = self.root / "preview"
         self.invoke("0.9.4", "--repo", "fixture/project", "--previous-tag", "v0.9.3", "--output", str(output))
         self.assertIn("/pull/5", (output / "notes.md").read_text())
         self.assertIn('version = "0.9.4"', (output / "release.patch").read_text())
         self.assertIn(".github/release-source.json", (output / "release.patch").read_text())
+        self.assertIn("+" + self.heading(), (output / "release.patch").read_text())
+        self.assertEqual((output / "notes.md").read_text(), self.notes)
         self.assertEqual(json.loads((output / "source.json").read_text())["source_sha"], self.sha)
         self.assertEqual(self.git("rev-parse", "HEAD"), self.sha)
         self.assertEqual(self.git("status", "--porcelain"), "")
@@ -126,7 +140,9 @@ class ReleasePreparation(Fixture):
         self.assertNotEqual(sha, self.sha)
         self.assertEqual(self.git("rev-parse", "HEAD"), self.sha)
         self.assertEqual(self.git("ls-remote", "origin", "refs/tags/v0.9.4"), "")
-        self.assertIn("/pull/5", self.git("show", sha + ":CHANGELOG.md"))
+        changelog = self.git("show", sha + ":CHANGELOG.md")
+        self.assertIn(self.heading() + "\n\n" + self.notes.strip(), changelog)
+        self.assertTrue(changelog.endswith(self.legacy_notes.strip()))
         manifest = tomllib.loads(self.git("show", sha + ":Cargo.toml"))
         self.assertEqual(manifest["package"]["version"], "0.9.4")
         self.assertEqual(manifest["dependencies"]["example"]["version"], "1.0.0")
@@ -152,6 +168,26 @@ class ReleasePreparation(Fixture):
         updates = prepare.version_updates(self.repo, "0.9.4-rc.1", self.notes)
         self.assertIn("pkgver=0.9.4rc.1", updates["packaging/arch/PKGBUILD"])
         self.assertIn("pkgrel=1", updates["packaging/arch/PKGBUILD"])
+        self.assertIn("## [0.9.4-rc.1](https://github.com/aaronroquefonseca/MyWhisper/releases/tag/v0.9.4-rc.1) - ",
+                      updates["CHANGELOG.md"])
+
+    def test_refresh_converts_bare_heading_and_preserves_categories_and_history(self):
+        original = (self.repo / "CHANGELOG.md").read_text()
+        history = "## 0.9.2\n\n- Original historical behavior.\n"
+        self.write(self.repo, "CHANGELOG.md", original.replace(self.legacy_notes.splitlines()[0], "## 0.9.3") + "\n" + history)
+        updates = prepare.version_updates(self.repo, "0.9.3", self.notes, refresh=True,
+                                          repo="fixture/project", release_date="2026-10-12")
+        self.assertEqual(updates["CHANGELOG.md"], "# Changelog\n\n" + self.heading("0.9.3", "2026-10-12")
+                         + "\n\n" + self.notes.strip() + "\n\n" + history)
+        for name in ("Cargo.toml", "Cargo.lock"):
+            self.assertEqual(updates[name], (self.repo / name).read_text())
+
+    def test_invalid_heading_inputs_are_rejected(self):
+        for date in ("2026-02-30", "2026-1-12", "2026-10-12\n### Injected"):
+            with self.subTest(date=date), self.assertRaises(ValueError):
+                prepare.version_updates(self.repo, "0.9.4", self.notes, release_date=date)
+        with self.assertRaisesRegex(ValueError, "repository"):
+            prepare.version_updates(self.repo, "0.9.4", self.notes, repo="fixture/project)\n### Injected")
 
     def test_source_snapshot_blocks_changes_merged_after_preparation(self):
         self.invoke("0.9.4", "--repo", "fixture/project", "--previous-tag", "v0.9.3", "--create-pr")
@@ -196,22 +232,23 @@ class ReleasePreparation(Fixture):
         self.invoke("0.9.4", "--repo", "fixture/project", "--previous-tag", "v0.9.3", "--create-pr")
         self.git("merge", "--ff-only", "release/v0.9.4-" + self.sha[:12])
         old = (self.repo / "CHANGELOG.md").read_text()
-        old = old.replace("## 0.9.4", "## [0.9.4](https://example.invalid/tag) - 2026-10-12")
+        old = old.replace(self.heading(), self.heading(release_date="2026-10-12"))
         self.write(self.repo, "CHANGELOG.md", old)
         self.write(self.repo, "README.md", "Another product improvement after preparation.\n")
         self.git("add", ".")
         self.git("commit", "-qm", "Improve after preparation")
         self.git("push", "-q", "origin", "main")
         self.sha = self.git("rev-parse", "HEAD")
-        self.notes = "## What's Changed\n* Include both reviewed improvements ([#5](https://example.invalid/pull/5)).\n"
+        self.notes = "### Security\n\n* Include both reviewed improvements ([#5](https://example.invalid/pull/5)).\n"
         self.invoke("0.9.4", "--refresh", "--repo", "fixture/project", "--previous-tag", "v0.9.3", "--create-pr")
         self.git("merge", "--ff-only", "release/v0.9.4-" + self.sha[:12])
         prepare.release.verify_notes_source(self.repo, "0.9.4")
         changelog = (self.repo / "CHANGELOG.md").read_text()
         self.assertEqual([v for v, _ in prepare.release.changelog_sections(changelog)].count("0.9.4"), 1)
-        self.assertIn("## [0.9.4](https://example.invalid/tag) - 2026-10-12", changelog)
+        self.assertIn(self.heading() + "\n\n" + self.notes.strip(), changelog)
         self.assertIn("Include both reviewed improvements", changelog)
         self.assertIn("Released behavior", changelog)
+        self.assertTrue(changelog.endswith(self.legacy_notes))
         self.assertEqual(tomllib.loads((self.repo / "Cargo.toml").read_text())["package"]["version"], "0.9.4")
         command = [sys.executable, str(HERE.parent / "packaging/release.py"), "v0.9.4",
                    "--root", str(self.repo), "--compare-version-to", self.sha]
