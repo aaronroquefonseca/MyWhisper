@@ -583,9 +583,10 @@ pub struct LlmEntry {
     #[serde(default)]
     pub num_ctx: Option<u32>,
     /// Reasoning preference: None = model default (param omitted),
-    /// Some(true/false) = forced. Ollama `think`, Claude extended
-    /// thinking (10k budget), Gemini dynamic budget (-1) / off (0);
-    /// other providers ignore it. Old stored bools read as forced.
+    /// Some(true/false) = forced. Ollama `think`, Claude adaptive or
+    /// enabled (1024 budget, unknown models keep the default),
+    /// Gemini dynamic budget (-1) / off (0); other providers ignore
+    /// it. Old stored bools read as forced.
     #[serde(default)]
     pub thinking: Option<bool>,
 }
