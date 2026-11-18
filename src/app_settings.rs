@@ -1099,7 +1099,6 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
             if let Err(e) = state.store.save_settings(&settings) {
                 eprintln!("[app] hotkey save failed: {e}");
             }
-            crate::hotkey::apply_from_settings(&state);
         })
     };
 
@@ -1396,14 +1395,14 @@ fn mods_from_state(state: gtk4::gdk::ModifierType) -> [bool; 4] {
 }
 
 struct Capture {
-    capturing: Rc<Cell<bool>>,
-    /// Modifier slots currently held (press-tracked).
-    held: Rc<RefCell<[bool; 4]>>,
-    /// Modifier slots pressed at any point this round (for
-    /// modifier-only finalize on release).
-    pressed: Rc<RefCell<[bool; 4]>>,
-    record_btn: Button,
-    add_entry: Entry,
+    capturing: Cell<bool>,
+    /// Modifier slots currently held and ever pressed during this capture.
+    held: RefCell<[bool; 4]>,
+    pressed: RefCell<[bool; 4]>,
+    record_btn: gtk4::glib::WeakRef<Button>,
+    add_entry: gtk4::glib::WeakRef<Entry>,
+    data_dir: Option<std::path::PathBuf>,
+    request: RefCell<Option<crate::hotkey::CaptureRequest>>,
 }
 
 impl Capture {
@@ -1411,23 +1410,84 @@ impl Capture {
         self.capturing.set(false);
         self.held.replace([false; 4]);
         self.pressed.replace([false; 4]);
-        self.record_btn.set_label(tr("hotkeys.record"));
-        self.add_entry.set_sensitive(true);
-        self.add_entry.set_placeholder_text(Some("F13"));
+        self.request.borrow_mut().take();
+        if let Some(button) = self.record_btn.upgrade() {
+            button.set_label(tr("hotkeys.record"));
+        }
+        if let Some(entry) = self.add_entry.upgrade() {
+            entry.set_sensitive(true);
+            entry.set_placeholder_text(Some("F13"));
+        }
     }
 
-    fn begin(&self) {
-        // Suspend the global listener while recording so the very
-        // keypress being recorded doesn't also fire dictation.
-        crate::hotkey::stop();
+    fn ready(&self) {
         self.capturing.set(true);
         self.live_label();
-        self.add_entry.set_sensitive(false);
-        self.add_entry
-            .set_placeholder_text(Some(tr("hotkeys.pressnow")));
+        if let Some(entry) = self.add_entry.upgrade() {
+            entry.set_placeholder_text(Some(tr("hotkeys.pressnow")));
+        }
+    }
+
+    fn begin(self: &Rc<Self>) {
+        let (Some(button), Some(entry)) = (self.record_btn.upgrade(), self.add_entry.upgrade())
+        else {
+            return;
+        };
+        let result = (|| -> std::io::Result<_> {
+            let dir = self.data_dir.as_deref().ok_or_else(|| {
+                std::io::Error::other("shortcut capture data directory is unavailable")
+            })?;
+            let request = crate::hotkey::CaptureRequest::begin(dir)?;
+            let waiting = request.service_running()?;
+            Ok((request, waiting))
+        })();
+        let (request, waiting) = match result {
+            Ok(state) => state,
+            Err(error) => {
+                eprintln!("[hotkey] capture suspend: {error}");
+                super::app::toast(&button, tr("hotkeys.suspendfailed"));
+                return;
+            }
+        };
+        let nonce = request.nonce();
+        self.request.replace(Some(request));
+        entry.set_sensitive(false);
+        if !waiting {
+            self.ready();
+            return;
+        }
+
+        button.set_label(tr("hotkeys.suspending"));
+        let capture = Rc::downgrade(self);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(20), move || {
+            use gtk4::glib::ControlFlow;
+            let Some(capture) = capture.upgrade() else {
+                return ControlFlow::Break;
+            };
+            let acknowledged = match capture.request.borrow().as_ref() {
+                Some(request) if request.nonce() == nonce => request.acknowledged(),
+                _ => return ControlFlow::Break,
+            };
+            if acknowledged {
+                capture.ready();
+                return ControlFlow::Break;
+            }
+            if std::time::Instant::now() >= deadline {
+                capture.stop();
+                if let Some(button) = capture.record_btn.upgrade() {
+                    super::app::toast(&button, tr("hotkeys.suspendfailed"));
+                }
+                return ControlFlow::Break;
+            }
+            ControlFlow::Continue
+        });
     }
 
     fn live_label(&self) {
+        let Some(button) = self.record_btn.upgrade() else {
+            return;
+        };
         let held = *self.held.borrow();
         let shown = combo_string(&held, None);
         let keys = if shown.is_empty() {
@@ -1435,8 +1495,7 @@ impl Capture {
         } else {
             shown
         };
-        self.record_btn
-            .set_label(crate::i18n::trf("hotkeys.recording", &[("keys", &keys)]).as_str());
+        button.set_label(crate::i18n::trf("hotkeys.recording", &[("keys", &keys)]).as_str());
     }
 
     fn finish(
@@ -1448,12 +1507,19 @@ impl Capture {
         persist: &Rc<dyn Fn()>,
     ) {
         if crate::hotkey::parse_combo(&combo).is_none() {
-            self.record_btn.set_label(tr("hotkeys.invalid"));
+            if let Some(button) = self.record_btn.upgrade() {
+                button.set_label(tr("hotkeys.invalid"));
+            }
             return;
         }
         {
             let mut s = state.settings.borrow_mut();
-            if !s.hotkeys.dictation_hotkeys.iter().any(|b| b.combo == combo) {
+            if !s
+                .hotkeys
+                .effective_hotkeys()
+                .iter()
+                .any(|b| same_shortcut(&b.combo, &combo))
+            {
                 s.hotkeys
                     .dictation_hotkeys
                     .push(crate::settings::HotkeyBinding { combo, mode });
@@ -1462,9 +1528,6 @@ impl Capture {
         persist();
         refill_hotkey_list(list, state, persist);
         self.stop();
-        // Recording is over either way: bring the listener back with
-        // the fresh bindings.
-        crate::hotkey::apply_from_settings(state);
     }
 }
 
@@ -1481,19 +1544,27 @@ fn attach_hotkey_capture(
     add_mode: &DropDown,
 ) {
     let cap = Rc::new(Capture {
-        capturing: Rc::new(Cell::new(false)),
-        held: Rc::new(RefCell::new([false; 4])),
-        pressed: Rc::new(RefCell::new([false; 4])),
-        record_btn: record_btn.clone(),
-        add_entry: add_entry.clone(),
+        capturing: Cell::new(false),
+        held: RefCell::new([false; 4]),
+        pressed: RefCell::new([false; 4]),
+        record_btn: record_btn.downgrade(),
+        add_entry: add_entry.downgrade(),
+        data_dir: state
+            .db_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(std::path::Path::to_path_buf),
+        request: RefCell::new(None),
     });
     {
         let cap = cap.clone();
-        let state = state.clone();
+        root.connect_unmap(move |_| cap.stop());
+    }
+    {
+        let cap = cap.clone();
         record_btn.connect_clicked(move |_| {
-            if cap.capturing.get() {
+            if cap.request.borrow().is_some() {
                 cap.stop();
-                crate::hotkey::apply_from_settings(&state);
             } else {
                 cap.begin();
             }
@@ -1510,6 +1581,12 @@ fn attach_hotkey_capture(
         let add_mode = add_mode.clone();
         ctl.connect_key_pressed(move |_, key, keycode, mod_state| {
             if !cap.capturing.get() {
+                if cap.request.borrow().is_some() {
+                    if capture_token(key, keycode) == Some("Escape") {
+                        cap.stop();
+                    }
+                    return gtk4::glib::Propagation::Stop;
+                }
                 return gtk4::glib::Propagation::Proceed;
             }
             // Seed from the event's own modifier state (covers
@@ -1531,7 +1608,6 @@ fn attach_hotkey_capture(
             let token = capture_token(key, keycode);
             if token == Some("Escape") && !held.iter().any(|h| *h) {
                 cap.stop();
-                crate::hotkey::apply_from_settings(&state);
                 return gtk4::glib::Propagation::Stop;
             }
             eprintln!("[hotkey] capture saw keycode={keycode} token={token:?}");
@@ -1546,7 +1622,9 @@ fn attach_hotkey_capture(
                     cap.finish(combo, mode, &state, &list, &persist);
                 }
                 None => {
-                    cap.record_btn.set_label(tr("hotkeys.unsupported"));
+                    if let Some(button) = cap.record_btn.upgrade() {
+                        button.set_label(tr("hotkeys.unsupported"));
+                    }
                 }
             }
             gtk4::glib::Propagation::Stop
