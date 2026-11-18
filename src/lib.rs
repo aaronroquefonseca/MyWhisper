@@ -7,6 +7,7 @@ pub mod app_sync;
 pub mod audio;
 pub mod clipboard;
 pub mod device;
+mod focus;
 pub mod hotkey;
 pub mod i18n;
 pub mod media;
