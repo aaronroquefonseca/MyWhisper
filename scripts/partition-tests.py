@@ -299,6 +299,7 @@ def main(argv):
             raise SystemExit("missing --logs LOG [LOG ...]")
         tests, harnesses = read_manifest(manifest)
         seen_ok, seen_ignored, failures, unknown = {}, set(), [], []
+        nested = []
         harness_runs = {harness: 0 for harness in harnesses}
         for log in logs:
             # Batch logs may carry cargo ANSI color codes (CARGO_TERM_COLOR);
@@ -324,12 +325,15 @@ def main(argv):
                     if name not in tests:
                         unknown.append(f"{log}: unrecognized ignored test {name}")
             current = None
+            section = None
+            running_counts = {}
             for line in text.splitlines():
                 running = RUNNING_LINE.search(line)
                 if running:
                     # Executable stems carry a hash suffix (name-deadbeef);
                     # match the manifest harness by target-name prefix.
                     stem = Path(running.group(1)).stem
+                    section = stem
                     current = next(
                         (
                             h
@@ -339,11 +343,26 @@ def main(argv):
                         None,
                     )
                     continue
+                started = re.match(r"^running (\d+) tests?$", line.strip())
+                if started:
+                    # Each binary section runs its suite once. A second
+                    # "running" line inside one section means a test spawned a
+                    # nested harness whose inherited stdout races the parent's
+                    # result lines (duplicates/corruption); fail explicitly.
+                    running_counts[section] = running_counts.get(section, 0) + 1
+                    continue
                 if current is not None and line.strip().startswith(
                     "test result: ok. 0 passed"
                 ):
                     harness_runs[current] += 1
                     current = None
+            for owner, count in sorted(
+                running_counts.items(), key=lambda item: str(item[0])
+            ):
+                if count > 1:
+                    nested.append(
+                        f"{log}: nested harness output in section {owner} ({count} suite starts)"
+                    )
         missing = sorted(
             name for name in tests if tests[name] == "run" and name not in seen_ok
         )
@@ -359,7 +378,7 @@ def main(argv):
                 failures.append(f"empty harness never ran: {harness}")
         failures.extend(f"coverage: {entry}" for entry in unknown)
         if failures:
-            raise SystemExit("batch coverage FAILED:\n" + "\n".join(failures))
+            raise SystemExit("batch coverage FAILED:\n" + "\n".join(nested + failures))
         print(
             f"batches cover all {len(tests)} tests exactly once ({len(want_ignored)} ignored), {len(harnesses)} harnesses ran"
         )
