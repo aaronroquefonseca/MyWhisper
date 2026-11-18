@@ -1801,24 +1801,6 @@ fn wait_ready_existing(name: &str, instance: u64, port: u16, baseline: u64) -> R
     }
 }
 
-/// Server stdout/stderr go here, not null: the next crash leaves a
-/// trace instead of a mystery reset.
-fn server_logs(name: &str) -> (Stdio, Stdio) {
-    use std::fs::OpenOptions;
-    let path = format!("/tmp/mywhisper-{name}.log");
-    let open = || {
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .ok()
-    };
-    match (open(), open()) {
-        (Some(o), Some(e)) => (Stdio::from(o), Stdio::from(e)),
-        _ => (Stdio::null(), Stdio::null()),
-    }
-}
-
 fn whisper_binary(data_dir: &Path, backend: GpuBackendSetting) -> Result<PathBuf, String> {
     // Strict: the dropdown is the single selector. No silent fallback
     // to another backend (that mismatch was reported as "cuda selected
@@ -2068,7 +2050,6 @@ fn ensure_whisper(
         key,
         whisper_port,
         || {
-            let (out, err) = server_logs("whisper-server");
             let mut cmd = Command::new(&bin);
             kill_on_parent_death(&mut cmd);
             cmd.args([
@@ -2084,8 +2065,8 @@ fn ensure_whisper(
                 &threads_arg(),
             ])
             .stdin(Stdio::null())
-            .stdout(out)
-            .stderr(err)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .env("LD_LIBRARY_PATH", &ld_path)
             .spawn()
             .map_err(|e| format!("spawn whisper-server: {e}"))
@@ -2295,7 +2276,6 @@ fn ensure_sherpa_offline(
         offline_port,
         || {
             let f = |n: &str| dir_s.join(n).to_string_lossy().to_string();
-            let (out, err) = server_logs("sherpa-offline-server");
             let mut cmd = Command::new(&bin_s);
             kill_on_parent_death(&mut cmd);
             // The binary defaults to CPU inference even from the CUDA
@@ -2314,7 +2294,7 @@ fn ensure_sherpa_offline(
                 format!("--decoder={}", f("decoder.int8.onnx")),
                 format!("--joiner={}", f("joiner.int8.onnx")),
                 format!("--num-threads={}", threads_arg()),
-                "--log-file=/tmp/mywhisper-sherpa-offline.log".to_string(),
+                "--log-file=/dev/null".to_string(),
             ];
             if let Some(lang) = cohere_arg {
                 args.push(format!("--cohere-transcribe-language={lang}"));
@@ -2322,8 +2302,8 @@ fn ensure_sherpa_offline(
             args.extend(hw_args);
             cmd.args(args)
                 .stdin(Stdio::null())
-                .stdout(out)
-                .stderr(err)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .env("LD_LIBRARY_PATH", server_ld_path(data_dir, &bin_s))
                 .spawn()
                 .map_err(|e| format!("spawn sherpa offline server: {e}"))
@@ -2362,7 +2342,6 @@ fn ensure_sherpa_online(
         online_port,
         || {
             let f = |n: &str| dir_s.join(n).to_string_lossy().to_string();
-            let (out, err) = server_logs("sherpa-online-server");
             let mut cmd = Command::new(&bin_s);
             kill_on_parent_death(&mut cmd);
             // See offline: the pack binary alone doesn't engage CUDA.
@@ -2380,13 +2359,13 @@ fn ensure_sherpa_online(
                 format!("--decoder={}", f("decoder.int8.onnx")),
                 format!("--joiner={}", f("joiner.int8.onnx")),
                 format!("--num-threads={}", threads_arg()),
-                "--log-file=/tmp/mywhisper-sherpa-online.log".to_string(),
+                "--log-file=/dev/null".to_string(),
             ];
             args.extend(hw_args);
             cmd.args(args)
                 .stdin(Stdio::null())
-                .stdout(out)
-                .stderr(err)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .env("LD_LIBRARY_PATH", server_ld_path(data_dir, &bin_s))
                 .spawn()
                 .map_err(|e| format!("spawn sherpa online server: {e}"))
@@ -2479,7 +2458,7 @@ fn sherpa_message(msg: &str) -> Result<(String, bool), String> {
         .get("text")
         .and_then(|t| t.as_str())
         .map(|t| t.to_string())
-        .ok_or_else(|| format!("sherpa reply has no text: {msg}"))?;
+        .ok_or("sherpa reply has no text")?;
     let is_final = v.get("is_final").and_then(|f| f.as_bool()).unwrap_or(false);
     Ok((text, is_final))
 }
@@ -2495,8 +2474,8 @@ fn sherpa_text(msg: &str) -> Result<String, String> {
 fn probe_sherpa_offline(port: u16) -> Result<(), String> {
     let silence = vec![0.0f32; 8000];
     eprintln!("[stt] sherpa-offline probe: 0.5s silence");
-    let text = sherpa_offline_transcribe_inner(&silence, Duration::from_secs(60), port)?;
-    eprintln!("[stt] sherpa-offline probe ok (reply: {text:?})");
+    sherpa_offline_transcribe_inner(&silence, Duration::from_secs(60), port)?;
+    eprintln!("[stt] sherpa-offline probe ok");
     Ok(())
 }
 
@@ -2504,8 +2483,8 @@ fn probe_sherpa_online(port: u16) -> Result<(), String> {
     eprintln!("[stt] sherpa-online probe: 0.5s silence");
     let mut s = OnlineSession::open_with(port, Duration::from_secs(60))?;
     s.send_chunk(&vec![0.0f32; 8000])?;
-    let text = s.finish()?;
-    eprintln!("[stt] sherpa-online probe ok (reply: {text:?})");
+    s.finish()?;
+    eprintln!("[stt] sherpa-online probe ok");
     Ok(())
 }
 
@@ -2562,7 +2541,7 @@ impl OnlineSession {
     }
 
     /// Fold one server message into the accumulation. Returns true
-    /// when it completed a segment (worth logging).
+    /// when it completed a segment.
     fn ingest(&mut self, msg: &str) -> bool {
         let Ok((text, is_final)) = sherpa_message(msg) else {
             eprintln!("[stt] bad online message");
@@ -2613,19 +2592,7 @@ impl OnlineSession {
                     if s == "Done!" {
                         break;
                     }
-                    match sherpa_message(s) {
-                        Ok(_) => {
-                            let before = self.current.clone();
-                            if self.ingest(s) {
-                                if let Some(seg) = self.segments.last() {
-                                    eprintln!("[stt] segment: {seg}");
-                                }
-                            } else if self.current != before && !self.current.is_empty() {
-                                eprintln!("[stt] partial: {}", self.current);
-                            }
-                        }
-                        Err(e) => eprintln!("[stt] {e}"),
-                    }
+                    self.ingest(s);
                     if self.preview {
                         let full = self.transcript();
                         if !full.trim().is_empty() {
@@ -2776,15 +2743,11 @@ fn whistle_pass(
         .env("DO_NOT_TRACK", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .output()
         .map_err(|e| format!("spawn needle: {e}"))?;
     if !out.status.success() {
-        return Err(format!(
-            "needle: exit {}: {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+        return Err(format!("needle: {}", out.status));
     }
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     whistle_parse_stdout(&stdout).ok_or_else(|| "needle: empty output".to_string())
@@ -3508,7 +3471,7 @@ fn run_spec(
                         agreed,
                         buffer.len().saturating_sub(overlap + SPEC_UNSTABLE_AUDIO),
                     );
-                    eprintln!("[stt] spec committed: {}", committed.0);
+                    eprintln!("[stt] spec advanced its committed prefix");
                 }
                 prev_hyp = hyp;
             }
@@ -5682,7 +5645,6 @@ fn restore_protected(cleaned: &str, token: &str, replacements: &[String]) -> Opt
 /// Retention: history off pastes without storing; auto-delete purges
 /// old rows first (tombstones survive).
 fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
-    eprintln!("[stt] raw: {raw}");
     let paths = match crate::paths::AppPaths::create() {
         Ok(p) => p,
         Err(e) => {
@@ -5715,7 +5677,7 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
         &settings.dictionary.words,
         &snips,
     );
-    eprintln!("[stt] final: {text}");
+    eprintln!("[stt] final transcript ready");
     if settings.privacy.keep_audio_recordings && settings.privacy.audio_retention_days > 0 {
         let data_dir = paths
             .db_file()
@@ -5915,6 +5877,8 @@ mod tests {
 
     #[test]
     fn sherpa_text_field() {
+        let error = sherpa_text(r#"{"error":"private synthetic transcript"}"#).unwrap_err();
+        assert_eq!(error, "sherpa reply has no text");
         assert_eq!(
             sherpa_text(r#"{"text":"hola","segment":2}"#).unwrap(),
             "hola"
@@ -6228,6 +6192,22 @@ mod tests {
         );
         assert_eq!(whistle_parse_stdout("   \n  "), None);
         assert_eq!(whistle_parse_stdout(r#"{"text":"   "}"#), None);
+    }
+
+    #[test]
+    fn whistle_failure_keeps_exit_status_without_child_output() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let engine = root.path().join("needle");
+        std::fs::write(
+            &engine,
+            "#!/bin/sh\necho private-stdout\necho private-stderr >&2\nexit 4\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let error = whistle_pass(&engine, &engine, &engine, None, "auto").unwrap_err();
+        assert_eq!(error, "needle: exit status: 4");
     }
 
     #[test]
