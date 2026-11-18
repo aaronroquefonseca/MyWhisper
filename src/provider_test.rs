@@ -1,562 +1,908 @@
-//! Lightweight provider connectivity tests (no heavy inference).
+//! Settings "Test" probes for configured transcription and language
+//! models. UI-free: the settings page maps [`Blocker`] and [`Outcome`]
+//! to translated copy.
 //!
-//! ONE pattern for every chain row (STT + LLM, local and remote) and
-//! every add/edit draft form: one Test button, same placement, same
-//! inline reporting (`latency + excerpt/status`). Mirrors the phone
-//! app (`MyWhisperMobile` `ProviderTest`): disabled fail-closed via
-//! `enabled`, busy shows the testing copy, a disabled button shows
-//! `disabled_reason` so the blocker stays explicit under a stale result.
+//! Probes never transcribe or generate. They follow the same routing
+//! dictation uses ([`crate::transcribe::entry_plan`] for STT, the
+//! entry's kind/provider for LLMs), so Test can only reach the
+//! destination a real dictation would:
+//! - Local STT: the runtime's prerequisite check (model and engine
+//!   files), no inference.
+//! - Self-hosted HTTP: `GET` the model list beside the transcription
+//!   endpoint. Self-hosted `ws(s)`: a TCP connect (reachability only).
+//! - OpenAI/Groq/Mistral: authenticated model list, exact model id.
+//! - OpenRouter: authenticated `/key`, then the model list.
+//! - Claude/Gemini/Google: authenticated `GET models/{model}`.
+//! - Deepgram: authenticated project list (model not checked).
+//! - Ollama: read-only `/api/tags`, exact model name. Never loads it.
 //!
-//! Probes are network-light and never run a full transcribe/generate:
-//! - Self-hosted http(s) / OpenAI-compatible cloud: `GET {base}/v1/models`
-//!   (bearer when a key is set). Only 2xx reads as reachable; gated
-//!   401/403 reads as FAIL (wrong or missing key), never PASS.
-//! - `ws(s)` streaming servers (sherpa protocol) speak no HTTP: a short
-//!   TCP connect proves the address answers.
-//! - Deepgram: `GET https://api.deepgram.com/v1/projects` (`Token` auth).
-//! - Gemini (STT + LLM): `GET .../v1beta/models?pageSize=1` (`x-goog-api-key`).
-//! - Ollama: read-only `GET {url}/api/tags` checked against the
-//!   configured model name. Never loads or pins the model (that is what
-//!   "Apply to model" is for).
-//! - Local chain STT: installed-pack check (no inference, no server).
-//! - Local LLM: not implemented (always disabled with a reason).
+//! Credentials only travel over HTTPS, or plain HTTP to a loopback
+//! host; cross-origin redirects are never followed; transport errors
+//! are reported by class, never by text (it can carry URLs).
 
-use std::net::ToSocketAddrs;
+use std::net::TcpStream;
+use std::path::Path;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Inline excerpt cap (matches the phone app width).
-pub const EXCERPT_MAX: usize = 120;
+use reqwest::Url;
+use reqwest::blocking::Client;
 
-/// Budget for server/remote probes (lightweight, no transcribe).
-pub const SERVER_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::settings::{
+    CloudLlm, LlmEntry, LlmKind, LocalSttProvider, SttChainEntry, SttEntryKind, SttSettings,
+};
+use crate::transcribe::Plan;
 
-/// Unified row outcome: PASS = ran + non-blank + under timeout with no
-/// error. Excerpt carries the reply/status, else the error.
+/// Whole-probe budget (DNS, connect, and reply).
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Why a configuration cannot be tested yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Blocker {
+    NeedUrl,
+    BadUrl,
+    NeedModel,
+    NeedKey,
+    /// An API key would travel over plain HTTP to a non-loopback host.
+    Insecure,
+    /// A `ws(s)` server with Streaming off: dictation cannot use it.
+    NeedsStreaming,
+    /// Dictation rejects this provider.
+    Unsupported,
+    /// Managed local language models are not implemented.
+    LocalUnavailable,
+}
+
+/// What a finished probe found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// Local model and engine files are present.
+    Installed,
+    /// The provider resolved the configured model (with the key, if any).
+    ModelAvailable,
+    /// Key accepted; the provider exposes no model check.
+    KeyAccepted,
+    /// Self-hosted model list answered; the model is not checked.
+    ServerAnswered,
+    /// TCP connect only (streaming servers have no HTTP surface).
+    Reachable,
+    NotInstalled,
+    ModelMissing,
+    KeyRejected,
+    Http(u16),
+    /// A redirect to another origin (never followed).
+    Redirected,
+    Timeout,
+    Unreachable,
+    Network,
+    BadReply,
+    Blocked(Blocker),
+}
+
+impl Outcome {
+    pub fn passed(self) -> bool {
+        matches!(
+            self,
+            Outcome::Installed
+                | Outcome::ModelAvailable
+                | Outcome::KeyAccepted
+                | Outcome::ServerAnswered
+                | Outcome::Reachable
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TestResult {
-    pub passed: bool,
+    pub outcome: Outcome,
     pub latency_ms: u64,
-    pub excerpt: String,
-    pub error: Option<String>,
-    pub timed_out: bool,
+    /// The model the runtime would use (defaults applied).
+    pub model: String,
 }
 
-/// Config errors for the STT kinds (pure, UI maps to strings).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SttError {
-    None,
-    NeedUrl,
-    NeedModel,
-    BadUrl,
-    BadBase,
-}
-
-/// Config errors for the LLM kinds (pure, UI maps to strings).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LlmError {
-    None,
-    NeedUrl,
-    NeedModel,
-    BadUrl,
-}
-
-/// Single-line excerpt, capped with an ellipsis.
-pub fn excerpt(output: &str, max_chars: usize) -> String {
-    let flat: String = output.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max_chars {
-        return flat;
-    }
-    let cut: String = flat.chars().take(max_chars).collect();
-    format!("{}…", cut.trim_end())
-}
-
-/// THE mapping: every kind reports through here. PASS = no error +
-/// under timeout + non-blank output.
-pub fn map_result(
-    output: Option<&str>,
-    latency: Duration,
-    timeout: Duration,
-    error: Option<String>,
-) -> TestResult {
-    let timed_out = latency > timeout;
-    let excerpt_text = match (&output, &error) {
-        (Some(o), _) if !o.trim().is_empty() => excerpt(o, EXCERPT_MAX),
-        (_, Some(e)) if !e.trim().is_empty() => excerpt(e, EXCERPT_MAX),
-        _ => String::new(),
-    };
-    let passed = error.is_none() && !timed_out && output.is_some_and(|o| !o.trim().is_empty());
-    TestResult {
-        passed,
-        latency_ms: latency.as_millis().min(u128::from(u64::MAX)) as u64,
-        excerpt: excerpt_text,
-        error,
-        timed_out,
-    }
-}
-
-/// Generic probe runner: measures wall-clock, catches errors, maps via
-/// [`map_result`]. Callers inject the lightweight check.
-pub fn run_probe(timeout: Duration, probe: impl FnOnce() -> Result<String, String>) -> TestResult {
+fn timed(model: String, probe: impl FnOnce() -> Outcome) -> TestResult {
     let start = Instant::now();
-    match probe() {
-        Ok(out) => map_result(Some(&out), start.elapsed(), timeout, None),
-        Err(e) => map_result(None, start.elapsed(), timeout, Some(e)),
+    let outcome = probe();
+    TestResult {
+        outcome,
+        latency_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+        model,
     }
 }
 
-/// Trimmed bearer token for probe auth (`None` when blank). Probes send
-/// `Authorization: Bearer <token>` only when non-blank.
-pub fn bearer_token(api_key: &str) -> Option<String> {
-    let t = api_key.trim();
-    if t.is_empty() {
-        None
-    } else {
-        Some(t.to_string())
-    }
+/// Server URL shape accepted by the settings forms.
+pub fn valid_server_url(value: &str, websocket: bool) -> bool {
+    Url::parse(value.trim()).is_ok_and(|url| {
+        url.host_str().is_some()
+            && (matches!(url.scheme(), "http" | "https")
+                || (websocket && matches!(url.scheme(), "ws" | "wss")))
+    })
 }
 
-/// Throw unless 2xx: every probe GET targets a genuine endpoint
-/// (model lists, project lists, tag lists). A gated 401/403 means the
-/// key is wrong or missing; any other non-2xx (404 wrong base, 429
-/// quota) names a real problem — all read as FAIL, never PASS.
-pub fn require_http_2xx(code: u16) -> Result<(), String> {
-    if (200..300).contains(&code) {
-        Ok(())
-    } else {
-        Err(format!("http {code}"))
-    }
-}
-
-/// STT config validation (rows and draft form share one rule).
-/// SelfHosted needs URL + model; Cloud needs model (blank URL =
-/// vendor default).
-pub fn validate_stt(kind: &str, url: &str, model: &str) -> SttError {
-    let u = url.trim();
-    let m = model.trim();
-    if kind == "Local" {
-        return SttError::None;
-    }
-    if m.is_empty() {
-        return SttError::NeedModel;
-    }
-    if kind == "SelfHosted" {
-        if u.is_empty() {
-            return SttError::NeedUrl;
-        }
-        let Some(scheme) = u.split("://").next() else {
-            return SttError::BadUrl;
-        };
-        if !u.contains("://") || !matches!(scheme, "http" | "https" | "ws" | "wss") {
-            return SttError::BadUrl;
-        }
-        return SttError::None;
-    }
-    // Cloud (+ unknown): blank URL = vendor default.
-    if !u.is_empty() {
-        let Some(scheme) = u.split("://").next() else {
-            return SttError::BadBase;
-        };
-        if !u.contains("://") || !matches!(scheme, "http" | "https") {
-            return SttError::BadBase;
-        }
-    }
-    SttError::None
-}
-
-/// LLM config validation. Ollama needs URL + model; Cloud needs model
-/// (blank URL = vendor default); Local is always disabled elsewhere.
-pub fn validate_llm(kind: &str, url: &str, model: &str) -> LlmError {
-    let u = url.trim();
-    let m = model.trim();
-    if kind == "Local" {
-        return LlmError::None;
-    }
-    if m.is_empty() {
-        return LlmError::NeedModel;
-    }
-    if kind == "Ollama" {
-        if u.is_empty() {
-            return LlmError::NeedUrl;
-        }
-        let Some(scheme) = u.split("://").next() else {
-            return LlmError::BadUrl;
-        };
-        if !u.contains("://") || !matches!(scheme, "http" | "https") {
-            return LlmError::BadUrl;
-        }
-        return LlmError::None;
-    }
-    if !u.is_empty() {
-        let Some(scheme) = u.split("://").next() else {
-            return LlmError::BadUrl;
-        };
-        if !u.contains("://") || !matches!(scheme, "http" | "https") {
-            return LlmError::BadUrl;
-        }
-    }
-    LlmError::None
-}
-
-/// Server STT button goes live when the config validates.
-pub fn stt_server_test_allowed(kind: &str, url: &str, model: &str) -> bool {
-    validate_stt(kind, url, model) == SttError::None
-}
-
-/// Remote LLM button goes live when the config validates.
-pub fn llm_remote_test_allowed(kind: &str, url: &str, model: &str) -> bool {
-    validate_llm(kind, url, model) == LlmError::None
-}
-
-/// Whether the disabled-reason line renders under the test button.
-/// Renders even when a stale result lingers (the blocker is explicit,
-/// never hidden behind old output).
-pub fn show_disabled_reason(enabled: bool, busy: bool, reason: Option<&str>) -> bool {
-    !enabled && !busy && reason.is_some()
-}
-
-/// STT cloud base URL for the probe (matches the transcribe dispatch).
-fn stt_cloud_base(provider: &str) -> &'static str {
-    match provider {
-        "Groq" => "https://api.groq.com/openai/v1",
-        "Mistral" => "https://api.mistral.ai/v1",
-        "Deepgram" => "https://api.deepgram.com",
-        "Gemini" => "https://generativelanguage.googleapis.com/v1beta",
-        _ => "https://api.openai.com/v1",
-    }
-}
-
-/// Join a server base + `/v1/models` (tolerates bases that already
-/// include `/v1`).
-pub fn join_models_url(base: &str) -> String {
-    let base = base.trim_end_matches('/');
-    if base.ends_with("/v1/models") {
-        base.to_string()
-    } else if base.ends_with("/v1") {
-        format!("{base}/models")
-    } else {
-        format!("{base}/v1/models")
-    }
-}
-
-fn blocking_client(timeout: Duration) -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| format!("client: {e}"))
-}
-
-/// TCP reachability for `ws(s)` streaming servers (sherpa protocol):
-/// no HTTP surface exists, so a short connect proves the address
-/// answers without speaking the protocol or running inference.
-fn tcp_reachable(url: &str, model: &str) -> Result<String, String> {
-    let parsed = reqwest::Url::parse(url.trim()).map_err(|_| format!("bad address · {model}"))?;
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| format!("bad address · {model}"))?;
-    let port = parsed.port_or_known_default().unwrap_or(80);
-    // Bracket IPv6 literals (`::1` → `[::1]:port`).
-    let addr = if host.contains(':') {
-        format!("[{host}]:{port}")
-    } else {
-        format!("{host}:{port}")
+fn is_loopback(url: &Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
     };
-    let timeout = Duration::from_secs(5);
-    std::net::TcpStream::connect_timeout(
-        &addr
-            .to_socket_addrs()
-            .map_err(|_| format!("unresolved · {model}"))?
-            .next()
-            .ok_or_else(|| format!("unresolved · {model}"))?,
-        timeout,
-    )
-    .map_err(|e| format!("unreachable · {e}"))?;
-    Ok(format!("reachable · {model}"))
+    // IPv6 literals come bracketed (`[::1]`).
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
-/// Lightweight STT endpoint check (no transcribe).
-///
-/// * `kind`: `"SelfHosted"` | `"Cloud"` (anything else = config-ok).
-/// * `provider`: cloud vendor name (`OpenAI`/`Groq`/`Mistral`/`Gemini`/`Deepgram`;
-///   ignored for self-hosted).
-/// * `url`: self-hosted server URL (ignored for cloud: vendor base is used).
-pub fn probe_stt_endpoint(
-    kind: &str,
-    url: &str,
-    model: &str,
-    api_key: &str,
-    provider: &str,
-) -> TestResult {
-    let m = model.trim().to_string();
-    if kind != "SelfHosted" && kind != "Cloud" {
-        return run_probe(SERVER_TIMEOUT, || Ok(format!("config ok · {m}")));
-    }
-    if kind == "SelfHosted" {
-        let base = url.trim().to_string();
-        let m = model.trim().to_string();
-        if base.to_ascii_lowercase().starts_with("ws") {
-            // Streaming servers speak no HTTP: a short TCP connect
-            // proves the address answers (real check, not config-ok).
-            return run_probe(SERVER_TIMEOUT, move || tcp_reachable(&base, &m));
-        }
-        if base.is_empty() {
-            return run_probe(SERVER_TIMEOUT, || Ok(format!("config ok · {m}")));
-        }
-        let k = api_key.trim().to_string();
-        return run_probe(SERVER_TIMEOUT, move || {
-            let client = blocking_client(SERVER_TIMEOUT)?;
-            probe_openai_compat_models(&client, &base, &m, &k)
-        });
-    }
-    // Cloud: vendor base is authoritative (the row URL field is unused).
-    probe_stt_cloud(provider, model, api_key)
+/// Whether a credential may be sent to `url`: TLS, or a loopback host.
+pub fn credential_transport_ok(url: &Url) -> bool {
+    matches!(url.scheme(), "https" | "wss") || is_loopback(url)
 }
 
-/// Probe a cloud STT vendor by name (used by chain rows where the URL
-/// field is unused and the vendor base is authoritative).
-pub fn probe_stt_cloud(provider: &str, model: &str, api_key: &str) -> TestResult {
-    let m = model.trim().to_string();
-    let k = api_key.trim().to_string();
-    let p = provider.trim().to_string();
-    run_probe(SERVER_TIMEOUT, move || {
-        let client = blocking_client(SERVER_TIMEOUT)?;
-        match p.as_str() {
-            "Deepgram" => {
-                let res = client
-                    .get("https://api.deepgram.com/v1/projects")
-                    .header("Authorization", format!("Token {k}"))
-                    .send()
-                    .map_err(|e| format!("deepgram: {e}"))?;
-                let code = res.status().as_u16();
-                require_http_2xx(code).map_err(|e| format!("deepgram: {e}"))?;
-                Ok(format!("reachable · {m}"))
+fn insecure_with_key(url: &str, key: &str) -> bool {
+    !key.trim().is_empty() && Url::parse(url.trim()).is_ok_and(|u| !credential_transport_ok(&u))
+}
+
+/// Credential binding: a saved key belongs to this destination. The
+/// edit forms drop the key when the destination changes.
+pub fn stt_destination(entry: &SttChainEntry) -> String {
+    match entry.kind {
+        SttEntryKind::Local => "local".to_string(),
+        SttEntryKind::Cloud => format!("cloud:{}", entry.provider),
+        SttEntryKind::SelfHosted => format!("server:{}", origin(&entry.url)),
+    }
+}
+
+pub fn llm_destination(entry: &LlmEntry) -> String {
+    match entry.kind {
+        LlmKind::Local => "local".to_string(),
+        LlmKind::Cloud => format!("cloud:{}", entry.provider.name()),
+        LlmKind::Ollama => format!("ollama:{}", origin(&entry.url)),
+    }
+}
+
+fn origin(url: &str) -> String {
+    match Url::parse(url.trim()) {
+        Ok(u) => u.origin().ascii_serialization(),
+        Err(_) => url.trim().to_string(),
+    }
+}
+
+/// Why this STT entry cannot be tested, or `None` when it can.
+pub fn stt_blocker(entry: &SttChainEntry) -> Option<Blocker> {
+    match entry.kind {
+        SttEntryKind::Local => None,
+        SttEntryKind::SelfHosted => {
+            let url = entry.url.trim();
+            if url.is_empty() {
+                Some(Blocker::NeedUrl)
+            } else if !valid_server_url(url, true) {
+                Some(Blocker::BadUrl)
+            } else if crate::transcribe::is_ws_url(url) {
+                // Streaming probes connect without the key.
+                (!entry.streaming).then_some(Blocker::NeedsStreaming)
+            } else if insecure_with_key(url, &entry.api_key) {
+                Some(Blocker::Insecure)
+            } else {
+                None
             }
-            "Gemini" => {
-                let res = client
-                    .get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1")
-                    .header("x-goog-api-key", &k)
-                    .send()
-                    .map_err(|e| format!("gemini: {e}"))?;
-                let code = res.status().as_u16();
-                require_http_2xx(code).map_err(|e| format!("gemini: {e}"))?;
-                Ok(format!("reachable · {m}"))
+        }
+        SttEntryKind::Cloud => {
+            if entry.api_key.trim().is_empty() {
+                Some(Blocker::NeedKey)
+            } else if crate::transcribe::entry_plan(&SttSettings::default(), entry, Path::new(""))
+                .is_err()
+            {
+                Some(Blocker::Unsupported)
+            } else {
+                None
             }
-            _ => {
-                let base = stt_cloud_base(&p);
-                probe_openai_compat_models(&client, base, &m, &k)
+        }
+    }
+}
+
+/// Why this LLM entry cannot be tested, or `None` when it can.
+pub fn llm_blocker(entry: &LlmEntry) -> Option<Blocker> {
+    match entry.kind {
+        LlmKind::Local => Some(Blocker::LocalUnavailable),
+        LlmKind::Ollama => {
+            let url = entry.url.trim();
+            if url.is_empty() {
+                Some(Blocker::NeedUrl)
+            } else if !valid_server_url(url, false) {
+                Some(Blocker::BadUrl)
+            } else if entry.model.trim().is_empty() {
+                Some(Blocker::NeedModel)
+            } else if insecure_with_key(url, &entry.api_key) {
+                Some(Blocker::Insecure)
+            } else {
+                None
             }
+        }
+        LlmKind::Cloud => {
+            if entry.model.trim().is_empty() {
+                Some(Blocker::NeedModel)
+            } else if entry.api_key.trim().is_empty() {
+                Some(Blocker::NeedKey)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// The local model id the Local chain entry would run.
+pub fn local_model_id(s: &SttSettings) -> String {
+    match s.local_provider {
+        LocalSttProvider::Nvidia => s.parakeet_model.clone(),
+        LocalSttProvider::OpenAi => s.whisper_model.clone(),
+        LocalSttProvider::Oruk => "orukeet-v0.1.0".to_string(),
+        LocalSttProvider::Cohere => "cohere-transcribe-03-2026".to_string(),
+        LocalSttProvider::Whistle => "whistle-v1".to_string(),
+    }
+}
+
+/// Test one STT chain entry through dictation's routing.
+pub fn probe_stt(entry: &SttChainEntry, s: &SttSettings, data_dir: &Path) -> TestResult {
+    let fallback_model = match entry.kind {
+        SttEntryKind::Local => local_model_id(s),
+        _ => entry.model.trim().to_string(),
+    };
+    if let Some(blocker) = stt_blocker(entry) {
+        return timed(fallback_model, || Outcome::Blocked(blocker));
+    }
+    let plan = match crate::transcribe::entry_plan(s, entry, data_dir) {
+        Ok(plan) => plan,
+        Err(_) if entry.kind == SttEntryKind::Local => {
+            return timed(fallback_model, || Outcome::NotInstalled);
+        }
+        Err(_) => return timed(fallback_model, || Outcome::Blocked(Blocker::Unsupported)),
+    };
+    let strict = entry.kind == SttEntryKind::Cloud;
+    match plan {
+        Plan::WhisperHttp { .. }
+        | Plan::SherpaOnline { .. }
+        | Plan::SherpaOffline { .. }
+        | Plan::WhistleCli { .. } => timed(fallback_model, || Outcome::Installed),
+        Plan::SelfHostedWs { url } => timed(fallback_model, || match Url::parse(&url) {
+            Ok(url) => tcp_reachable(&url, PROBE_TIMEOUT),
+            Err(_) => Outcome::Blocked(Blocker::BadUrl),
+        }),
+        Plan::CloudOpenAiCompat {
+            base, key, model, ..
+        } => {
+            let shown = model.clone();
+            timed(shown, || {
+                let url = models_url(&crate::transcribe::openai_transcriptions_url(&base));
+                openai_models(&url, &key, &model, strict)
+            })
+        }
+        Plan::CloudDeepgram {
+            base, key, model, ..
+        } => timed(model, || {
+            let url = format!("{}/v1/projects", base.trim_end_matches('/'));
+            match fetch(&url, Auth::Header("Authorization", &format!("Token {key}"))) {
+                Ok((code, _)) => status_outcome(code).err().unwrap_or(Outcome::KeyAccepted),
+                Err(outcome) => outcome,
+            }
+        }),
+        Plan::CloudGemini { key, model, .. } => {
+            let shown = model.clone();
+            timed(shown, || {
+                model_resource(
+                    CloudLlm::Google.base_url(),
+                    &model,
+                    Auth::Header("x-goog-api-key", &key),
+                )
+            })
+        }
+    }
+}
+
+/// Test one LLM entry against its provider.
+pub fn probe_llm(entry: &LlmEntry) -> TestResult {
+    probe_llm_at(entry, entry.provider.base_url())
+}
+
+fn probe_llm_at(entry: &LlmEntry, cloud_base: &str) -> TestResult {
+    let model = entry.model.trim().to_string();
+    if let Some(blocker) = llm_blocker(entry) {
+        return timed(model, || Outcome::Blocked(blocker));
+    }
+    let key = entry.api_key.trim();
+    let base = cloud_base.trim_end_matches('/');
+    timed(model.clone(), || match (entry.kind, entry.provider) {
+        (LlmKind::Local, _) => Outcome::Blocked(Blocker::LocalUnavailable),
+        (LlmKind::Ollama, _) => probe_ollama(&entry.url, &model, key),
+        (LlmKind::Cloud, CloudLlm::Claude) => model_resource(base, &model, Auth::Anthropic(key)),
+        (LlmKind::Cloud, CloudLlm::Google) => {
+            model_resource(base, &model, Auth::Header("x-goog-api-key", key))
+        }
+        (LlmKind::Cloud, CloudLlm::OpenRouter) => {
+            // The model list is public: only /key proves the key works.
+            match fetch(&format!("{base}/key"), Auth::Bearer(key)) {
+                Ok((code, _)) => match status_outcome(code) {
+                    Ok(()) => openai_models(&format!("{base}/models"), "", &model, true),
+                    Err(outcome) => outcome,
+                },
+                Err(outcome) => outcome,
+            }
+        }
+        (LlmKind::Cloud, CloudLlm::OpenAI | CloudLlm::Groq) => {
+            openai_models(&format!("{base}/models"), key, &model, true)
         }
     })
 }
 
-fn probe_openai_compat_models(
-    client: &reqwest::blocking::Client,
-    base: &str,
-    model: &str,
-    api_key: &str,
-) -> Result<String, String> {
-    // `/v1/models` is a genuine GET endpoint (unlike POST-only
-    // transcribe routes): any non-2xx names a real problem (wrong
-    // base, bad key), so only 2xx reads as reachable.
-    let url = join_models_url(base);
-    let mut req = client.get(&url).header("Accept", "application/json");
-    if let Some(token) = bearer_token(api_key) {
-        req = req.bearer_auth(token);
+/// Model list beside an OpenAI-style transcription endpoint
+/// (`.../audio/transcriptions` → `.../models`).
+fn models_url(transcriptions: &str) -> String {
+    let t = transcriptions.trim_end_matches('/');
+    if let Some(prefix) = t.strip_suffix("/audio/transcriptions") {
+        format!("{prefix}/models")
+    } else {
+        // Custom endpoint name: its sibling `models`.
+        match t.rsplit_once('/') {
+            Some((prefix, _)) => format!("{prefix}/models"),
+            None => format!("{t}/models"),
+        }
     }
-    let res = req.send().map_err(|e| format!("probe: {e}"))?;
+}
+
+/// Probe credentials; an empty key sends no auth header.
+enum Auth<'a> {
+    Bearer(&'a str),
+    Header(&'static str, &'a str),
+    Anthropic(&'a str),
+}
+
+/// Same-origin redirects only: a credential never follows a hop to
+/// another scheme, host, or port.
+fn client() -> Option<Client> {
+    Client::builder()
+        .timeout(PROBE_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let same_origin = attempt
+                .previous()
+                .first()
+                .is_some_and(|first| first.origin() == attempt.url().origin());
+            if same_origin && attempt.previous().len() < 5 {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
+        .build()
+        .ok()
+}
+
+/// GET with policy checks. `Err` carries a final outcome.
+fn fetch(url: &str, auth: Auth) -> Result<(u16, String), Outcome> {
+    let parsed = Url::parse(url).map_err(|_| Outcome::Blocked(Blocker::BadUrl))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(Outcome::Blocked(Blocker::BadUrl));
+    }
+    let has_key = match auth {
+        Auth::Bearer(k) | Auth::Header(_, k) | Auth::Anthropic(k) => !k.trim().is_empty(),
+    };
+    if has_key && !credential_transport_ok(&parsed) {
+        return Err(Outcome::Blocked(Blocker::Insecure));
+    }
+    let client = client().ok_or(Outcome::Network)?;
+    let mut req = client.get(parsed).header("Accept", "application/json");
+    req = match auth {
+        Auth::Bearer(k) if k.trim().is_empty() => req,
+        Auth::Bearer(k) => req.bearer_auth(k.trim()),
+        Auth::Header(name, k) => req.header(name, k.trim()),
+        Auth::Anthropic(k) => req
+            .header("x-api-key", k.trim())
+            .header("anthropic-version", "2023-06-01"),
+    };
+    let res = req.send().map_err(|e| transport_outcome(&e))?;
     let code = res.status().as_u16();
-    require_http_2xx(code).map_err(|e| format!("probe: {e} · {model}"))?;
-    Ok(format!("reachable · {model}"))
+    let body = res.text().unwrap_or_default();
+    Ok((code, body))
 }
 
-/// Ollama probe: read-only `GET {url}/api/tags` checked against the
-/// configured model name. Never loads or pins the model — that side
-/// effect belongs to "Apply to model". Bearer token included when set
-/// (reverse-proxy setups).
-pub fn probe_ollama(url: &str, model: &str, api_key: &str) -> TestResult {
-    let url = url.trim().to_string();
-    let model = model.trim().to_string();
-    let k = api_key.trim().to_string();
-    run_probe(SERVER_TIMEOUT, move || {
-        let client = blocking_client(SERVER_TIMEOUT)?;
-        let mut req = client
-            .get(format!("{}/api/tags", url.trim_end_matches('/')))
-            .header("Accept", "application/json");
-        if let Some(token) = bearer_token(&k) {
-            req = req.bearer_auth(token);
-        }
-        let res = req.send().map_err(|e| format!("ollama: {e}"))?;
-        let code = res.status().as_u16();
-        require_http_2xx(code).map_err(|e| format!("ollama: {e}"))?;
-        let body = res.text().map_err(|e| format!("ollama body: {e}"))?;
-        if body
-            .to_ascii_lowercase()
-            .contains(&model.to_ascii_lowercase())
-        {
-            Ok(format!("model ok · {model}"))
+fn transport_outcome(e: &reqwest::Error) -> Outcome {
+    if e.is_timeout() {
+        Outcome::Timeout
+    } else if e.is_redirect() {
+        Outcome::Redirected
+    } else if e.is_connect() {
+        Outcome::Unreachable
+    } else {
+        Outcome::Network
+    }
+}
+
+fn status_outcome(code: u16) -> Result<(), Outcome> {
+    match code {
+        200..=299 => Ok(()),
+        300..=399 => Err(Outcome::Redirected),
+        401 | 403 => Err(Outcome::KeyRejected),
+        404 => Err(Outcome::ModelMissing),
+        _ => Err(Outcome::Http(code)),
+    }
+}
+
+/// `GET {base}/models/{model}`: 200 = the key works and the model exists.
+fn model_resource(base: &str, model: &str, auth: Auth) -> Outcome {
+    let Ok(mut url) = Url::parse(&format!("{}/models", base.trim_end_matches('/'))) else {
+        return Outcome::Blocked(Blocker::BadUrl);
+    };
+    if let Ok(mut path) = url.path_segments_mut() {
+        path.push(model);
+    }
+    match fetch(url.as_str(), auth) {
+        Ok((code, _)) => status_outcome(code)
+            .err()
+            .unwrap_or(Outcome::ModelAvailable),
+        Err(outcome) => outcome,
+    }
+}
+
+/// OpenAI-style `{"data":[{"id":...}]}` list. `strict`: the model must
+/// be listed (cloud); otherwise an answering server passes.
+fn openai_models(url: &str, key: &str, model: &str, strict: bool) -> Outcome {
+    let (code, body) = match fetch(url, Auth::Bearer(key)) {
+        Ok(r) => r,
+        Err(outcome) => return outcome,
+    };
+    if let Err(outcome) = status_outcome(code) {
+        // A missing list endpoint is not a missing model.
+        return if outcome == Outcome::ModelMissing {
+            Outcome::Http(code)
         } else {
-            Err(format!("model not listed · {model}"))
-        }
-    })
+            outcome
+        };
+    }
+    match listed_ids(&body) {
+        Some(ids) if ids.iter().any(|id| model_id_matches(id, model)) => Outcome::ModelAvailable,
+        Some(_) if strict => Outcome::ModelMissing,
+        None if strict => Outcome::BadReply,
+        _ => Outcome::ServerAnswered,
+    }
 }
 
-/// Remote LLM probe by provider name (zero-billing model-list GETs).
-/// `provider` is the `CloudLlm::name()` string; `base` is its
-/// `base_url()` (call sites pass both so this stays UI-free).
-pub fn probe_llm_cloud(provider: &str, base: &str, model: &str, api_key: &str) -> TestResult {
-    let p = provider.trim().to_string();
-    let b = base.trim().to_string();
-    let m = model.trim().to_string();
-    let k = api_key.trim().to_string();
-    run_probe(SERVER_TIMEOUT, move || {
-        let client = blocking_client(SERVER_TIMEOUT)?;
-        match p.as_str() {
-            "Claude" => {
-                let res = client
-                    .get(format!("{}/models", b.trim_end_matches('/')))
-                    .header("x-api-key", &k)
-                    .header("anthropic-version", "2023-06-01")
-                    .send()
-                    .map_err(|e| format!("claude: {e}"))?;
-                let code = res.status().as_u16();
-                require_http_2xx(code).map_err(|e| format!("claude: {e}"))?;
-                Ok(format!("reachable · {m}"))
-            }
-            "Google" => {
-                let res = client
-                    .get(format!("{}/models?pageSize=1", b.trim_end_matches('/')))
-                    .header("x-goog-api-key", &k)
-                    .send()
-                    .map_err(|e| format!("google: {e}"))?;
-                let code = res.status().as_u16();
-                require_http_2xx(code).map_err(|e| format!("google: {e}"))?;
-                Ok(format!("reachable · {m}"))
-            }
-            _ => {
-                let url = format!("{}/models", b.trim_end_matches('/'));
-                let mut req = client.get(&url).header("Accept", "application/json");
-                if let Some(token) = bearer_token(&k) {
-                    req = req.bearer_auth(token);
-                }
-                let res = req.send().map_err(|e| format!("probe: {e}"))?;
-                let code = res.status().as_u16();
-                require_http_2xx(code).map_err(|e| format!("probe: {e} · {m}"))?;
-                Ok(format!("reachable · {m}"))
-            }
+fn listed_ids(body: &str) -> Option<Vec<String>> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    Some(
+        v.get("data")?
+            .as_array()?
+            .iter()
+            .filter_map(|m| m.get("id")?.as_str().map(str::to_string))
+            .collect(),
+    )
+}
+
+/// Exact id; OpenRouter routing suffixes (`:nitro`, `:floor`, ...)
+/// fall back to the base id when the suffixed one is not listed.
+fn model_id_matches(id: &str, model: &str) -> bool {
+    id == model || model.rsplit_once(':').is_some_and(|(base, _)| id == base)
+}
+
+/// Read-only `/api/tags` check; never loads the model.
+fn probe_ollama(url: &str, model: &str, key: &str) -> Outcome {
+    let url = format!("{}/api/tags", url.trim().trim_end_matches('/'));
+    let (code, body) = match fetch(&url, Auth::Bearer(key)) {
+        Ok(r) => r,
+        Err(outcome) => return outcome,
+    };
+    if let Err(outcome) = status_outcome(code) {
+        return if outcome == Outcome::ModelMissing {
+            Outcome::Http(code)
+        } else {
+            outcome
+        };
+    }
+    match ollama_has_model(&body, model) {
+        Some(true) => Outcome::ModelAvailable,
+        Some(false) => Outcome::ModelMissing,
+        None => Outcome::BadReply,
+    }
+}
+
+/// Exact Ollama name match; an omitted tag means `:latest`. `None`
+/// when the body is not a tags list.
+pub fn ollama_has_model(body: &str, model: &str) -> Option<bool> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let want = ollama_name(model);
+    Some(v.get("models")?.as_array()?.iter().any(|m| {
+        ["name", "model"].iter().any(|field| {
+            m.get(field)
+                .and_then(|n| n.as_str())
+                .is_some_and(|n| ollama_name(n).eq_ignore_ascii_case(&want))
+        })
+    }))
+}
+
+fn ollama_name(name: &str) -> String {
+    let name = name.trim();
+    // The tag follows the last path segment (`host:5000/ns/model:tag`).
+    let last = name.rsplit('/').next().unwrap_or(name);
+    if last.contains(':') {
+        name.to_string()
+    } else {
+        format!("{name}:latest")
+    }
+}
+
+/// TCP connect to every resolved address within one deadline
+/// (resolution included). Proves reachability, not the protocol.
+fn tcp_reachable(url: &Url, budget: Duration) -> Outcome {
+    let deadline = Instant::now() + budget;
+    let (tx, rx) = mpsc::channel();
+    let target = url.clone();
+    // `socket_addrs` blocks without a timeout: resolve on a side thread.
+    std::thread::spawn(move || {
+        let _ = tx.send(target.socket_addrs(|| None));
+    });
+    let addrs = match rx.recv_timeout(budget) {
+        Ok(Ok(addrs)) if !addrs.is_empty() => addrs,
+        Ok(_) => return Outcome::Unreachable,
+        Err(_) => return Outcome::Timeout,
+    };
+    let count = addrs.len();
+    for (i, addr) in addrs.iter().enumerate() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Outcome::Timeout;
         }
-    })
+        // Share what is left so one dead address cannot eat the budget.
+        let slice = left / u32::try_from(count - i).unwrap_or(1);
+        if TcpStream::connect_timeout(addr, slice).is_ok() {
+            return Outcome::Reachable;
+        }
+    }
+    Outcome::Unreachable
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
 
-    #[test]
-    fn excerpt_caps_with_ellipsis() {
-        assert_eq!(excerpt("  hello   world ", 120), "hello world");
-        let long = "a ".repeat(100);
-        let out = excerpt(&long, 120);
-        assert!(out.ends_with('…'));
-        assert!(out.chars().count() <= 121);
+    /// Loopback HTTP fixture: answers `conns` requests with `respond`
+    /// and records each request head.
+    struct Fixture {
+        base: String,
+        seen: Arc<Mutex<Vec<String>>>,
     }
 
-    #[test]
-    fn map_result_pass_fail_timeout_rules() {
-        let ok = map_result(
-            Some("HTTP 200 · whisper-1"),
-            Duration::from_millis(50),
-            SERVER_TIMEOUT,
-            None,
-        );
-        assert!(ok.passed);
-        assert!(!ok.excerpt.is_empty());
-        let fail = map_result(
-            None,
-            Duration::from_millis(50),
-            SERVER_TIMEOUT,
-            Some("http 401 · m".to_string()),
-        );
-        assert!(!fail.passed);
-        assert!(fail.excerpt.contains("401"));
-        let slow = map_result(
-            Some("HTTP 200 · m"),
-            Duration::from_secs(30),
-            SERVER_TIMEOUT,
-            None,
-        );
-        assert!(!slow.passed && slow.timed_out);
-        let blank = map_result(Some("   "), Duration::from_millis(5), SERVER_TIMEOUT, None);
-        assert!(!blank.passed);
+    fn serve(conns: usize, respond: impl Fn(&str) -> String + Send + 'static) -> Fixture {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback bind");
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(conns) {
+                let Ok(mut stream) = stream else { break };
+                stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 2048];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut tmp) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                    }
+                }
+                let head = String::from_utf8_lossy(&buf).to_string();
+                let reply = respond(&head);
+                log.lock().unwrap().push(head);
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        Fixture {
+            base: format!("http://127.0.0.1:{port}"),
+            seen,
+        }
     }
 
-    #[test]
-    fn validate_stt_rules_mirror_phone_app() {
-        assert_eq!(validate_stt("Local", "", ""), SttError::None);
-        assert_eq!(validate_stt("SelfHosted", "", "m"), SttError::NeedUrl);
-        assert_eq!(
-            validate_stt("SelfHosted", "http://h:8000", ""),
-            SttError::NeedModel
-        );
-        assert_eq!(validate_stt("SelfHosted", "ftp://h", "m"), SttError::BadUrl);
-        assert_eq!(
-            validate_stt("SelfHosted", "ws://h:6006", "m"),
-            SttError::None
-        );
-        assert_eq!(validate_stt("Cloud", "", ""), SttError::NeedModel);
-        assert_eq!(validate_stt("Cloud", "", "whisper-1"), SttError::None);
-        assert_eq!(validate_stt("Cloud", "notaurl", "m"), SttError::BadBase);
+    fn json(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
     }
 
-    #[test]
-    fn validate_llm_rules_mirror_phone_app() {
-        assert_eq!(validate_llm("Ollama", "", "m"), LlmError::NeedUrl);
-        assert_eq!(
-            validate_llm("Ollama", "http://127.0.0.1:11434", ""),
-            LlmError::NeedModel
-        );
-        assert_eq!(
-            validate_llm("Ollama", "http://127.0.0.1:11434", "gemma4:e4b"),
-            LlmError::None
-        );
-        assert_eq!(validate_llm("Cloud", "", ""), LlmError::NeedModel);
-        assert_eq!(validate_llm("Cloud", "", "gpt-6-luna"), LlmError::None);
+    fn stt(kind: SttEntryKind, provider: &str, url: &str, key: &str) -> SttChainEntry {
+        SttChainEntry {
+            id: "t".into(),
+            name: "t".into(),
+            kind,
+            enabled: true,
+            provider: provider.into(),
+            url: url.into(),
+            model: String::new(),
+            api_key: key.into(),
+            streaming: true,
+        }
     }
 
-    #[test]
-    fn gated_status_never_passes() {
-        // Model-list GETs are genuine endpoints: only 2xx passes.
-        assert!(require_http_2xx(401).is_err());
-        assert!(require_http_2xx(403).is_err());
-        assert!(require_http_2xx(404).is_err());
-        assert!(require_http_2xx(429).is_err());
-        assert!(require_http_2xx(200).is_ok());
-        assert!(require_http_2xx(299).is_ok());
+    fn llm(kind: LlmKind, provider: CloudLlm, url: &str, model: &str, key: &str) -> LlmEntry {
+        LlmEntry {
+            kind,
+            provider,
+            url: url.into(),
+            model: model.into(),
+            api_key: key.into(),
+            ..LlmEntry::ollama("", "")
+        }
     }
 
-    #[test]
-    fn test_buttons_gate_on_validation() {
-        assert!(stt_server_test_allowed("SelfHosted", "http://h:8000", "m"));
-        assert!(!stt_server_test_allowed("SelfHosted", "", "m"));
-        assert!(llm_remote_test_allowed(
-            "Ollama",
-            "http://127.0.0.1:11434",
-            "gemma4:e4b"
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mywhisper-provider-test-{tag}-{}",
+            std::process::id()
         ));
-        assert!(!llm_remote_test_allowed("Ollama", "", "m"));
-        assert!(!show_disabled_reason(true, false, Some("x")));
-        assert!(show_disabled_reason(false, false, Some("x")));
-        assert!(!show_disabled_reason(false, true, Some("x")));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]
-    fn models_url_join_tolerates_v1_bases() {
-        assert_eq!(join_models_url("http://h:8000"), "http://h:8000/v1/models");
+    fn unknown_stt_vendor_is_rejected_like_dictation() {
+        let entry = stt(SttEntryKind::Cloud, "Acme", "", "sk-test");
+        assert_eq!(stt_blocker(&entry), Some(Blocker::Unsupported));
+        let r = probe_stt(&entry, &SttSettings::default(), Path::new(""));
+        assert_eq!(r.outcome, Outcome::Blocked(Blocker::Unsupported));
+        assert!(stt_blocker(&stt(SttEntryKind::Cloud, "Groq", "", "k")).is_none());
         assert_eq!(
-            join_models_url("http://h:8000/v1"),
+            stt_blocker(&stt(SttEntryKind::Cloud, "Groq", "", " ")),
+            Some(Blocker::NeedKey)
+        );
+    }
+
+    #[test]
+    fn credential_destination_changes_with_vendor_or_server() {
+        let a = stt(SttEntryKind::Cloud, "OpenAI", "", "k");
+        let b = stt(SttEntryKind::Cloud, "Groq", "", "k");
+        assert_ne!(stt_destination(&a), stt_destination(&b));
+        let s1 = stt(SttEntryKind::SelfHosted, "", "https://h:8000/v1", "k");
+        let s2 = stt(SttEntryKind::SelfHosted, "", "https://h:8000/other", "k");
+        let s3 = stt(SttEntryKind::SelfHosted, "", "https://evil:8000/v1", "k");
+        let s4 = stt(SttEntryKind::SelfHosted, "", "http://h:8000/v1", "k");
+        assert_eq!(stt_destination(&s1), stt_destination(&s2));
+        assert_ne!(stt_destination(&s1), stt_destination(&s3));
+        assert_ne!(stt_destination(&s1), stt_destination(&s4));
+        assert_ne!(stt_destination(&a), stt_destination(&s1));
+        let o = llm(
+            LlmKind::Ollama,
+            CloudLlm::OpenAI,
+            "http://127.0.0.1:11434",
+            "m",
+            "",
+        );
+        let c = llm(
+            LlmKind::Cloud,
+            CloudLlm::OpenAI,
+            "http://127.0.0.1:11434",
+            "m",
+            "",
+        );
+        let r = llm(LlmKind::Cloud, CloudLlm::OpenRouter, "", "m", "");
+        assert_ne!(llm_destination(&o), llm_destination(&c));
+        assert_ne!(llm_destination(&c), llm_destination(&r));
+    }
+
+    #[test]
+    fn keys_need_https_or_loopback() {
+        let ok = |u: &str| credential_transport_ok(&Url::parse(u).unwrap());
+        assert!(ok("https://api.example.com"));
+        assert!(ok("http://127.0.0.1:8000"));
+        assert!(ok("http://localhost:8000"));
+        assert!(ok("http://[::1]:8000"));
+        assert!(!ok("http://192.168.1.5:8000"));
+        assert!(!ok("http://example.com"));
+        let lan = stt(SttEntryKind::SelfHosted, "", "http://192.168.1.5:8000", "k");
+        assert_eq!(stt_blocker(&lan), Some(Blocker::Insecure));
+        // Defense in depth: the probe refuses before any network I/O.
+        assert_eq!(
+            fetch("http://192.168.1.5:9/v1/models", Auth::Bearer("k")).unwrap_err(),
+            Outcome::Blocked(Blocker::Insecure)
+        );
+        let keyless = stt(SttEntryKind::SelfHosted, "", "http://192.168.1.5:8000", "");
+        assert_eq!(stt_blocker(&keyless), None);
+        let ollama = llm(
+            LlmKind::Ollama,
+            CloudLlm::OpenAI,
+            "http://10.0.0.2:11434",
+            "m",
+            "t",
+        );
+        assert_eq!(llm_blocker(&ollama), Some(Blocker::Insecure));
+    }
+
+    #[test]
+    fn cross_origin_redirect_is_not_followed() {
+        let target = serve(1, |_| json("200 OK", r#"{"data":[]}"#));
+        let location = format!("{}/v1/models", target.base);
+        let origin = serve(1, move |_| {
+            format!(
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+        });
+        let entry = SttChainEntry {
+            api_key: "secret-key".into(),
+            ..stt(SttEntryKind::SelfHosted, "", &origin.base, "")
+        };
+        let r = probe_stt(&entry, &SttSettings::default(), Path::new(""));
+        assert_eq!(r.outcome, Outcome::Redirected);
+        assert!(!r.outcome.passed());
+        let heads = origin.seen.lock().unwrap();
+        assert!(heads[0].starts_with("GET /v1/models "), "{}", heads[0]);
+        assert!(heads[0].contains("secret-key"));
+        assert!(target.seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn self_hosted_models_url_follows_runtime_path() {
+        let models = |base: &str| models_url(&crate::transcribe::openai_transcriptions_url(base));
+        assert_eq!(models("http://h:8000"), "http://h:8000/v1/models");
+        assert_eq!(models("http://h:8000/v1"), "http://h:8000/v1/models");
+        assert_eq!(
+            models("http://h:8000/v1/audio/transcriptions"),
             "http://h:8000/v1/models"
         );
         assert_eq!(
-            join_models_url("https://api.openai.com/v1/"),
+            models("https://api.openai.com/v1/"),
             "https://api.openai.com/v1/models"
         );
+    }
+
+    #[test]
+    fn self_hosted_blank_model_is_testable_with_runtime_default() {
+        let server = serve(1, |_| json("200 OK", r#"{"data":[{"id":"x"}]}"#));
+        let entry = stt(SttEntryKind::SelfHosted, "", &server.base, "");
+        assert_eq!(stt_blocker(&entry), None);
+        let r = probe_stt(&entry, &SttSettings::default(), Path::new(""));
+        assert_eq!(r.outcome, Outcome::ServerAnswered);
+        assert_eq!(r.model, "default");
+        assert!(r.outcome.passed());
+    }
+
+    #[test]
+    fn self_hosted_url_validation() {
+        for bad in ["http://", "ftp://h", "notaurl"] {
+            let e = stt(SttEntryKind::SelfHosted, "", bad, "");
+            assert_eq!(stt_blocker(&e), Some(Blocker::BadUrl), "{bad}");
+        }
+        let ws_off = SttChainEntry {
+            streaming: false,
+            ..stt(SttEntryKind::SelfHosted, "", "ws://127.0.0.1:6006", "")
+        };
+        assert_eq!(stt_blocker(&ws_off), Some(Blocker::NeedsStreaming));
+        let o = llm(LlmKind::Ollama, CloudLlm::OpenAI, "http://", "m", "");
+        assert_eq!(llm_blocker(&o), Some(Blocker::BadUrl));
+    }
+
+    #[test]
+    fn ws_probe_tries_ipv6_loopback_and_labels_reachability() {
+        let Ok(listener) = TcpListener::bind("[::1]:0") else {
+            return; // host without IPv6 loopback
+        };
+        let port = listener.local_addr().unwrap().port();
+        let entry = stt(
+            SttEntryKind::SelfHosted,
+            "",
+            &format!("ws://[::1]:{port}"),
+            "",
+        );
+        let r = probe_stt(&entry, &SttSettings::default(), Path::new(""));
+        assert_eq!(r.outcome, Outcome::Reachable);
+        drop(listener);
+    }
+
+    #[test]
+    fn ollama_names_match_exactly_with_latest_default() {
+        let body = r#"{"models":[{"name":"llama3.2:latest","model":"llama3.2:latest"},{"name":"gemma4:e4b"}]}"#;
+        assert_eq!(ollama_has_model(body, "llama3"), Some(false));
+        assert_eq!(ollama_has_model(body, "llama3.2"), Some(true));
+        assert_eq!(ollama_has_model(body, "llama3.2:latest"), Some(true));
+        assert_eq!(ollama_has_model(body, "gemma4"), Some(false));
+        assert_eq!(ollama_has_model(body, "gemma4:e4b"), Some(true));
+        assert_eq!(ollama_has_model("not json", "x"), None);
+        let reg = r#"{"models":[{"name":"reg.local:5000/ns/tiny:latest"}]}"#;
+        assert_eq!(ollama_has_model(reg, "reg.local:5000/ns/tiny"), Some(true));
+    }
+
+    #[test]
+    fn ollama_probe_reports_missing_model() {
+        let server = serve(1, |_| {
+            json("200 OK", r#"{"models":[{"name":"llama3.2:latest"}]}"#)
+        });
+        let entry = llm(
+            LlmKind::Ollama,
+            CloudLlm::OpenAI,
+            &server.base,
+            "llama3",
+            "",
+        );
+        assert_eq!(probe_llm(&entry).outcome, Outcome::ModelMissing);
+        assert!(server.seen.lock().unwrap()[0].starts_with("GET /api/tags "));
+    }
+
+    #[test]
+    fn openrouter_needs_authenticated_key_and_listed_model() {
+        let server = serve(2, |head| {
+            if head.starts_with("GET /api/v1/key ") {
+                if head.contains("Bearer good") {
+                    json("200 OK", r#"{"data":{"label":"x"}}"#)
+                } else {
+                    json("401 Unauthorized", "{}")
+                }
+            } else {
+                json("200 OK", r#"{"data":[{"id":"moonshotai/kimi-k2"}]}"#)
+            }
+        });
+        let base = format!("{}/api/v1", server.base);
+        let entry =
+            |model: &str, key: &str| llm(LlmKind::Cloud, CloudLlm::OpenRouter, "", model, key);
+        assert_eq!(
+            probe_llm_at(&entry("moonshotai/kimi-k2", "good"), &base).outcome,
+            Outcome::ModelAvailable
+        );
+        let bad = serve(1, |_| json("401 Unauthorized", "{}"));
+        assert_eq!(
+            probe_llm_at(
+                &entry("moonshotai/kimi-k2", "bad"),
+                &format!("{}/api/v1", bad.base)
+            )
+            .outcome,
+            Outcome::KeyRejected
+        );
+        let missing = serve(2, |head| {
+            if head.starts_with("GET /api/v1/key ") {
+                json("200 OK", "{}")
+            } else {
+                json("200 OK", r#"{"data":[{"id":"other/model"}]}"#)
+            }
+        });
+        assert_eq!(
+            probe_llm_at(
+                &entry("moonshotai/kimi-k2", "good"),
+                &format!("{}/api/v1", missing.base)
+            )
+            .outcome,
+            Outcome::ModelMissing
+        );
+        let heads = server.seen.lock().unwrap();
+        assert!(heads[0].starts_with("GET /api/v1/key "));
+        // The public list never needs the key.
+        assert!(!heads[1].contains("Bearer"));
+    }
+
+    #[test]
+    fn whistle_needs_model_and_engine() {
+        let data = scratch("whistle");
+        let s = SttSettings {
+            local_provider: LocalSttProvider::Whistle,
+            ..SttSettings::default()
+        };
+        let local = stt(SttEntryKind::Local, "", "", "");
+        let model_dir = crate::stt::model_dir(&data, crate::stt::find_model("whistle-v1").unwrap());
+        let engine = crate::transcribe::needle_engine_path(&data);
+        std::fs::create_dir_all(engine.parent().unwrap()).unwrap();
+        std::fs::write(&engine, b"").unwrap();
+        assert_eq!(probe_stt(&local, &s, &data).outcome, Outcome::NotInstalled);
+        std::fs::remove_file(&engine).unwrap();
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join("whistle.cact"), b"").unwrap();
+        assert_eq!(probe_stt(&local, &s, &data).outcome, Outcome::NotInstalled);
+        std::fs::write(&engine, b"").unwrap();
+        let r = probe_stt(&local, &s, &data);
+        assert_eq!(r.outcome, Outcome::Installed);
+        assert_eq!(r.model, "whistle-v1");
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn status_mapping_never_passes_errors() {
+        assert_eq!(status_outcome(200), Ok(()));
+        assert_eq!(status_outcome(302), Err(Outcome::Redirected));
+        assert_eq!(status_outcome(401), Err(Outcome::KeyRejected));
+        assert_eq!(status_outcome(403), Err(Outcome::KeyRejected));
+        assert_eq!(status_outcome(429), Err(Outcome::Http(429)));
+        assert!(!Outcome::Blocked(Blocker::Insecure).passed());
     }
 }

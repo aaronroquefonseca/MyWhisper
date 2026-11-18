@@ -13,6 +13,7 @@ use std::rc::Rc;
 use super::app::{AppState, apply_theme, log_theme_state};
 use crate::clipboard::{BackendStatus, copy_backend_deps, paste_backend_deps, probe};
 use crate::i18n::{tr, trf};
+use crate::provider_test::valid_server_url;
 use crate::settings::{CopyBackend, PasteBackend, PasteCombo, Theme};
 
 // ---------------------------------------------------------------- helpers
@@ -145,14 +146,6 @@ fn delete_opts() -> [&'static str; 7] {
     ]
 }
 
-fn valid_server_url(value: &str, websocket: bool) -> bool {
-    reqwest::Url::parse(value.trim()).is_ok_and(|url| {
-        url.host_str().is_some()
-            && (matches!(url.scheme(), "http" | "https")
-                || (websocket && matches!(url.scheme(), "ws" | "wss")))
-    })
-}
-
 fn same_shortcut(left: &str, right: &str) -> bool {
     crate::hotkey::parse_combo(left)
         .zip(crate::hotkey::parse_combo(right))
@@ -163,142 +156,291 @@ fn same_shortcut(left: &str, right: &str) -> bool {
 }
 
 // ------------------------------------------------- provider test rows
-//
-// ONE test-button pattern for every chain row (STT + LLM) and every
-// add/edit draft form: one button, same placement, same inline
-// reporting (`latency + excerpt/status`). Mirrors the phone app:
-// disabled fail-closed via `enabled`, busy shows the testing copy,
-// a disabled button shows the reason so the blocker stays explicit
-// under a stale result.
 
-/// Inline status label for a test row (dim until a result lands).
-fn test_status_label() -> Label {
-    let status = Label::new(None);
-    status.add_css_class("dim");
-    status.set_xalign(0.0);
-    status.set_wrap(true);
-    status.set_hexpand(true);
-    status
+/// One Test button with its inline result, used by every STT/LLM row
+/// and both draft forms. Weak widget refs keep signal closures from
+/// owning the row; `generation` discards a probe whose configuration
+/// changed (or was reset) while it ran.
+#[derive(Clone)]
+struct TestRow {
+    button: gtk4::glib::WeakRef<Button>,
+    status: gtk4::glib::WeakRef<Label>,
+    generation: Rc<Cell<u64>>,
 }
 
-/// Paint a finished probe result inline (green PASS / red FAIL).
-fn set_test_status(label: &Label, r: &crate::provider_test::TestResult) {
-    let text = if r.passed {
-        trf(
-            "provider_test.pass",
-            &[("ms", &r.latency_ms.to_string()), ("excerpt", &r.excerpt)],
-        )
-    } else {
-        let detail = if r.excerpt.is_empty() {
-            r.error.clone().unwrap_or_else(|| "failed".to_string())
-        } else {
-            r.excerpt.clone()
+impl TestRow {
+    fn new(a11y_label: &str) -> (GtkBox, Button, Self) {
+        let row = GtkBox::new(Orientation::Horizontal, 8);
+        row.set_margin_start(4);
+        let button = Button::with_label(tr("action.test"));
+        button.set_valign(gtk4::Align::Center);
+        button.update_property(&[gtk4::accessible::Property::Label(a11y_label)]);
+        let status = Label::new(None);
+        status.add_css_class("dim");
+        status.set_xalign(0.0);
+        status.set_wrap(true);
+        status.set_hexpand(true);
+        row.append(&button);
+        row.append(&status);
+        let this = Self {
+            button: button.downgrade(),
+            status: status.downgrade(),
+            generation: Rc::default(),
         };
-        trf(
-            "provider_test.fail",
-            &[("ms", &r.latency_ms.to_string()), ("detail", &detail)],
-        )
-    };
-    label.set_text(&text);
-    label.remove_css_class("cap-ok");
-    label.remove_css_class("cap-no");
-    label.add_css_class(if r.passed { "cap-ok" } else { "cap-no" });
-}
-
-/// Disabled-reason copy for an STT row/draft (None when the test is live).
-fn stt_test_reason(kind: &str, url: &str, model: &str) -> Option<String> {
-    use crate::provider_test::{SttError, validate_stt};
-    match validate_stt(kind, url, model) {
-        SttError::None => None,
-        SttError::NeedUrl => Some(tr("provider_test.need_url").to_string()),
-        SttError::NeedModel => Some(tr("provider_test.need_model").to_string()),
-        SttError::BadUrl | SttError::BadBase => Some(tr("provider_test.bad_url").to_string()),
+        (row, button, this)
     }
-}
 
-/// Disabled-reason copy for an LLM row/draft (None when the test is live).
-fn llm_test_reason(kind: &str, url: &str, model: &str) -> Option<String> {
-    use crate::provider_test::{LlmError, validate_llm};
-    match validate_llm(kind, url, model) {
-        LlmError::None => None,
-        LlmError::NeedUrl => Some(tr("provider_test.need_url").to_string()),
-        LlmError::NeedModel => Some(tr("provider_test.need_model").to_string()),
-        LlmError::BadUrl => Some(tr("provider_test.bad_url").to_string()),
+    /// Configuration changed: forget any running or shown result and
+    /// show why Test is unavailable, if it is.
+    fn reset(&self, blocker: Option<crate::provider_test::Blocker>) {
+        self.generation.set(self.generation.get() + 1);
+        let (Some(button), Some(status)) = (self.button.upgrade(), self.status.upgrade()) else {
+            return;
+        };
+        let reason = blocker.map(blocker_text);
+        button.set_label(tr("action.test"));
+        button.set_sensitive(reason.is_none());
+        button.set_tooltip_text(reason);
+        status.remove_css_class("cap-ok");
+        status.remove_css_class("cap-no");
+        status.set_text(reason.unwrap_or(""));
     }
-}
 
-/// Run a blocking probe off the UI thread: busy copy while running,
-/// inline PASS/FAIL when done. Same shape as the "Apply to model"
-/// button (thread + 200 ms poll).
-fn spawn_test_probe(
-    button: &Button,
-    status: &Label,
-    probe: impl FnOnce() -> crate::provider_test::TestResult + Send + 'static,
-) {
-    button.set_sensitive(false);
-    button.set_label(tr("provider_test.testing"));
-    status.remove_css_class("cap-ok");
-    status.remove_css_class("cap-no");
-    status.set_text(tr("provider_test.testing"));
-    let out = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let sender = out.clone();
-    std::thread::spawn(move || {
-        let r = probe();
-        *sender.lock().unwrap() = Some(r);
-    });
-    let button = button.clone();
-    let status = status.clone();
-    gtk4::glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-        if let Some(r) = out.lock().unwrap().take() {
-            button.set_sensitive(true);
-            button.set_label(tr("action.test"));
-            set_test_status(&status, &r);
-            gtk4::glib::ControlFlow::Break
-        } else {
-            gtk4::glib::ControlFlow::Continue
-        }
-    });
-}
-
-/// Local chain probe: is the selected on-device model downloaded?
-/// Filesystem check only (no inference, no server). Takes owned values
-/// so it can run off the UI thread.
-fn probe_local_stt(
-    data_dir: std::path::PathBuf,
-    model_id: String,
-) -> crate::provider_test::TestResult {
-    use crate::provider_test::{SERVER_TIMEOUT, run_probe};
-    run_probe(SERVER_TIMEOUT, move || {
-        if model_id == "whistle-v1" && crate::stt::needle_installed(&data_dir) {
-            return Ok(trf("provider_test.local_ok", &[("id", &model_id)]));
-        }
-        match crate::stt::find_model(&model_id) {
-            Some(entry) if crate::stt::is_installed(&data_dir, entry) => {
-                Ok(trf("provider_test.local_ok", &[("id", entry.id)]))
+    /// Run `probe` off the UI thread; paint its result only if the
+    /// configuration is still the one it tested.
+    fn start(&self, probe: impl FnOnce() -> crate::provider_test::TestResult + Send + 'static) {
+        let (Some(button), Some(status)) = (self.button.upgrade(), self.status.upgrade()) else {
+            return;
+        };
+        let generation = self.generation.get();
+        button.set_sensitive(false);
+        button.set_label(tr("provider_test.testing"));
+        status.remove_css_class("cap-ok");
+        status.remove_css_class("cap-no");
+        status.set_text(tr("provider_test.testing"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(probe());
+        });
+        let row = self.clone();
+        gtk4::glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+            let result = match rx.try_recv() {
+                Ok(result) => result,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    return gtk4::glib::ControlFlow::Continue;
+                }
+                // The probe thread died: report it rather than spin.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    crate::provider_test::TestResult {
+                        outcome: crate::provider_test::Outcome::Network,
+                        latency_ms: 0,
+                        model: String::new(),
+                    }
+                }
+            };
+            if row.generation.get() == generation {
+                row.show(&result);
             }
-            _ => Err(trf("provider_test.local_missing", &[("id", &model_id)])),
-        }
-    })
+            gtk4::glib::ControlFlow::Break
+        });
+    }
+
+    fn show(&self, r: &crate::provider_test::TestResult) {
+        let (Some(button), Some(status)) = (self.button.upgrade(), self.status.upgrade()) else {
+            return;
+        };
+        let passed = r.outcome.passed();
+        let ms = r.latency_ms.to_string();
+        let detail = outcome_text(r);
+        let text = if passed {
+            trf("provider_test.pass", &[("ms", &ms), ("detail", &detail)])
+        } else {
+            trf("provider_test.fail", &[("ms", &ms), ("detail", &detail)])
+        };
+        button.set_label(tr("action.test"));
+        button.set_sensitive(true);
+        status.set_text(&text);
+        status.add_css_class(if passed { "cap-ok" } else { "cap-no" });
+    }
 }
 
-/// Snapshot the selected local model + data dir for [`probe_local_stt`].
-fn local_chain_snapshot(state: &Rc<AppState>) -> (std::path::PathBuf, String) {
-    use crate::settings::LocalSttProvider;
-    let s = state.settings.borrow();
-    let model_id: String = match s.stt.local_provider {
-        LocalSttProvider::Nvidia => s.stt.parakeet_model.clone(),
-        LocalSttProvider::OpenAi => s.stt.whisper_model.clone(),
-        LocalSttProvider::Oruk => "orukeet-v0.1.0".to_string(),
-        LocalSttProvider::Cohere => "cohere-transcribe-03-2026".to_string(),
-        LocalSttProvider::Whistle => "whistle-v1".to_string(),
-    };
-    drop(s);
-    let data_dir = state
+fn blocker_text(blocker: crate::provider_test::Blocker) -> &'static str {
+    use crate::provider_test::Blocker;
+    match blocker {
+        Blocker::NeedUrl => tr("provider_test.need_url"),
+        Blocker::BadUrl => tr("provider_test.bad_url"),
+        Blocker::NeedModel => tr("provider_test.need_model"),
+        Blocker::NeedKey => tr("provider_test.need_key"),
+        Blocker::Insecure => tr("provider_test.insecure"),
+        Blocker::NeedsStreaming => tr("provider_test.needs_streaming"),
+        Blocker::Unsupported => tr("provider_test.unsupported"),
+        Blocker::LocalUnavailable => tr("provider_test.local_na"),
+    }
+}
+
+fn outcome_text(r: &crate::provider_test::TestResult) -> String {
+    use crate::provider_test::Outcome;
+    let model = [("model", r.model.as_str())];
+    match r.outcome {
+        Outcome::Installed => trf("provider_test.installed", &model),
+        Outcome::ModelAvailable => trf("provider_test.model_ok", &model),
+        Outcome::KeyAccepted => trf("provider_test.key_ok", &model),
+        Outcome::ServerAnswered => trf("provider_test.server_ok", &model),
+        Outcome::Reachable => tr("provider_test.reachable").to_string(),
+        Outcome::NotInstalled => trf("provider_test.not_installed", &model),
+        Outcome::ModelMissing => trf("provider_test.model_missing", &model),
+        Outcome::KeyRejected => tr("provider_test.key_rejected").to_string(),
+        Outcome::Http(code) => trf("provider_test.http", &[("code", &code.to_string())]),
+        Outcome::Redirected => tr("provider_test.redirected").to_string(),
+        Outcome::Timeout => tr("provider_test.timeout").to_string(),
+        Outcome::Unreachable => tr("provider_test.unreachable").to_string(),
+        Outcome::Network => tr("provider_test.network").to_string(),
+        Outcome::BadReply => tr("provider_test.bad_reply").to_string(),
+        Outcome::Blocked(blocker) => blocker_text(blocker).to_string(),
+    }
+}
+
+fn data_dir(state: &AppState) -> std::path::PathBuf {
+    state
         .db_path
         .parent()
         .map(|p| p.to_path_buf())
-        .unwrap_or_default();
-    (data_dir, model_id)
+        .unwrap_or_default()
+}
+
+const STT_CLOUD_PROVIDERS: [&str; 5] = ["OpenAI", "Groq", "Mistral", "Gemini", "Deepgram"];
+
+/// Weak view of the remote STT form fields that define an entry.
+/// Shared by Save, the draft Test, and credential binding; safe to
+/// capture in the fields' own signal handlers.
+#[derive(Clone)]
+struct SttDraft {
+    kind_dd: gtk4::glib::WeakRef<DropDown>,
+    provider_dd: gtk4::glib::WeakRef<DropDown>,
+    url_e: gtk4::glib::WeakRef<Entry>,
+    model_e: gtk4::glib::WeakRef<Entry>,
+    key_e: gtk4::glib::WeakRef<Entry>,
+    sh_key_e: gtk4::glib::WeakRef<Entry>,
+    stream_intent: Rc<RefCell<bool>>,
+    /// Destination the prefilled key was saved for (editing only).
+    bound: Rc<RefCell<Option<String>>>,
+}
+
+impl SttDraft {
+    fn entry(&self) -> Option<crate::settings::SttChainEntry> {
+        use crate::settings::SttEntryKind;
+        let cloud = self.kind_dd.upgrade()?.selected() == 1;
+        let provider = STT_CLOUD_PROVIDERS
+            .get(self.provider_dd.upgrade()?.selected() as usize)
+            .copied()
+            .unwrap_or("OpenAI");
+        let key_e = if cloud { &self.key_e } else { &self.sh_key_e };
+        Some(crate::settings::SttChainEntry {
+            id: String::new(),
+            name: String::new(),
+            kind: if cloud {
+                SttEntryKind::Cloud
+            } else {
+                SttEntryKind::SelfHosted
+            },
+            enabled: true,
+            provider: if cloud {
+                provider.to_string()
+            } else {
+                String::new()
+            },
+            url: self.url_e.upgrade()?.text().trim().to_string(),
+            model: self.model_e.upgrade()?.text().trim().to_string(),
+            api_key: key_e.upgrade()?.text().to_string(),
+            streaming: *self.stream_intent.borrow(),
+        })
+    }
+
+    /// Current entry, after dropping a saved key whose destination
+    /// (vendor or server origin) no longer matches.
+    fn bound_entry(&self) -> Option<crate::settings::SttChainEntry> {
+        let entry = self.entry()?;
+        let dest = crate::provider_test::stt_destination(&entry);
+        if self.bound.borrow().as_ref().is_none_or(|d| *d == dest) {
+            return Some(entry);
+        }
+        *self.bound.borrow_mut() = None;
+        for key in [&self.key_e, &self.sh_key_e] {
+            if let Some(key) = key.upgrade() {
+                key.set_text("");
+            }
+        }
+        self.entry()
+    }
+}
+
+/// LLM counterpart of [`SttDraft`].
+#[derive(Clone)]
+struct LmDraft {
+    kind_dd: gtk4::glib::WeakRef<DropDown>,
+    provider_dd: gtk4::glib::WeakRef<DropDown>,
+    url_e: gtk4::glib::WeakRef<Entry>,
+    ollama_model_e: gtk4::glib::WeakRef<Entry>,
+    cloud_model_e: gtk4::glib::WeakRef<Entry>,
+    key_e: gtk4::glib::WeakRef<Entry>,
+    cloud_key_e: gtk4::glib::WeakRef<Entry>,
+    bound: Rc<RefCell<Option<String>>>,
+}
+
+fn cloud_llm_at(index: u32) -> crate::settings::CloudLlm {
+    use crate::settings::CloudLlm;
+    match index {
+        0 => CloudLlm::Groq,
+        1 => CloudLlm::OpenRouter,
+        3 => CloudLlm::Claude,
+        4 => CloudLlm::Google,
+        _ => CloudLlm::OpenAI,
+    }
+}
+
+impl LmDraft {
+    fn entry(&self) -> Option<crate::settings::LlmEntry> {
+        use crate::settings::{LlmEntry, LlmKind};
+        let kind = match self.kind_dd.upgrade()?.selected() {
+            1 => LlmKind::Local,
+            2 => LlmKind::Cloud,
+            _ => LlmKind::Ollama,
+        };
+        let cloud = kind == LlmKind::Cloud;
+        let model_e = if cloud {
+            &self.cloud_model_e
+        } else {
+            &self.ollama_model_e
+        };
+        let key_e = if cloud {
+            &self.cloud_key_e
+        } else {
+            &self.key_e
+        };
+        Some(LlmEntry {
+            kind,
+            provider: cloud_llm_at(self.provider_dd.upgrade()?.selected()),
+            url: self.url_e.upgrade()?.text().trim().to_string(),
+            model: model_e.upgrade()?.text().trim().to_string(),
+            api_key: key_e.upgrade()?.text().to_string(),
+            ..LlmEntry::ollama("", "")
+        })
+    }
+
+    fn bound_entry(&self) -> Option<crate::settings::LlmEntry> {
+        let entry = self.entry()?;
+        let dest = crate::provider_test::llm_destination(&entry);
+        if self.bound.borrow().as_ref().is_none_or(|d| *d == dest) {
+            return Some(entry);
+        }
+        *self.bound.borrow_mut() = None;
+        for key in [&self.key_e, &self.cloud_key_e] {
+            if let Some(key) = key.upgrade() {
+                key.set_text("");
+            }
+        }
+        self.entry()
+    }
 }
 
 // ---------------------------------------------------------------- sections
@@ -2158,6 +2300,8 @@ struct SttForm {
     add_btn: Button,
     cancel_btn: Button,
     editing: Rc<RefCell<Option<String>>>,
+    /// Destination of the key prefilled by Edit (see [`SttDraft`]).
+    bound: Rc<RefCell<Option<String>>>,
 }
 
 /// STT chain list. Local rows toggle only (configuration lives in
@@ -2286,22 +2430,28 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
                     let Some(e) = entry else {
                         return;
                     };
+                    // Unbind first: the refills below must not clear keys.
+                    *form.bound.borrow_mut() = None;
                     form.expander.set_expanded(true);
                     form.name_e.grab_focus();
                     form.name_e.set_text(&e.name);
                     form.url_e.set_text(&e.url);
                     form.model_e.set_text(&e.model);
-                    form.key_e.set_text(&e.api_key);
-                    form.sh_key_e.set_text(&e.api_key);
+                    // The key only fills the field of its own kind.
+                    let cloud = matches!(e.kind, SttEntryKind::Cloud);
+                    form.key_e.set_text(if cloud { &e.api_key } else { "" });
+                    form.sh_key_e.set_text(if cloud { "" } else { &e.api_key });
                     *form.stream_intent.borrow_mut() = e.streaming;
                     {
                         let ws = crate::transcribe::is_ws_url(e.url.trim_start());
                         form.stream_sw.set_sensitive(ws);
                         form.stream_sw.set_active(e.streaming && ws);
                     }
-                    let providers = ["OpenAI", "Groq", "Mistral", "Gemini", "Deepgram"];
                     form.provider_dd.set_selected(
-                        providers.iter().position(|p| *p == e.provider).unwrap_or(0) as u32,
+                        STT_CLOUD_PROVIDERS
+                            .iter()
+                            .position(|p| *p == e.provider)
+                            .unwrap_or(0) as u32,
                     );
                     form.kind_dd.set_selected(match e.kind {
                         SttEntryKind::Cloud => 1,
@@ -2310,6 +2460,8 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
                     form.add_btn.set_label(tr("action.save"));
                     form.cancel_btn.set_visible(true);
                     *form.editing.borrow_mut() = Some(id.clone());
+                    // From here on, a vendor or server change drops the key.
+                    *form.bound.borrow_mut() = Some(crate::provider_test::stt_destination(&e));
                 });
             }
             card.append(&edit);
@@ -2340,90 +2492,25 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
             );
         }
         card.append(&del);
-        // Provider test row under every chain entry (same pattern as
-        // the phone app): one Test button + inline latency/excerpt.
+        // Test row under every entry, routed like dictation. Local
+        // entries read the live local configuration at click time.
         let wrap = GtkBox::new(Orientation::Vertical, 2);
         wrap.append(&card);
+        let (test_box, test_btn, test_row) =
+            TestRow::new(&format!("{} — {}", tr("action.test"), entry.name));
+        test_row.reset(crate::provider_test::stt_blocker(entry));
         {
-            use crate::settings::SttEntryKind;
-            let is_local = matches!(entry.kind, SttEntryKind::Local);
-            let test_box = GtkBox::new(Orientation::Horizontal, 8);
-            test_box.set_margin_start(4);
-            let test_btn = Button::with_label(tr("action.test"));
-            test_btn.set_valign(gtk4::Align::Center);
-            test_btn.update_property(&[gtk4::accessible::Property::Label(&format!(
-                "{} — {}",
-                tr("action.test"),
-                entry.name
-            ))]);
-            let status = test_status_label();
-            if is_local {
-                // Filesystem check: fast, but still off the UI thread
-                // for a uniform busy state across all Test buttons.
-                // Snapshot at click time: the provider/model pickers below
-                // can change without refilling this row.
-                let state = state.clone();
-                let status = status.clone();
-                test_btn.connect_clicked(move |button| {
-                    let (data_dir, model_id) = local_chain_snapshot(&state);
-                    let status = status.clone();
-                    spawn_test_probe(button, &status, move || probe_local_stt(data_dir, model_id));
-                });
-            } else {
-                let kind_str = match entry.kind {
-                    SttEntryKind::Cloud => "Cloud",
-                    _ => "SelfHosted",
-                };
-                // Cloud probes authenticate: an empty key would 401,
-                // so gate on it with a kinder reason than a red FAIL.
-                let reason = stt_test_reason(kind_str, &entry.url, &entry.model).or_else(|| {
-                    if kind_str == "Cloud" && entry.api_key.trim().is_empty() {
-                        Some(tr("provider_test.need_key").to_string())
-                    } else {
-                        None
-                    }
-                });
-                test_btn.set_sensitive(reason.is_none());
-                if let Some(reason) = reason {
-                    test_btn.set_tooltip_text(Some(reason.as_str()));
-                    status.set_text(&reason);
-                }
-                let model = entry.model.clone();
-                let key = entry.api_key.clone();
-                let provider = entry.provider.clone();
-                let url = entry.url.clone();
-                let kind_owned = kind_str.to_string();
-                let status = status.clone();
-                test_btn.connect_clicked(move |button| {
-                    let status = status.clone();
-                    let kind_owned = kind_owned.clone();
-                    if kind_owned == "Cloud" {
-                        let model = model.clone();
-                        let key = key.clone();
-                        let provider = provider.clone();
-                        spawn_test_probe(button, &status, move || {
-                            crate::provider_test::probe_stt_cloud(&provider, &model, &key)
-                        });
-                    } else {
-                        let url = url.clone();
-                        let model = model.clone();
-                        let key = key.clone();
-                        spawn_test_probe(button, &status, move || {
-                            crate::provider_test::probe_stt_endpoint(
-                                &kind_owned,
-                                &url,
-                                &model,
-                                &key,
-                                "",
-                            )
-                        });
-                    }
-                });
-            }
-            test_box.append(&test_btn);
-            test_box.append(&status);
-            wrap.append(&test_box);
+            let state = state.clone();
+            let entry = entry.clone();
+            test_btn.connect_clicked(move |_| {
+                let settings = state.settings.borrow().stt.clone();
+                let data_dir = data_dir(&state);
+                let entry = entry.clone();
+                test_row
+                    .start(move || crate::provider_test::probe_stt(&entry, &settings, &data_dir));
+            });
         }
+        wrap.append(&test_box);
         list.append(&wrap);
     }
 }
@@ -2586,20 +2673,8 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         }
     }
     remote_rows.append(&url_box);
-    // Draft probe: same ONE row pattern as the chain rows (Test button
-    // + inline latency/excerpt), run against the unsaved form values.
-    // It sits above Add/Cancel: verify-before-commit ordering. Draft
-    // edits clear a stale result.
-    let stt_draft_box = GtkBox::new(Orientation::Horizontal, 8);
-    stt_draft_box.set_margin_start(4);
-    let stt_draft_btn = Button::with_label(tr("action.test"));
-    stt_draft_btn.set_valign(gtk4::Align::Center);
-    stt_draft_btn.update_property(&[gtk4::accessible::Property::Label(tr(
-        "action.test.draft.stt",
-    ))]);
-    let stt_draft_status = test_status_label();
-    stt_draft_box.append(&stt_draft_btn);
-    stt_draft_box.append(&stt_draft_status);
+    // Draft Test above Add/Save: verify before committing.
+    let (stt_draft_box, stt_draft_btn, stt_draft_row) = TestRow::new(tr("action.test.draft.stt"));
     remote_rows.append(&stt_draft_box);
     let add_btn = Button::with_label(tr("stt.remote.add"));
     add_btn.add_css_class("suggested-action");
@@ -2628,6 +2703,17 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         add_btn: add_btn.clone(),
         cancel_btn: cancel_btn.clone(),
         editing: Rc::new(RefCell::new(None)),
+        bound: Rc::new(RefCell::new(None)),
+    };
+    let draft = SttDraft {
+        kind_dd: kind_dd.downgrade(),
+        provider_dd: provider_dd.downgrade(),
+        url_e: url_e.downgrade(),
+        model_e: model_e.downgrade(),
+        key_e: key_e.downgrade(),
+        sh_key_e: sh_key_e.downgrade(),
+        stream_intent: stream_intent.clone(),
+        bound: form.bound.clone(),
     };
     fill_stt_chain(&chain_list, state, &form, &add_local_btn);
     {
@@ -2703,6 +2789,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         let cb = form.cancel_btn.clone();
         cb.connect_clicked(move |_| {
             *form.editing.borrow_mut() = None;
+            *form.bound.borrow_mut() = None;
             form.add_btn.set_label(tr("stt.remote.add"));
             form.cancel_btn.set_visible(false);
             form.name_e.set_text("");
@@ -2724,49 +2811,22 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         let cb = form.cancel_btn.clone();
         let form = form.clone();
         let alb1 = add_local_btn.clone();
+        let draft = draft.clone();
         ab.connect_clicked(move |_| {
-            use crate::settings::SttEntryKind;
+            let Some(mut entry) = draft.bound_entry() else {
+                return;
+            };
             let cloud = form.kind_dd.selected() == 1;
-            if cloud
-                && (form.model_e.text().trim().is_empty() || form.key_e.text().trim().is_empty())
-            {
+            if cloud && (entry.model.is_empty() || entry.api_key.trim().is_empty()) {
                 super::app::toast(&form.add_btn, tr("stt.required"));
                 return;
             }
-            if !cloud && !valid_server_url(&form.url_e.text(), true) {
+            if !cloud && !valid_server_url(&entry.url, true) {
                 form.url_e.add_css_class("error");
                 super::app::toast(&form.add_btn, tr("form.badurl"));
                 return;
             }
-            let provider = match form.provider_dd.selected() {
-                1 => "Groq",
-                2 => "Mistral",
-                3 => "Gemini",
-                4 => "Deepgram",
-                _ => "OpenAI",
-            };
-            let mut entry = crate::settings::SttChainEntry {
-                id: String::new(),
-                name: form.name_e.text().to_string(),
-                kind: if cloud {
-                    SttEntryKind::Cloud
-                } else {
-                    SttEntryKind::SelfHosted
-                },
-                enabled: true,
-                provider: provider.to_string(),
-                url: form.url_e.text().trim().to_string(),
-                model: form.model_e.text().trim().to_string(),
-                api_key: if cloud {
-                    form.key_e.text().to_string()
-                } else {
-                    form.sh_key_e.text().to_string()
-                },
-                streaming: *form.stream_intent.borrow(),
-            };
-            if !cloud {
-                entry.provider.clear();
-            }
+            entry.name = form.name_e.text().to_string();
             if entry.name.trim().is_empty() {
                 entry.name = if cloud {
                     format!("{} ({})", entry.provider, entry.model)
@@ -2795,6 +2855,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 }
             }
             *form.editing.borrow_mut() = None;
+            *form.bound.borrow_mut() = None;
             ab_inner.set_label(tr("stt.remote.add"));
             cb.set_visible(false);
             form.name_e.set_text("");
@@ -2808,101 +2869,29 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         });
     }
     {
-        // Draft Test wiring: probe the unsaved values. Edits to probed
-        // fields clear a stale PASS/FAIL (the name field is cosmetic
-        // and does not). A probe in flight is never touched.
+        // Draft Test: any change to a field that defines the entry
+        // (name is cosmetic) drops the result, even mid-probe, and
+        // re-gates the button.
         let refresh: Rc<dyn Fn()> = Rc::new({
-            let kind_dd = kind_dd.clone();
-            let url_e = url_e.clone();
-            let model_e = model_e.clone();
-            let key_e = key_e.clone();
-            let sh_key_e = sh_key_e.clone();
-            let btn = stt_draft_btn.clone();
-            let status = stt_draft_status.clone();
+            let draft = draft.clone();
+            let row = stt_draft_row.clone();
             move || {
-                // Never touch an in-flight probe (status shows Testing…):
-                // its result still lands and the user re-tests after.
-                if status.text().as_str() == tr("provider_test.testing") {
-                    return;
-                }
-                let cloud = kind_dd.selected() == 1;
-                let kind = if cloud { "Cloud" } else { "SelfHosted" };
-                let url = url_e.text().to_string();
-                let model = model_e.text().to_string();
-                let key = if cloud {
-                    key_e.text().to_string()
-                } else {
-                    sh_key_e.text().to_string()
-                };
-                let reason = stt_test_reason(kind, &url, &model).or_else(|| {
-                    if cloud && key.trim().is_empty() {
-                        Some(tr("provider_test.need_key").to_string())
-                    } else {
-                        None
-                    }
-                });
-                btn.set_sensitive(reason.is_none());
-                if let Some(reason) = reason {
-                    btn.set_tooltip_text(Some(reason.as_str()));
-                    status.remove_css_class("cap-ok");
-                    status.remove_css_class("cap-no");
-                    status.set_text(&reason);
-                } else {
-                    btn.set_tooltip_text(None::<&str>);
-                    // A previous PASS/FAIL described older values:
-                    // clear it so only the next run speaks.
-                    if status.has_css_class("cap-ok") || status.has_css_class("cap-no") {
-                        status.remove_css_class("cap-ok");
-                        status.remove_css_class("cap-no");
-                        status.set_text("");
-                    }
+                if let Some(entry) = draft.bound_entry() {
+                    row.reset(crate::provider_test::stt_blocker(&entry));
                 }
             }
         });
         {
-            let btn = stt_draft_btn.clone();
-            let status = stt_draft_status.clone();
-            let kind_dd = kind_dd.clone();
-            let provider_dd = provider_dd.clone();
-            let url_e = url_e.clone();
-            let model_e = model_e.clone();
-            let key_e = key_e.clone();
-            let sh_key_e = sh_key_e.clone();
+            let state = state.clone();
+            let draft = draft.clone();
             stt_draft_btn.connect_clicked(move |_| {
-                let cloud = kind_dd.selected() == 1;
-                let provider = match provider_dd.selected() {
-                    1 => "Groq",
-                    2 => "Mistral",
-                    3 => "Gemini",
-                    4 => "Deepgram",
-                    _ => "OpenAI",
-                }
-                .to_string();
-                let url = url_e.text().to_string();
-                let model = model_e.text().to_string();
-                let key = if cloud {
-                    key_e.text().to_string()
-                } else {
-                    sh_key_e.text().to_string()
+                let Some(entry) = draft.bound_entry() else {
+                    return;
                 };
-                let kind_owned = if cloud {
-                    "Cloud".to_string()
-                } else {
-                    "SelfHosted".to_string()
-                };
-                spawn_test_probe(&btn, &status, move || {
-                    if kind_owned == "Cloud" {
-                        crate::provider_test::probe_stt_cloud(&provider, &model, &key)
-                    } else {
-                        crate::provider_test::probe_stt_endpoint(
-                            &kind_owned,
-                            &url,
-                            &model,
-                            &key,
-                            "",
-                        )
-                    }
-                });
+                let settings = state.settings.borrow().stt.clone();
+                let data_dir = data_dir(&state);
+                stt_draft_row
+                    .start(move || crate::provider_test::probe_stt(&entry, &settings, &data_dir));
             });
         }
         for entry in [&url_e, &model_e, &key_e, &sh_key_e] {
@@ -2912,6 +2901,10 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
         for dd in [&kind_dd, &provider_dd] {
             let refresh = refresh.clone();
             dd.connect_selected_notify(move |_| refresh());
+        }
+        {
+            let refresh = refresh.clone();
+            stream_sw.connect_active_notify(move |_| refresh());
         }
         refresh();
     }
@@ -3646,6 +3639,8 @@ struct LmForm {
     add_btn: Button,
     cancel_btn: Button,
     editing: Rc<RefCell<Option<String>>>,
+    /// Destination of the key prefilled by Edit (see [`LmDraft`]).
+    bound: Rc<RefCell<Option<String>>>,
 }
 
 fn lm_model_row(entry: &crate::settings::LlmEntry) -> GtkBox {
@@ -3785,14 +3780,18 @@ fn fill_lm_models(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
                 let Some(e) = entry else {
                     return;
                 };
+                // Unbind first: the refills below must not clear keys.
+                *form.bound.borrow_mut() = None;
                 form.expander.set_expanded(true);
                 form.name_e.grab_focus();
                 form.name_e.set_text(&e.name);
                 form.url_e.set_text(&e.url);
                 form.ollama_model_e.set_text(&e.model);
-                form.cloud_model_e.set_text(&e.model);
-                form.key_e.set_text(&e.api_key);
-                form.cloud_key_e.set_text(&e.api_key);
+                // The key only fills the field of its own kind.
+                let cloud = e.kind == crate::settings::LlmKind::Cloud;
+                form.key_e.set_text(if cloud { "" } else { &e.api_key });
+                form.cloud_key_e
+                    .set_text(if cloud { &e.api_key } else { "" });
                 let tsel = match e.thinking {
                     Some(true) => 1,
                     Some(false) => 2,
@@ -3819,6 +3818,8 @@ fn fill_lm_models(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
                     crate::settings::CloudLlm::Google => 4,
                     _ => 2,
                 });
+                // After the provider: its change handler resets the model.
+                form.cloud_model_e.set_text(&e.model);
                 form.kind_dd.set_selected(match e.kind {
                     crate::settings::LlmKind::Local => 1,
                     crate::settings::LlmKind::Cloud => 2,
@@ -3827,6 +3828,8 @@ fn fill_lm_models(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
                 form.add_btn.set_label(tr("action.save"));
                 form.cancel_btn.set_visible(true);
                 *form.editing.borrow_mut() = Some(id.clone());
+                // From here on, a provider or server change drops the key.
+                *form.bound.borrow_mut() = Some(crate::provider_test::llm_destination(&e));
             });
         }
         card.append(&edit);
@@ -3856,88 +3859,20 @@ fn fill_lm_models(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
             );
         }
         card.append(&del);
-        // Provider test row under every configured model (same pattern
-        // as the phone app): one Test button + inline latency/excerpt.
+        // Test row under every configured model.
         let wrap = GtkBox::new(Orientation::Vertical, 2);
         wrap.append(&card);
+        let (test_box, test_btn, test_row) =
+            TestRow::new(&format!("{} — {}", tr("action.test"), entry.name));
+        test_row.reset(crate::provider_test::llm_blocker(entry));
         {
-            use crate::settings::LlmKind;
-            let test_box = GtkBox::new(Orientation::Horizontal, 8);
-            test_box.set_margin_start(4);
-            let test_btn = Button::with_label(tr("action.test"));
-            test_btn.set_valign(gtk4::Align::Center);
-            test_btn.update_property(&[gtk4::accessible::Property::Label(&format!(
-                "{} — {}",
-                tr("action.test"),
-                entry.name
-            ))]);
-            let status = test_status_label();
-            match entry.kind {
-                LlmKind::Local => {
-                    test_btn.set_sensitive(false);
-                    let reason = tr("provider_test.local_na").to_string();
-                    test_btn.set_tooltip_text(Some(reason.as_str()));
-                    status.set_text(&reason);
-                }
-                LlmKind::Ollama => {
-                    let reason = llm_test_reason("Ollama", &entry.url, &entry.model);
-                    test_btn.set_sensitive(reason.is_none());
-                    if let Some(reason) = reason {
-                        test_btn.set_tooltip_text(Some(reason.as_str()));
-                        status.set_text(&reason);
-                    }
-                    let url = entry.url.clone();
-                    let model = entry.model.clone();
-                    let key = entry.api_key.clone();
-                    let status = status.clone();
-                    test_btn.connect_clicked(move |button| {
-                        let url = url.clone();
-                        let model = model.clone();
-                        let key = key.clone();
-                        let status = status.clone();
-                        spawn_test_probe(button, &status, move || {
-                            crate::provider_test::probe_ollama(&url, &model, &key)
-                        });
-                    });
-                }
-                LlmKind::Cloud => {
-                    // Cloud probes authenticate: an empty key would 401,
-                    // so gate on it with a kinder reason than a red FAIL.
-                    let reason = llm_test_reason("Cloud", "", &entry.model).or_else(|| {
-                        if entry.api_key.trim().is_empty() {
-                            Some(tr("provider_test.need_key").to_string())
-                        } else {
-                            None
-                        }
-                    });
-                    test_btn.set_sensitive(reason.is_none());
-                    if let Some(reason) = reason {
-                        test_btn.set_tooltip_text(Some(reason.as_str()));
-                        status.set_text(&reason);
-                    }
-                    let provider = entry.provider;
-                    let model = entry.model.clone();
-                    let key = entry.api_key.clone();
-                    let status = status.clone();
-                    test_btn.connect_clicked(move |button| {
-                        let model = model.clone();
-                        let key = key.clone();
-                        let status = status.clone();
-                        spawn_test_probe(button, &status, move || {
-                            crate::provider_test::probe_llm_cloud(
-                                provider.name(),
-                                provider.base_url(),
-                                &model,
-                                &key,
-                            )
-                        });
-                    });
-                }
-            }
-            test_box.append(&test_btn);
-            test_box.append(&status);
-            wrap.append(&test_box);
+            let entry = entry.clone();
+            test_btn.connect_clicked(move |_| {
+                let entry = entry.clone();
+                test_row.start(move || crate::provider_test::probe_llm(&entry));
+            });
         }
+        wrap.append(&test_box);
         list.append(&wrap);
     }
 }
@@ -4173,21 +4108,8 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
     rows.append(&local_box);
     cloud_box.set_visible(false);
     local_box.set_visible(false);
-    // Draft probe: same ONE row pattern as the configured-model rows
-    // (Test button + inline latency/excerpt), run against the unsaved
-    // form values. It sits above Add/Cancel: verify-before-commit
-    // ordering. Draft edits clear a stale result. Hidden for the Local
-    // kind (unavailable: the form's own note already says so).
-    let lm_draft_box = GtkBox::new(Orientation::Horizontal, 8);
-    lm_draft_box.set_margin_start(4);
-    let lm_draft_btn = Button::with_label(tr("action.test"));
-    lm_draft_btn.set_valign(gtk4::Align::Center);
-    lm_draft_btn.update_property(&[gtk4::accessible::Property::Label(tr(
-        "action.test.draft.lm",
-    ))]);
-    let lm_draft_status = test_status_label();
-    lm_draft_box.append(&lm_draft_btn);
-    lm_draft_box.append(&lm_draft_status);
+    // Draft Test above Add/Save: verify before committing.
+    let (lm_draft_box, lm_draft_btn, lm_draft_row) = TestRow::new(tr("action.test.draft.lm"));
     rows.append(&lm_draft_box);
     // Show the form for the picked kind.
     let add_btn = Button::with_label(tr("action.add"));
@@ -4260,6 +4182,17 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         add_btn: add_btn.clone(),
         cancel_btn: cancel_btn.clone(),
         editing: Rc::new(RefCell::new(None)),
+        bound: Rc::new(RefCell::new(None)),
+    };
+    let draft = LmDraft {
+        kind_dd: kind_dd.downgrade(),
+        provider_dd: provider_dd.downgrade(),
+        url_e: url_e.downgrade(),
+        ollama_model_e: ollama_model_e.downgrade(),
+        cloud_model_e: cloud_model_e.downgrade(),
+        key_e: key_e.downgrade(),
+        cloud_key_e: cloud_key_e.downgrade(),
+        bound: form.bound.clone(),
     };
     fill_lm_models(&list, state, &form);
     // Re-entering this page reflects cleanup priority changes without losing form drafts.
@@ -4274,6 +4207,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         let cb = form.cancel_btn.clone();
         cb.connect_clicked(move |_| {
             *form.editing.borrow_mut() = None;
+            *form.bound.borrow_mut() = None;
             form.add_btn.set_label(tr("action.add"));
             form.cancel_btn.set_visible(false);
             form.name_e.set_text("");
@@ -4309,7 +4243,12 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         let editing = form.editing.clone();
         let ab = add_btn.clone();
         let cb = form.cancel_btn.clone();
+        let draft = draft.clone();
         add_btn.connect_clicked(move |_| {
+            // Drops a saved key whose destination changed.
+            if draft.bound_entry().is_none() {
+                return;
+            }
             let kind = match kind_dd.selected() {
                 1 => LlmKind::Local,
                 2 => LlmKind::Cloud,
@@ -4403,117 +4342,34 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
                 }
             }
             *editing.borrow_mut() = None;
+            *form.bound.borrow_mut() = None;
             ab.set_label(tr("action.add"));
             cb.set_visible(false);
             name_e.set_text("");
             key_e.set_text("");
+            cloud_key_e.set_text("");
             persist_prefs(state.clone())();
             fill_lm_models(&list, &state, &form);
             super::app::toast(&ab, tr("feedback.saved"));
         });
     }
     {
-        // Draft Test wiring: probe the unsaved values. Ollama probes its
-        // server (read-only tags check); Cloud probes the vendor model
-        // list. Edits to probed fields clear a stale PASS/FAIL (the name
-        // field is cosmetic and does not). Hidden for the Local kind.
+        // Draft Test: any change to a field that defines the entry
+        // drops the result, even mid-probe, and re-gates the button.
         let refresh: Rc<dyn Fn()> = Rc::new({
-            let kind_dd = kind_dd.clone();
-            let url_e = url_e.clone();
-            let ollama_model_e = ollama_model_e.clone();
-            let cloud_model_e = cloud_model_e.clone();
-            let cloud_key_e = cloud_key_e.clone();
-            let draft_box = lm_draft_box.clone();
-            let btn = lm_draft_btn.clone();
-            let status = lm_draft_status.clone();
+            let draft = draft.clone();
+            let row = lm_draft_row.clone();
             move || {
-                // Never touch an in-flight probe (status shows Testing…).
-                if status.text().as_str() == tr("provider_test.testing") {
-                    return;
-                }
-                draft_box.set_visible(kind_dd.selected() != 1);
-                if kind_dd.selected() == 1 {
-                    return;
-                }
-                let (kind, url, model, key) = match kind_dd.selected() {
-                    2 => (
-                        "Cloud",
-                        String::new(),
-                        cloud_model_e.text().to_string(),
-                        cloud_key_e.text().to_string(),
-                    ),
-                    _ => (
-                        "Ollama",
-                        url_e.text().to_string(),
-                        ollama_model_e.text().to_string(),
-                        String::new(),
-                    ),
-                };
-                let reason = llm_test_reason(kind, &url, &model).or_else(|| {
-                    if kind == "Cloud" && key.trim().is_empty() {
-                        Some(tr("provider_test.need_key").to_string())
-                    } else {
-                        None
-                    }
-                });
-                btn.set_sensitive(reason.is_none());
-                if let Some(reason) = reason {
-                    btn.set_tooltip_text(Some(reason.as_str()));
-                    status.remove_css_class("cap-ok");
-                    status.remove_css_class("cap-no");
-                    status.set_text(&reason);
-                } else {
-                    btn.set_tooltip_text(None::<&str>);
-                    // A previous PASS/FAIL described older values:
-                    // clear it so only the next run speaks.
-                    if status.has_css_class("cap-ok") || status.has_css_class("cap-no") {
-                        status.remove_css_class("cap-ok");
-                        status.remove_css_class("cap-no");
-                        status.set_text("");
-                    }
+                if let Some(entry) = draft.bound_entry() {
+                    row.reset(crate::provider_test::llm_blocker(&entry));
                 }
             }
         });
         {
-            let kind_dd = kind_dd.clone();
-            let provider_dd = provider_dd.clone();
-            let url_e = url_e.clone();
-            let ollama_model_e = ollama_model_e.clone();
-            let cloud_model_e = cloud_model_e.clone();
-            let key_e = key_e.clone();
-            let cloud_key_e = cloud_key_e.clone();
-            let btn = lm_draft_btn.clone();
-            let status = lm_draft_status.clone();
+            let draft = draft.clone();
             lm_draft_btn.connect_clicked(move |_| {
-                let kind = kind_dd.selected();
-                if kind == 1 {
-                    return;
-                }
-                if kind == 2 {
-                    let provider = match provider_dd.selected() {
-                        0 => CloudLlm::Groq,
-                        1 => CloudLlm::OpenRouter,
-                        3 => CloudLlm::Claude,
-                        4 => CloudLlm::Google,
-                        _ => CloudLlm::OpenAI,
-                    };
-                    let model = cloud_model_e.text().to_string();
-                    let key = cloud_key_e.text().to_string();
-                    spawn_test_probe(&btn, &status, move || {
-                        crate::provider_test::probe_llm_cloud(
-                            provider.name(),
-                            provider.base_url(),
-                            &model,
-                            &key,
-                        )
-                    });
-                } else {
-                    let url = url_e.text().to_string();
-                    let model = ollama_model_e.text().to_string();
-                    let key = key_e.text().to_string();
-                    spawn_test_probe(&btn, &status, move || {
-                        crate::provider_test::probe_ollama(&url, &model, &key)
-                    });
+                if let Some(entry) = draft.bound_entry() {
+                    lm_draft_row.start(move || crate::provider_test::probe_llm(&entry));
                 }
             });
         }
