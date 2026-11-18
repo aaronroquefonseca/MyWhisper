@@ -979,8 +979,9 @@ enum ActiveDefer {
     /// capture is still the latest admitted AND unrevoked (cancellation
     /// or replacement revokes), plus no *other* utterance is active —
     /// so useful warming during the requesting recording is preserved
-    /// while stale queued warmups can never kill a newer server.
-    Owned(u64),
+    /// while stale queued warmups can never kill a newer server. The
+    /// second field is the press's Stop epoch (as `Utterance`).
+    Owned(u64, u64),
     /// Release worker for an utterance admitted at Stop epoch `e`: like
     /// `Never`, but a newer explicit Stop forbids starting a server
     /// (reusing an already-ready one stays allowed).
@@ -1529,7 +1530,7 @@ fn ensure_server(
         }
         // Authoritative idle/ownership revalidation: no capture admitted
         // ahead of us is killed by the removals below.
-        if matches!(defer, ActiveDefer::IfAnyActive | ActiveDefer::Owned(_)) {
+        if matches!(defer, ActiveDefer::IfAnyActive | ActiveDefer::Owned(..)) {
             let live_active = live().lock().map(|g| g.is_some()).unwrap_or(true);
             let busy = BUSY.load(Ordering::SeqCst);
             let leased = ENGINE_LEASED.load(Ordering::Acquire);
@@ -1540,7 +1541,7 @@ fn ensure_server(
                 // Own utterance counts as one: other overlapping captures
                 // or inference hangovers still defer, but the requesting
                 // recording itself never blocks its own warmup.
-                ActiveDefer::Owned(id) => {
+                ActiveDefer::Owned(id, _) => {
                     ADMITTED_ID.load(Ordering::Acquire) != id
                         || REVOKED_ID.load(Ordering::Acquire) >= id
                         || busy
@@ -1553,9 +1554,10 @@ fn ensure_server(
             }
         }
         let mut map = servers().lock().map_err(|e| format!("server lock: {e}"))?;
-        // Stop mid-hold: the release may reuse a ready server for this
-        // exact key, but never start (or replace) one after a newer Stop.
-        if let ActiveDefer::Utterance(epoch) = defer
+        // Stop mid-hold: the release (or the press warmup) may reuse a
+        // ready server for this exact key, but never start (or replace)
+        // one after a newer Stop.
+        if let ActiveDefer::Utterance(epoch) | ActiveDefer::Owned(_, epoch) = defer
             && STOP_EPOCH.load(Ordering::Acquire) != epoch
             && !map.get_mut(name).is_some_and(|s| {
                 s.ready && s.key == key && s.child.try_wait().is_ok_and(|e| e.is_none())
@@ -2013,7 +2015,8 @@ fn launch_key(
 /// current settings' local plan (e.g. a press warmed B, then A was
 /// restored before the watcher saw B). Cold (empty map) never drifts,
 /// so intentional cold state is kept. An uncomputable local identity
-/// (missing pack) is not drift: reconciling could not fix it anyway.
+/// (runtime pack missing) is drift too: nothing running can be it, and
+/// a stale server must not keep serving the old configuration.
 pub fn launch_drift(stt: &SttSettings, data_dir: &Path) -> bool {
     let running: Vec<(String, String)> = match servers().lock() {
         Ok(map) => map
@@ -2040,7 +2043,7 @@ pub fn launch_drift(stt: &SttSettings, data_dir: &Path) -> bool {
     let Some((want_name, want_key)) =
         launch_key(&plan, data_dir, stt.gpu_backend, stt.sherpa_backend, &net)
     else {
-        return false;
+        return true;
     };
     running
         .iter()
@@ -2159,10 +2162,23 @@ fn http_client() -> Result<reqwest::blocking::Client, String> {
         .map_err(|e| format!("http client: {e}"))
 }
 
+/// Client for local engine servers: audio must never leave loopback, so
+/// no system proxy (HTTP_PROXY etc.) and no redirects.
+fn local_http_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .timeout(INFERENCE_TIMEOUT)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("http client: {e}"))
+}
+
 fn whisper_load(model: &Path, port: u16) -> Result<(), String> {
     let boundary = "mywhisperload";
     let body = multipart_body(boundary, &[("model", &model.to_string_lossy())], None);
-    let res = http_client()?
+    let client = local_http_client()?;
+    owned_ready_listener("whisper", port)?;
+    let res = client
         .post(format!("http://127.0.0.1:{port}/load"))
         .header(
             "Content-Type",
@@ -3080,7 +3096,6 @@ fn whisper_json_text(v: &serde_json::Value) -> String {
 }
 
 pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>, port: u16) -> Result<String, String> {
-    owned_ready_listener("whisper", port)?;
     let boundary = "mywhisperwav";
     let mut fields = vec![("temperature", "0.0"), ("response_format", "json")];
     let prompt_owned;
@@ -3095,7 +3110,10 @@ pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>, port: u16) -> Resu
         &fields,
         Some(("file", "audio.wav", "audio/wav", wav)),
     );
-    let res = http_client()?
+    let client = local_http_client()?;
+    // Ownership checked last, right before the audio connection.
+    owned_ready_listener("whisper", port)?;
+    let res = client
         .post(format!("http://127.0.0.1:{port}/inference"))
         .header(
             "Content-Type",
@@ -3510,7 +3528,7 @@ struct LiveUtterance {
     release_delay_ms: u64,
     /// Server bind + ports snapshot at press (Network section).
     net: ServerNet,
-    /// `STOP_EPOCH` at press admission (see `ActiveDefer::Utterance`).
+    /// `STOP_EPOCH` at the GTK press (see `ActiveDefer::Utterance`).
     stop_epoch: u64,
 }
 
@@ -3572,17 +3590,32 @@ pub fn begin_utterance(
 static PRESS_SEQ: AtomicU64 = AtomicU64::new(0);
 static PRESS_CLOSED: AtomicU64 = AtomicU64::new(0);
 
+/// GTK-ordered press: sequence number plus the `STOP_EPOCH` seen at
+/// the physical press, so a Stop landing before the pooled arm still
+/// forbids this utterance from starting a server.
+#[derive(Clone, Copy, Debug)]
+pub struct PressTicket {
+    seq: u64,
+    stop_epoch: u64,
+}
+
 /// Register a press on the thread that orders press/release events.
-pub fn register_press() -> u64 {
-    PRESS_SEQ.fetch_add(1, Ordering::AcqRel) + 1
+pub fn register_press() -> PressTicket {
+    // Epoch first: a Stop racing this call makes the ticket stricter,
+    // never looser.
+    let stop_epoch = STOP_EPOCH.load(Ordering::Acquire);
+    PressTicket {
+        seq: PRESS_SEQ.fetch_add(1, Ordering::AcqRel) + 1,
+        stop_epoch,
+    }
 }
 
 fn close_pending_presses() {
     PRESS_CLOSED.fetch_max(PRESS_SEQ.load(Ordering::Acquire), Ordering::AcqRel);
 }
 
-fn press_closed(ticket: u64) -> bool {
-    PRESS_CLOSED.load(Ordering::Acquire) >= ticket
+fn press_closed(ticket: PressTicket) -> bool {
+    PRESS_CLOSED.load(Ordering::Acquire) >= ticket.seq
 }
 
 #[cfg(test)]
@@ -3596,7 +3629,7 @@ pub(crate) fn set_press_admission_pause(tx: mpsc::Sender<()>, rx: mpsc::Receiver
 
 /// `begin_utterance` for a press registered via `register_press`.
 pub fn begin_utterance_for(
-    ticket: u64,
+    ticket: PressTicket,
     stt_param: crate::settings::SttSettings,
     keep_audio: bool,
     data_dir: &Path,
@@ -3642,7 +3675,7 @@ pub fn begin_utterance_for(
         active_inc();
         owner = admit_owner();
         generation = server_generation();
-        stop_epoch = STOP_EPOCH.load(Ordering::Acquire);
+        stop_epoch = ticket.stop_epoch;
     }
     CANCELLED.store(false, Ordering::Relaxed);
     let mut plans = match plans_for(&stt, data_dir) {
@@ -3694,7 +3727,7 @@ pub fn begin_utterance_for(
                 sherpa_backend,
                 &warm_net,
                 generation,
-                Some(owner),
+                Some((owner, stop_epoch)),
             ) {
                 eprintln!("[stt] warmup: {e}");
             }
@@ -3747,32 +3780,99 @@ pub fn begin_utterance_for(
     } else {
         None
     };
-    let result_rx = if plan.streaming() {
+    // Publish the capture BEFORE any stream setup (WS handshake, Whistle
+    // spawn): a release during a slow setup must still finalize the
+    // recording (one-shot + fallback chain), never discard it.
+    let stream_plan = plan.clone();
+    {
+        let mut live_guard = live().lock().unwrap_or_else(|p| p.into_inner());
+        if press_closed(ticket) {
+            // Released/cancelled while arming: never publish. Same
+            // teardown as cancel (spec aborts, warmup ownership revoked).
+            drop(live_guard);
+            eprintln!("[stt] press: released while arming; discarding capture");
+            stop.store(true, Ordering::Relaxed);
+            cancel.store(true, Ordering::Relaxed);
+            settled.store(true, Ordering::Relaxed);
+            if let Some(spec) = &spec {
+                spec.stop.store(true, Ordering::Relaxed);
+            }
+            audio::clear_recorder_if(&recorder);
+            revoke_owner(owner);
+            active_dec();
+            return;
+        }
+        *live_guard = Some(LiveUtterance {
+            stop_epoch,
+            owner,
+            recorder: recorder.clone(),
+            stop: stop.clone(),
+            cancel: cancel.clone(),
+            spec,
+            result_rx: None,
+            whistle_rx: None,
+            plan,
+            fallbacks,
+            started: Instant::now(),
+            data_dir: data_dir.clone(),
+            backend,
+            sherpa_backend,
+            vad_enabled: stt.vad_enabled,
+            vad_gate: stt.vad_threshold,
+            keep_audio,
+            spec_overlap: (stt.spec_overlap_secs.clamp(0.0, 5.0) * 16_000.0) as usize,
+            net: server_net(&stt),
+            settled: settled.clone(),
+            release_delay_ms,
+        });
+    }
+    // Attach a stream only while this press's capture is still the
+    // published one; otherwise the release already owns the recording
+    // and the stream is dropped unstarted.
+    let attach = |rx: mpsc::Receiver<Result<String, String>>,
+                  start: Box<dyn FnOnce() + Send>,
+                  whistle: bool|
+     -> bool {
+        let mut live_guard = live().lock().unwrap_or_else(|p| p.into_inner());
+        let Some(sess) = live_guard.as_mut().filter(|s| s.owner == owner) else {
+            return false;
+        };
+        if let Err(e) =
+            crate::runtime::submit(if whistle { "whistle-pump" } else { "stt-pump" }, start)
+        {
+            eprintln!("[stt] press: {e}");
+            return false;
+        }
+        if whistle {
+            sess.whistle_rx = Some(rx);
+        } else {
+            sess.result_rx = Some(rx);
+        }
+        true
+    };
+    if stream_plan.streaming() {
         let online_port = engine_port(&server_net(&stt), SHERPA_ONLINE_PORT);
-        let open = match &plan {
+        let open = match &stream_plan {
             Plan::SelfHostedWs { url } => OnlineSession::open_with_url(url, INFERENCE_TIMEOUT),
             _ => OnlineSession::open_owned(online_port, INFERENCE_TIMEOUT),
         };
-        match open.map(|mut session| {
-            session.preview = stt.live_preview;
-            session
-        }) {
-            Ok(session) => {
+        match open {
+            Ok(mut session) => {
+                session.preview = stt.live_preview;
                 let (tx, rx) = mpsc::channel();
                 let rec = recorder.clone();
                 let stop_pump = stop.clone();
                 let cancel_pump = cancel.clone();
                 let pump_settled = settled.clone();
-                if let Err(e) = crate::runtime::submit("stt-pump", move || {
-                    pump_online(session, rec, stop_pump, cancel_pump, pump_settled, tx);
-                }) {
-                    eprintln!("[stt] press: {e}");
-                    audio::set_recorder(None);
-                    revoke_owner(owner);
-                    active_dec();
-                    return;
+                if !attach(
+                    rx,
+                    Box::new(move || {
+                        pump_online(session, rec, stop_pump, cancel_pump, pump_settled, tx);
+                    }),
+                    false,
+                ) {
+                    eprintln!("[stt] press: released during stream setup; one-shot decode");
                 }
-                Some(rx)
             }
             Err(e) => {
                 // Server down at press: do NOT abort. Keep recording;
@@ -3780,33 +3880,32 @@ pub fn begin_utterance_for(
                 // the one-shot fallback transcribes. First cold
                 // press costs model-load latency, never the text.
                 eprintln!("[stt] press: online session failed, recording anyway: {e}");
-                None
             }
         }
-    } else {
-        None
-    };
+    }
     // Whistle live stream (FIFO + --audio-stream): decode overlaps the
     // hold; the pump below feeds source-rate PCM as tapped. Setup
     // failure falls back to single-file decode in the worker.
-    let whistle_rx = match &plan {
-        Plan::WhistleCli {
-            engine,
-            model,
-            lang,
-        } => {
-            let words = load_hint_words(&data_dir);
-            let kw = write_keywords_file(&words);
-            let kw_cleanup = kw.clone();
-            match WhistleStream::open(engine, model, kw.as_deref(), lang) {
-                Ok(stream) => {
-                    let (tx, rx) = mpsc::channel();
-                    let rec = recorder.clone();
-                    let stop_pump = stop.clone();
-                    let cancel_pump = cancel.clone();
-                    let preview = stt.live_preview;
-                    let whistle_settled = settled.clone();
-                    if let Err(e) = crate::runtime::submit("whistle-pump", move || {
+    if let Plan::WhistleCli {
+        engine,
+        model,
+        lang,
+    } = &stream_plan
+    {
+        let words = load_hint_words(&data_dir);
+        let kw = write_keywords_file(&words);
+        let kw_cleanup = kw.clone();
+        match WhistleStream::open(engine, model, kw.as_deref(), lang) {
+            Ok(stream) => {
+                let (tx, rx) = mpsc::channel();
+                let rec = recorder.clone();
+                let stop_pump = stop.clone();
+                let cancel_pump = cancel.clone();
+                let preview = stt.live_preview;
+                let whistle_settled = settled.clone();
+                if !attach(
+                    rx,
+                    Box::new(move || {
                         pump_whistle(
                             stream,
                             rec,
@@ -3819,62 +3918,21 @@ pub fn begin_utterance_for(
                         if let Some(kw) = kw_cleanup {
                             let _ = std::fs::remove_file(kw);
                         }
-                    }) {
-                        eprintln!("[stt] press: {e}");
-                    }
-                    Some(rx)
+                    }),
+                    true,
+                ) && let Some(kw) = kw
+                {
+                    let _ = std::fs::remove_file(kw);
                 }
-                Err(e) => {
-                    eprintln!("[stt] whistle stream unavailable ({e}); file fallback");
-                    if let Some(kw) = kw {
-                        let _ = std::fs::remove_file(kw);
-                    }
-                    None
+            }
+            Err(e) => {
+                eprintln!("[stt] whistle stream unavailable ({e}); file fallback");
+                if let Some(kw) = kw {
+                    let _ = std::fs::remove_file(kw);
                 }
             }
         }
-        _ => None,
-    };
-    let mut live_guard = live().lock().unwrap_or_else(|p| p.into_inner());
-    if press_closed(ticket) {
-        // Released/cancelled while arming: never publish. Same teardown
-        // as cancel (pumps abort, warmup ownership revoked).
-        drop(live_guard);
-        eprintln!("[stt] press: released while arming; discarding capture");
-        stop.store(true, Ordering::Relaxed);
-        cancel.store(true, Ordering::Relaxed);
-        settled.store(true, Ordering::Relaxed);
-        if let Some(spec) = &spec {
-            spec.stop.store(true, Ordering::Relaxed);
-        }
-        audio::clear_recorder_if(&recorder);
-        revoke_owner(owner);
-        active_dec();
-        return;
     }
-    *live_guard = Some(LiveUtterance {
-        stop_epoch,
-        owner,
-        recorder,
-        stop,
-        cancel,
-        spec,
-        result_rx,
-        whistle_rx,
-        plan,
-        fallbacks,
-        started: Instant::now(),
-        data_dir,
-        backend,
-        sherpa_backend,
-        vad_enabled: stt.vad_enabled,
-        vad_gate: stt.vad_threshold,
-        keep_audio,
-        spec_overlap: (stt.spec_overlap_secs.clamp(0.0, 5.0) * 16_000.0) as usize,
-        net: server_net(&stt),
-        settled: settled.clone(),
-        release_delay_ms,
-    });
 }
 
 /// Streaming pump body: realtime ~200 ms cadence while held, tail
@@ -4261,38 +4319,47 @@ fn finish_session(
         return Ok(None);
     }
     // Speculative path: the spec thread owns a resampled buffer and
-    // internal agreement; finalize only the unconfirmed tail.
+    // internal agreement; finalize only the unconfirmed tail. Any
+    // failure falls through to the full recording + fallback chain.
     if let Some(spec) = sess.spec {
         spec.stop.store(true, Ordering::Relaxed);
-        let (committed, committed_len, buf) = spec
-            .done_rx
-            .recv()
-            .map_err(|_| "spec thread died".to_string())?;
-        eprintln!(
-            "[stt] release: spec agreed on {} words, tail from {:.1}s",
-            committed.split_whitespace().count(),
-            committed_len as f64 / 16_000.0
-        );
-        let tail = crate::speculative::unconfirmed_window(&buf, committed_len, sess.spec_overlap);
-        if tail.len() < MIN_SAMPLES_16K / 2 {
-            // Nothing (much) left: committed text is the answer.
-            return Ok(empty_to_none(committed).map(|t| (t, secs, wav_of(&buf, sess.keep_audio))));
-        }
-        let t0 = Instant::now();
-        let tail_wav = wav_bytes_16k(&audio::f32_to_i16(&tail));
-        let prompt =
-            crate::textnorm::dictionary_prompt(words, crate::textnorm::WHISPER_PROMPT_CHARS);
-        let out = whisper_transcribe(&tail_wav, prompt, engine_port(&sess.net, WHISPER_PORT)).map(
-            |tail_text| {
-                let merged = crate::speculative::merge_tail(&committed, &tail_text);
+        match spec.done_rx.recv() {
+            Ok((committed, committed_len, buf)) => {
                 eprintln!(
-                    "[stt] release: tail decode took {:.1}s",
-                    t0.elapsed().as_secs_f64()
+                    "[stt] release: spec agreed on {} words, tail from {:.1}s",
+                    committed.split_whitespace().count(),
+                    committed_len as f64 / 16_000.0
                 );
-                empty_to_none(merged).map(|t| (t, secs, wav_of(&buf, sess.keep_audio)))
-            },
-        );
-        return out;
+                let tail =
+                    crate::speculative::unconfirmed_window(&buf, committed_len, sess.spec_overlap);
+                if tail.len() < MIN_SAMPLES_16K / 2 {
+                    // Nothing (much) left: committed text is the answer.
+                    return Ok(
+                        empty_to_none(committed).map(|t| (t, secs, wav_of(&buf, sess.keep_audio)))
+                    );
+                }
+                let t0 = Instant::now();
+                let tail_wav = wav_bytes_16k(&audio::f32_to_i16(&tail));
+                let prompt = crate::textnorm::dictionary_prompt(
+                    words,
+                    crate::textnorm::WHISPER_PROMPT_CHARS,
+                );
+                match whisper_transcribe(&tail_wav, prompt, engine_port(&sess.net, WHISPER_PORT)) {
+                    Ok(tail_text) => {
+                        let merged = crate::speculative::merge_tail(&committed, &tail_text);
+                        eprintln!(
+                            "[stt] release: tail decode took {:.1}s",
+                            t0.elapsed().as_secs_f64()
+                        );
+                        return Ok(
+                            empty_to_none(merged).map(|t| (t, secs, wav_of(&buf, sess.keep_audio)))
+                        );
+                    }
+                    Err(e) => eprintln!("[stt] spec tail failed ({e}); full recording"),
+                }
+            }
+            Err(_) => eprintln!("[stt] spec thread died; full recording"),
+        }
     }
     eprintln!("[stt] release: {} samples @ {} Hz", pcm.len(), rate);
     let mut f32s = Resampler::resample_all(rate, &pcm);
@@ -4459,7 +4526,7 @@ pub fn ensure_for_plan_at_gen(
     sherpa_backend: SherpaBackendSetting,
     net: &ServerNet,
     expected_gen: u64,
-    owner: Option<u64>,
+    owner: Option<(u64, u64)>,
 ) -> Result<(), String> {
     ensure_servers(
         plan,
@@ -4469,7 +4536,7 @@ pub fn ensure_for_plan_at_gen(
         net,
         Some(expected_gen),
         owner
-            .map(ActiveDefer::Owned)
+            .map(|(id, epoch)| ActiveDefer::Owned(id, epoch))
             .unwrap_or(ActiveDefer::IfAnyActive),
         // Warmups are covered by owner/generation checks; startup work
         // has no snapshot to attest. See `ensure_server`.
@@ -4663,7 +4730,22 @@ pub fn reconcile_servers(
         .and_then(|v| v.into_iter().next())
         .map(|(_, p)| p);
     let want_local = local_on && primary.as_ref().is_some_and(local_server);
-    if !want_local {
+    // Autostart for a local plan whose runtime pack is missing: nothing
+    // can start, but a stale server for older settings must still stop
+    // (same admission as leaving local). Retried until the pack exists.
+    let runtime_missing = want_local
+        && stt.auto_start_server
+        && primary.as_ref().is_some_and(|p| {
+            launch_key(
+                p,
+                data_dir,
+                stt.gpu_backend,
+                stt.sherpa_backend,
+                &server_net(stt),
+            )
+            .is_none()
+        });
+    if !want_local || runtime_missing {
         // Leaving local operation (or nothing resolvable): stop owned.
         // Atomic check+destroy under one admission holding: the
         // non-blocking lease is retained across the kill/clear (never
@@ -4737,6 +4819,10 @@ pub fn reconcile_servers(
             for name in ["whisper", "sherpa-offline", "sherpa-online"] {
                 pidfile_remove(data_dir, name);
             }
+        }
+        if runtime_missing {
+            // Not applied: no Stop suppression expires, the watcher retries.
+            return Err("local runtime not installed; stale server stopped".to_string());
         }
         if !fp.is_empty() && cur_fp == fp {
             *STOPPED_FP.lock().unwrap_or_else(|p| p.into_inner()) = String::new();
@@ -8242,7 +8328,7 @@ mod tests {
             "old-en".to_string(),
             port_q,
             gen_en,
-            ActiveDefer::Owned(owner_en),
+            ActiveDefer::Owned(owner_en, STOP_EPOCH.load(Ordering::Acquire)),
             entered_tx,
             proceed_rx,
             done_tx,
@@ -10972,6 +11058,50 @@ mod tests {
         wait_port_closed(port);
     }
 
+    /// Finding: press registered on GTK, Stop, then the pooled arm is
+    /// admitted: its warmup and release restarted Whisper mid-hold. The
+    /// epoch now comes from the ticket, not from admission.
+    #[test]
+    fn queued_press_admitted_after_stop_does_not_restart() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let writer = seed_whisper_tiny(root.path());
+        install_fake_whisper_http(root.path());
+        let port = free_port();
+        let mut settings = writer.load_settings();
+        settings.stt.server_port = port.to_string();
+        writer.save_settings(&settings).unwrap();
+        let ticket = register_press();
+        drop_servers(root.path());
+        begin_utterance_for(ticket, writer.load_settings().stt, false, root.path(), 0);
+        assert!(has_live());
+        // Room for the (refused) warmup to have launched and listened.
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!port_open(port), "warmup undid the Stop");
+        release_and_wait();
+        assert!(!port_open(port), "release undid the Stop");
+        assert!(!servers().lock().unwrap().contains_key("whisper"));
+        assert_eq!(active_count(), 0);
+        // A press registered after the Stop starts normally.
+        begin_utterance_for(
+            register_press(),
+            writer.load_settings().stt,
+            false,
+            root.path(),
+            0,
+        );
+        release_and_wait();
+        assert!(port_open(port), "post-Stop press could not start");
+        drop_servers(root.path());
+        wait_port_closed(port);
+    }
+
     #[test]
     fn restored_settings_reconcile_stray_press_server() {
         let _guard = serial();
@@ -11042,6 +11172,223 @@ mod tests {
         assert_eq!(servers().lock().unwrap()["whisper"].child.id(), pid_a);
         drop_servers(root.path());
         wait_gone(pid_a);
+    }
+
+    /// Finding: settings restored to a backend whose runtime pack is not
+    /// installed (CUDA) left CPU Whisper serving on the previous port.
+    #[test]
+    fn missing_runtime_stops_stale_server() {
+        let _guard = serial();
+        if !python_available() {
+            eprintln!("SKIP: python3 missing");
+            return;
+        }
+        let _ = crate::runtime::init();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let writer = seed_whisper_tiny(root.path());
+        install_fake_whisper_http(root.path());
+        let data_dir = root.path().to_path_buf();
+        let db_path = data_dir.join("state.db");
+        // CPU A, autostart, applied and running.
+        let (port_a, port_b) = (free_port(), free_port());
+        let mut settings = writer.load_settings();
+        settings.stt.auto_start_server = true;
+        settings.stt.gpu_backend = GpuBackendSetting::Cpu;
+        settings.stt.server_port = port_a.to_string();
+        writer.save_settings(&settings).unwrap();
+        let stt_a = writer.load_settings().stt;
+        ensure_for_plan(
+            &plan_for(&stt_a, &data_dir).unwrap(),
+            &data_dir,
+            stt_a.gpu_backend,
+            stt_a.sherpa_backend,
+            &server_net(&stt_a),
+        )
+        .unwrap();
+        assert!(port_open(port_a));
+        let pid_a = servers().lock().unwrap()["whisper"].child.id();
+        let mut last_primary = stt_primary_id(&stt_a, &data_dir);
+        let mut last_auto = true;
+        // Restore B: CUDA (pack absent) on another port.
+        settings.stt.gpu_backend = GpuBackendSetting::Cuda;
+        settings.stt.server_port = port_b.to_string();
+        writer.save_settings(&settings).unwrap();
+        let stt_b = writer.load_settings().stt;
+        assert!(launch_drift(&stt_b, &data_dir), "stale A not drift");
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        wait_gone(pid_a);
+        assert!(!port_open(port_a), "stale CPU whisper kept serving");
+        assert!(!port_open(port_b));
+        assert!(servers().lock().unwrap().is_empty());
+        // Nothing running: cold is not drift, later ticks are no-ops.
+        assert!(!launch_drift(&stt_b, &data_dir));
+        crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
+        assert!(servers().lock().unwrap().is_empty());
+        drop_servers(root.path());
+    }
+
+    /// Release side of `end_utterance` minus `deliver` (which writes to
+    /// the real data dir): take the published capture and finalize it.
+    fn take_and_finish() -> Option<Result<Option<FinishedTranscript>, String>> {
+        close_pending_presses();
+        let sess = live().lock().unwrap().take()?;
+        sess.stop.store(true, Ordering::Relaxed);
+        revoke_owner(sess.owner);
+        audio::clear_recorder_if(&sess.recorder);
+        sess.settled.store(true, Ordering::Relaxed);
+        let out = finish_session(sess, &[]);
+        active_dec();
+        Some(out)
+    }
+
+    fn openai_text_reply(text: &str) -> String {
+        let body = format!("{{\"text\":\"{text}\"}}");
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// Finding: a release during a slow streaming handshake discarded
+    /// the recorded speech and skipped the fallback chain.
+    #[test]
+    fn release_during_stream_handshake_keeps_recording() {
+        use crate::settings::{SttChainEntry, SttEntryKind};
+        let _guard = serial();
+        let _ = crate::runtime::init();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        // Streaming primary that stalls the first handshake until told,
+        // then refuses later (one-shot) connections outright.
+        let slow = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let slow_port = slow.local_addr().unwrap().port();
+        let (accepted_tx, accepted_rx) = mpsc::channel::<()>();
+        let (close_tx, close_rx) = mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let mut held = Some((accepted_tx, close_rx));
+            for conn in slow.incoming().flatten() {
+                if let Some((accepted_tx, close_rx)) = held.take() {
+                    std::thread::spawn(move || {
+                        let _ = accepted_tx.send(());
+                        let _ = close_rx.recv_timeout(Duration::from_secs(30));
+                        // Late but successful handshake, then hold
+                        // until the client drops the stream.
+                        if let Ok(mut ws) = tungstenite::accept(conn) {
+                            while ws.read().is_ok() {}
+                        }
+                    });
+                }
+            }
+        });
+        let fallback = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let fallback_port = fallback.local_addr().unwrap().port();
+        let fallback_hits = canned_http(fallback, openai_text_reply("fallback ok"));
+        let entry = |id: &str, url: String, streaming: bool| SttChainEntry {
+            id: id.into(),
+            name: id.into(),
+            kind: SttEntryKind::SelfHosted,
+            enabled: true,
+            provider: String::new(),
+            url,
+            model: String::new(),
+            api_key: String::new(),
+            streaming,
+        };
+        let writer = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let mut settings = writer.load_settings();
+        settings.stt.entries = vec![
+            entry("ws", format!("ws://127.0.0.1:{slow_port}"), true),
+            entry("http", format!("http://127.0.0.1:{fallback_port}"), false),
+        ];
+        settings.stt.vad_enabled = false;
+        settings.stt.spec_enabled = false;
+        writer.save_settings(&settings).unwrap();
+        let stt = writer.load_settings().stt;
+        let data = root.path().to_path_buf();
+        let ticket = register_press();
+        let press = std::thread::spawn(move || begin_utterance_for(ticket, stt, false, &data, 0));
+        accepted_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        // Handshake in flight: the capture is already published and armed.
+        assert!(has_live(), "capture unpublished during stream setup");
+        crate::audio::tap_samples(&vec![2000i16; 16_000], 16_000);
+        let out = take_and_finish().expect("release found no capture");
+        let (text, _, _) = out.unwrap().expect("no transcript");
+        assert_eq!(text, "fallback ok");
+        assert_eq!(fallback_hits.load(Ordering::SeqCst), 1);
+        // Handshake ends after release: the stream is dropped unattached.
+        close_tx.send(()).unwrap();
+        press.join().unwrap();
+        assert!(!has_live());
+        assert!(!crate::audio::recorder_armed());
+        assert_eq!(active_count(), 0);
+    }
+
+    /// Finding: a speculative tail decode failing (ownership error after
+    /// Stop) returned the error and never tried the HTTP fallback.
+    #[test]
+    fn spec_tail_failure_falls_back_to_full_chain() {
+        let _guard = serial();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let fallback = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let fallback_port = fallback.local_addr().unwrap().port();
+        let fallback_hits = canned_http(fallback, openai_text_reply("full chain"));
+        let recorder = Arc::new(Mutex::new(Recorder::default()));
+        {
+            let mut r = recorder.lock().unwrap();
+            r.start(16_000);
+            r.push(&vec![2000i16; 32_000]);
+        }
+        // Spec agreed on nothing: the whole buffer is an unconfirmed tail.
+        let (spec_tx, spec_rx) = mpsc::channel();
+        spec_tx
+            .send((String::new(), 0, vec![0.1f32; 32_000]))
+            .unwrap();
+        let sess = LiveUtterance {
+            // Stop since press: no whisper may start, so the tail fails.
+            stop_epoch: STOP_EPOCH.load(Ordering::Acquire).wrapping_sub(1),
+            owner: 0,
+            recorder,
+            stop: Arc::new(AtomicBool::new(true)),
+            cancel: Arc::new(AtomicBool::new(false)),
+            spec: Some(SpecHandle {
+                stop: Arc::new(AtomicBool::new(false)),
+                done_rx: spec_rx,
+            }),
+            result_rx: None,
+            whistle_rx: None,
+            plan: Plan::WhisperHttp {
+                model_bin: root.path().join("m.bin"),
+                lang: "en".into(),
+            },
+            fallbacks: vec![(
+                "http".into(),
+                Plan::CloudOpenAiCompat {
+                    base: format!("http://127.0.0.1:{fallback_port}"),
+                    key: String::new(),
+                    model: "default".into(),
+                    lang: "en".into(),
+                },
+            )],
+            started: Instant::now(),
+            data_dir: root.path().to_path_buf(),
+            backend: GpuBackendSetting::Cpu,
+            sherpa_backend: SherpaBackendSetting::Cpu,
+            vad_enabled: false,
+            vad_gate: 0.0,
+            keep_audio: false,
+            spec_overlap: 0,
+            settled: Arc::new(AtomicBool::new(true)),
+            release_delay_ms: 0,
+            net: ServerNet {
+                host: "127.0.0.1",
+                port_override: Some(free_port()),
+            },
+        };
+        let (text, _, _) = finish_session(sess, &[]).unwrap().expect("no transcript");
+        assert_eq!(text, "full chain");
+        assert_eq!(fallback_hits.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -11141,5 +11488,90 @@ mod tests {
         assert!(f.try_wait().unwrap().is_none(), "foreign was touched");
         let _ = f.kill();
         let _ = f.wait();
+    }
+
+    /// Accepts on `listener`, answers each conn with `reply`, counts conns.
+    fn canned_http(listener: std::net::TcpListener, reply: String) -> Arc<AtomicU64> {
+        use std::io::{Read, Write};
+        let hits = Arc::new(AtomicU64::new(0));
+        let seen = hits.clone();
+        std::thread::spawn(move || {
+            for mut conn in listener.incoming().flatten() {
+                seen.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = conn.read(&mut buf);
+                let _ = conn.write_all(reply.as_bytes());
+            }
+        });
+        hits
+    }
+
+    /// Finding: with HTTP_PROXY set, local Whisper audio went to the
+    /// proxy. Env is mutated only in a re-exec'd child running this test
+    /// alone, never in the parallel test process.
+    #[test]
+    fn local_engine_http_ignores_proxy_and_redirects() {
+        let ok = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok".to_string();
+        if let Ok(target) = std::env::var("MYWHISPER_PROXY_TEST_TARGET") {
+            let res = local_http_client()
+                .unwrap()
+                .post(format!("http://127.0.0.1:{target}/inference"))
+                .body("audio")
+                .send()
+                .unwrap();
+            assert_eq!(res.text().unwrap(), "ok");
+            return;
+        }
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_port = proxy.local_addr().unwrap().port();
+        let proxy_hits = canned_http(proxy, ok.clone());
+        let target = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let target_port = target.local_addr().unwrap().port();
+        let target_hits = canned_http(target, ok.clone());
+        let proxy_url = format!("http://127.0.0.1:{proxy_port}");
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "transcribe::tests::local_engine_http_ignores_proxy_and_redirects",
+                "--nocapture",
+            ])
+            .env("MYWHISPER_PROXY_TEST_TARGET", target_port.to_string())
+            .env("HTTP_PROXY", &proxy_url)
+            .env("http_proxy", &proxy_url)
+            .env("ALL_PROXY", &proxy_url)
+            .env("all_proxy", &proxy_url)
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "proxy child failed: {status}");
+        assert_eq!(proxy_hits.load(Ordering::SeqCst), 0, "audio reached proxy");
+        assert_eq!(target_hits.load(Ordering::SeqCst), 1);
+
+        // Redirects are not followed: a 3xx cannot bounce audio elsewhere.
+        let elsewhere = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let elsewhere_port = elsewhere.local_addr().unwrap().port();
+        let elsewhere_hits = canned_http(elsewhere, ok);
+        let redirect = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let redirect_port = redirect.local_addr().unwrap().port();
+        canned_http(
+            redirect,
+            format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nlocation: http://127.0.0.1:{elsewhere_port}/inference\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+            ),
+        );
+        let res = local_http_client()
+            .unwrap()
+            .post(format!("http://127.0.0.1:{redirect_port}/inference"))
+            .body("audio")
+            .send()
+            .unwrap();
+        assert_eq!(res.status().as_u16(), 307);
+        assert_eq!(
+            elsewhere_hits.load(Ordering::SeqCst),
+            0,
+            "redirect followed"
+        );
     }
 }
