@@ -271,7 +271,6 @@ fn blocker_text(blocker: crate::provider_test::Blocker) -> &'static str {
         Blocker::BadUrl => tr("provider_test.bad_url"),
         Blocker::NeedModel => tr("provider_test.need_model"),
         Blocker::NeedKey => tr("provider_test.need_key"),
-        Blocker::Insecure => tr("provider_test.insecure"),
         Blocker::NeedsStreaming => tr("provider_test.needs_streaming"),
         Blocker::Unsupported => tr("provider_test.unsupported"),
         Blocker::LocalUnavailable => tr("provider_test.local_na"),

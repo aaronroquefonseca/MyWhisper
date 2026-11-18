@@ -16,8 +16,8 @@
 //! - Deepgram: authenticated project list (model not checked).
 //! - Ollama: read-only `/api/tags`, exact model name. Never loads it.
 //!
-//! Credentials only travel over HTTPS, or plain HTTP to a loopback
-//! host; cross-origin redirects are never followed; transport errors
+//! Plain HTTP is allowed wherever dictation allows it (local and LAN
+//! servers); cross-origin redirects are never followed; transport errors
 //! are reported by class, never by text (it can carry URLs).
 
 use std::net::TcpStream;
@@ -43,8 +43,6 @@ pub enum Blocker {
     BadUrl,
     NeedModel,
     NeedKey,
-    /// An API key would travel over plain HTTP to a non-loopback host.
-    Insecure,
     /// A `ws(s)` server with Streaming off: dictation cannot use it.
     NeedsStreaming,
     /// Dictation rejects this provider.
@@ -119,27 +117,6 @@ pub fn valid_server_url(value: &str, websocket: bool) -> bool {
     })
 }
 
-fn is_loopback(url: &Url) -> bool {
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    // IPv6 literals come bracketed (`[::1]`).
-    let bare = host.trim_start_matches('[').trim_end_matches(']');
-    host.eq_ignore_ascii_case("localhost")
-        || bare
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback())
-}
-
-/// Whether a credential may be sent to `url`: TLS, or a loopback host.
-pub fn credential_transport_ok(url: &Url) -> bool {
-    matches!(url.scheme(), "https" | "wss") || is_loopback(url)
-}
-
-fn insecure_with_key(url: &str, key: &str) -> bool {
-    !key.trim().is_empty() && Url::parse(url.trim()).is_ok_and(|u| !credential_transport_ok(&u))
-}
-
 /// Credential binding: a saved key belongs to this destination. The
 /// edit forms drop the key when the destination changes.
 pub fn stt_destination(entry: &SttChainEntry) -> String {
@@ -178,8 +155,6 @@ pub fn stt_blocker(entry: &SttChainEntry) -> Option<Blocker> {
             } else if crate::transcribe::is_ws_url(url) {
                 // Streaming probes connect without the key.
                 (!entry.streaming).then_some(Blocker::NeedsStreaming)
-            } else if insecure_with_key(url, &entry.api_key) {
-                Some(Blocker::Insecure)
             } else {
                 None
             }
@@ -210,8 +185,6 @@ pub fn llm_blocker(entry: &LlmEntry) -> Option<Blocker> {
                 Some(Blocker::BadUrl)
             } else if entry.model.trim().is_empty() {
                 Some(Blocker::NeedModel)
-            } else if insecure_with_key(url, &entry.api_key) {
-                Some(Blocker::Insecure)
             } else {
                 None
             }
@@ -378,12 +351,6 @@ fn fetch(url: &str, auth: Auth) -> Result<(u16, String), Outcome> {
     let parsed = Url::parse(url).map_err(|_| Outcome::Blocked(Blocker::BadUrl))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(Outcome::Blocked(Blocker::BadUrl));
-    }
-    let has_key = match auth {
-        Auth::Bearer(k) | Auth::Header(_, k) | Auth::Anthropic(k) => !k.trim().is_empty(),
-    };
-    if has_key && !credential_transport_ok(&parsed) {
-        return Err(Outcome::Blocked(Blocker::Insecure));
     }
     let client = client().ok_or(Outcome::Network)?;
     let mut req = client.get(parsed).header("Accept", "application/json");
@@ -686,34 +653,6 @@ mod tests {
     }
 
     #[test]
-    fn keys_need_https_or_loopback() {
-        let ok = |u: &str| credential_transport_ok(&Url::parse(u).unwrap());
-        assert!(ok("https://api.example.com"));
-        assert!(ok("http://127.0.0.1:8000"));
-        assert!(ok("http://localhost:8000"));
-        assert!(ok("http://[::1]:8000"));
-        assert!(!ok("http://192.168.1.5:8000"));
-        assert!(!ok("http://example.com"));
-        let lan = stt(SttEntryKind::SelfHosted, "", "http://192.168.1.5:8000", "k");
-        assert_eq!(stt_blocker(&lan), Some(Blocker::Insecure));
-        // Defense in depth: the probe refuses before any network I/O.
-        assert_eq!(
-            fetch("http://192.168.1.5:9/v1/models", Auth::Bearer("k")).unwrap_err(),
-            Outcome::Blocked(Blocker::Insecure)
-        );
-        let keyless = stt(SttEntryKind::SelfHosted, "", "http://192.168.1.5:8000", "");
-        assert_eq!(stt_blocker(&keyless), None);
-        let ollama = llm(
-            LlmKind::Ollama,
-            CloudLlm::OpenAI,
-            "http://10.0.0.2:11434",
-            "m",
-            "t",
-        );
-        assert_eq!(llm_blocker(&ollama), Some(Blocker::Insecure));
-    }
-
-    #[test]
     fn cross_origin_redirect_is_not_followed() {
         let target = serve(1, |_| json("200 OK", r#"{"data":[]}"#));
         let location = format!("{}/v1/models", target.base);
@@ -897,12 +836,26 @@ mod tests {
     }
 
     #[test]
+    fn plain_http_with_key_is_testable_like_dictation() {
+        let lan = stt(SttEntryKind::SelfHosted, "", "http://192.168.1.5:8000", "k");
+        assert_eq!(stt_blocker(&lan), None);
+        let ollama = llm(
+            LlmKind::Ollama,
+            CloudLlm::OpenAI,
+            "http://10.0.0.2:11434",
+            "m",
+            "t",
+        );
+        assert_eq!(llm_blocker(&ollama), None);
+    }
+
+    #[test]
     fn status_mapping_never_passes_errors() {
         assert_eq!(status_outcome(200), Ok(()));
         assert_eq!(status_outcome(302), Err(Outcome::Redirected));
         assert_eq!(status_outcome(401), Err(Outcome::KeyRejected));
         assert_eq!(status_outcome(403), Err(Outcome::KeyRejected));
         assert_eq!(status_outcome(429), Err(Outcome::Http(429)));
-        assert!(!Outcome::Blocked(Blocker::Insecure).passed());
+        assert!(!Outcome::Blocked(Blocker::NeedKey).passed());
     }
 }

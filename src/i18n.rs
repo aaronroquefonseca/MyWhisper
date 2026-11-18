@@ -823,10 +823,6 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Enter an API key to test.",
             "Introduce una clave API para probar.",
         ),
-        "provider_test.insecure" => (
-            "Use https:// or a local address to test with an API key.",
-            "Usa https:// o una dirección local para probar con una clave API.",
-        ),
         "provider_test.needs_streaming" => (
             "Turn on Streaming to use a WebSocket server.",
             "Activa Streaming para usar un servidor WebSocket.",
