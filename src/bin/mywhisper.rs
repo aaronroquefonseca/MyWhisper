@@ -32,6 +32,18 @@ fn main() -> gtk4::glib::ExitCode {
     let _log_guard = mywhisper::paths::init_file_logging(&paths.state_dir);
     let store =
         std::rc::Rc::new(mywhisper::store::Store::open(&paths.db_file()).expect("open state.db"));
+    // One-time scrub of old tombstones; slow on big histories, so off
+    // the GTK thread (exports redact tombstones until it finishes).
+    {
+        let db = paths.db_file();
+        std::thread::spawn(move || {
+            match mywhisper::store::Store::open(&db).and_then(|s| s.redact_old_tombstones()) {
+                Ok(0) => {}
+                Ok(n) => eprintln!("[store] redacted {n} old tombstones"),
+                Err(e) => eprintln!("[store] tombstone redaction failed: {e}"),
+            }
+        });
+    }
     let identity = mywhisper::device::DeviceIdentity::load_or_create(&paths.device_key_file())
         .expect("node identity");
     tracing::info!(
