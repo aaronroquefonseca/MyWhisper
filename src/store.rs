@@ -12,9 +12,11 @@
 //! `(updated_at_ms, updated_by)`. Deletes are tombstones so they win
 //! over concurrent edits only when newer (same LWW rule).
 
-use rusqlite::Connection;
-use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::settings::{AppSettings, HistoryEntry, Snippet};
 
@@ -138,6 +140,19 @@ const TOMBSTONES_REDACTED: i64 = 3;
 
 pub struct Store {
     conn: Connection,
+}
+
+/// Databases with a background WAL truncate running, and whether a
+/// request arrived during the current attempt.
+static WAL_TRUNCATES: Mutex<BTreeMap<PathBuf, bool>> = Mutex::new(BTreeMap::new());
+
+/// Use a short busy timeout because TRUNCATE can hold the write lock
+/// while waiting for readers. Open only the existing encrypted DB.
+fn truncate_wal_briefly(path: &Path, key: &[u8; 32]) -> rusqlite::Result<bool> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    conn.busy_timeout(Duration::from_millis(50))?;
+    conn.execute_batch(&key_pragma(key))?;
+    Store { conn }.truncate_wal()
 }
 
 static HISTORY_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -426,27 +441,45 @@ impl Store {
     }
 
     /// Deleted text can linger in WAL frames: truncate the WAL on a
-    /// background thread, retrying while readers block it.
+    /// background thread, retrying while readers block it. One thread
+    /// per database; requests made while it runs make it go once more.
     fn truncate_wal_soon(&self) {
         let Some(path) = self
             .conn
             .path()
             .filter(|p| !p.is_empty())
-            .map(std::path::PathBuf::from)
+            .map(PathBuf::from)
         else {
             return;
         };
-        std::thread::spawn(move || {
-            for _ in 0..30 {
-                if !path.exists() {
-                    return;
-                }
-                if let Ok(true) = Store::open(&path).and_then(|s| s.truncate_wal()) {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_secs(2));
+        {
+            let mut pending = WAL_TRUNCATES.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(again) = pending.get_mut(&path) {
+                *again = true;
+                return;
             }
-            eprintln!("[store] WAL truncate kept failing; next checkpoint retries");
+            pending.insert(path.clone(), false);
+        }
+        std::thread::spawn(move || {
+            loop {
+                let done = (0..30).any(|attempt| {
+                    if attempt > 0 {
+                        std::thread::sleep(Duration::from_secs(2));
+                    }
+                    !path.exists()
+                        || db_key()
+                            .is_ok_and(|key| truncate_wal_briefly(&path, &key).unwrap_or(false))
+                });
+                if !done {
+                    eprintln!("[store] WAL truncate kept failing; next checkpoint retries");
+                }
+                let mut pending = WAL_TRUNCATES.lock().unwrap_or_else(|e| e.into_inner());
+                if pending.get_mut(&path).is_some_and(std::mem::take) {
+                    continue;
+                }
+                pending.remove(&path);
+                return;
+            }
         });
     }
 
@@ -454,26 +487,29 @@ impl Store {
     /// settings row that cannot be read or decoded means off. Only a
     /// fresh store with no settings yet gets the default.
     pub fn sync_enabled(&self) -> bool {
-        let json: String =
-            match self
-                .conn
-                .query_row("SELECT value FROM kv WHERE key = 'settings'", [], |r| {
-                    r.get(0)
-                }) {
-                Ok(json) => json,
-                Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    return crate::settings::SyncSettings::default().enabled;
-                }
-                Err(_) => return false,
-            };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) else {
-            return false;
-        };
-        match value.get("sync").map(|sync| sync.get("enabled")) {
-            // `enabled` predates nothing: serde defaults it to on.
-            Some(None) => true,
-            Some(Some(serde_json::Value::Bool(on))) => *on,
-            _ => false,
+        Self::saved_sync_enabled(&self.settings_json())
+    }
+
+    fn settings_json(&self) -> rusqlite::Result<Option<serde_json::Value>> {
+        self.conn
+            .query_row("SELECT value FROM kv WHERE key = 'settings'", [], |row| {
+                let json: String = row.get(0)?;
+                // Invalid JSON is a saved null value for the permission check.
+                Ok(serde_json::from_str(&json).unwrap_or(serde_json::Value::Null))
+            })
+            .optional()
+    }
+
+    fn saved_sync_enabled(json: &rusqlite::Result<Option<serde_json::Value>>) -> bool {
+        match json {
+            Ok(None) => crate::settings::SyncSettings::default().enabled,
+            Ok(Some(value)) => {
+                value
+                    .pointer("/sync/enabled")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+            }
+            Err(_) => false,
         }
     }
 
@@ -491,9 +527,7 @@ impl Store {
         Ok(value.and_then(|v| v.parse().ok()).unwrap_or(0))
     }
 
-    /// Write transaction for one sync merge: the permission check and
-    /// every merged row commit together, and the write lock taken up
-    /// front makes a concurrent switch-off wait or be seen.
+    /// Take the write lock before checking permission for a merge batch.
     pub fn begin_merge(&self) -> rusqlite::Result<rusqlite::Transaction<'_>> {
         rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)
     }
@@ -501,14 +535,11 @@ impl Store {
     // -- settings (JSON blob under kv['settings']) -------------------------
 
     pub fn load_settings(&self) -> AppSettings {
-        let json: Option<String> = self
-            .conn
-            .query_row("SELECT value FROM kv WHERE key = 'settings'", [], |row| {
-                row.get(0)
-            })
-            .ok();
+        let json = self.settings_json();
+        let sync_enabled = Self::saved_sync_enabled(&json);
         let mut settings: AppSettings = json
-            .and_then(|j| serde_json::from_str(&j).ok())
+            .ok()
+            .flatten()
             .and_then(|mut v| {
                 restore_local_vendor(&mut v);
                 serde_json::from_value(v).ok()
@@ -524,6 +555,7 @@ impl Store {
                 e.thinking = Some(false);
             }
         }
+        settings.sync.enabled = sync_enabled;
         // Typed tables are authoritative for dictionary content.
         settings.dictionary.words = self.load_words().unwrap_or_default();
         settings.dictionary.snippets = self.load_snippets().unwrap_or_default();
@@ -550,8 +582,14 @@ impl Store {
         })?;
         stash_local_vendor(&mut value);
         let json = value.to_string();
-        // Epoch first: a failed write after it only aborts rounds.
-        // (No transaction here: `reset_all_data` calls this inside its own.)
+        // Switch-off and its epoch bump commit together, so no round
+        // sees one without the other. `reset_all_data` already holds a
+        // transaction; SQLite cannot nest them.
+        let tx = if !settings.sync.enabled && self.conn.is_autocommit() {
+            Some(self.conn.unchecked_transaction()?)
+        } else {
+            None
+        };
         if !settings.sync.enabled {
             bump_epoch(&self.conn)?;
         }
@@ -560,7 +598,10 @@ impl Store {
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             [&json],
         )?;
-        Ok(())
+        match tx {
+            Some(tx) => tx.commit(),
+            None => Ok(()),
+        }
     }
 
     // -- dictionary ----------------------------------------------------------
@@ -1122,6 +1163,12 @@ fn merge_addresses(current: &[String], seen: &[String]) -> Vec<String> {
     out
 }
 
+/// A revocation outranks the `trusted` flag: builds without the
+/// `revoked` table can re-add a removed peer as trusted from gossip.
+const PEER_COLUMNS: &str = "node_id, name, address, addresses,
+    (trusted != 0 AND NOT EXISTS (SELECT 1 FROM revoked WHERE revoked.node_id = devices.node_id)),
+    pending, introducer, last_seen, last_sync";
+
 impl Store {
     fn peer_from_row(row: &rusqlite::Row) -> rusqlite::Result<Peer> {
         let address: String = row.get(2)?;
@@ -1140,26 +1187,20 @@ impl Store {
     }
 
     pub fn list_peers(&self) -> rusqlite::Result<Vec<Peer>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT node_id, name, address, addresses, trusted, pending,
-                    introducer, last_seen, last_sync
-             FROM devices ORDER BY name",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {PEER_COLUMNS} FROM devices ORDER BY name"))?;
         stmt.query_map([], Self::peer_from_row)?.collect()
     }
 
     pub fn get_peer(&self, node_id: &str) -> rusqlite::Result<Option<Peer>> {
-        let peer = self
-            .conn
+        self.conn
             .query_row(
-                "SELECT node_id, name, address, addresses, trusted, pending,
-                        introducer, last_seen, last_sync
-                 FROM devices WHERE node_id = ?1",
+                &format!("SELECT {PEER_COLUMNS} FROM devices WHERE node_id = ?1"),
                 [node_id],
                 Self::peer_from_row,
             )
-            .ok();
-        Ok(peer)
+            .optional()
     }
 
     /// Insert or update a peer row (manual add / edits).
@@ -1175,7 +1216,9 @@ impl Store {
         } else {
             dump_addresses(&[address.to_string()])
         };
-        self.conn.execute(
+        // Distrust and its epoch bump commit together.
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "INSERT INTO devices
                (node_id, name, address, addresses, trusted, pending, introducer,
                 last_seen, last_sync)
@@ -1190,12 +1233,11 @@ impl Store {
             (node_id, name, address, addresses, trusted as i64),
         )?;
         if trusted {
-            self.conn
-                .execute("DELETE FROM revoked WHERE node_id = ?1", [node_id])?;
+            tx.execute("DELETE FROM revoked WHERE node_id = ?1", [node_id])?;
         } else {
-            bump_epoch(&self.conn)?;
+            bump_epoch(&tx)?;
         }
-        Ok(())
+        tx.commit()
     }
 
     /// Forget a peer and remember the revocation, so an introducer's
@@ -1286,14 +1328,16 @@ impl Store {
     /// clears the pending flag.
     pub fn decide_request(&self, node_id: &str, accept: bool) -> rusqlite::Result<()> {
         if accept {
-            self.conn.execute(
+            let tx = self.conn.unchecked_transaction()?;
+            let updated = tx.execute(
                 "UPDATE devices SET trusted = 1, pending = 0, introducer = 1
                  WHERE node_id = ?1",
                 [node_id],
             )?;
-            self.conn
-                .execute("DELETE FROM revoked WHERE node_id = ?1", [node_id])?;
-            Ok(())
+            if updated != 0 {
+                tx.execute("DELETE FROM revoked WHERE node_id = ?1", [node_id])?;
+            }
+            tx.commit()
         } else {
             self.remove_peer(node_id)
         }
@@ -1566,15 +1610,30 @@ mod tests {
         settings.sync.enabled = false;
         store.save_settings(&settings).unwrap();
         assert!(!store.sync_enabled());
-        for blob in ["not json", "{}", r#"{"sync":{"enabled":"yes"}}"#] {
+        for blob in [
+            "not json",
+            "{}",
+            r#"{"sync":{"enabled":"yes"}}"#,
+            r#"{"sync":null}"#,
+            r#"{"sync":[]}"#,
+            r#"{"sync":{}}"#,
+        ] {
             store
                 .conn
                 .execute("UPDATE kv SET value = ?1 WHERE key = 'settings'", [blob])
                 .unwrap();
-            // `load_settings` falls back to defaults (sync on) here.
-            assert!(store.load_settings().sync.enabled);
             assert!(!store.sync_enabled(), "{blob}");
+            // The UI switch shows what the engine obeys.
+            assert!(!store.load_settings().sync.enabled, "{blob}");
         }
+        store
+            .conn
+            .execute(
+                "UPDATE kv SET value = ?1 WHERE key = 'settings'",
+                [r#"{"sync":{"enabled":true}}"#],
+            )
+            .unwrap();
+        assert!(store.sync_enabled());
         store.conn.execute_batch("DROP TABLE kv").unwrap();
         assert!(!store.sync_enabled());
     }
@@ -1607,13 +1666,78 @@ mod tests {
         let store = Store::open(&path).unwrap();
         assert_eq!(store.apply_gossip(&gossip, true, "self").unwrap(), 0);
         assert!(store.list_peers().unwrap().is_empty());
-        // Adding it again by hand lifts the revocation.
+        // Simulate an older build restoring a removed peer via gossip.
+        store
+            .conn
+            .execute(
+                "INSERT INTO devices (node_id, trusted) VALUES (?1, 1)",
+                [&removed],
+            )
+            .unwrap();
+        assert!(!store.get_peer(&removed).unwrap().unwrap().trusted);
+        assert!(store.list_peers().unwrap().iter().all(|p| !p.trusted));
+        assert!(store.export_gossip().unwrap().is_empty());
+
+        // Adding or accepting by hand lifts the revocation.
         store.upsert_peer(&removed, "x", "", true).unwrap();
-        store.remove_peer(&removed).unwrap();
-        store.upsert_peer(&removed, "x", "", true).unwrap();
-        store.decide_request(&removed, true).unwrap();
-        store.conn.execute("DELETE FROM devices", []).unwrap();
-        assert_eq!(store.apply_gossip(&gossip[..1], true, "self").unwrap(), 1);
+        store.record_seen(&rejected, "x", &[]).unwrap();
+        store.decide_request(&rejected, true).unwrap();
+        assert_eq!(store.export_gossip().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_withdrawal_and_its_epoch_bump_commit_together() {
+        let store = Store::open_memory().unwrap();
+        store.save_settings(&AppSettings::default()).unwrap();
+        store.upsert_peer("p", "p", "", true).unwrap();
+        let epoch = store.sync_epoch().unwrap();
+        // The setting write fails after the epoch bump: neither lands.
+        store
+            .conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_settings BEFORE UPDATE ON kv
+                 BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+            )
+            .unwrap();
+        let mut off = AppSettings::default();
+        off.sync.enabled = false;
+        assert!(store.save_settings(&off).is_err());
+        assert!(store.sync_enabled());
+        assert_eq!(store.sync_epoch().unwrap(), epoch);
+        // The epoch bump fails after the distrust: neither lands.
+        store
+            .conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_epoch BEFORE INSERT ON sync_meta
+                 WHEN NEW.key = 'epoch'
+                 BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+            )
+            .unwrap();
+        assert!(store.upsert_peer("p", "p", "", false).is_err());
+        assert!(store.get_peer("p").unwrap().unwrap().trusted);
+        assert_eq!(store.sync_epoch().unwrap(), epoch);
+    }
+
+    #[test]
+    fn wal_truncate_gives_up_fast_behind_a_pinned_reader() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let store = Store::open(&path).unwrap();
+        store.add_history("a", "a", 1, 1, "node").unwrap();
+        // A reader holding an old snapshot blocks TRUNCATE.
+        let reader = Store::open(&path).unwrap();
+        reader.conn.execute_batch("BEGIN").unwrap();
+        reader
+            .conn
+            .query_row("SELECT count(*) FROM history", [], |r| r.get::<_, i64>(0))
+            .unwrap();
+        store.add_history("b", "b", 1, 1, "node").unwrap();
+        let key = db_key().unwrap();
+        let started = std::time::Instant::now();
+        assert!(!truncate_wal_briefly(&path, &key).unwrap());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        reader.conn.execute_batch("COMMIT").unwrap();
+        assert!(truncate_wal_briefly(&path, &key).unwrap());
     }
 
     #[test]

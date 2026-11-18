@@ -293,12 +293,24 @@ impl NoiseStream {
 
     /// Send one logical message (chunked at 60 KiB plaintext).
     pub fn send_msg(&mut self, data: &[u8]) -> Result<(), String> {
+        self.send_msg_checked(data, || Ok(()))
+    }
+
+    /// `send_msg` that runs `check` before every frame and stops at its
+    /// first error, leaving the peer a truncated message it rejects.
+    fn send_msg_checked(
+        &mut self,
+        data: &[u8],
+        mut check: impl FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
         if self.authed {
             self.deadline = message_deadline(data.len());
         }
         let total = data.len() as u64;
+        check()?;
         self.write_chunk(&total.to_be_bytes())?;
         for chunk in data.chunks(CHUNK) {
+            check()?;
             self.write_chunk(chunk)?;
         }
         Ok(())
@@ -360,6 +372,33 @@ impl NoiseStream {
 }
 
 // -- exchange ---------------------------------------------------------------
+
+/// Bounds of one merge transaction (rows, then text bytes): it holds
+/// the write lock, which local dictation writes wait on.
+const MERGE_BATCH_ROWS: usize = 200;
+const MERGE_BATCH_BYTES: usize = 256 * 1024;
+/// Pause between merge transactions so waiting writers get the lock.
+const MERGE_YIELD: Duration = Duration::from_millis(5);
+
+/// Split `rows` into consecutive merge batches within both bounds
+/// (`size` is a row's text bytes; a single oversized row still gets a
+/// batch of its own).
+fn merge_batches<T>(rows: &[T], size: impl Fn(&T) -> usize) -> Vec<&[T]> {
+    let mut out = Vec::new();
+    let (mut start, mut bytes) = (0, 0);
+    for (i, row) in rows.iter().enumerate() {
+        let row_bytes = size(row) + 64;
+        if i > start && (i - start == MERGE_BATCH_ROWS || bytes + row_bytes > MERGE_BATCH_BYTES) {
+            out.push(&rows[start..i]);
+            (start, bytes) = (i, 0);
+        }
+        bytes += row_bytes;
+    }
+    if start < rows.len() {
+        out.push(&rows[start..]);
+    }
+    out
+}
 
 fn gossip_out(store: &Store, self_id: &str) -> Vec<PeerGossip> {
     store
@@ -543,11 +582,13 @@ pub fn exchange(
         peers: gossip_out(&store, &creds.node_id),
     })
     .map_err(|e| format!("encode: {e}"))?;
+    // Re-checked before every frame: a withdrawal mid-send stops it.
     let send_ours = |session: &mut NoiseStream| {
-        #[cfg(test)]
-        tests::before_send();
-        may_sync(&store, &peer.node_id, epoch)?;
-        session.send_msg(&ours)
+        session.send_msg_checked(&ours, || {
+            #[cfg(test)]
+            tests::before_send();
+            may_sync(&store, &peer.node_id, epoch)
+        })
     };
     let theirs: Payload = if initiator {
         send_ours(session)?;
@@ -558,35 +599,48 @@ pub fn exchange(
         theirs
     };
 
-    // Merge in one write transaction that re-checks permission first,
-    // so a concurrent switch-off/revocation/reset either lands before
-    // the check (and aborts) or waits until the merge is committed.
-    let tx = store.begin_merge().map_err(|e| format!("merge: {e}"))?;
-    may_sync(&store, &peer.node_id, epoch)?;
-    store
-        .apply_words(&theirs.words)
-        .map_err(|e| format!("merge words: {e}"))?;
-    store
-        .apply_snippets(&theirs.snippets)
-        .map_err(|e| format!("merge snippets: {e}"))?;
-    store
-        .apply_history(&theirs.history)
-        .map_err(|e| format!("merge history: {e}"))?;
+    // Recheck permission under the write lock for every batch. Already
+    // committed records converge on retry via the existing merge rules.
+    let mut merged_batch = false;
+    let mut in_batch = |apply: &mut dyn FnMut() -> rusqlite::Result<()>| -> Result<(), String> {
+        if merged_batch {
+            std::thread::sleep(MERGE_YIELD);
+            #[cfg(test)]
+            tests::between_merge_batches();
+        }
+        let tx = store.begin_merge().map_err(|e| format!("merge: {e}"))?;
+        may_sync(&store, &peer.node_id, epoch)?;
+        apply().map_err(|e| format!("merge: {e}"))?;
+        tx.commit().map_err(|e| format!("merge commit: {e}"))?;
+        merged_batch = true;
+        Ok(())
+    };
+    for batch in merge_batches(&theirs.words, |w| w.word.len() + w.updated_by.len()) {
+        in_batch(&mut || store.apply_words(batch))?;
+    }
+    for batch in merge_batches(&theirs.snippets, |s| {
+        s.trigger.len() + s.replacement.len() + s.updated_by.len()
+    }) {
+        in_batch(&mut || store.apply_snippets(batch))?;
+    }
+    for batch in merge_batches(&theirs.history, |h| {
+        h.uuid.len() + h.text.len() + h.raw_text.len()
+    }) {
+        in_batch(&mut || store.apply_history(batch))?;
+    }
     // Merge introductions: strangers they vouch for join only when we
     // marked the sender an introducer.
-    let sender_introducer = store
-        .get_peer(&peer.node_id)
-        .map_err(|e| format!("peer lookup: {e}"))?
-        .map(|p| p.introducer)
-        .unwrap_or(false);
-    let introduced = store
-        .apply_gossip(&theirs.peers, sender_introducer, &creds.node_id)
-        .map_err(|e| format!("merge peers: {e}"))?;
-
-    store
-        .touch_peer_synced(&peer.node_id, &peer.name)
-        .map_err(|e| format!("record sync: {e}"))?;
-    tx.commit().map_err(|e| format!("merge commit: {e}"))?;
+    let mut introduced = 0;
+    for batch in merge_batches(&theirs.peers, |p| {
+        p.node_id.len() + p.name.len() + p.addresses.iter().map(|a| a.len() + 3).sum::<usize>()
+    }) {
+        in_batch(&mut || {
+            let sender_introducer = store.get_peer(&peer.node_id)?.is_some_and(|p| p.introducer);
+            introduced += store.apply_gossip(batch, sender_introducer, &creds.node_id)?;
+            Ok(())
+        })?;
+    }
+    in_batch(&mut || store.touch_peer_synced(&peer.node_id, &peer.name))?;
     Ok(SyncReport {
         peer_node: peer.node_id,
         peer_name: peer.name,
@@ -1017,8 +1071,10 @@ mod tests {
     static TEST_SEQ: AtomicU64 = AtomicU64::new(0);
 
     thread_local! {
-        /// Runs in `exchange` after export, right before our payload is sent.
+        /// Runs in `exchange` after export, before each frame of our payload.
         static BEFORE_SEND: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+            const { std::cell::RefCell::new(None) };
+        static BETWEEN_MERGE_BATCHES: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
             const { std::cell::RefCell::new(None) };
     }
 
@@ -1032,6 +1088,12 @@ mod tests {
 
     fn set_before_send(hook: Option<Box<dyn Fn()>>) {
         BEFORE_SEND.with(|slot| *slot.borrow_mut() = hook);
+    }
+
+    pub(super) fn between_merge_batches() {
+        if let Some(hook) = BETWEEN_MERGE_BATCHES.with(|slot| slot.take()) {
+            hook();
+        }
     }
 
     fn temp_db(tag: &str) -> PathBuf {
@@ -1348,6 +1410,93 @@ mod tests {
         );
         assert!(history_texts(&Store::open(&db_a).unwrap()).is_empty());
         assert_eq!(history_texts(&Store::open(&db_b).unwrap()), vec!["from-b"]);
+    }
+
+    fn add_bulk_history(db: &Path, count: usize, bytes: usize) {
+        let store = Store::open(db).unwrap();
+        let rows: Vec<HistoryRecord> = (0..count)
+            .map(|i| HistoryRecord {
+                uuid: format!("bulk-{i}"),
+                text: "x".repeat(bytes),
+                raw_text: String::new(),
+                words: 1,
+                duration_secs: 1,
+                deleted: false,
+                discarded: false,
+                recorded_at: 0,
+            })
+            .collect();
+        let tx = store.begin_merge().unwrap();
+        store.apply_history(&rows).unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn permission_withdrawn_mid_payload_stops_the_send() {
+        // A's payload spans many frames; A turns sync off after two.
+        let (id_a, id_b, db_a, db_b) = paired();
+        add_bulk_history(&db_a, 1, CHUNK * 3);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let (hook_db, frames) = (db_a.clone(), Arc::new(AtomicUsize::new(0)));
+        let server = serve_one_hooked(listener, db_a.clone(), id_a.creds(), move || {
+            if frames.fetch_add(1, Ordering::SeqCst) == 2 {
+                disable_sync(&Store::open(&hook_db).unwrap())
+            }
+        });
+        assert!(sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id).is_err());
+        let err = server.join().unwrap().unwrap_err();
+        assert!(err.contains("sync is off"), "server err: {err}");
+        assert_eq!(history_texts(&Store::open(&db_b).unwrap()), vec!["from-b"]);
+        let a = Store::open(&db_a).unwrap().load_history(100, true).unwrap();
+        assert!(a.iter().all(|h| h.text != "from-b"));
+        std::fs::remove_file(&db_a).ok();
+        std::fs::remove_file(&db_b).ok();
+    }
+
+    #[test]
+    fn merge_rechecks_permission_after_releasing_the_write_lock() {
+        let (id_a, id_b, db_a, db_b) = paired();
+        add_bulk_history(&db_a, MERGE_BATCH_ROWS + 1, 1);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let server = serve_one(listener, db_a.clone(), id_a.creds());
+        let (local_db, local_id) = (db_b.clone(), id_b.node_id.clone());
+        BETWEEN_MERGE_BATCHES.with(|slot| {
+            slot.replace(Some(Box::new(move || {
+                let writer = Store::open(&local_db).unwrap();
+                writer
+                    .add_history("local", "local", 1, 1, &local_id)
+                    .unwrap();
+                disable_sync(&writer);
+                writer
+                    .save_settings(&crate::settings::AppSettings::default())
+                    .unwrap();
+            })));
+        });
+        let err = sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id).unwrap_err();
+        assert!(err.contains("changed during the round"), "{err}");
+        server.join().unwrap().unwrap();
+        let store = Store::open(&db_b).unwrap();
+        let history = store.load_history(MERGE_BATCH_ROWS + 4, true).unwrap();
+        assert_eq!(history.len(), MERGE_BATCH_ROWS + 2);
+        assert!(history.iter().any(|h| h.text == "local"));
+        assert_eq!(store.get_peer(&id_a.node_id).unwrap().unwrap().last_sync, 0);
+        std::fs::remove_file(&db_a).ok();
+        std::fs::remove_file(&db_b).ok();
+    }
+
+    #[test]
+    fn merge_batches_respect_row_and_byte_bounds() {
+        let sizes = |rows: &[usize]| {
+            merge_batches(rows, |r| *r)
+                .into_iter()
+                .map(<[_]>::len)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sizes(&[10; 450]), [200, 200, 50]);
+        assert_eq!(sizes(&[200 * 1024, 200 * 1024, 1024 * 1024, 1]), [1; 4]);
+        assert!(sizes(&[]).is_empty());
     }
 
     /// Dial `listener`'s server as an unknown node and finish the Noise
