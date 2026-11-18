@@ -345,7 +345,8 @@ pub enum SherpaBackendSetting {
 
 /// Local vendor tabs, mirroring OpenWhispr: Oruk and Cohere ship
 /// exactly one model each; OpenAI is the whisper.cpp family, NVIDIA
-/// the sherpa parakeet/nemotron family.
+/// the sherpa parakeet/nemotron family, Bark the English Bark 3.0
+/// family (sherpa offline, same servers as NVIDIA).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalSttProvider {
     #[serde(alias = "Whisper")]
@@ -355,6 +356,7 @@ pub enum LocalSttProvider {
     Oruk,
     Cohere,
     Whistle,
+    Bark,
 }
 
 /// Pre-chain engine selector. Deprecated: the chain supersedes it,
@@ -395,6 +397,17 @@ pub struct SttChainEntry {
     pub streaming: bool,
 }
 
+fn lenient_local_provider<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<LocalSttProvider, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).unwrap_or(LocalSttProvider::OpenAi))
+}
+
+fn default_bark_model() -> String {
+    "bark-3.0-clean".to_string()
+}
+
 impl SttChainEntry {
     pub fn summary(&self) -> String {
         match self.kind {
@@ -412,9 +425,17 @@ pub struct SttSettings {
     /// Deprecated migration source (see SttMode).
     #[serde(default)]
     pub mode: SttMode,
+    /// Unknown names (a newer build's provider) load as the default
+    /// instead of failing the whole settings blob. See
+    /// `store::LEGACY_LOCAL_PROVIDERS` for the old-build direction.
+    #[serde(deserialize_with = "lenient_local_provider")]
     pub local_provider: LocalSttProvider,
     pub whisper_model: String,
     pub parakeet_model: String,
+    /// Bark 3.0 model id (registry id, e.g. "bark-3.0-clean").
+    /// serde-defaulted so pre-Bark databases keep loading.
+    #[serde(default = "default_bark_model")]
+    pub bark_model: String,
     pub cloud_provider: String,
     pub cloud_model: String,
     pub cloud_api_key: String,
@@ -484,6 +505,7 @@ impl Default for SttSettings {
             local_provider: LocalSttProvider::OpenAi,
             whisper_model: "base".to_string(),
             parakeet_model: "parakeet-tdt-0.6b-v3".to_string(),
+            bark_model: default_bark_model(),
             cloud_provider: "OpenAI".to_string(),
             cloud_model: "whisper-1".to_string(),
             cloud_api_key: String::new(),

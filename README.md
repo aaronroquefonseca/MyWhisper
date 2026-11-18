@@ -18,10 +18,10 @@ Release notes use dated, release-linked headings and the categories in [the rele
   history), Activity (stats + heatmap), Dictionary (words + spoken
   snippets), Devices, and Settings (including transcription and text cleanup).
 - **Speech to Text**: chained options, top-down fallback. Local
-  whisper (HTTP :8080), sherpa online/offline (websocket :6006/:6007),
-  Whistle CLI, self-hosted (OpenAI-compat http or sherpa-protocol
-  ws/wss, optional bearer token), cloud (OpenAI/Groq/Mistral/Gemini/
-  Deepgram). One local server at a time; lazy start with catch-up.
+  whisper (HTTP :8080), sherpa online/offline (websocket :6006/:6007,
+  incl. the English Bark 3.0 family), Whistle CLI, self-hosted
+  (OpenAI-compat http or sherpa-protocol ws/wss, optional bearer
+  token), cloud (OpenAI/Groq/Mistral/Gemini/Deepgram). One local server at a time; lazy start with catch-up.
   Dictionary words accompany HTTP transcription requests as provider-specific
   spelling hints (subject to provider budgets; Mistral/Deepgram: up to 100
   terms, with an additional conservative byte budget for Deepgram Nova-3).
@@ -143,3 +143,20 @@ Portions adapted from OpenWhispr retain its MIT copyright and license notice in
 [packaging/notices/OpenWhispr.txt](packaging/notices/OpenWhispr.txt).
 Third-party components retain their own licenses. Release archives and installed
 packages include the project license, third-party notices, and their inventory.
+
+Speech models are not bundled: they download on demand under their own
+licenses. The Bark 3.0 packs are Conway Research's
+[Underdog Bark 3.0](https://huggingface.co/ConwayResearch/Underdog-Bark-3.0/tree/85db2ad18ab41e534a222ee253c29191d77ed919),
+[Plus](https://huggingface.co/ConwayResearch/Underdog-Bark-3.0-Plus/tree/d4fab2f8b95681e5ad3cfb4e8c5f4e0c009b3deb)
+and [Clean](https://huggingface.co/ConwayResearch/Underdog-Bark-3.0-Clean/tree/6d34ed8639b2b9a33e764acf06748519bbb950cf)
+under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) at those
+revisions (later revisions are CC BY-NC 4.0 and are not used), in unofficial
+ONNX int8 conversions by `velddev` pinned to exact commits. Each pack installs
+with its NOTICE, LICENSE and conversion README, and Settings shows the source,
+license, modification note and warranty disclaimer. The models are provided
+as-is, without warranties.
+
+Downgrading below the first Bark release: older builds read a Bark selection
+as NVIDIA. Saving any setting there drops the Bark choice, so after upgrading
+again NVIDIA stays selected; installed Bark packs remain on disk and can be
+chosen again from the Bark tab.
