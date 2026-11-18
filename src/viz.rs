@@ -412,10 +412,16 @@ impl Visualizer {
         }
     }
 
-    /// Dictation gate: open capture while the pill is visible, drop
-    /// it the moment it hides.
+    /// Dictation gate: open capture while listening, drop it on
+    /// release (the mic's settle grace lands the tail; Processing
+    /// never holds the device).
     pub fn set_mic_active(&self, active: bool) {
         self.state.borrow_mut().mic.set_active(active);
+    }
+
+    /// Immediate close for cancel: no tail to land, so skip the hold.
+    pub fn close_mic_now(&self) {
+        self.state.borrow_mut().mic.close_now();
     }
 }
 
