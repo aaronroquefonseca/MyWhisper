@@ -1918,7 +1918,9 @@ fn sherpa_offline_transcribe_inner(
 
 fn whisper_json_text(v: &serde_json::Value) -> String {
     if let Some(t) = v.get("text").and_then(|t| t.as_str()) {
-        return t.trim().to_string();
+        // whisper.cpp's server joins segments with "\n" at timing cuts, not
+        // speaker intent; fold them back into one line.
+        return t.split_whitespace().collect::<Vec<_>>().join(" ");
     }
     // Fallback: concatenate per-segment texts.
     v.get("segments")
@@ -3784,6 +3786,9 @@ mod tests {
     fn whisper_text_or_segments() {
         let v: serde_json::Value = serde_json::from_str(r#"{"text":" hi "}"#).unwrap();
         assert_eq!(whisper_json_text(&v), "hi");
+        let v: serde_json::Value =
+            serde_json::from_str(r#"{"text":" open for this\n project.\n You can\n"}"#).unwrap();
+        assert_eq!(whisper_json_text(&v), "open for this project. You can");
         let v: serde_json::Value =
             serde_json::from_str(r#"{"segments":[{"text":"foo "},{"text":"bar"}]}"#).unwrap();
         assert_eq!(whisper_json_text(&v), "foo bar");
