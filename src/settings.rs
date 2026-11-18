@@ -247,27 +247,56 @@ fn default_dictation_hotkeys() -> Vec<HotkeyBinding> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "SavedHotkeys")]
 pub struct HotkeySettings {
     /// Dictation bindings, any-of fires. Per-binding mode means one
     /// key can hold-to-talk while another toggles.
-    #[serde(
-        default = "default_dictation_hotkeys",
-        deserialize_with = "de_bindings"
-    )]
     pub dictation_hotkeys: Vec<HotkeyBinding>,
     /// Legacy single combo (pre-multi-binding). Migrated into
     /// `dictation_hotkeys` on load, then ignored on save.
-    #[serde(default)]
     pub dictation_hotkey: String,
     /// Smart-mode tap ceiling in ms: presses shorter than this
     /// toggle, longer ones hold. Default 150.
-    #[serde(default = "default_smart_tap_ms")]
     pub smart_tap_ms: u64,
     /// Master hotkey switch (banner toggle): off mutes all hotkey
     /// events (presses never reach the pipeline). systemd owns the
     /// process; this only gates input.
-    #[serde(default = "default_true")]
     pub hotkeys_enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct SavedHotkeys {
+    #[serde(default, deserialize_with = "de_present_bindings")]
+    dictation_hotkeys: Option<Vec<HotkeyBinding>>,
+    #[serde(default)]
+    dictation_hotkey: String,
+    #[serde(default = "default_smart_tap_ms")]
+    smart_tap_ms: u64,
+    #[serde(default = "default_true")]
+    hotkeys_enabled: bool,
+}
+
+fn de_present_bindings<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Vec<HotkeyBinding>>, D::Error> {
+    de_bindings(d).map(Some)
+}
+
+impl From<SavedHotkeys> for HotkeySettings {
+    fn from(saved: SavedHotkeys) -> Self {
+        let dictation_hotkeys = match saved.dictation_hotkeys {
+            Some(bindings) => bindings,
+            None if saved.dictation_hotkey.is_empty() => default_dictation_hotkeys(),
+            // Leave room for the existing migration to persist the legacy binding.
+            None => Vec::new(),
+        };
+        Self {
+            dictation_hotkeys,
+            dictation_hotkey: saved.dictation_hotkey,
+            smart_tap_ms: saved.smart_tap_ms,
+            hotkeys_enabled: saved.hotkeys_enabled,
+        }
+    }
 }
 
 fn default_smart_tap_ms() -> u64 {
@@ -868,6 +897,27 @@ pub struct HistoryEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hotkey_defaults_do_not_shadow_legacy_bindings() {
+        let mut legacy: HotkeySettings =
+            serde_json::from_str(r#"{"dictation_hotkey":"Ctrl+Alt+D","hotkeys_enabled":false}"#)
+                .unwrap();
+        assert_eq!(legacy.effective_hotkeys()[0].combo, "Ctrl+Alt+D");
+        assert!(!legacy.hotkeys_enabled);
+        assert!(legacy.migrate_legacy());
+        assert_eq!(legacy.dictation_hotkeys[0].combo, "Ctrl+Alt+D");
+        assert_eq!(legacy.dictation_hotkeys[0].mode, ActivationMode::Push);
+        assert!(!legacy.migrate_legacy());
+
+        let modern: HotkeySettings =
+            serde_json::from_str(r#"{"dictation_hotkey":"F9","dictation_hotkeys":["F8"]}"#)
+                .unwrap();
+        assert_eq!(modern.effective_hotkeys()[0].combo, "F8");
+        let defaults: HotkeySettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.dictation_hotkeys[0].combo, "F13");
+        assert!(serde_json::from_str::<HotkeySettings>(r#"{"dictation_hotkeys":null}"#).is_err());
+    }
 
     #[test]
     fn chain_respects_order_and_enabled() {
