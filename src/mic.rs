@@ -112,6 +112,7 @@ pub struct MicConfig {
     pub selection: MicSelection,
     pub device_id: String,
     pub warm_secs: u32,
+    pub release_delay_ms: u64,
 }
 
 impl Default for MicConfig {
@@ -120,6 +121,7 @@ impl Default for MicConfig {
             selection: MicSelection::System,
             device_id: String::new(),
             warm_secs: 0,
+            release_delay_ms: 0,
         }
     }
 }
@@ -137,6 +139,7 @@ pub fn resolve_config() -> MicConfig {
         selection: prefs.mic_selection,
         device_id: prefs.mic_device_id,
         warm_secs: prefs.mic_warm_hold_secs,
+        release_delay_ms: prefs.mic_release_delay_ms,
     }
 }
 
@@ -346,9 +349,10 @@ impl CpalMic {
 /// Level source with automatic sim fallback.
 ///
 /// The capture stream is demand-gated: it exists only while dictation
-/// is active (`set_active(true)` on pill show, `false` on hide), so
-/// the OS mic indicator is on exactly while we listen -- never
-/// idling open in the background.
+/// is active (`set_active(true)` on Listening, `false` on release to
+/// Processing/hide), so the OS mic indicator is on exactly while we
+/// listen -- never idling open in the background and never held
+/// through inference.
 pub struct MicInput {
     real_cpal: Option<CpalMic>,
     real_parec: Option<ParecMic>,
@@ -357,8 +361,32 @@ pub struct MicInput {
     wanted: bool,
     /// Warm hold: when Some, the stream stays open until this deadline
     /// after dictation ends (set from prefs at every edge). Checked in
-    /// `sample()`, which already ticks continuously.
+    /// `sample()`, which already ticks continuously. Also covers the
+    /// release-tail settle grace (see `SETTLE_GRACE_MS`), so the close
+    /// below never amputates in-flight slices.
     warm_until: Option<Instant>,
+}
+
+/// Settle grace: minimum stream hold after dictation ends so the
+/// release-tail thread (`RELEASE_FLUSH_MS` in transcribe.rs) can land
+/// in-flight slices before the device closes. Inference itself never
+/// needs the mic; this only protects the ~1 quantum tail.
+const SETTLE_GRACE_MS: u64 = 500;
+
+/// Hold after dictation ends: the longer of the warm hold and the
+/// release-tail settle window. Pure for testability.
+fn settle_hold_ms(cfg: &MicConfig) -> u64 {
+    (cfg.warm_secs as u64 * 1000).max(cfg.release_delay_ms + SETTLE_GRACE_MS)
+}
+
+/// Merge a new hold deadline with an armed one: never extend. A second
+/// deactivate (e.g. Processing -> Hidden after release already armed
+/// the hold) must not slide the close past release + hold.
+fn merge_hold(existing: Option<Instant>, candidate: Instant) -> Instant {
+    match existing {
+        Some(e) if e < candidate => e,
+        _ => candidate,
+    }
 }
 
 impl MicInput {
@@ -373,10 +401,13 @@ impl MicInput {
         }
     }
 
-    /// Open the capture stream (pill show) or schedule its close (pill
-    /// hide). With a warm hold configured, the stream stays open for
-    /// that many seconds after use so slow-starting mics don't clip
-    /// the next utterance's onset; 0 closes immediately.
+    /// Open the capture stream (dictation start) or schedule its close
+    /// (dictation end). The stream stays open for the longer of the
+    /// configured warm hold and the release-tail settle grace
+    /// (`release_delay_ms + SETTLE_GRACE_MS`), so slow-starting mics
+    /// don't clip the next onset and the release tail still lands;
+    /// inference itself never needs the mic. Callers must deactivate
+    /// on release (not on hide), so Processing never holds the mic.
     pub fn set_active(&mut self, active: bool) {
         self.wanted = active;
         if active {
@@ -385,15 +416,26 @@ impl MicInput {
                 self.open_selected();
             }
         } else {
-            let warm = resolve_config().warm_secs;
-            if warm > 0 && (self.real_cpal.is_some() || self.real_parec.is_some()) {
-                self.warm_until =
-                    Some(Instant::now() + std::time::Duration::from_secs(warm as u64));
-                eprintln!("[mic] warm hold {warm}s");
-            } else {
-                self.close_capture();
+            if self.real_cpal.is_none() && self.real_parec.is_none() {
                 self.warm_until = None;
+                return;
             }
+            let cfg = resolve_config();
+            // Always >= SETTLE_GRACE_MS by construction (see
+            // settle_hold_ms): the tail outlives every close.
+            let hold_ms = settle_hold_ms(&cfg);
+            debug_assert!(hold_ms > 0, "settle hold must cover the release tail");
+            let candidate = Instant::now() + std::time::Duration::from_millis(hold_ms);
+            let deadline = merge_hold(self.warm_until, candidate);
+            // A second deactivate must not re-log as a fresh arm when
+            // the earlier deadline won.
+            if self.warm_until != Some(deadline) {
+                eprintln!(
+                    "[mic] hold {hold_ms}ms (max warm {}s, settle)",
+                    cfg.warm_secs
+                );
+            }
+            self.warm_until = Some(deadline);
         }
     }
 
@@ -407,8 +449,19 @@ impl MicInput {
 
     pub fn use_sim(&mut self) {
         self.use_real = false;
+        // Not close_now(): a source switch may land mid-utterance,
+        // where close_now's wanted-debug_assert must not fire.
         self.close_capture();
+        self.warm_until = None;
         eprintln!("[poc] mic source -> sim");
+    }
+
+    /// Immediate close: the cancel path (tap disarmed right after, no
+    /// tail to transcribe) must not park the device open for the hold.
+    pub fn close_now(&mut self) {
+        debug_assert!(!self.wanted, "close_now must not orphan a live utterance");
+        self.close_capture();
+        self.warm_until = None;
     }
 
     fn close_capture(&mut self) {
@@ -479,13 +532,12 @@ impl MicInput {
 impl LevelSource for MicInput {
     fn sample(&mut self, _dt: f32) -> f32 {
         if !self.wanted {
-            // Warm hold countdown runs here (this ticks continuously).
+            // Hold countdown runs here (this ticks continuously).
             if let Some(deadline) = self.warm_until
                 && Instant::now() >= deadline
             {
-                eprintln!("[mic] warm hold expired, capture closed");
-                self.real_cpal = None;
-                self.real_parec = None;
+                eprintln!("[mic] hold expired");
+                self.close_capture();
                 self.warm_until = None;
             }
             return 0.0;
@@ -560,5 +612,51 @@ mod tests {
         assert!(live, "sim should produce levels while active");
         mic.set_active(false);
         assert_eq!(mic.sample(0.033), 0.0);
+    }
+
+    /// Release hold covers the tail settle first, the warm hold when
+    /// it is longer: Processing never holds the mic, the tail still
+    /// lands.
+    #[test]
+    fn settle_hold_covers_tail_then_warm() {
+        let cfg = MicConfig::default();
+        assert_eq!(settle_hold_ms(&cfg), SETTLE_GRACE_MS);
+        let cfg = MicConfig {
+            release_delay_ms: 1000,
+            ..MicConfig::default()
+        };
+        assert_eq!(settle_hold_ms(&cfg), 1000 + SETTLE_GRACE_MS);
+        let cfg = MicConfig {
+            warm_secs: 10,
+            release_delay_ms: 1000,
+            ..MicConfig::default()
+        };
+        assert_eq!(settle_hold_ms(&cfg), 10_000);
+    }
+
+    /// A second deactivate (Processing -> Hidden) must not slide the
+    /// close past release + hold.
+    #[test]
+    fn hold_merge_never_extends() {
+        let t0 = Instant::now();
+        let early = t0 + std::time::Duration::from_millis(500);
+        let late = t0 + std::time::Duration::from_millis(1000);
+        assert_eq!(merge_hold(Some(early), late), early);
+        assert_eq!(merge_hold(Some(late), early), early);
+        assert_eq!(merge_hold(None, late), late);
+    }
+
+    /// Cancel closes now: no armed hold may survive it or a sim
+    /// switch (both leave no tail to land).
+    #[test]
+    fn close_now_and_sim_clear_hold() {
+        let t0 = Instant::now() + std::time::Duration::from_secs(60);
+        let mut mic = MicInput::new();
+        mic.warm_until = Some(t0);
+        mic.close_now();
+        assert!(mic.warm_until.is_none());
+        mic.warm_until = Some(t0);
+        mic.use_sim();
+        assert!(mic.warm_until.is_none());
     }
 }
