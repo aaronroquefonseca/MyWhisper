@@ -2183,7 +2183,9 @@ fn is_loopback_url(url: &str) -> bool {
     };
     // host_str brackets IPv6 and normalizes IPv4 shorthand (127.1).
     let host = host.trim_start_matches('[').trim_end_matches(']');
-    host.eq_ignore_ascii_case("localhost")
+    host.strip_suffix('.')
+        .unwrap_or(host)
+        .eq_ignore_ascii_case("localhost")
         || match host.parse::<std::net::IpAddr>() {
             Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback(),
             Ok(std::net::IpAddr::V6(ip)) => {
@@ -11753,7 +11755,7 @@ mod tests {
         let ok = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok".to_string();
         if let Ok(target) = std::env::var("MYWHISPER_CLEANUP_PROXY_TARGET") {
             let body = serde_json::json!({"messages": "transcript"});
-            for host in ["127.0.0.1", "localhost"] {
+            for host in ["127.0.0.1", "localhost", "localhost."] {
                 let url = format!("http://{host}:{target}/api/chat");
                 assert_eq!(http_post_json(&url, &[], &body).unwrap(), "ok");
             }
@@ -11766,6 +11768,7 @@ mod tests {
             "http://127.0.0.5:1",
             "http://localhost:11434",
             "http://LOCALHOST",
+            "http://LOCALHOST.:11434",
             "http://[::1]:11434",
             "http://[::ffff:127.0.0.1]:1",
         ] {
@@ -11775,6 +11778,7 @@ mod tests {
             "http://192.168.1.2:11434",
             "http://ollama.lan",
             "http://localhost.example.com",
+            "http://localhost.example.com.",
             "https://api.example.com",
             "not a url",
         ] {
@@ -11804,7 +11808,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success(), "proxy child failed: {status}");
-        assert_eq!(target_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(target_hits.load(Ordering::SeqCst), 3);
         assert_eq!(
             proxy_hits.load(Ordering::SeqCst),
             1,
