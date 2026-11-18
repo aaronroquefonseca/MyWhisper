@@ -19,9 +19,10 @@
 //!   utterance after release.
 //! - Local / Bark (bark-3.0, plus, clean) → the same offline server:
 //!   the velddev ONNX builds keep the NeMo transducer layout, so no
-//!   new runtime. Bark 3.0/Plus get 0.25s of leading silence (their
-//!   eval condition, keeps the first word); Clean needs no padding
-//!   and drops fillers; `<unk>` tokens are stripped for Bark only.
+//!   new runtime. Only installed, registry-pinned Bark packs route
+//!   here; English is fixed in the plan, never written to settings.
+//!   Leading silence follows each pack's eval condition and `<unk>`
+//!   is stripped for Bark only.
 //! - Local / Cohere → unsupported: `offline-websocket-server`
 //!   v1.13.8 exposes no `cohere-transcribe-*` flags (library-only
 //!   model). Clear error, revisit when the server grows flags.
@@ -337,13 +338,19 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
             })
         }
         LocalSttProvider::Bark => {
+            // Registry-pinned Bark ids only: a foreign id in bark_model
+            // must not route another family's dir through Bark.
             let entry = stt::find_model(&s.bark_model)
+                .filter(|m| m.kind == stt::ModelKind::Bark)
                 .ok_or_else(|| format!("unknown bark model {:?}", s.bark_model))?;
-            let dir = stt::model_dir(data_dir, entry);
-            require_transducer_files(&dir, entry.id)?;
+            if !stt::is_installed(data_dir, entry) {
+                return Err(missing(&format!("bark model {}", entry.id)));
+            }
+            // English-only family: the lock lives here, not in the
+            // shared dictation language other chain entries use.
             Ok(Plan::SherpaOffline {
-                model_dir: dir,
-                lang: s.language.clone(),
+                model_dir: stt::model_dir(data_dir, entry),
+                lang: "en".to_string(),
             })
         }
         LocalSttProvider::Whistle => {
@@ -389,37 +396,28 @@ fn require_transducer_files(dir: &Path, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Bark models live under `<data>/models/bark/` (other sherpa
-/// transducers under `models/parakeet/`).
-fn is_bark_dir(model_dir: &Path) -> bool {
-    model_dir
-        .parent()
-        .and_then(|p| p.file_name())
-        .map(|n| n == "bark")
-        .unwrap_or(false)
-}
-
-/// Bark 3.0/Plus were evaluated with 0.25s of leading silence (it
-/// keeps the first word); Clean was evaluated as-is and needs no
-/// padding. Detected by model dir id.
-fn bark_needs_leading_silence(model_dir: &Path) -> bool {
-    if !is_bark_dir(model_dir) {
-        return false;
+/// Bark pack served from `model_dir` (`<data>/models/bark/<id>`).
+fn bark_pack_for_dir(model_dir: &Path) -> Option<&'static stt::BarkPack> {
+    let family = model_dir.parent()?.file_name()?;
+    if family != "bark" {
+        return None;
     }
-    let name = model_dir
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    name.starts_with("bark-3.0") && name != "bark-3.0-clean"
+    stt::bark_pack(model_dir.file_name()?.to_str()?)
 }
 
-/// sherpa-onnx renders the unknown-word token as `<unk>`; the
-/// reference Bark decoding leaves it out (velddev README). Strip it
-/// for Bark models only — other transducers keep server text verbatim.
-/// Whitespace is collapsed so removed tokens never leave double gaps.
-fn strip_bark_unk(text: &str, model_dir: &Path) -> String {
-    if !is_bark_dir(model_dir) {
-        return text.to_string();
+/// Bark frontend: leading silence per the pack's eval condition
+/// (16 kHz samples), and sherpa's `<unk>` rendering removed (the
+/// reference decoding leaves it out). Other models pass through.
+fn bark_input(samples: &[f32], model_dir: &Path) -> Vec<f32> {
+    let pad = bark_pack_for_dir(model_dir).map_or(0, |p| p.leading_silence_ms as usize * 16);
+    let mut out = vec![0.0f32; pad];
+    out.extend_from_slice(samples);
+    out
+}
+
+fn bark_output(text: String, model_dir: &Path) -> String {
+    if bark_pack_for_dir(model_dir).is_none() {
+        return text;
     }
     text.replace("<unk>", "")
         .split_whitespace()
@@ -3107,20 +3105,9 @@ fn transcribe_blocking(
             )
         }
         Plan::SherpaOffline { model_dir, .. } => {
-            // Bark 3.0/Plus were evaluated with 0.25s of leading
-            // silence (keeps the first word); Clean was evaluated
-            // as-is. sherpa-onnx renders the unknown-word token as
-            // `<unk>` while the reference Bark decoding leaves it
-            // out: strip it for Bark models only.
-            let samples: Vec<f32> = if bark_needs_leading_silence(model_dir) {
-                let mut padded = vec![0.0f32; 4000];
-                padded.extend_from_slice(f32s);
-                padded
-            } else {
-                f32s.to_vec()
-            };
+            let samples = bark_input(f32s, model_dir);
             let text = sherpa_offline_transcribe(&samples, engine_port(net, SHERPA_OFFLINE_PORT))?;
-            Ok(strip_bark_unk(&text, model_dir))
+            Ok(bark_output(text, model_dir))
         }
         Plan::WhistleCli {
             engine,
@@ -3847,15 +3834,77 @@ mod tests {
         let plus = Path::new("/data/models/bark/bark-3.0-plus");
         let clean = Path::new("/data/models/bark/bark-3.0-clean");
         let para = Path::new("/data/models/parakeet/parakeet-tdt-0.6b-v3");
-        assert!(bark_needs_leading_silence(bark));
-        assert!(bark_needs_leading_silence(plus));
-        assert!(!bark_needs_leading_silence(clean));
-        assert!(!bark_needs_leading_silence(para));
-        assert_eq!(strip_bark_unk("hello <unk>", bark), "hello");
-        assert_eq!(strip_bark_unk("a <unk> b", bark), "a b");
-        assert_eq!(strip_bark_unk("plain text", bark), "plain text");
-        // Non-Bark models keep server text verbatim.
-        assert_eq!(strip_bark_unk("hello <unk>", para), "hello <unk>");
+        // Not a Bark dir even though the id is: the family dir decides.
+        let foreign = Path::new("/data/models/parakeet/bark-3.0");
+        let audio = [0.5f32; 10];
+        assert_eq!(bark_input(&audio, bark).len(), 4_000 + 10);
+        assert_eq!(bark_input(&audio, plus).len(), 4_000 + 10);
+        assert_eq!(bark_input(&audio, clean), audio);
+        assert_eq!(bark_input(&audio, para), audio);
+        assert_eq!(bark_input(&audio, foreign), audio);
+        assert_eq!(bark_output("hello <unk>".into(), bark), "hello");
+        assert_eq!(bark_output("a <unk>  b".into(), clean), "a b");
+        assert_eq!(bark_output("hello <unk>".into(), para), "hello <unk>");
+    }
+
+    /// Sparse files at the pinned sizes stand in for an installed pack.
+    fn fake_bark_install(data: &Path, id: &str) -> PathBuf {
+        let entry = stt::find_model(id).unwrap();
+        let dir = stt::model_dir(data, entry);
+        std::fs::create_dir_all(&dir).unwrap();
+        for pin in stt::bark_pack(id).unwrap().files {
+            std::fs::File::create(dir.join(pin.name))
+                .unwrap()
+                .set_len(pin.bytes)
+                .unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn bark_plan_is_english_without_touching_settings() {
+        let data = tempfile::tempdir().unwrap();
+        let dir = fake_bark_install(data.path(), "bark-3.0-clean");
+        let s = SttSettings {
+            local_provider: LocalSttProvider::Bark,
+            language: "es".to_string(),
+            ..Default::default()
+        };
+        match local_plan(&s, data.path()).unwrap() {
+            Plan::SherpaOffline { model_dir, lang } => {
+                assert_eq!(model_dir, dir);
+                assert_eq!(lang, "en");
+            }
+            other => panic!("unexpected plan {other:?}"),
+        }
+        // The shared language stays the user's choice for other entries.
+        assert_eq!(s.language, "es");
+    }
+
+    #[test]
+    fn bark_plan_rejects_foreign_ids_and_incomplete_packs() {
+        let data = tempfile::tempdir().unwrap();
+        let mut s = SttSettings {
+            local_provider: LocalSttProvider::Bark,
+            ..Default::default()
+        };
+        // A non-Bark registry id with its files present must not route.
+        let para = stt::find_model("parakeet-tdt-0.6b-v3").unwrap();
+        let para_dir = stt::model_dir(data.path(), para);
+        std::fs::create_dir_all(&para_dir).unwrap();
+        for f in para.required_files {
+            std::fs::write(para_dir.join(f), b"x").unwrap();
+        }
+        for id in ["parakeet-tdt-0.6b-v3", "tiny", "../parakeet/x", "nope"] {
+            s.bark_model = id.to_string();
+            let err = local_plan(&s, data.path()).unwrap_err();
+            assert!(err.contains("unknown bark model"), "{id}: {err}");
+        }
+        // Bark id, but an empty tokens.txt is not an install.
+        s.bark_model = "bark-3.0".to_string();
+        let dir = fake_bark_install(data.path(), "bark-3.0");
+        std::fs::write(dir.join("tokens.txt"), b"").unwrap();
+        assert!(local_plan(&s, data.path()).is_err());
     }
 
     #[test]

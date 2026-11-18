@@ -1037,6 +1037,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "backend.caption.20" => ("Vulkan server", "Servidor Vulkan"),
         "backend.caption.21" => ("Sherpa CUDA server", "Servidor Sherpa CUDA"),
         "backend.caption.22" => ("Sherpa CPU server", "Servidor Sherpa CPU"),
+        "stt.bark.attribution" => (
+            "Model by Conway Research ({source}), licensed {license}. Unofficial ONNX conversion with int8 quantization by velddev ({converter}); weights otherwise unchanged. Offered as-is, without warranties. NOTICE, LICENSE and the conversion notes install with the model.",
+            "Modelo de Conway Research ({source}), con licencia {license}. Conversión ONNX no oficial con cuantización int8 de velddev ({converter}); pesos sin otros cambios. Se ofrece tal cual, sin garantías. NOTICE, LICENSE y las notas de conversión se instalan con el modelo.",
+        ),
         "backend.caption.23" => (
             "English dictation ASR, drops ums and uhs (CC-BY-4.0)",
             "ASR inglés para dictado, omite ums y uhs (CC-BY-4.0)",

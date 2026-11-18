@@ -1415,6 +1415,48 @@ fn fill_stt_models(container: &GtkBox, state: &Rc<AppState>) {
         cap.add_css_class(if ok { "cap-ok" } else { "cap-no" });
         cap.set_xalign(0.0);
         info.append(&cap);
+        // CC BY 4.0 attribution: source + revision, license, the
+        // converter's modification note and the warranty disclaimer.
+        if let Some(pack) = stt::bark_pack(m.id) {
+            let link = |url: String, text: &str| {
+                format!(
+                    "<a href=\"{}\">{}</a>",
+                    gtk4::glib::markup_escape_text(&url),
+                    gtk4::glib::markup_escape_text(text)
+                )
+            };
+            let source = link(
+                format!(
+                    "https://huggingface.co/{}/tree/{}",
+                    pack.source_repo, pack.source_revision
+                ),
+                &format!("{}@{}", pack.source_repo, &pack.source_revision[..7]),
+            );
+            let converter = link(
+                format!(
+                    "https://huggingface.co/{}/tree/{}",
+                    pack.repo, pack.revision
+                ),
+                &format!("{}@{}", pack.repo, &pack.revision[..7]),
+            );
+            let license = link(
+                "https://creativecommons.org/licenses/by/4.0/".to_string(),
+                "CC BY 4.0",
+            );
+            let attribution = Label::new(None);
+            attribution.set_markup(&crate::i18n::trf(
+                "stt.bark.attribution",
+                &[
+                    ("source", &source),
+                    ("converter", &converter),
+                    ("license", &license),
+                ],
+            ));
+            attribution.add_css_class("dim");
+            attribution.set_xalign(0.0);
+            attribution.set_wrap(true);
+            info.append(&attribution);
+        }
         card.append(&info);
 
         if let Some(dl) = stt::download_state(m.id) {
@@ -2005,6 +2047,26 @@ fn stt_lang(state: &Rc<AppState>) -> SttLang {
         opts: v,
         locked: false,
     }
+}
+
+/// Dropdown value for the stored language, and whether to persist it.
+/// A locked (single-language) model only displays its language: the
+/// stored code is shared with remote chain entries and must survive a
+/// trip through Bark or another English-only model. On open lists a
+/// code outside the list corrects to en (else the first option).
+fn shown_stt_lang(lang: &SttLang, stored: &str) -> (String, bool) {
+    if lang.locked {
+        return (lang.opts[0].clone(), false);
+    }
+    if lang.opts.iter().any(|o| o == stored) {
+        return (stored.to_string(), false);
+    }
+    let def = lang
+        .opts
+        .iter()
+        .find(|o| *o == "en")
+        .unwrap_or(&lang.opts[0]);
+    (def.clone(), true)
 }
 
 /// Shared handles of the STT remote form (mirrors LmForm).
@@ -2832,7 +2894,7 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 lang_slot.remove(&child);
             }
             let lang = stt_lang(&state);
-            let opts = lang.opts;
+            let opts = &lang.opts;
             let (b, _) = row(tr("row.language"));
             let lang_drop = DropDown::new(
                 Some(StringList::new(
@@ -2840,29 +2902,11 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 )),
                 None::<gtk4::Expression>,
             );
-            // STT codes stay untranslated (server contract). A stored
-            // code outside the new list corrects to the model default
-            // (the single language, else en) and persists, so the
-            // list always reflects the current model.
-            let def = if opts.len() == 1 {
-                opts[0].clone()
-            } else if opts.contains(&"en".to_string()) {
-                "en".to_string()
-            } else {
-                opts[0].clone()
-            };
+            // STT codes stay untranslated (server contract).
             let stored = state.settings.borrow().stt.language.clone();
-            let shown = if opts.contains(&stored) { stored } else { def };
-            let corrected = {
-                let mut st = state.settings.borrow_mut();
-                if st.stt.language != shown {
-                    st.stt.language = shown.clone();
-                    true
-                } else {
-                    false
-                }
-            };
+            let (shown, corrected) = shown_stt_lang(&lang, &stored);
             if corrected {
+                state.settings.borrow_mut().stt.language = shown.clone();
                 persist_prefs(state.clone())();
             }
             lang_drop
@@ -4816,6 +4860,23 @@ pub fn page(state: &Rc<AppState>, initial_section: &str) -> GtkBox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locked_models_show_their_language_without_rewriting_it() {
+        let en_only = SttLang {
+            opts: vec!["en".to_string()],
+            locked: true,
+        };
+        // Spanish cloud chain + Bark selected: shows en, persists nothing.
+        assert_eq!(shown_stt_lang(&en_only, "es"), ("en".to_string(), false));
+        let open = SttLang {
+            opts: ["auto", "en", "es"].map(String::from).to_vec(),
+            locked: false,
+        };
+        // Back on a multilingual model the stored es is still there.
+        assert_eq!(shown_stt_lang(&open, "es"), ("es".to_string(), false));
+        assert_eq!(shown_stt_lang(&open, "xx"), ("en".to_string(), true));
+    }
 
     #[test]
     fn shortcut_conflicts_use_parsed_keys_instead_of_spelling() {

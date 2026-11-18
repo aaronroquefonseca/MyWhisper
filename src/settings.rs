@@ -397,6 +397,13 @@ pub struct SttChainEntry {
     pub streaming: bool,
 }
 
+fn lenient_local_provider<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<LocalSttProvider, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).unwrap_or(LocalSttProvider::OpenAi))
+}
+
 fn default_bark_model() -> String {
     "bark-3.0-clean".to_string()
 }
@@ -418,6 +425,10 @@ pub struct SttSettings {
     /// Deprecated migration source (see SttMode).
     #[serde(default)]
     pub mode: SttMode,
+    /// Unknown names (a newer build's provider) load as the default
+    /// instead of failing the whole settings blob. See
+    /// `store::LEGACY_LOCAL_PROVIDERS` for the old-build direction.
+    #[serde(deserialize_with = "lenient_local_provider")]
     pub local_provider: LocalSttProvider,
     pub whisper_model: String,
     pub parakeet_model: String,
