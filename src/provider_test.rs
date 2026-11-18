@@ -1031,17 +1031,21 @@ mod tests {
         let local = stt(SttEntryKind::Local, "", "", "");
         let model_dir = crate::stt::model_dir(&data, crate::stt::find_model("whistle-v1").unwrap());
         let engine = crate::transcribe::needle_engine_path(&data);
-        std::fs::create_dir_all(engine.parent().unwrap()).unwrap();
-        std::fs::write(&engine, b"").unwrap();
+        crate::stt::fake_install(&data, crate::stt::NEEDLE_ENGINE_ID);
         assert_eq!(probe_stt(&local, &s, &data).outcome, Outcome::NotInstalled);
-        std::fs::remove_file(&engine).unwrap();
+        // An empty model file is not an install (no pinned size).
         std::fs::create_dir_all(&model_dir).unwrap();
         std::fs::write(model_dir.join("whistle.cact"), b"").unwrap();
         assert_eq!(probe_stt(&local, &s, &data).outcome, Outcome::NotInstalled);
-        std::fs::write(&engine, b"").unwrap();
+        crate::stt::fake_install(&data, "whistle-v1");
         let r = probe_stt(&local, &s, &data);
         assert_eq!(r.outcome, Outcome::Installed);
         assert_eq!(r.model, "whistle-v1");
+        // Same for an empty engine binary.
+        std::fs::remove_dir_all(engine.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(engine.parent().unwrap()).unwrap();
+        std::fs::write(&engine, b"").unwrap();
+        assert_eq!(probe_stt(&local, &s, &data).outcome, Outcome::NotInstalled);
         let _ = std::fs::remove_dir_all(&data);
     }
 
@@ -1053,17 +1057,13 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, b"").unwrap();
         };
-        // Whisper: model file present, whisper-cpu pack missing.
+        // Whisper: model installed; whisper-cpu missing, then empty.
         let whisper = SttSettings {
             local_provider: LocalSttProvider::OpenAi,
             gpu_backend: crate::settings::GpuBackendSetting::Cpu,
             ..SttSettings::default()
         };
-        let entry = crate::stt::find_model(&whisper.whisper_model).unwrap();
-        touch(crate::stt::model_dir(&data, entry).join(format!(
-            "ggml-{}.bin",
-            crate::stt::whisper_file_stem(entry.id)
-        )));
+        crate::stt::fake_install(&data, &whisper.whisper_model);
         assert_eq!(
             probe_stt(&local, &whisper, &data).outcome,
             Outcome::NotInstalled
@@ -1075,14 +1075,20 @@ mod tests {
         touch(crate::stt::gpu_bin_dir(&data, pack).join("whisper-server"));
         assert_eq!(
             probe_stt(&local, &whisper, &data).outcome,
+            Outcome::NotInstalled
+        );
+        crate::stt::fake_install(&data, "whisper-cpu");
+        assert_eq!(
+            probe_stt(&local, &whisper, &data).outcome,
             Outcome::Installed
         );
-        // Sherpa (Oruk, offline): model files present, sherpa-cpu missing.
+        // Sherpa (Oruk, offline): empty model files are not a model.
         let oruk = SttSettings {
             local_provider: LocalSttProvider::Oruk,
             sherpa_backend: crate::settings::SherpaBackendSetting::Cpu,
             ..SttSettings::default()
         };
+        crate::stt::fake_install(&data, "sherpa-cpu");
         let dir = crate::stt::model_dir(&data, crate::stt::find_model("orukeet-v0.1.0").unwrap());
         for f in [
             "encoder.int8.onnx",
@@ -1096,15 +1102,19 @@ mod tests {
             probe_stt(&local, &oruk, &data).outcome,
             Outcome::NotInstalled
         );
+        crate::stt::fake_install(&data, "orukeet-v0.1.0");
+        assert_eq!(probe_stt(&local, &oruk, &data).outcome, Outcome::Installed);
+        // The server binary alone is not the sherpa pack.
         let pack = crate::stt::SHERPA_PACKS
             .iter()
             .find(|p| p.id == "sherpa-cpu")
             .unwrap();
-        touch(
-            crate::stt::sherpa_bin_dir(&data, pack)
-                .join("bin/sherpa-onnx-offline-websocket-server"),
+        std::fs::remove_file(crate::stt::sherpa_bin_dir(&data, pack).join("lib/libonnxruntime.so"))
+            .unwrap();
+        assert_eq!(
+            probe_stt(&local, &oruk, &data).outcome,
+            Outcome::NotInstalled
         );
-        assert_eq!(probe_stt(&local, &oruk, &data).outcome, Outcome::Installed);
         let _ = std::fs::remove_dir_all(&data);
     }
 

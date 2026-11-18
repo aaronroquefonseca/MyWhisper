@@ -318,7 +318,7 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
                 .ok_or_else(|| format!("unknown whisper model {:?}", s.whisper_model))?;
             let dir = stt::model_dir(data_dir, entry);
             let bin = dir.join(format!("ggml-{}.bin", stt::whisper_file_stem(entry.id)));
-            if !bin.exists() {
+            if !stt::is_installed(data_dir, entry) {
                 return Err(missing(&format!("whisper model {}", entry.id)));
             }
             Ok(Plan::WhisperHttp {
@@ -330,7 +330,7 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
             let entry = stt::find_model(&s.parakeet_model)
                 .ok_or_else(|| format!("unknown parakeet model {:?}", s.parakeet_model))?;
             let dir = stt::model_dir(data_dir, entry);
-            require_transducer_files(&dir, entry.id)?;
+            require_model(data_dir, entry)?;
             match entry.runtime {
                 Some(stt::ParakeetRuntime::Online) => Ok(Plan::SherpaOnline { model_dir: dir }),
                 _ => Ok(Plan::SherpaOffline {
@@ -342,7 +342,7 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
         LocalSttProvider::Oruk => {
             let entry = stt::find_model("orukeet-v0.1.0").ok_or_else(|| missing("orukeet"))?;
             let dir = stt::model_dir(data_dir, entry);
-            require_transducer_files(&dir, entry.id)?;
+            require_model(data_dir, entry)?;
             Ok(Plan::SherpaOffline {
                 model_dir: dir,
                 lang: s.language.clone(),
@@ -368,13 +368,12 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
             let entry = stt::find_model("whistle-v1").ok_or_else(|| missing("whistle"))?;
             let dir = stt::model_dir(data_dir, entry);
             let model = dir.join("whistle.cact");
-            if !model.exists() {
+            if !stt::is_installed(data_dir, entry) {
                 return Err(missing("whistle model (download it in Language Models)"));
             }
-            // The `needle` engine is user-placed (no verified upstream
-            // binary URL yet): `<data>/bin/needle/needle`, executable.
+            // The `needle` engine: `<data>/bin/needle/needle`, verified.
             let engine = needle_engine_path(data_dir);
-            if !engine.exists() {
+            if !stt::needle_installed(data_dir) {
                 return Err(missing(
                     "needle engine binary at bin/needle/needle (see Whistle docs)",
                 ));
@@ -393,18 +392,13 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
     }
 }
 
-fn require_transducer_files(dir: &Path, id: &str) -> Result<(), String> {
-    for f in [
-        "encoder.int8.onnx",
-        "decoder.int8.onnx",
-        "joiner.int8.onnx",
-        "tokens.txt",
-    ] {
-        if !dir.join(f).exists() {
-            return Err(missing(&format!("parakeet model {id} ({f})")));
-        }
+/// Every pinned model file present and verified, as Settings shows it.
+fn require_model(data_dir: &Path, entry: &stt::ModelEntry) -> Result<(), String> {
+    if stt::is_installed(data_dir, entry) {
+        Ok(())
+    } else {
+        Err(missing(&format!("parakeet model {}", entry.id)))
     }
-    Ok(())
 }
 
 /// Bark pack served from `model_dir` (`<data>/models/bark/<id>`).
@@ -919,7 +913,7 @@ fn whisper_binary(data_dir: &Path, backend: GpuBackendSetting) -> Result<PathBuf
         .find(|p| p.id == want)
         .ok_or_else(|| format!("unknown whisper pack {want}"))?;
     let bin = stt::gpu_bin_dir(data_dir, pack).join("whisper-server");
-    if bin.exists() {
+    if stt::gpu_installed(data_dir, pack) {
         Ok(bin)
     } else {
         Err(missing(&format!("{want} runtime pack")))
@@ -966,7 +960,7 @@ fn sherpa_binary(
         .find(|b| b.ends_with(which))
         .ok_or_else(|| format!("sherpa pack lacks {which}"))?;
     let bin = stt::sherpa_bin_dir(data_dir, pack).join(rel);
-    if bin.exists() {
+    if stt::sherpa_installed(data_dir, pack) {
         Ok(bin)
     } else {
         Err(missing(&format!("{want} runtime pack")))
@@ -3867,18 +3861,7 @@ mod tests {
 
     /// Sparse files at the pinned sizes stand in for an installed pack.
     fn fake_bark_install(data: &Path, id: &str) -> PathBuf {
-        let entry = stt::find_model(id).unwrap();
-        let dir = stt::model_dir(data, entry);
-        std::fs::create_dir_all(&dir).unwrap();
-        let pack = stt::bark_pack(id).unwrap();
-        for pin in pack.files {
-            std::fs::File::create(dir.join(pin.name))
-                .unwrap()
-                .set_len(pin.bytes)
-                .unwrap();
-        }
-        stt::write_bark_marker(&dir, pack).unwrap();
-        dir
+        stt::fake_install(data, id)
     }
 
     #[test]
@@ -3912,8 +3895,8 @@ mod tests {
         let para = stt::find_model("parakeet-tdt-0.6b-v3").unwrap();
         let para_dir = stt::model_dir(data.path(), para);
         std::fs::create_dir_all(&para_dir).unwrap();
-        for f in para.required_files {
-            std::fs::write(para_dir.join(f), b"x").unwrap();
+        for f in para.files {
+            std::fs::write(para_dir.join(f.name), b"x").unwrap();
         }
         for id in ["parakeet-tdt-0.6b-v3", "tiny", "../parakeet/x", "nope"] {
             s.bark_model = id.to_string();

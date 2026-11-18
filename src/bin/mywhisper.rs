@@ -72,6 +72,10 @@ fn main() -> gtk4::glib::ExitCode {
     if let Err(e) = mywhisper::runtime::init() {
         eprintln!("[app] task runtime unavailable: {e}");
     }
+    // Hash pre-marker model/runtime installs once, off the GTK thread.
+    if let Err(e) = mywhisper::stt::spawn_legacy_verification(paths.data_dir.clone()) {
+        eprintln!("[app] install verification not started: {e}");
+    }
     let discovered: std::sync::Arc<
         std::sync::Mutex<std::collections::HashMap<String, mywhisper::net::Discovered>>,
     > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
