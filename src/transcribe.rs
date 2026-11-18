@@ -3534,6 +3534,15 @@ struct LiveUtterance {
 
 static LIVE: OnceLock<Mutex<Option<LiveUtterance>>> = OnceLock::new();
 static BUSY: AtomicBool = AtomicBool::new(false);
+static DELIVERY: Mutex<()> = Mutex::new(());
+
+/// Take the delivery turn, then free the worker: the next utterance
+/// may transcribe meanwhile but cannot deliver before this one ends.
+fn delivery_turn<'a>(busy: &AtomicBool, turn: &'a Mutex<()>) -> std::sync::MutexGuard<'a, ()> {
+    let guard = turn.lock().unwrap_or_else(|p| p.into_inner());
+    busy.store(false, Ordering::SeqCst);
+    guard
+}
 
 /// Latest live-preview text for the pill drain loop. Pumps overwrite
 /// on change; the drain takes (clears). Empty = nothing new.
@@ -4202,7 +4211,7 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
                 })
                 .unwrap_or_default();
             let out = finish_session(sess, &words);
-            BUSY.store(false, Ordering::SeqCst);
+            let _turn = delivery_turn(&BUSY, &DELIVERY);
             active_dec();
             match out {
                 Ok(Some((text, secs, wav))) => {
@@ -5789,6 +5798,29 @@ mod tests {
         let dir = fake_bark_install(data.path(), "bark-3.0");
         std::fs::write(dir.join("tokens.txt"), b"").unwrap();
         assert!(local_plan(&s, data.path()).is_err());
+    }
+
+    #[test]
+    fn delivery_turns_keep_utterance_order() {
+        let busy = AtomicBool::new(true);
+        let turn = Mutex::new(());
+        let first = delivery_turn(&busy, &turn);
+        assert!(
+            !busy.load(Ordering::SeqCst),
+            "next utterance may transcribe"
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                assert!(!busy.swap(true, Ordering::SeqCst));
+                let _second = delivery_turn(&busy, &turn);
+                tx.send(()).unwrap();
+            });
+            assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+            assert!(busy.load(Ordering::SeqCst), "held until its turn");
+            drop(first);
+            rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
     }
 
     #[test]
