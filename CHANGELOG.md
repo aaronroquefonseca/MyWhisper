@@ -1,25 +1,28 @@
 # Changelog
 
-## 0.9.4
+## [0.9.4](https://github.com/aaronroquefonseca/MyWhisper/releases/tag/v0.9.4) - 2026-10-12
 
-- Preserve device identity during legacy-key migration and concurrent
-  startups. Protect private files with atomic writes, restrictive
-  permissions, and checks against symlinks and non-regular files.
-  ([#5](https://github.com/aaronroquefonseca/MyWhisper/pull/5))
-- Fix symbolic logo visibility and toast contrast in light and dark
-  themes, including close-button hover, pressed, and dismissal behavior.
-  ([#6](https://github.com/aaronroquefonseca/MyWhisper/pull/6))
-- Harden upgrades with stable-version selection, authenticated download
-  checksums, archive validation, and service restart verification.
-  Complete Nix build/runtime prerequisites, make CLI help and version
-  available before storage initialization, and verify release versions,
-  dependency notices, artifact integrity, and isolated regression/UI checks.
-  ([#7](https://github.com/aaronroquefonseca/MyWhisper/pull/7))
-- License MyWhisper under MIT and include the project license alongside
-  preserved third-party notices in release archives and installed packages.
-  ([#9](https://github.com/aaronroquefonseca/MyWhisper/pull/9))
+### Security
 
-## 0.9.3
+- **Security:** Preserve device identity during legacy-key migration and concurrent startups. Protect private files with atomic writes, restrictive permissions, and checks against symlinks and non-regular files. ([#5](https://github.com/aaronroquefonseca/MyWhisper/pull/5))
+  Upgrade action: restart MyWhisper after updating to use the protected identity files.
+- **Security:** Harden upgrades with stable-version selection, authenticated download checksums, archive validation, and service restart verification. ([#7](https://github.com/aaronroquefonseca/MyWhisper/pull/7))
+  Upgrade action: allow the installer to restart the user service after update.
+
+### Fixes
+
+- Fix symbolic logo visibility and toast contrast in light and dark themes, including close-button hover, pressed, and dismissal behavior. ([#6](https://github.com/aaronroquefonseca/MyWhisper/pull/6))
+- Complete Nix build/runtime prerequisites. ([#7](https://github.com/aaronroquefonseca/MyWhisper/pull/7))
+- Make CLI help and version available before storage initialization. ([#7](https://github.com/aaronroquefonseca/MyWhisper/pull/7))
+
+### Other improvements
+
+- Verify release versions, dependency notices, artifact integrity, and isolated regression/UI checks. ([#7](https://github.com/aaronroquefonseca/MyWhisper/pull/7))
+- License MyWhisper under MIT and include the project license alongside preserved third-party notices in release archives and installed packages. ([#9](https://github.com/aaronroquefonseca/MyWhisper/pull/9))
+
+## [0.9.3](https://github.com/aaronroquefonseca/MyWhisper/releases/tag/v0.9.3) - 2026-10-09
+
+(legacy notes, no PR links)
 
 - Refreshed desktop UI with persistent Dictation, Activity,
   Dictionary, Devices, and Settings navigation, a monochrome
@@ -44,7 +47,9 @@
 - Disposable UI preview and smoke checks for settings, history,
   dictionary, theme, language, and prompt editing workflows.
 
-## 0.9.2
+## [0.9.2](https://github.com/aaronroquefonseca/MyWhisper/releases/tag/v0.9.2) - 2026-10-09
+
+(legacy notes, no PR links)
 
 - Exact release-point capture: timestamped mic tap, truncate at
   release (nothing before cut, nothing after kept); fixed 350 ms
@@ -67,7 +72,9 @@
 - Install docs with copy-paste commands (Arch + NixOS, HTTPS flake
   input as the default).
 
-## 0.9.0
+## [0.9.0](https://github.com/aaronroquefonseca/MyWhisper/releases/tag/v0.9.0) - 2026-10-09
+
+(legacy notes, no PR links)
 
 First packaged release (`mywhisper` binary).
 
