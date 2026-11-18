@@ -382,6 +382,12 @@ impl VoiceOverlay {
         self.inner.viz.set_mic_source(real)
     }
 
+    /// Immediate mic close for cancel: the tap is disarmed right
+    /// after, so the release-tail hold must not park the device open.
+    pub fn close_mic_now(&self) {
+        self.inner.viz.close_mic_now();
+    }
+
     /// Pin the layer surface to a screen corner/edge. Bottom anchor is
     /// constant; only the horizontal anchoring moves. No-op on the
     /// undecorated fallback window.
@@ -609,9 +615,13 @@ impl VoiceOverlay {
             .set(self.inner.anim_gen.get().wrapping_add(1));
         self.inner.state.set(next);
         self.inner.mirror.store(next.code(), Ordering::SeqCst);
-        // Capture follows visibility exactly: open on any shown
-        // state, drop on hide. No idle-open mic, ever.
-        self.inner.viz.set_mic_active(next != OverlayState::Hidden);
+        // Capture follows dictation, not visibility: open on Listening
+        // only, drop on release (Processing and later). The mic's own
+        // settle grace keeps the tail; inference never needs the mic,
+        // so Processing must not hold it. No idle-open mic, ever.
+        self.inner
+            .viz
+            .set_mic_active(next == OverlayState::Listening);
         // Live words belong to Listening only: release (Processing)
         // and hide retire them with the state.
         if next != OverlayState::Listening {

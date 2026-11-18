@@ -24,7 +24,8 @@ test|lib|audio::tests::wav_header_shape|run
 test|lib|child::tests::bounds_stalled_input_output_and_nonzero_exit|run
 test|lib|child::tests::communicates_large_input_without_pipe_deadlock|run
 test|lib|clipboard::tests::backend_dep_strings_present|run
-test|lib|database_key::tests::create_item_prompt_is_dismissed_before_activation_and_its_future_is_cancelled|run
+test|lib|database_key::tests::create_item_requiring_a_prompt_fails_locked_without_activating_it|run
+test|lib|database_key::tests::provisioning_against_private_bus|ignored
 test|lib|device::provisioning_tests::concurrent_create_and_legacy_migration_share_one_private_identity|run
 test|lib|device::provisioning_tests::interrupted_replacement_and_fresh_processes_preserve_both_keys|run
 test|lib|device::provisioning_tests::invalid_identity_is_preserved_and_display_is_unicode_safe|run
@@ -41,7 +42,10 @@ test|lib|maintenance::tests::closing_owner_interrupts_a_long_idle_timer|run
 test|lib|maintenance::tests::idle_worker_expires_existing_data_with_recording_off_and_stops_with_owner|run
 test|lib|media::tests::no_players_is_empty_success|run
 test|lib|mic::tests::builtin_picker_prefers_onboard|run
+test|lib|mic::tests::close_now_and_sim_clear_hold|run
+test|lib|mic::tests::hold_merge_never_extends|run
 test|lib|mic::tests::mic_gated_on_dictation_active|run
+test|lib|mic::tests::settle_hold_covers_tail_then_warm|run
 test|lib|net::background_catchup_delay_interrupts_original_owner_before_database_io|run
 test|lib|net::tests::disable_and_reenable_during_handshake_never_exports_the_queued_snapshot|run
 test|lib|net::tests::disabling_sync_interrupts_an_active_stalled_encrypted_export|run
@@ -132,6 +136,7 @@ test|lib|store::segments::tests::staging_and_decoded_string_limits_reject_withou
 test|lib|store::tests::activity_counts_all_history_and_only_measured_speed|run
 test|lib|store::tests::auto_delete_keeps_tombstones|run
 test|lib|store::tests::bulk_deletion_survives_sync_with_an_older_peer|run
+test|lib|store::tests::db_key_hex_helpers_roundtrip|run
 test|lib|store::tests::discarded_rows_filter_and_sync|run
 test|lib|store::tests::divergent_edits_converge_with_newest_winning|run
 test|lib|store::tests::interrupted_key_provision_candidates_recover_existing_data_without_replacement|run
@@ -149,9 +154,11 @@ test|lib|stt::tests::downloads_tiny_model|ignored
 test|lib|stt::tests::find_model_resolves_all_ids|run
 test|lib|stt::tests::registry_is_complete_and_consistent|run
 test|lib|stt::tests::whisper_stems_map_to_filenames|run
+test|lib|stt::tests::zip_extract_installs_layout_without_escape|run
 test|lib|sync_jobs::tests::dirty_updates_replay_latest_after_active_round_without_starving_other_peers|run
 test|lib|sync_jobs::tests::resources_run_independently_and_panics_do_not_drop_pending_updates|run
 test|lib|textnorm::tests::dict_key_keeps_accents_but_unifies_case_and_canonical_forms|run
+test|lib|textnorm::tests::dictionary_budget_preserves_complete_utf8_entries|run
 test|lib|textnorm::tests::prompt_joins_and_trims_at_comma|run
 test|lib|textnorm::tests::snippets_accent_and_case_insensitive|run
 test|lib|textnorm::tests::snippets_empty_is_passthrough|run
@@ -161,6 +168,8 @@ test|lib|textnorm::tests::snippets_turkish_dot|run
 test|lib|transcribe::tests::chain_falls_back_past_broken_first|run
 test|lib|transcribe::tests::cloud_url_join|run
 test|lib|transcribe::tests::deepgram_pointer|run
+test|lib|transcribe::tests::deepgram_sends_encoded_dictionary_terms|run
+test|lib|transcribe::tests::gemini_sends_dictionary_with_audio|run
 test|lib|transcribe::tests::lang_param_auto_omits|run
 test|lib|transcribe::tests::live_oruk_offline_roundtrip|ignored
 test|lib|transcribe::tests::marker_like_detection_and_token_namespaces|run
@@ -192,6 +201,8 @@ test|lib|transcribe::tests::plan_cohere_unsupported|run
 test|lib|transcribe::tests::plan_routing_needs_files|run
 test|lib|transcribe::tests::plans_selfhosted_ws_and_bearer|run
 test|lib|transcribe::tests::prompt_defaults_and_suffix|run
+test|lib|transcribe::tests::remote_dictionary_respects_provider_limits|run
+test|lib|transcribe::tests::remote_http_sends_dictionary|run
 test|lib|transcribe::tests::server_net_defaults_and_overrides|run
 test|lib|transcribe::tests::sherpa_text_field|run
 test|lib|transcribe::tests::snippet_token_with_uses_controlled_candidates|run
