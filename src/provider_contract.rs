@@ -1,6 +1,6 @@
 //! Canonical completed answers. Never deliver thoughts, refusals, or truncated output.
 //!
-//! R37–R38: capability-aware requests plus provider-specific
+//! Capability-aware requests plus provider-specific
 //! completed-answer parsing. Every parser accepts only a normally
 //! completed reply and returns the concatenated answer text:
 //! - Claude: `stop_reason` end_turn/stop_sequence; all `text` blocks
@@ -20,30 +20,29 @@
 //! refusals, malformed blocks and tool calls are all `Err`, which the
 //! runner also turns into fallback — never into partial dictation.
 //!
-//! Thinking tri-state (owned request side; storage migration is #18):
+//! Thinking tri-state:
 //! `None` omits the param (model default), `Some(false)` forces off,
-//! `Some(true)` forces on via the model's supported mode. Unknown
-//! Claude capabilities are an error so the caller falls back instead
-//! of sending a 400-invalid budget. Live model/thinking capabilities
-//! still need authenticated disposable checks (see R37 live gates).
+//! `Some(true)` forces on via the model's supported mode. Claude models
+//! with unknown thinking capabilities keep the model default instead of
+//! risking a 400 from an invalid budget.
 use serde_json::{Value, json};
 
 /// Claude Messages request. `max_tokens` 16384 leaves room for the
 /// 1024 thinking budget plus the answer (budget must be < max_tokens,
 /// minimum 1024). Adaptive models decide themselves; enabled models
-/// need the explicit budget; unknown models error so the caller keeps
-/// the model default instead of sending a rejected request.
+/// need the explicit budget; unknown models omit `thinking` (model
+/// default) instead of sending a request the API may reject.
 ///
 /// Adaptive (per 2026 docs): 4-6/4-7/4-8, 5.x, Mythos/Fable families.
-/// Enabled-only: 4-5 family + 3.7 Sonnet. Everything else → Err.
+/// Enabled-only: 4-5 family + 3.7 Sonnet. Everything else → omitted.
 /// `Some(false)` sends `disabled` (rejected by always-on Fable 5 /
-/// Mythos 5 — live gate must confirm; the runner falls back on 400).
+/// Mythos 5; the runner falls back on 400).
 pub(crate) fn claude_request(
     model: &str,
     thinking: Option<bool>,
     system: &str,
     user: &str,
-) -> Result<Value, String> {
+) -> Value {
     let mut body = json!({"model":model,"max_tokens":16384,"system":system,"messages":[{"role":"user","content":user}]});
     if let Some(enabled) = thinking {
         if !enabled {
@@ -75,13 +74,9 @@ pub(crate) fn claude_request(
         .any(|prefix| model.starts_with(prefix))
         {
             body["thinking"] = json!({"type":"enabled","budget_tokens":1024});
-        } else {
-            return Err(
-                "thinking capabilities unknown for this Claude model; select model default".into(),
-            );
         }
     }
-    Ok(body)
+    body
 }
 
 /// Ollama `/api/chat` request (stream:false, pinned sampling mirrors
@@ -224,7 +219,7 @@ mod tests {
             "claude-opus-4-5",
             "claude-3-7-sonnet-20250219",
         ] {
-            let v = claude_request(model, Some(true), "system", "user").unwrap();
+            let v = claude_request(model, Some(true), "system", "user");
             assert_eq!(v["thinking"]["type"], "enabled");
             assert!(v["thinking"]["budget_tokens"].as_u64().unwrap() >= 1024);
             assert!(v["thinking"]["budget_tokens"].as_u64() < v["max_tokens"].as_u64());
@@ -244,14 +239,14 @@ mod tests {
             "claude-fable-5",
         ] {
             assert_eq!(
-                claude_request(model, Some(true), "s", "u").unwrap()["thinking"],
+                claude_request(model, Some(true), "s", "u")["thinking"],
                 json!({"type":"adaptive"}),
                 "model {model}"
             );
             // Disabled is still sent (API may 400 on always-on models;
-            // the runner falls back — live gate must confirm).
+            // the runner falls back).
             assert_eq!(
-                claude_request(model, Some(false), "s", "u").unwrap()["thinking"]["type"],
+                claude_request(model, Some(false), "s", "u")["thinking"]["type"],
                 "disabled",
                 "model {model}"
             );
@@ -268,20 +263,20 @@ mod tests {
             "",
         ] {
             assert!(
-                claude_request(model, Some(true), "s", "u").is_err(),
+                claude_request(model, Some(true), "s", "u")
+                    .get("thinking")
+                    .is_none(),
                 "model {model}"
             );
         }
         assert!(
             claude_request("future-model", None, "s", "u")
-                .unwrap()
                 .get("thinking")
                 .is_none()
         );
         // Tri-state: None omits everywhere.
         assert!(
             claude_request("claude-sonnet-4-5", None, "s", "u")
-                .unwrap()
                 .get("thinking")
                 .is_none()
         );
@@ -536,7 +531,6 @@ mod tests {
         for model in ["claude-haiku-4-5", "claude-opus-4-7", "future-model"] {
             assert!(
                 claude_request(model, None, "s", "u")
-                    .unwrap()
                     .get("thinking")
                     .is_none()
             );
@@ -544,12 +538,12 @@ mod tests {
         // Some(false) disables thinking on every model, even unknown ones.
         for model in ["claude-sonnet-4-5", "future-model"] {
             assert_eq!(
-                claude_request(model, Some(false), "s", "u").unwrap()["thinking"]["type"],
+                claude_request(model, Some(false), "s", "u")["thinking"]["type"],
                 "disabled"
             );
         }
         // Request echoes model/system/user untouched.
-        let v = claude_request("claude-sonnet-4-5", None, "sys", "usr").unwrap();
+        let v = claude_request("claude-sonnet-4-5", None, "sys", "usr");
         assert_eq!(v["model"], "claude-sonnet-4-5");
         assert_eq!(v["system"], "sys");
         assert_eq!(v["messages"][0]["content"], "usr");

@@ -3269,7 +3269,7 @@ fn llm_cleanup(
             // keep_alive rides along unless the entry leaves it blank
             // (Ollama server default). Tri-state `think` lives in
             // `provider_contract::ollama_request` (None omits = model
-            // default); storage migration of that field is owned by #18.
+            // default).
             let mut body = crate::provider_contract::ollama_request(
                 &entry.model,
                 entry.thinking,
@@ -3324,7 +3324,7 @@ fn llm_cleanup(
                     entry.thinking,
                     system,
                     &user,
-                )?;
+                );
                 let text = http_post_json(
                     "https://api.anthropic.com/v1/messages",
                     &[
