@@ -56,6 +56,7 @@ pub enum HotkeyEvent {
 }
 
 pub type HotkeyCallback = Arc<dyn Fn(HotkeyEvent) + Send + Sync + 'static>;
+type BindingCallback = Arc<dyn Fn(HotkeyEvent, Option<usize>) + Send + Sync + 'static>;
 
 /// Generation counter: bumped on every (re)start so a stale loop
 /// exits instead of double-firing after settings change.
@@ -409,7 +410,7 @@ fn poll_events<D: KeyDevice>(
     devices: &mut Vec<(std::path::PathBuf, D)>,
     held: &mut HashSet<KeyCode>,
     watched: &mut [Watched],
-    on_event: &HotkeyCallback,
+    on_event: &BindingCallback,
 ) {
     let mut dead = Vec::new();
     for (i, (_, dev)) in devices.iter_mut().enumerate() {
@@ -442,13 +443,11 @@ fn poll_events<D: KeyDevice>(
                 _ => continue,
             };
             let pressed = value == 1;
-            // Escape cancels a live utterance (midway cancel). Gated
-            // on live state: idle Escape presses never emit.
-            if pressed && key == KeyCode::KEY_ESC && crate::transcribe::has_live() {
-                eprintln!("[hotkey] escape cancels live utterance");
-                on_event(HotkeyEvent::Cancel);
+            // An accepted press can be queued before the engine is live.
+            if pressed && key == KeyCode::KEY_ESC {
+                on_event(HotkeyEvent::Cancel, None);
             }
-            for w in watched.iter_mut() {
+            for (binding, w) in watched.iter_mut().enumerate() {
                 let c = &w.combo;
                 if let Some(target) = c.target {
                     if key != target {
@@ -457,11 +456,11 @@ fn poll_events<D: KeyDevice>(
                     if pressed && !w.active && mods_ok(c, held) {
                         w.active = true;
                         w.active_since = Some(Instant::now());
-                        on_event(HotkeyEvent::Down(w.action, w.mode));
+                        on_event(HotkeyEvent::Down(w.action, w.mode), Some(binding));
                     } else if !pressed && w.active {
                         w.active = false;
                         w.active_since = None;
-                        on_event(HotkeyEvent::Up(w.action, w.mode));
+                        on_event(HotkeyEvent::Up(w.action, w.mode), Some(binding));
                     }
                 } else {
                     // Modifier-only combo.
@@ -471,11 +470,11 @@ fn poll_events<D: KeyDevice>(
                     if mods_ok(c, held) && !w.active {
                         w.active = true;
                         w.active_since = Some(Instant::now());
-                        on_event(HotkeyEvent::Down(w.action, w.mode));
+                        on_event(HotkeyEvent::Down(w.action, w.mode), Some(binding));
                     } else if !mods_ok(c, held) && w.active {
                         w.active = false;
                         w.active_since = None;
-                        on_event(HotkeyEvent::Up(w.action, w.mode));
+                        on_event(HotkeyEvent::Up(w.action, w.mode), Some(binding));
                     }
                 }
             }
@@ -494,7 +493,7 @@ fn poll_events<D: KeyDevice>(
 fn run_loop(
     generation: u64,
     mut watched: Vec<Watched>,
-    on_event: HotkeyCallback,
+    on_event: BindingCallback,
     on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static>,
 ) {
     let mut held: HashSet<KeyCode> = HashSet::new();
@@ -544,7 +543,7 @@ fn run_loop(
         poll_events(&mut devices, &mut held, &mut watched, &on_event);
         // Watchdog: a Push hold wedged by a lost release is
         // force-released instead of sticking dictation on forever.
-        for w in watched.iter_mut() {
+        for (binding, w) in watched.iter_mut().enumerate() {
             if w.active
                 && w.mode == crate::settings::ActivationMode::Push
                 && w.active_since
@@ -554,7 +553,7 @@ fn run_loop(
                 eprintln!("[hotkey] WARNING: push stuck >{MAX_PUSH_SECS}s, force release");
                 w.active = false;
                 w.active_since = None;
-                on_event(HotkeyEvent::Up(w.action, w.mode));
+                on_event(HotkeyEvent::Up(w.action, w.mode), Some(binding));
             }
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -569,6 +568,22 @@ fn run_loop(
 pub fn start(
     bindings: HashMap<HotkeyAction, Vec<crate::settings::HotkeyBinding>>,
     on_event: HotkeyCallback,
+    on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static>,
+) {
+    start_with_bindings(
+        bindings,
+        Arc::new(move |event, _| {
+            if event != HotkeyEvent::Cancel || crate::transcribe::has_live() {
+                on_event(event);
+            }
+        }),
+        on_status,
+    );
+}
+
+fn start_with_bindings(
+    bindings: HashMap<HotkeyAction, Vec<crate::settings::HotkeyBinding>>,
+    on_event: BindingCallback,
     on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static>,
 ) {
     let generation = HOTKEY_GEN.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
@@ -619,30 +634,77 @@ pub type DictationHook = Arc<dyn Fn() + Send + Sync + 'static>;
 
 /// Smart-mode tap ceiling default (ms): a press shorter than this
 /// toggles, a longer one holds. Overridable per install via the
-/// `smart_tap_ms` setting; releases log their duration for calibration.
+/// `smart_tap_ms` setting.
 pub const SMART_TAP_MS: u64 = 150;
 
-/// Smart press outcome, pure for testability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SmartDown {
-    /// Was idle: dictation started, this press owns the session.
+enum ActivationEffect {
     Open,
-    /// Was active: dictation stopped (toggle-off), press owns nothing.
     Close,
+    Cancel,
 }
 
-fn smart_down(dictating: bool) -> SmartDown {
-    if dictating {
-        SmartDown::Close
-    } else {
-        SmartDown::Open
+struct ActiveBinding {
+    index: usize,
+    mode: crate::settings::ActivationMode,
+    pressed_at: Instant,
+}
+
+#[derive(Default)]
+struct Activation {
+    active: Option<ActiveBinding>,
+}
+
+impl Activation {
+    fn handle(
+        &mut self,
+        event: HotkeyEvent,
+        binding: Option<usize>,
+        now: Instant,
+        tap_ms: u64,
+    ) -> Option<ActivationEffect> {
+        use crate::settings::ActivationMode;
+
+        match event {
+            HotkeyEvent::Down(_, mode) => {
+                let index = binding?;
+                if self.active.is_some() {
+                    if mode == ActivationMode::Push {
+                        return None;
+                    }
+                    self.active = None;
+                    return Some(ActivationEffect::Close);
+                }
+                self.active = Some(ActiveBinding {
+                    index,
+                    mode,
+                    pressed_at: now,
+                });
+                Some(ActivationEffect::Open)
+            }
+            HotkeyEvent::Up(_, mode) => {
+                let active = self.active.as_mut()?;
+                if binding != Some(active.index) || mode != active.mode {
+                    return None;
+                }
+                match mode {
+                    ActivationMode::Tap => return None,
+                    ActivationMode::Smart
+                        if now.duration_since(active.pressed_at).as_millis()
+                            < u128::from(tap_ms) =>
+                    {
+                        // A quick Smart press stays on as a toggle.
+                        active.mode = ActivationMode::Tap;
+                        return None;
+                    }
+                    _ => {}
+                }
+                self.active = None;
+                Some(ActivationEffect::Close)
+            }
+            HotkeyEvent::Cancel => self.active.take().map(|_| ActivationEffect::Cancel),
+        }
     }
-}
-
-/// Whether a smart release stops dictation: only when the press that
-/// opened the session was held past the tap ceiling.
-fn smart_up_should_stop(opener: bool, held_ms: u64, tap_ms: u64) -> bool {
-    opener && held_ms >= tap_ms
 }
 
 /// (Re)start the listener from live settings with explicit dictation
@@ -656,64 +718,25 @@ pub fn start_dictation(
     up: DictationHook,
     cancel: DictationHook,
 ) {
-    use crate::settings::ActivationMode;
     let mut map = HashMap::new();
     map.insert(HotkeyAction::DictationToggle, bindings);
-    // Shared toggle state across bindings of the same action; the
-    // mode travels on the event so mixed Push+Tap bindings coexist.
-    let dictating = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // Smart presses: what the press did + when, decided at release.
-    let smart_press: Arc<std::sync::Mutex<Option<(Instant, bool)>>> =
-        Arc::new(std::sync::Mutex::new(None));
-    let on_event: HotkeyCallback = Arc::new(move |ev| match ev {
-        HotkeyEvent::Down(HotkeyAction::DictationToggle, ActivationMode::Push) => {
-            dictating.store(true, Ordering::SeqCst);
-            down();
+    let activation = std::sync::Mutex::new(Activation::default());
+    let on_event: BindingCallback = Arc::new(move |event, binding| {
+        let effect = activation
+            .lock()
+            .unwrap()
+            .handle(event, binding, Instant::now(), tap_ms);
+        match effect {
+            Some(ActivationEffect::Open) => down(),
+            Some(ActivationEffect::Close) => up(),
+            Some(ActivationEffect::Cancel) => cancel(),
+            None if event == HotkeyEvent::Cancel && crate::transcribe::has_live() => cancel(),
+            None => {}
         }
-        HotkeyEvent::Up(HotkeyAction::DictationToggle, ActivationMode::Push) => {
-            dictating.store(false, Ordering::SeqCst);
-            up();
-        }
-        HotkeyEvent::Down(HotkeyAction::DictationToggle, ActivationMode::Tap) => {
-            let was = dictating.fetch_xor(true, Ordering::SeqCst);
-            if !was {
-                down();
-            } else {
-                up();
-            }
-        }
-        HotkeyEvent::Down(HotkeyAction::DictationToggle, ActivationMode::Smart) => {
-            match smart_down(dictating.load(Ordering::SeqCst)) {
-                SmartDown::Open => {
-                    dictating.store(true, Ordering::SeqCst);
-                    *smart_press.lock().unwrap() = Some((Instant::now(), true));
-                    down();
-                }
-                SmartDown::Close => {
-                    dictating.store(false, Ordering::SeqCst);
-                    *smart_press.lock().unwrap() = Some((Instant::now(), false));
-                    up();
-                }
-            }
-        }
-        HotkeyEvent::Up(HotkeyAction::DictationToggle, ActivationMode::Smart) => {
-            if let Some((t0, opener)) = smart_press.lock().unwrap().take() {
-                let held_ms = t0.elapsed().as_millis() as u64;
-                eprintln!("[hotkey] smart release after {held_ms}ms (ceiling {tap_ms}ms)");
-                if smart_up_should_stop(opener, held_ms, tap_ms) {
-                    dictating.store(false, Ordering::SeqCst);
-                    up();
-                }
-            }
-        }
-        HotkeyEvent::Cancel => {
-            cancel();
-        }
-        _ => {}
     });
     let on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static> =
         Arc::new(|st| eprintln!("[hotkey] status: {st:?}"));
-    start(map, on_event, on_status);
+    start_with_bindings(map, on_event, on_status);
 }
 
 /// Log-only hooks for standalone GUI mode (no pill in this process).
@@ -758,26 +781,87 @@ mod tests {
 
     #[test]
     fn smart_tap_holds_toggle() {
-        // Tap (under the ceiling) toggles: opener release keeps on.
-        assert_eq!(smart_down(false), SmartDown::Open);
-        assert!(!smart_up_should_stop(true, SMART_TAP_MS - 1, SMART_TAP_MS));
-        // Hold (at/over the ceiling) behaves like push: release stops.
-        assert!(smart_up_should_stop(true, SMART_TAP_MS, SMART_TAP_MS));
-        assert!(smart_up_should_stop(
-            true,
-            SMART_TAP_MS + 5000,
-            SMART_TAP_MS
-        ));
-        // A press that closed (toggle-off) never stops on release.
-        assert_eq!(smart_down(true), SmartDown::Close);
-        assert!(!smart_up_should_stop(
-            false,
-            SMART_TAP_MS + 5000,
-            SMART_TAP_MS
-        ));
-        // Custom ceiling honored.
-        assert!(!smart_up_should_stop(true, 100, 150));
-        assert!(smart_up_should_stop(true, 150, 150));
+        use crate::settings::ActivationMode::Smart;
+        use ActivationEffect::{Close, Open};
+
+        let mut activation = Activation::default();
+        let action = HotkeyAction::DictationToggle;
+        let down = HotkeyEvent::Down(action, Smart);
+        let up = HotkeyEvent::Up(action, Smart);
+        let now = Instant::now();
+        let ceiling = Duration::from_millis(SMART_TAP_MS);
+
+        assert_eq!(
+            activation.handle(down, Some(0), now, SMART_TAP_MS),
+            Some(Open)
+        );
+        assert_eq!(
+            activation.handle(
+                up,
+                Some(0),
+                now + ceiling - Duration::from_millis(1),
+                SMART_TAP_MS
+            ),
+            None
+        );
+        assert_eq!(
+            activation.handle(down, Some(0), now + ceiling, SMART_TAP_MS),
+            Some(Close)
+        );
+        assert_eq!(
+            activation.handle(up, Some(0), now + ceiling * 2, SMART_TAP_MS),
+            None
+        );
+
+        assert_eq!(activation.handle(down, Some(0), now, 100), Some(Open));
+        assert_eq!(
+            activation.handle(up, Some(0), now + Duration::from_millis(100), 100),
+            Some(Close)
+        );
+    }
+
+    #[test]
+    fn releases_only_close_the_session_their_binding_opened() {
+        use crate::settings::ActivationMode::{Push, Smart, Tap};
+        use ActivationEffect::{Cancel, Close, Open};
+
+        let action = HotkeyAction::DictationToggle;
+        let now = Instant::now();
+        let later = now + Duration::from_secs(1);
+        let down = HotkeyEvent::Down;
+        let up = HotkeyEvent::Up;
+        for mode in [Push, Smart, Tap] {
+            let mut activation = Activation::default();
+            assert_eq!(activation.handle(HotkeyEvent::Cancel, None, now, 100), None);
+            assert_eq!(
+                activation.handle(down(action, mode), Some(0), now, 100),
+                Some(Open)
+            );
+            assert_eq!(
+                activation.handle(down(action, Push), Some(1), now, 100),
+                None
+            );
+            assert_eq!(
+                activation.handle(up(action, Push), Some(1), later, 100),
+                None
+            );
+            assert_eq!(
+                activation.handle(HotkeyEvent::Cancel, None, later, 100),
+                Some(Cancel)
+            );
+            assert_eq!(
+                activation.handle(down(action, Push), Some(2), later, 100),
+                Some(Open)
+            );
+            assert_eq!(
+                activation.handle(up(action, mode), Some(0), later, 100),
+                None
+            );
+            assert_eq!(
+                activation.handle(up(action, Push), Some(2), later, 100),
+                Some(Close)
+            );
+        }
     }
 
     #[test]
@@ -948,8 +1032,10 @@ mod tests {
                 vec![release, syn],
             ])),
         )];
+        let record_edge = callback.clone();
+        let binding_callback: BindingCallback = Arc::new(move |event, _| record_edge(event));
         for _ in 0..4 {
-            poll_events(&mut devices, &mut held, &mut watched, &callback);
+            poll_events(&mut devices, &mut held, &mut watched, &binding_callback);
         }
         assert_edges(&seen.lock().unwrap());
         if std::env::var_os("MYWHISPER_NATIVE_HOTKEY_GATE").is_some() {
