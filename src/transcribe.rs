@@ -871,6 +871,27 @@ fn whisper_binary(data_dir: &Path, backend: GpuBackendSetting) -> Result<PathBuf
     }
 }
 
+/// The engine binary `plan` would start, checked without starting it
+/// (the settings Test uses this; dictation's `ensure_*` does the same).
+pub fn plan_runtime_ready(plan: &Plan, s: &SttSettings, data_dir: &Path) -> Result<(), String> {
+    match plan {
+        Plan::WhisperHttp { .. } => whisper_binary(data_dir, s.gpu_backend).map(drop),
+        Plan::SherpaOnline { .. } => sherpa_binary(
+            data_dir,
+            s.sherpa_backend,
+            "sherpa-onnx-online-websocket-server",
+        )
+        .map(drop),
+        Plan::SherpaOffline { .. } => sherpa_binary(
+            data_dir,
+            s.sherpa_backend,
+            "sherpa-onnx-offline-websocket-server",
+        )
+        .map(drop),
+        _ => Ok(()),
+    }
+}
+
 fn sherpa_binary(
     data_dir: &Path,
     backend: SherpaBackendSetting,
@@ -2017,18 +2038,34 @@ fn openai_dictionary_hint(base: &str, words: &[String]) -> Vec<(&'static str, St
         .collect()
 }
 
-/// Transcription endpoint for an OpenAI-compatible base: a full
-/// `.../transcriptions` URL is used as-is, otherwise
-/// `/v1/audio/transcriptions` is appended (once, even under `/v1`).
-pub fn openai_transcriptions_url(base: &str) -> String {
-    let base = base.trim_end_matches('/');
-    let url = if base.ends_with("transcriptions") {
-        base.to_string()
-    } else {
-        format!("{base}/v1/audio/transcriptions")
-    };
-    // Some OpenAI-compatible servers live under /v1 already.
-    url.replace("/v1/v1/", "/v1/")
+/// Transcription endpoint for an OpenAI-compatible base, built from
+/// parsed path segments so the host and query are never rewritten: a
+/// path ending in a `...transcriptions` segment is used as-is,
+/// otherwise `v1/audio/transcriptions` is appended (`v1` once, even
+/// when the base already ends in it).
+pub fn openai_transcriptions_url(base: &str) -> Result<reqwest::Url, String> {
+    let mut url = reqwest::Url::parse(base.trim()).map_err(|e| format!("server URL: {e}"))?;
+    let segments: Vec<String> = url
+        .path_segments()
+        .ok_or("server URL has no path")?
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    let last = segments.last().map(String::as_str);
+    let full = last.is_some_and(|s| s.ends_with("transcriptions"));
+    let under_v1 = last == Some("v1");
+    let mut path = url
+        .path_segments_mut()
+        .map_err(|_| "server URL has no path".to_string())?;
+    path.clear().extend(&segments);
+    if !full {
+        if !under_v1 {
+            path.push("v1");
+        }
+        path.extend(["audio", "transcriptions"]);
+    }
+    drop(path);
+    Ok(url)
 }
 
 fn openai_compat_transcribe(
@@ -2040,7 +2077,7 @@ fn openai_compat_transcribe(
     wav: &[u8],
 ) -> Result<String, String> {
     let base = base.trim_end_matches('/');
-    let url = openai_transcriptions_url(base);
+    let url = openai_transcriptions_url(base).map_err(|e| format!("cloud transcribe: {e}"))?;
     let boundary = "mywhispercloud";
     // "auto" = omit: the API auto-detects when no language is sent.
     let mut fields = vec![("model", model)];
@@ -2055,7 +2092,7 @@ fn openai_compat_transcribe(
         Some(("file", "audio.wav", "audio/wav", wav)),
     );
     let mut req = http_client()?
-        .post(&url)
+        .post(url)
         .header(
             "Content-Type",
             format!("multipart/form-data; boundary={boundary}"),

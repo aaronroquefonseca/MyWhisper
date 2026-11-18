@@ -6,8 +6,8 @@
 //! dictation uses ([`crate::transcribe::entry_plan`] for STT, the
 //! entry's kind/provider for LLMs), so Test can only reach the
 //! destination a real dictation would:
-//! - Local STT: the runtime's prerequisite check (model and engine
-//!   files), no inference.
+//! - Local STT: the runtime's prerequisite check (model files and the
+//!   selected engine binary), no inference.
 //! - Self-hosted HTTP: `GET` the model list beside the transcription
 //!   endpoint. Self-hosted `ws(s)`: a TCP connect (reachability only).
 //! - OpenAI/Groq/Mistral: authenticated model list, exact model id.
@@ -17,8 +17,10 @@
 //! - Ollama: read-only `/api/tags`, exact model name. Never loads it.
 //!
 //! Plain HTTP is allowed wherever dictation allows it (local and LAN
-//! servers); cross-origin redirects are never followed; transport errors
-//! are reported by class, never by text (it can carry URLs).
+//! servers); a probe URL whose origin differs from the configured one is
+//! refused before any credential is attached; cross-origin redirects are
+//! never followed; transport errors are reported by class, never by text
+//! (it can carry URLs).
 
 use std::net::TcpStream;
 use std::path::Path;
@@ -117,13 +119,14 @@ pub fn valid_server_url(value: &str, websocket: bool) -> bool {
     })
 }
 
-/// Credential binding: a saved key belongs to this destination. The
-/// edit forms drop the key when the destination changes.
+/// Credential binding: a key belongs to this destination (vendor, or
+/// server origin plus service path). The forms drop the key when the
+/// destination changes; see [`key_stays`].
 pub fn stt_destination(entry: &SttChainEntry) -> String {
     match entry.kind {
         SttEntryKind::Local => "local".to_string(),
         SttEntryKind::Cloud => format!("cloud:{}", entry.provider),
-        SttEntryKind::SelfHosted => format!("server:{}", origin(&entry.url)),
+        SttEntryKind::SelfHosted => format!("server:{}", service(&entry.url)),
     }
 }
 
@@ -131,14 +134,42 @@ pub fn llm_destination(entry: &LlmEntry) -> String {
     match entry.kind {
         LlmKind::Local => "local".to_string(),
         LlmKind::Cloud => format!("cloud:{}", entry.provider.name()),
-        LlmKind::Ollama => format!("ollama:{}", origin(&entry.url)),
+        LlmKind::Ollama => format!("ollama:{}", service(&entry.url)),
     }
 }
 
-fn origin(url: &str) -> String {
+/// Origin plus path (trailing `/` ignored): `/first` and `/second` on
+/// one server are different services.
+fn service(url: &str) -> String {
     match Url::parse(url.trim()) {
-        Ok(u) => u.origin().ascii_serialization(),
+        Ok(u) => format!(
+            "{}{}",
+            u.origin().ascii_serialization(),
+            u.path().trim_end_matches('/')
+        ),
         Err(_) => url.trim().to_string(),
+    }
+}
+
+/// Form-side binding of the typed or prefilled key to `dest`, run on
+/// every field change. A key binds to the destination present when it
+/// is entered; `false` = the destination moved since, so the caller
+/// must clear the key fields (and `bound` is reset).
+pub fn key_stays(bound: &mut Option<String>, dest: String, has_key: bool) -> bool {
+    if !has_key {
+        *bound = None;
+        return true;
+    }
+    match bound {
+        Some(d) if *d != dest => {
+            *bound = None;
+            false
+        }
+        Some(_) => true,
+        None => {
+            *bound = Some(dest);
+            true
+        }
     }
 }
 
@@ -201,6 +232,24 @@ pub fn llm_blocker(entry: &LlmEntry) -> Option<Blocker> {
     }
 }
 
+/// What the Local row's result depends on: a change to any of these
+/// invalidates a shown or running Local test.
+pub fn local_config(
+    s: &SttSettings,
+) -> (
+    LocalSttProvider,
+    String,
+    crate::settings::GpuBackendSetting,
+    crate::settings::SherpaBackendSetting,
+) {
+    (
+        s.local_provider,
+        local_model_id(s),
+        s.gpu_backend,
+        s.sherpa_backend,
+    )
+}
+
 /// The local model id the Local chain entry would run.
 pub fn local_model_id(s: &SttSettings) -> String {
     match s.local_provider {
@@ -233,7 +282,15 @@ pub fn probe_stt(entry: &SttChainEntry, s: &SttSettings, data_dir: &Path) -> Tes
         Plan::WhisperHttp { .. }
         | Plan::SherpaOnline { .. }
         | Plan::SherpaOffline { .. }
-        | Plan::WhistleCli { .. } => timed(fallback_model, || Outcome::Installed),
+        | Plan::WhistleCli { .. } => {
+            timed(
+                fallback_model,
+                || match crate::transcribe::plan_runtime_ready(&plan, s, data_dir) {
+                    Ok(()) => Outcome::Installed,
+                    Err(_) => Outcome::NotInstalled,
+                },
+            )
+        }
         Plan::SelfHostedWs { url } => timed(fallback_model, || match Url::parse(&url) {
             Ok(url) => tcp_reachable(&url, PROBE_TIMEOUT),
             Err(_) => Outcome::Blocked(Blocker::BadUrl),
@@ -242,16 +299,22 @@ pub fn probe_stt(entry: &SttChainEntry, s: &SttSettings, data_dir: &Path) -> Tes
             base, key, model, ..
         } => {
             let shown = model.clone();
-            timed(shown, || {
-                let url = models_url(&crate::transcribe::openai_transcriptions_url(&base));
-                openai_models(&url, &key, &model, strict)
-            })
+            timed(
+                shown,
+                || match crate::transcribe::openai_transcriptions_url(&base) {
+                    Ok(endpoint) => {
+                        openai_models(models_url(&endpoint).as_str(), &base, &key, &model, strict)
+                    }
+                    Err(_) => Outcome::Blocked(Blocker::BadUrl),
+                },
+            )
         }
         Plan::CloudDeepgram {
             base, key, model, ..
         } => timed(model, || {
             let url = format!("{}/v1/projects", base.trim_end_matches('/'));
-            match fetch(&url, Auth::Header("Authorization", &format!("Token {key}"))) {
+            let auth = Auth::Header("Authorization", &format!("Token {key}"));
+            match fetch(&url, &base, auth) {
                 Ok((code, _)) => status_outcome(code).err().unwrap_or(Outcome::KeyAccepted),
                 Err(outcome) => outcome,
             }
@@ -290,33 +353,43 @@ fn probe_llm_at(entry: &LlmEntry, cloud_base: &str) -> TestResult {
         }
         (LlmKind::Cloud, CloudLlm::OpenRouter) => {
             // The model list is public: only /key proves the key works.
-            match fetch(&format!("{base}/key"), Auth::Bearer(key)) {
+            match fetch(&format!("{base}/key"), base, Auth::Bearer(key)) {
                 Ok((code, _)) => match status_outcome(code) {
-                    Ok(()) => openai_models(&format!("{base}/models"), "", &model, true),
+                    Ok(()) => openai_models(
+                        &format!("{base}/models"),
+                        base,
+                        "",
+                        openrouter_catalog_id(&model),
+                        true,
+                    ),
                     Err(outcome) => outcome,
                 },
                 Err(outcome) => outcome,
             }
         }
         (LlmKind::Cloud, CloudLlm::OpenAI | CloudLlm::Groq) => {
-            openai_models(&format!("{base}/models"), key, &model, true)
+            openai_models(&format!("{base}/models"), base, key, &model, true)
         }
     })
 }
 
 /// Model list beside an OpenAI-style transcription endpoint
-/// (`.../audio/transcriptions` → `.../models`).
-fn models_url(transcriptions: &str) -> String {
-    let t = transcriptions.trim_end_matches('/');
-    if let Some(prefix) = t.strip_suffix("/audio/transcriptions") {
-        format!("{prefix}/models")
-    } else {
-        // Custom endpoint name: its sibling `models`.
-        match t.rsplit_once('/') {
-            Some((prefix, _)) => format!("{prefix}/models"),
-            None => format!("{t}/models"),
+/// (`.../audio/transcriptions` → `.../models`; a custom endpoint name
+/// → its sibling `models`). Path segments only: host and query stay.
+fn models_url(transcriptions: &Url) -> Url {
+    let audio = transcriptions
+        .path_segments()
+        .and_then(|mut s| s.nth_back(1))
+        == Some("audio");
+    let mut url = transcriptions.clone();
+    if let Ok(mut path) = url.path_segments_mut() {
+        path.pop();
+        if audio {
+            path.pop();
         }
+        path.push("models");
     }
+    url
 }
 
 /// Probe credentials; an empty key sends no auth header.
@@ -346,10 +419,13 @@ fn client() -> Option<Client> {
         .ok()
 }
 
-/// GET with policy checks. `Err` carries a final outcome.
-fn fetch(url: &str, auth: Auth) -> Result<(u16, String), Outcome> {
+/// GET with policy checks. `configured`: the URL the user (or the
+/// provider constant) set; the probe must stay on its origin before any
+/// credential is attached. `Err` carries a final outcome.
+fn fetch(url: &str, configured: &str, auth: Auth) -> Result<(u16, String), Outcome> {
     let parsed = Url::parse(url).map_err(|_| Outcome::Blocked(Blocker::BadUrl))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
+    let same_origin = Url::parse(configured.trim()).is_ok_and(|c| c.origin() == parsed.origin());
+    if !same_origin || !matches!(parsed.scheme(), "http" | "https") {
         return Err(Outcome::Blocked(Blocker::BadUrl));
     }
     let client = client().ok_or(Outcome::Network)?;
@@ -398,7 +474,7 @@ fn model_resource(base: &str, model: &str, auth: Auth) -> Outcome {
     if let Ok(mut path) = url.path_segments_mut() {
         path.push(model);
     }
-    match fetch(url.as_str(), auth) {
+    match fetch(url.as_str(), base, auth) {
         Ok((code, _)) => status_outcome(code)
             .err()
             .unwrap_or(Outcome::ModelAvailable),
@@ -408,8 +484,8 @@ fn model_resource(base: &str, model: &str, auth: Auth) -> Outcome {
 
 /// OpenAI-style `{"data":[{"id":...}]}` list. `strict`: the model must
 /// be listed (cloud); otherwise an answering server passes.
-fn openai_models(url: &str, key: &str, model: &str, strict: bool) -> Outcome {
-    let (code, body) = match fetch(url, Auth::Bearer(key)) {
+fn openai_models(url: &str, configured: &str, key: &str, model: &str, strict: bool) -> Outcome {
+    let (code, body) = match fetch(url, configured, Auth::Bearer(key)) {
         Ok(r) => r,
         Err(outcome) => return outcome,
     };
@@ -422,7 +498,7 @@ fn openai_models(url: &str, key: &str, model: &str, strict: bool) -> Outcome {
         };
     }
     match listed_ids(&body) {
-        Some(ids) if ids.iter().any(|id| model_id_matches(id, model)) => Outcome::ModelAvailable,
+        Some(ids) if ids.iter().any(|id| id == model) => Outcome::ModelAvailable,
         Some(_) if strict => Outcome::ModelMissing,
         None if strict => Outcome::BadReply,
         _ => Outcome::ServerAnswered,
@@ -440,16 +516,24 @@ fn listed_ids(body: &str) -> Option<Vec<String>> {
     )
 }
 
-/// Exact id; OpenRouter routing suffixes (`:nitro`, `:floor`, ...)
-/// fall back to the base id when the suffixed one is not listed.
-fn model_id_matches(id: &str, model: &str) -> bool {
-    id == model || model.rsplit_once(':').is_some_and(|(base, _)| id == base)
+/// OpenRouter routing variants: accepted on any model id and never
+/// listed in `/models`. Static variants (`:free`, `:batch`, ...) are
+/// listed ids and must match exactly.
+/// <https://openrouter.ai/docs/guides/routing/model-variants>
+const OPENROUTER_DYNAMIC_VARIANTS: [&str; 4] = ["nitro", "floor", "exacto", "online"];
+
+/// The id OpenRouter's catalog lists for `model`.
+fn openrouter_catalog_id(model: &str) -> &str {
+    match model.rsplit_once(':') {
+        Some((base, variant)) if OPENROUTER_DYNAMIC_VARIANTS.contains(&variant) => base,
+        _ => model,
+    }
 }
 
 /// Read-only `/api/tags` check; never loads the model.
 fn probe_ollama(url: &str, model: &str, key: &str) -> Outcome {
-    let url = format!("{}/api/tags", url.trim().trim_end_matches('/'));
-    let (code, body) = match fetch(&url, Auth::Bearer(key)) {
+    let tags = format!("{}/api/tags", url.trim().trim_end_matches('/'));
+    let (code, body) = match fetch(&tags, url, Auth::Bearer(key)) {
         Ok(r) => r,
         Err(outcome) => return outcome,
     };
@@ -629,7 +713,10 @@ mod tests {
         let s2 = stt(SttEntryKind::SelfHosted, "", "https://h:8000/other", "k");
         let s3 = stt(SttEntryKind::SelfHosted, "", "https://evil:8000/v1", "k");
         let s4 = stt(SttEntryKind::SelfHosted, "", "http://h:8000/v1", "k");
-        assert_eq!(stt_destination(&s1), stt_destination(&s2));
+        let s5 = stt(SttEntryKind::SelfHosted, "", "https://h:8000/v1/", "k");
+        // Same origin, other service path: the key does not follow.
+        assert_ne!(stt_destination(&s1), stt_destination(&s2));
+        assert_eq!(stt_destination(&s1), stt_destination(&s5));
         assert_ne!(stt_destination(&s1), stt_destination(&s3));
         assert_ne!(stt_destination(&s1), stt_destination(&s4));
         assert_ne!(stt_destination(&a), stt_destination(&s1));
@@ -650,6 +737,104 @@ mod tests {
         let r = llm(LlmKind::Cloud, CloudLlm::OpenRouter, "", "m", "");
         assert_ne!(llm_destination(&o), llm_destination(&c));
         assert_ne!(llm_destination(&c), llm_destination(&r));
+        let first = llm(LlmKind::Ollama, CloudLlm::OpenAI, "http://h/first", "m", "");
+        let second = llm(
+            LlmKind::Ollama,
+            CloudLlm::OpenAI,
+            "http://h/second",
+            "m",
+            "",
+        );
+        assert_ne!(llm_destination(&first), llm_destination(&second));
+    }
+
+    #[test]
+    fn fresh_draft_key_binds_to_destination_at_entry() {
+        // Draft form: no saved binding; a key typed for A must not
+        // reach B after the URL changes.
+        let a = stt_destination(&stt(SttEntryKind::SelfHosted, "", "http://a:8000", "k"));
+        let b = stt_destination(&stt(SttEntryKind::SelfHosted, "", "http://b:8000", "k"));
+        let mut bound = None;
+        assert!(key_stays(&mut bound, a.clone(), false));
+        assert_eq!(bound, None);
+        assert!(key_stays(&mut bound, a.clone(), true));
+        assert_eq!(bound.as_deref(), Some(a.as_str()));
+        assert!(key_stays(&mut bound, a.clone(), true));
+        assert!(
+            !key_stays(&mut bound, b.clone(), true),
+            "key must be cleared"
+        );
+        assert_eq!(bound, None);
+        // Cleared fields: nothing bound; a new key binds to B.
+        assert!(key_stays(&mut bound, b.clone(), false));
+        assert!(key_stays(&mut bound, b.clone(), true));
+        assert_eq!(bound.as_deref(), Some(b.as_str()));
+    }
+
+    #[test]
+    fn endpoint_urls_never_change_host_or_absorb_paths_into_query() {
+        let t = |base: &str| {
+            crate::transcribe::openai_transcriptions_url(base)
+                .unwrap()
+                .to_string()
+        };
+        // A host ending in "transcriptions" is a host, not an endpoint.
+        assert_eq!(
+            t("http://speech-transcriptions"),
+            "http://speech-transcriptions/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            t("http://h:8000/v1?tenant=a"),
+            "http://h:8000/v1/audio/transcriptions?tenant=a"
+        );
+        assert_eq!(
+            t("https://api.groq.com/openai/v1/audio/transcriptions/"),
+            "https://api.groq.com/openai/v1/audio/transcriptions"
+        );
+        let m = |base: &str| {
+            models_url(&crate::transcribe::openai_transcriptions_url(base).unwrap()).to_string()
+        };
+        assert_eq!(
+            m("http://speech-transcriptions"),
+            "http://speech-transcriptions/v1/models"
+        );
+        assert_eq!(
+            m("http://h:8000/v1?tenant=a"),
+            "http://h:8000/v1/models?tenant=a"
+        );
+        assert_eq!(
+            m("http://h:8000/custom/transcriptions"),
+            "http://h:8000/custom/models"
+        );
+        // End to end: the key reaches the configured server only, on
+        // the models path, with the query kept.
+        let server = serve(1, |_| json("200 OK", r#"{"data":[]}"#));
+        let entry = stt(
+            SttEntryKind::SelfHosted,
+            "",
+            &format!("{}/v1?tenant=a", server.base),
+            "dummy-key",
+        );
+        let r = probe_stt(&entry, &SttSettings::default(), Path::new(""));
+        assert_eq!(r.outcome, Outcome::ServerAnswered);
+        let heads = server.seen.lock().unwrap();
+        assert!(
+            heads[0].starts_with("GET /v1/models?tenant=a "),
+            "{}",
+            heads[0]
+        );
+    }
+
+    #[test]
+    fn probe_refuses_other_origin_before_sending_key() {
+        let other = serve(1, |_| json("200 OK", "{}"));
+        let url = format!("{}/v1/models", other.base);
+        let configured = "http://127.0.0.1:1/v1";
+        assert_eq!(
+            fetch(&url, configured, Auth::Bearer("dummy-key")).err(),
+            Some(Outcome::Blocked(Blocker::BadUrl))
+        );
+        assert!(other.seen.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -676,7 +861,9 @@ mod tests {
 
     #[test]
     fn self_hosted_models_url_follows_runtime_path() {
-        let models = |base: &str| models_url(&crate::transcribe::openai_transcriptions_url(base));
+        let models = |base: &str| {
+            models_url(&crate::transcribe::openai_transcriptions_url(base).unwrap()).to_string()
+        };
         assert_eq!(models("http://h:8000"), "http://h:8000/v1/models");
         assert_eq!(models("http://h:8000/v1"), "http://h:8000/v1/models");
         assert_eq!(
@@ -833,6 +1020,128 @@ mod tests {
         assert_eq!(r.outcome, Outcome::Installed);
         assert_eq!(r.model, "whistle-v1");
         let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn local_whisper_and_sherpa_need_runtime_pack() {
+        let data = scratch("runtime");
+        let local = stt(SttEntryKind::Local, "", "", "");
+        let touch = |path: std::path::PathBuf| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"").unwrap();
+        };
+        // Whisper: model file present, whisper-cpu pack missing.
+        let whisper = SttSettings {
+            local_provider: LocalSttProvider::OpenAi,
+            gpu_backend: crate::settings::GpuBackendSetting::Cpu,
+            ..SttSettings::default()
+        };
+        let entry = crate::stt::find_model(&whisper.whisper_model).unwrap();
+        touch(crate::stt::model_dir(&data, entry).join(format!(
+            "ggml-{}.bin",
+            crate::stt::whisper_file_stem(entry.id)
+        )));
+        assert_eq!(
+            probe_stt(&local, &whisper, &data).outcome,
+            Outcome::NotInstalled
+        );
+        let pack = crate::stt::GPU_PACKS
+            .iter()
+            .find(|p| p.id == "whisper-cpu")
+            .unwrap();
+        touch(crate::stt::gpu_bin_dir(&data, pack).join("whisper-server"));
+        assert_eq!(
+            probe_stt(&local, &whisper, &data).outcome,
+            Outcome::Installed
+        );
+        // Sherpa (Oruk, offline): model files present, sherpa-cpu missing.
+        let oruk = SttSettings {
+            local_provider: LocalSttProvider::Oruk,
+            sherpa_backend: crate::settings::SherpaBackendSetting::Cpu,
+            ..SttSettings::default()
+        };
+        let dir = crate::stt::model_dir(&data, crate::stt::find_model("orukeet-v0.1.0").unwrap());
+        for f in [
+            "encoder.int8.onnx",
+            "decoder.int8.onnx",
+            "joiner.int8.onnx",
+            "tokens.txt",
+        ] {
+            touch(dir.join(f));
+        }
+        assert_eq!(
+            probe_stt(&local, &oruk, &data).outcome,
+            Outcome::NotInstalled
+        );
+        let pack = crate::stt::SHERPA_PACKS
+            .iter()
+            .find(|p| p.id == "sherpa-cpu")
+            .unwrap();
+        touch(
+            crate::stt::sherpa_bin_dir(&data, pack)
+                .join("bin/sherpa-onnx-offline-websocket-server"),
+        );
+        assert_eq!(probe_stt(&local, &oruk, &data).outcome, Outcome::Installed);
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn local_config_tracks_provider_model_and_runtime() {
+        let base = SttSettings {
+            local_provider: LocalSttProvider::OpenAi,
+            ..SttSettings::default()
+        };
+        let cohere = SttSettings {
+            local_provider: LocalSttProvider::Cohere,
+            ..base.clone()
+        };
+        let model = SttSettings {
+            whisper_model: "other".into(),
+            ..base.clone()
+        };
+        let runtime = SttSettings {
+            gpu_backend: crate::settings::GpuBackendSetting::Vulkan,
+            ..base.clone()
+        };
+        let sherpa = SttSettings {
+            sherpa_backend: crate::settings::SherpaBackendSetting::Cuda,
+            ..base.clone()
+        };
+        for changed in [&cohere, &model, &runtime, &sherpa] {
+            assert_ne!(local_config(&base), local_config(changed));
+        }
+        assert_eq!(local_config(&base), local_config(&base.clone()));
+    }
+
+    #[test]
+    fn catalog_ids_match_exactly_except_openrouter_routing_variants() {
+        assert_eq!(openrouter_catalog_id("a/b:nitro"), "a/b");
+        assert_eq!(openrouter_catalog_id("a/b:floor"), "a/b");
+        assert_eq!(openrouter_catalog_id("a/b:free"), "a/b:free");
+        assert_eq!(openrouter_catalog_id("a/b:typo"), "a/b:typo");
+        let openai = serve(1, |_| json("200 OK", r#"{"data":[{"id":"whisper-1"}]}"#));
+        let typo = llm(LlmKind::Cloud, CloudLlm::OpenAI, "", "whisper-1:typo", "k");
+        assert_eq!(
+            probe_llm_at(&typo, &format!("{}/v1", openai.base)).outcome,
+            Outcome::ModelMissing
+        );
+        let router = serve(4, |head| {
+            if head.starts_with("GET /api/v1/key ") {
+                json("200 OK", "{}")
+            } else {
+                json("200 OK", r#"{"data":[{"id":"a/b"}]}"#)
+            }
+        });
+        let base = format!("{}/api/v1", router.base);
+        let or = |model: &str| llm(LlmKind::Cloud, CloudLlm::OpenRouter, "", model, "k");
+        assert_eq!(
+            probe_llm_at(&or("a/b:free"), &base).outcome,
+            Outcome::ModelMissing
+        );
+        assert_eq!(
+            probe_llm_at(&or("a/b:nitro"), &base).outcome,
+            Outcome::ModelAvailable
+        );
     }
 
     #[test]

@@ -321,7 +321,7 @@ struct SttDraft {
     key_e: gtk4::glib::WeakRef<Entry>,
     sh_key_e: gtk4::glib::WeakRef<Entry>,
     stream_intent: Rc<RefCell<bool>>,
-    /// Destination the prefilled key was saved for (editing only).
+    /// Destination the key in the form was entered or saved for.
     bound: Rc<RefCell<Option<String>>>,
 }
 
@@ -355,15 +355,17 @@ impl SttDraft {
         })
     }
 
-    /// Current entry, after dropping a saved key whose destination
-    /// (vendor or server origin) no longer matches.
+    /// Current entry, after dropping a typed or saved key whose
+    /// destination (vendor, or server origin and path) moved since.
     fn bound_entry(&self) -> Option<crate::settings::SttChainEntry> {
         let entry = self.entry()?;
         let dest = crate::provider_test::stt_destination(&entry);
-        if self.bound.borrow().as_ref().is_none_or(|d| *d == dest) {
+        let has_key = [&self.key_e, &self.sh_key_e]
+            .iter()
+            .any(|k| k.upgrade().is_some_and(|k| !k.text().trim().is_empty()));
+        if crate::provider_test::key_stays(&mut self.bound.borrow_mut(), dest, has_key) {
             return Some(entry);
         }
-        *self.bound.borrow_mut() = None;
         for key in [&self.key_e, &self.sh_key_e] {
             if let Some(key) = key.upgrade() {
                 key.set_text("");
@@ -429,10 +431,12 @@ impl LmDraft {
     fn bound_entry(&self) -> Option<crate::settings::LlmEntry> {
         let entry = self.entry()?;
         let dest = crate::provider_test::llm_destination(&entry);
-        if self.bound.borrow().as_ref().is_none_or(|d| *d == dest) {
+        let has_key = [&self.key_e, &self.cloud_key_e]
+            .iter()
+            .any(|k| k.upgrade().is_some_and(|k| !k.text().trim().is_empty()));
+        if crate::provider_test::key_stays(&mut self.bound.borrow_mut(), dest, has_key) {
             return Some(entry);
         }
-        *self.bound.borrow_mut() = None;
         for key in [&self.key_e, &self.cloud_key_e] {
             if let Some(key) = key.upgrade() {
                 key.set_text("");
@@ -2436,10 +2440,6 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
                     form.name_e.set_text(&e.name);
                     form.url_e.set_text(&e.url);
                     form.model_e.set_text(&e.model);
-                    // The key only fills the field of its own kind.
-                    let cloud = matches!(e.kind, SttEntryKind::Cloud);
-                    form.key_e.set_text(if cloud { &e.api_key } else { "" });
-                    form.sh_key_e.set_text(if cloud { "" } else { &e.api_key });
                     *form.stream_intent.borrow_mut() = e.streaming;
                     {
                         let ws = crate::transcribe::is_ws_url(e.url.trim_start());
@@ -2456,6 +2456,11 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
                         SttEntryKind::Cloud => 1,
                         _ => 0,
                     });
+                    // Keys last: they bind to the destination filled above.
+                    // The key only fills the field of its own kind.
+                    let cloud = matches!(e.kind, SttEntryKind::Cloud);
+                    form.key_e.set_text(if cloud { &e.api_key } else { "" });
+                    form.sh_key_e.set_text(if cloud { "" } else { &e.api_key });
                     form.add_btn.set_label(tr("action.save"));
                     form.cancel_btn.set_visible(true);
                     *form.editing.borrow_mut() = Some(id.clone());
@@ -2498,6 +2503,26 @@ fn fill_stt_chain(list: &GtkBox, state: &Rc<AppState>, form: &SttForm, add_local
         let (test_box, test_btn, test_row) =
             TestRow::new(&format!("{} — {}", tr("action.test"), entry.name));
         test_row.reset(crate::provider_test::stt_blocker(entry));
+        if matches!(entry.kind, SttEntryKind::Local) {
+            // The local configuration lives in the pills, model list and
+            // runtime pickers below: any change there drops a shown or
+            // running result. Polled like the model list; ends with the row.
+            let state = state.clone();
+            let row = test_row.clone();
+            let alive = test_box.downgrade();
+            let mut seen = crate::provider_test::local_config(&state.settings.borrow().stt);
+            gtk4::glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+                if alive.upgrade().is_none() {
+                    return gtk4::glib::ControlFlow::Break;
+                }
+                let now = crate::provider_test::local_config(&state.settings.borrow().stt);
+                if now != seen {
+                    seen = now;
+                    row.reset(None);
+                }
+                gtk4::glib::ControlFlow::Continue
+            });
+        }
         {
             let state = state.clone();
             let entry = entry.clone();
@@ -3786,11 +3811,6 @@ fn fill_lm_models(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
                 form.name_e.set_text(&e.name);
                 form.url_e.set_text(&e.url);
                 form.ollama_model_e.set_text(&e.model);
-                // The key only fills the field of its own kind.
-                let cloud = e.kind == crate::settings::LlmKind::Cloud;
-                form.key_e.set_text(if cloud { "" } else { &e.api_key });
-                form.cloud_key_e
-                    .set_text(if cloud { &e.api_key } else { "" });
                 let tsel = match e.thinking {
                     Some(true) => 1,
                     Some(false) => 2,
@@ -3824,6 +3844,12 @@ fn fill_lm_models(list: &GtkBox, state: &Rc<AppState>, form: &LmForm) {
                     crate::settings::LlmKind::Cloud => 2,
                     _ => 0,
                 });
+                // Keys last: they bind to the destination filled above.
+                // The key only fills the field of its own kind.
+                let cloud = e.kind == crate::settings::LlmKind::Cloud;
+                form.key_e.set_text(if cloud { "" } else { &e.api_key });
+                form.cloud_key_e
+                    .set_text(if cloud { &e.api_key } else { "" });
                 form.add_btn.set_label(tr("action.save"));
                 form.cancel_btn.set_visible(true);
                 *form.editing.borrow_mut() = Some(id.clone());
@@ -3927,6 +3953,16 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         e.set_hexpand(true);
     }
     key_e.set_visibility(false);
+    let draft = LmDraft {
+        kind_dd: kind_dd.downgrade(),
+        provider_dd: provider_dd.downgrade(),
+        url_e: url_e.downgrade(),
+        ollama_model_e: ollama_model_e.downgrade(),
+        cloud_model_e: cloud_model_e.downgrade(),
+        key_e: key_e.downgrade(),
+        cloud_key_e: cloud_key_e.downgrade(),
+        bound: Rc::new(RefCell::new(None)),
+    };
     cloud_key_e.set_visibility(false);
     url_e.set_text("http://127.0.0.1:11434");
     ollama_model_e.set_text("gemma4:e4b");
@@ -4013,14 +4049,16 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
             ollama_box.append(&b);
         }
         {
-            let url_e = url_e.clone();
-            let ollama_model_e = ollama_model_e.clone();
             let keepalive_dd = keepalive_dd.clone();
-            let key_e = key_e.clone();
+            let draft = draft.clone();
             update_btn.connect_clicked(move |button| {
-                let url = url_e.text().trim().to_string();
-                let model = ollama_model_e.text().trim().to_string();
-                let token = key_e.text().trim().to_string();
+                // Drops a token whose server moved since it was entered.
+                let Some(entry) = draft.bound_entry() else {
+                    return;
+                };
+                let url = entry.url;
+                let model = entry.model;
+                let token = entry.api_key.trim().to_string();
                 if !valid_server_url(&url, false) || model.is_empty() {
                     super::app::toast(button, tr("lm.required"));
                     return;
@@ -4181,17 +4219,7 @@ fn language_models_page(state: &Rc<AppState>) -> GtkBox {
         add_btn: add_btn.clone(),
         cancel_btn: cancel_btn.clone(),
         editing: Rc::new(RefCell::new(None)),
-        bound: Rc::new(RefCell::new(None)),
-    };
-    let draft = LmDraft {
-        kind_dd: kind_dd.downgrade(),
-        provider_dd: provider_dd.downgrade(),
-        url_e: url_e.downgrade(),
-        ollama_model_e: ollama_model_e.downgrade(),
-        cloud_model_e: cloud_model_e.downgrade(),
-        key_e: key_e.downgrade(),
-        cloud_key_e: cloud_key_e.downgrade(),
-        bound: form.bound.clone(),
+        bound: draft.bound.clone(),
     };
     fill_lm_models(&list, state, &form);
     // Re-entering this page reflects cleanup priority changes without losing form drafts.
