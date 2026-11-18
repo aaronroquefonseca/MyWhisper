@@ -102,6 +102,16 @@ jobs:
           python3 scripts/test-iteration.py
           shellcheck scripts/pr-test.sh
           python3 scripts/test-pr-test.py
+      - name: Preserve batch evidence on fixture failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rust-batch-logs
+          path: |
+            batch-*.log
+            scripts/test-manifest.txt
+          if-no-files-found: error
+          retention-days: 7
       - name: Current dependency security audit
         run: |
           cargo install --locked cargo-audit --version 0.22.2

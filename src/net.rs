@@ -705,6 +705,15 @@ pub fn exchange(
         })?;
         return Err("peer revoked".to_string());
     }
+    // Test-only parked rendezvous for the authorization race: a test
+    // client installs a hook, passes the gate above, then blocks until
+    // the test releases it — so policy edits land deterministically
+    // mid-exchange instead of racing gate passage. Compiled out in
+    // production; without an installed hook this branch is a no-op.
+    #[cfg(test)]
+    if initiator && let Some(path) = store.path() {
+        crate::private_fs::replacement_fault::point("sync-client-parked", path);
+    }
     // Contact bookkeeping: unknown nodes become pending requests,
     // known ones refresh addresses.
     let mut contact_addrs: Vec<String> = peer.addresses.clone();
@@ -1950,6 +1959,36 @@ mod tests {
     use super::*;
     use crate::device::DeviceIdentity;
 
+    /// Bounded rendezvous for fixture listeners: a peer that can never
+    /// arrive (early client failure) fails the round instead of hanging
+    /// the suite. 30 s is orders of magnitude above healthy localhost
+    /// connect latency; expiry always means a true stall.
+    fn accept_bounded(
+        listener: &TcpListener,
+        what: &str,
+    ) -> std::io::Result<(TcpStream, std::net::SocketAddr)> {
+        listener.set_nonblocking(true)?;
+        let start = std::time::Instant::now();
+        loop {
+            match listener.accept() {
+                Ok(pair) => {
+                    let _ = listener.set_nonblocking(false);
+                    return Ok(pair);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if start.elapsed() > Duration::from_secs(30) {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!("{what} rendezvous stalled with no peer"),
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     #[test]
     fn stopped_engine_cancels_queued_dials_and_an_active_noise_handshake() {
         use std::sync::mpsc;
@@ -2227,11 +2266,18 @@ mod tests {
             .unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
-        let (reached, ready) = std::sync::mpsc::channel();
+        // Client-parked rendezvous: the toggle below must land AFTER the
+        // client passes its post-Hello authorization gate (epoch captured)
+        // and BEFORE policy install observes it. Toggling on the server's
+        // Hello completion instead races gate passage under load: a client
+        // that has not reached the gate fails closed with "sync disabled"
+        // (no epoch-change path) and drops the socket before the Verdict.
+        let (parked_tx, parked_rx) = std::sync::mpsc::channel();
+        let (proceed_tx, proceed_rx) = std::sync::mpsc::channel();
         let (resume, release) = std::sync::mpsc::channel();
         let remote_id = remote.clone();
         let server = std::thread::spawn(move || {
-            let (socket, _) = listener.accept().unwrap();
+            let (socket, _) = accept_bounded(&listener, "handshake server").unwrap();
             let (mut session, hash, _) =
                 NoiseStream::handshake(socket, &remote_id.noise_static, false).unwrap();
             let _hello: Hello = session.recv_json().unwrap();
@@ -2247,8 +2293,7 @@ mod tests {
                     sig: DeviceIdentity::sign_session_static(&remote_id.signing, &hash).to_vec(),
                 })
                 .unwrap();
-            reached.send(()).unwrap();
-            release.recv_timeout(Duration::from_secs(3)).unwrap();
+            release.recv_timeout(Duration::from_secs(30)).unwrap();
             session
                 .send_json(&Verdict {
                     ok: true,
@@ -2262,6 +2307,12 @@ mod tests {
         });
         let client_path = path.clone();
         let client = std::thread::spawn(move || {
+            crate::private_fs::replacement_fault::install(move |phase, _| {
+                if phase == "sync-client-parked" {
+                    let _ = parked_tx.send(());
+                    let _ = proceed_rx.recv_timeout(Duration::from_secs(30));
+                }
+            });
             sync_now(
                 &[address],
                 &client_path,
@@ -2270,12 +2321,18 @@ mod tests {
                 &remote.node_id,
             )
         });
-        ready.recv_timeout(Duration::from_secs(3)).unwrap();
+        parked_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("client never parked at the authorization gate");
         let mut settings = store.load_settings();
         settings.sync.enabled = false;
         store.save_settings(&settings).unwrap();
         settings.sync.enabled = true;
         store.save_settings(&settings).unwrap();
+        // Release the parked client first so it is reading when the
+        // server writes the Verdict; either order is safe over TCP, but
+        // this one never depends on buffer behavior.
+        proceed_tx.send(()).unwrap();
         resume.send(()).unwrap();
         assert!(
             client
@@ -2551,39 +2608,6 @@ mod tests {
             .apply_history(std::slice::from_ref(&original))
             .unwrap();
         assert!(original.text.len() > CONTENT_CAP);
-        // Every rendezvous in this fixture is bounded: a peer that can
-        // never arrive (early client failure) must fail the round, not
-        // hang the suite. 30 s is orders of magnitude above healthy
-        // localhost connect latency yet strictly below the client-side
-        // round bound, so expiry always means a true stall; the round
-        // is then retried from persisted offsets, never wedged.
-        fn accept_bounded(
-            listener: &TcpListener,
-            what: &str,
-        ) -> std::io::Result<(TcpStream, std::net::SocketAddr)> {
-            listener.set_nonblocking(true)?;
-            let start = std::time::Instant::now();
-            loop {
-                match listener.accept() {
-                    Ok(pair) => {
-                        let _ = listener.set_nonblocking(false);
-                        return Ok(pair);
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        if start.elapsed() > Duration::from_secs(30) {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::TimedOut,
-                                format!("{what} rendezvous stalled with no peer"),
-                            ));
-                        }
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-        }
-        // Commit a fragment, drop the socket before its ACK, and reopen the
-        // receiver. A subsequent real negotiation must send the saved offset.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
         let receiver_db = db_b.clone();
