@@ -14,6 +14,7 @@
 use evdev::{Device, EventSummary, EventType, KeyCode};
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::FileTypeExt;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -330,16 +331,22 @@ fn open_keyboards() -> (Vec<(std::path::PathBuf, Device)>, bool) {
 /// Merge a rescan into the live set: keep existing fds untouched
 /// (their buffered events and held state survive), open only new
 /// nodes, drop vanished ones.
-fn merge_devices<D>(
-    devices: &mut Vec<(std::path::PathBuf, D)>,
-    found: Vec<(std::path::PathBuf, D)>,
-) {
+fn merge_devices<D>(devices: &mut Vec<(PathBuf, D)>, found: Vec<(PathBuf, D)>) -> Vec<PathBuf> {
     for (path, dev) in found {
         if !devices.iter().any(|(p, _)| p == &path) {
             devices.push((path, dev));
         }
     }
-    devices.retain(|(p, _)| p.exists());
+    let mut removed = Vec::new();
+    devices.retain(|(path, _)| {
+        if path.exists() {
+            true
+        } else {
+            removed.push(path.clone());
+            false
+        }
+    });
+    removed
 }
 
 fn ctrl_held(held: &HashSet<KeyCode>) -> bool {
@@ -380,15 +387,70 @@ fn is_modifier(code: KeyCode) -> bool {
 }
 
 /// One watched binding: parsed combo + its action + its own mode +
-/// edge state. `active_since` bounds a Push hold: if a release is
+/// edge state. The press timestamp bounds a Push hold: if a release is
 /// ever lost (fd torn down mid-press), the watchdog force-releases
 /// instead of wedging dictation on.
 struct Watched {
     action: HotkeyAction,
     combo: Combo,
     mode: crate::settings::ActivationMode,
-    active: bool,
-    active_since: Option<Instant>,
+    press: Option<KeyboardPress>,
+}
+
+struct KeyboardPress {
+    device: PathBuf,
+    started: Instant,
+}
+
+#[derive(Default)]
+struct HeldKeys {
+    by_device: HashMap<PathBuf, HashSet<KeyCode>>,
+    all: HashSet<KeyCode>,
+}
+
+impl HeldKeys {
+    fn update(&mut self, path: &Path, key: KeyCode, pressed: bool) -> bool {
+        if pressed {
+            self.all.insert(key);
+            return self
+                .by_device
+                .entry(path.to_path_buf())
+                .or_default()
+                .insert(key);
+        }
+        if !self
+            .by_device
+            .get_mut(path)
+            .is_some_and(|keys| keys.remove(&key))
+        {
+            return false;
+        }
+        if !self.by_device.values().any(|keys| keys.contains(&key)) {
+            self.all.remove(&key);
+        }
+        true
+    }
+}
+
+fn disconnect_keyboard(
+    path: &Path,
+    held: &mut HeldKeys,
+    watched: &mut [Watched],
+    on_event: &BindingCallback,
+) {
+    if held.by_device.remove(path).is_none() {
+        return;
+    }
+    let before = std::mem::take(&mut held.all);
+    held.all = held.by_device.values().flatten().copied().collect();
+    for (binding, w) in watched.iter_mut().enumerate() {
+        if w.press.as_ref().is_some_and(|press| {
+            press.device == path || (mods_ok(&w.combo, &before) && !mods_ok(&w.combo, &held.all))
+        }) {
+            w.press = None;
+            on_event(HotkeyEvent::Cancel, Some(binding));
+        }
+    }
 }
 
 /// Push holds wedged active longer than this are force-released.
@@ -408,12 +470,12 @@ impl KeyDevice for Device {
 
 fn poll_events<D: KeyDevice>(
     devices: &mut Vec<(std::path::PathBuf, D)>,
-    held: &mut HashSet<KeyCode>,
+    held: &mut HeldKeys,
     watched: &mut [Watched],
     on_event: &BindingCallback,
 ) {
     let mut dead = Vec::new();
-    for (i, (_, dev)) in devices.iter_mut().enumerate() {
+    for (i, (path, dev)) in devices.iter_mut().enumerate() {
         let events = match dev.events() {
             Ok(events) => events,
             // Nonblocking fds report WouldBlock when idle: not death.
@@ -428,20 +490,15 @@ fn poll_events<D: KeyDevice>(
                 continue;
             };
             // value 0 = release, 1 = press, 2 = repeat (ignored).
-            // Banner mute: when hotkeys are disabled, no event
-            // reaches the pipeline (presses are swallowed here).
+            match value {
+                0 | 1 if held.update(path, key, value == 1) => {}
+                _ => continue,
+            };
+            // Track physical releases during mute so an old held key
+            // cannot leak into the next enabled period.
             if !crate::transcribe::hotkeys_listening() {
                 continue;
             }
-            match value {
-                1 => {
-                    held.insert(key);
-                }
-                0 => {
-                    held.remove(&key);
-                }
-                _ => continue,
-            };
             let pressed = value == 1;
             // An accepted press can be queued before the engine is live.
             if pressed && key == KeyCode::KEY_ESC {
@@ -449,33 +506,23 @@ fn poll_events<D: KeyDevice>(
             }
             for (binding, w) in watched.iter_mut().enumerate() {
                 let c = &w.combo;
-                if let Some(target) = c.target {
-                    if key != target {
-                        continue;
-                    }
-                    if pressed && !w.active && mods_ok(c, held) {
-                        w.active = true;
-                        w.active_since = Some(Instant::now());
-                        on_event(HotkeyEvent::Down(w.action, w.mode), Some(binding));
-                    } else if !pressed && w.active {
-                        w.active = false;
-                        w.active_since = None;
-                        on_event(HotkeyEvent::Up(w.action, w.mode), Some(binding));
-                    }
-                } else {
-                    // Modifier-only combo.
-                    if !is_modifier(key) {
-                        continue;
-                    }
-                    if mods_ok(c, held) && !w.active {
-                        w.active = true;
-                        w.active_since = Some(Instant::now());
-                        on_event(HotkeyEvent::Down(w.action, w.mode), Some(binding));
-                    } else if !mods_ok(c, held) && w.active {
-                        w.active = false;
-                        w.active_since = None;
-                        on_event(HotkeyEvent::Up(w.action, w.mode), Some(binding));
-                    }
+                let mods_held = mods_ok(c, &held.all);
+                let (began, ended) = match c.target {
+                    Some(target) if target == key => (
+                        pressed && mods_held,
+                        !pressed && w.press.as_ref().is_some_and(|p| p.device == *path),
+                    ),
+                    None if is_modifier(key) => (mods_held, !mods_held),
+                    _ => continue,
+                };
+                if began && w.press.is_none() {
+                    w.press = Some(KeyboardPress {
+                        device: path.clone(),
+                        started: Instant::now(),
+                    });
+                    on_event(HotkeyEvent::Down(w.action, w.mode), Some(binding));
+                } else if ended && w.press.take().is_some() {
+                    on_event(HotkeyEvent::Up(w.action, w.mode), Some(binding));
                 }
             }
         }
@@ -484,7 +531,8 @@ fn poll_events<D: KeyDevice>(
     // indexes valid.
     for i in dead.into_iter().rev() {
         eprintln!("[hotkey] device gone, dropping fd");
-        devices.remove(i);
+        let (path, _) = devices.remove(i);
+        disconnect_keyboard(&path, held, watched, on_event);
     }
 }
 
@@ -496,7 +544,7 @@ fn run_loop(
     on_event: BindingCallback,
     on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static>,
 ) {
-    let mut held: HashSet<KeyCode> = HashSet::new();
+    let mut held = HeldKeys::default();
     let mut devices: Vec<(std::path::PathBuf, Device)> = Vec::new();
     let mut reported = false;
     let mut rescan_in = 0u32;
@@ -511,7 +559,9 @@ fn run_loop(
             // nodes, drop vanished ones. Replacing the whole set
             // here used to lose a release landing mid-rescan and
             // wedge the pill on.
-            merge_devices(&mut devices, found);
+            for path in merge_devices(&mut devices, found) {
+                disconnect_keyboard(&path, &mut held, &mut watched, &on_event);
+            }
             if devices.is_empty() {
                 if denied {
                     if !reported {
@@ -538,21 +588,17 @@ fn run_loop(
             rescan_in = 100; // ~5s at 50ms polls
         }
         rescan_in -= 1;
-        // Seed held state from the kernel so a boot-time-held key
-        // cannot wedge an edge.
         poll_events(&mut devices, &mut held, &mut watched, &on_event);
         // Watchdog: a Push hold wedged by a lost release is
         // force-released instead of sticking dictation on forever.
         for (binding, w) in watched.iter_mut().enumerate() {
-            if w.active
-                && w.mode == crate::settings::ActivationMode::Push
-                && w.active_since
-                    .map(|t| t.elapsed() > Duration::from_secs(MAX_PUSH_SECS))
-                    .unwrap_or(false)
+            if w.mode == crate::settings::ActivationMode::Push
+                && w.press
+                    .as_ref()
+                    .is_some_and(|p| p.started.elapsed() > Duration::from_secs(MAX_PUSH_SECS))
             {
                 eprintln!("[hotkey] WARNING: push stuck >{MAX_PUSH_SECS}s, force release");
-                w.active = false;
-                w.active_since = None;
+                w.press = None;
                 on_event(HotkeyEvent::Up(w.action, w.mode), Some(binding));
             }
         }
@@ -601,8 +647,7 @@ fn start_with_bindings(
                         action,
                         combo,
                         mode: b.mode,
-                        active: false,
-                        active_since: None,
+                        press: None,
                     });
                 }
                 None => eprintln!("[hotkey] WARNING: skipping invalid combo {:?}", b.combo),
@@ -702,7 +747,14 @@ impl Activation {
                 self.active = None;
                 Some(ActivationEffect::Close)
             }
-            HotkeyEvent::Cancel => self.active.take().map(|_| ActivationEffect::Cancel),
+            HotkeyEvent::Cancel => {
+                let active = self.active.as_ref()?;
+                if binding.is_some_and(|index| index != active.index) {
+                    return None;
+                }
+                self.active = None;
+                Some(ActivationEffect::Cancel)
+            }
         }
     }
 }
@@ -730,7 +782,12 @@ pub fn start_dictation(
             Some(ActivationEffect::Open) => down(),
             Some(ActivationEffect::Close) => up(),
             Some(ActivationEffect::Cancel) => cancel(),
-            None if event == HotkeyEvent::Cancel && crate::transcribe::has_live() => cancel(),
+            None if event == HotkeyEvent::Cancel
+                && binding.is_none()
+                && crate::transcribe::has_live() =>
+            {
+                cancel();
+            }
             None => {}
         }
     });
@@ -846,6 +903,10 @@ mod tests {
                 None
             );
             assert_eq!(
+                activation.handle(HotkeyEvent::Cancel, Some(1), later, 100),
+                None
+            );
+            assert_eq!(
                 activation.handle(HotkeyEvent::Cancel, None, later, 100),
                 Some(Cancel)
             );
@@ -957,6 +1018,97 @@ mod tests {
                 .ok_or_else(|| std::io::ErrorKind::WouldBlock.into())
         }
     }
+
+    #[test]
+    fn foreign_release_and_disconnect_preserve_keyboard_ownership() {
+        use crate::settings::ActivationMode::Push;
+
+        let key = |code: KeyCode, value| evdev::InputEvent::new(EventType::KEY.0, code.0, value);
+        let ctrl = KeyCode::KEY_LEFTCTRL;
+        let trigger = KeyCode::KEY_F13;
+        let primary = PathBuf::from("primary");
+        let secondary = PathBuf::from("secondary");
+        let mut devices = vec![
+            (
+                primary.clone(),
+                SyntheticKeyboard([vec![key(ctrl, 1), key(trigger, 1)]].into()),
+            ),
+            (
+                secondary,
+                SyntheticKeyboard(
+                    [
+                        vec![key(ctrl, 1), key(trigger, 1)],
+                        vec![key(ctrl, 0), key(trigger, 0)],
+                        vec![key(trigger, 1), key(trigger, 0)],
+                    ]
+                    .into(),
+                ),
+            ),
+        ];
+        let mut held = HeldKeys::default();
+        let mut watched = [Watched {
+            action: HotkeyAction::DictationToggle,
+            combo: parse_combo("Ctrl+F13").unwrap(),
+            mode: Push,
+            press: None,
+        }];
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let on_event: BindingCallback =
+            Arc::new(move |event, index| sink.lock().unwrap().push((event, index)));
+
+        poll_events(&mut devices, &mut held, &mut watched, &on_event);
+        poll_events(&mut devices, &mut held, &mut watched, &on_event);
+        assert!(held.all.contains(&ctrl));
+        assert!(held.all.contains(&trigger));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [(
+                HotkeyEvent::Down(HotkeyAction::DictationToggle, Push),
+                Some(0)
+            )]
+        );
+
+        devices.remove(0);
+        disconnect_keyboard(&primary, &mut held, &mut watched, &on_event);
+        assert!(held.all.is_empty());
+        assert!(watched[0].press.is_none());
+        poll_events(&mut devices, &mut held, &mut watched, &on_event);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                (
+                    HotkeyEvent::Down(HotkeyAction::DictationToggle, Push),
+                    Some(0)
+                ),
+                (HotkeyEvent::Cancel, Some(0))
+            ]
+        );
+
+        let modifier = PathBuf::from("modifier");
+        devices[0].1.0.push_back(vec![key(trigger, 1)]);
+        devices.insert(
+            0,
+            (
+                modifier.clone(),
+                SyntheticKeyboard([vec![key(ctrl, 1)]].into()),
+            ),
+        );
+        poll_events(&mut devices, &mut held, &mut watched, &on_event);
+        devices.remove(0);
+        disconnect_keyboard(&modifier, &mut held, &mut watched, &on_event);
+        assert_eq!(
+            &seen.lock().unwrap()[2..],
+            [
+                (
+                    HotkeyEvent::Down(HotkeyAction::DictationToggle, Push),
+                    Some(0)
+                ),
+                (HotkeyEvent::Cancel, Some(0))
+            ]
+        );
+    }
+
     fn native_keyboard() -> (evdev::uinput::VirtualDevice, std::path::PathBuf, Device) {
         use evdev::uinput::VirtualDevice;
         let mut keys = evdev::AttributeSet::<KeyCode>::new();
@@ -1016,10 +1168,9 @@ mod tests {
             action: HotkeyAction::DictationToggle,
             combo: parse_combo("F13").unwrap(),
             mode: crate::settings::ActivationMode::Push,
-            active: false,
-            active_since: None,
+            press: None,
         }];
-        let mut held = HashSet::new();
+        let mut held = HeldKeys::default();
         let syn = evdev::InputEvent::new(0, 0, 0);
         let press = evdev::InputEvent::new(EventType::KEY.0, KeyCode::KEY_F13.0, 1);
         let repeat = evdev::InputEvent::new(EventType::KEY.0, KeyCode::KEY_F13.0, 2);
