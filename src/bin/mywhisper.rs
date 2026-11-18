@@ -327,10 +327,13 @@ fn run_headless(
                             mywhisper::media::resume(
                                 &paused.borrow_mut().drain(..).collect::<Vec<_>>(),
                             );
-                            // Midway cancel: hide at once. The discard
-                            // worker lands the row (or not); completion
-                            // re-hides harmlessly.
+                            // Midway cancel: hide at once and close the mic
+                            // now (no tail to land; the hold must not park
+                            // the device open). The discard worker lands
+                            // the row (or not); completion re-hides
+                            // harmlessly.
                             overlay.hide();
+                            overlay.close_mic_now();
                             let tx_done = tx_done.clone();
                             let gen_at_cancel = gen_hide.load(std::sync::atomic::Ordering::SeqCst);
                             let gen_hide = gen_hide.clone();

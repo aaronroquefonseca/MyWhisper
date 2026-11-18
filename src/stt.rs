@@ -762,6 +762,71 @@ mod tests {
         assert_eq!(whisper_file_stem("large"), "large-v3");
         assert_eq!(whisper_file_stem("turbo"), "large-v3-turbo");
     }
+
+    /// zip 9 hardening regression: the production `ZipArchive::extract`
+    /// path must still install a normal archive and must not let a
+    /// `../` entry escape the destination (RUSTSEC-2026-0368/0369).
+    #[test]
+    fn zip_extract_installs_layout_without_escape() {
+        use std::io::Write;
+        let root = std::env::temp_dir().join(format!("mywhisper-zip-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        // Normal archive: same two calls as `download_gpu_pack`.
+        let archive_path = root.join("pack.zip");
+        {
+            let file = std::fs::File::create(&archive_path).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            zip.start_file(
+                "whisper-server-test",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(b"binary").unwrap();
+            zip.finish().unwrap();
+        }
+        let dest = root.join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+        {
+            let file = std::fs::File::open(&archive_path).unwrap();
+            let mut zip = zip::ZipArchive::new(file).unwrap();
+            zip.extract(&dest).unwrap();
+        }
+        assert_eq!(
+            std::fs::read(dest.join("whisper-server-test")).unwrap(),
+            b"binary"
+        );
+
+        // Malicious archives: `../` and absolute entries must not escape.
+        for name in ["../evil.txt", "/tmp/mywhisper-zip-escape-probe.txt"] {
+            let evil_archive = root.join(format!("evil-{}.zip", name.len()));
+            {
+                let file = std::fs::File::create(&evil_archive).unwrap();
+                let mut zip = zip::ZipWriter::new(file);
+                zip.start_file(name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(b"evil").unwrap();
+                zip.finish().unwrap();
+            }
+            let evil_dest = root.join("evil-out");
+            std::fs::create_dir_all(&evil_dest).unwrap();
+            {
+                let file = std::fs::File::open(&evil_archive).unwrap();
+                let mut zip = zip::ZipArchive::new(file).unwrap();
+                let _ = zip.extract(&evil_dest);
+            }
+        }
+        assert!(
+            !root.join("evil.txt").exists(),
+            "zip extract must not escape destination"
+        );
+        assert!(
+            !std::path::Path::new("/tmp/mywhisper-zip-escape-probe.txt").exists(),
+            "zip extract must not write absolute paths"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 // ---------------------------------------------------------------- GPU packs

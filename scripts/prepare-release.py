@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Preview a PR-based changelog/version update, or explicitly open its release PR."""
 import argparse
+import datetime
 import importlib.util
 import json
 import os
@@ -44,8 +45,15 @@ def replace_one(pattern, replacement, text, description):
     return updated
 
 
-def version_updates(root, candidate, notes, refresh=False):
+def version_updates(root, candidate, notes, refresh=False, repo="aaronroquefonseca/MyWhisper", release_date=None):
     release.version(candidate)
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        raise ValueError("invalid repository name")
+    release_date = datetime.date.today().isoformat() if release_date is None else release_date
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", release_date):
+        raise ValueError("release date must be YYYY-MM-DD")
+    datetime.date.fromisoformat(release_date)
+    release_heading = f"## [{candidate}](https://github.com/{repo}/releases/tag/v{candidate}) - {release_date}"
     if not notes.strip() or len(notes.encode()) > 256 * 1024:
         raise ValueError("release notes must be nonempty and bounded")
     manifest = (root / "Cargo.toml").read_text()
@@ -76,17 +84,17 @@ def version_updates(root, candidate, notes, refresh=False):
     # forms; contributors need no special files or Markdown list syntax.
     if refresh:
         headings = release.changelog_headings(changelog)
-        matches = [(index, end) for index, (value, _, end) in enumerate(headings) if value == candidate]
+        matches = [(index, start) for index, (value, start, _) in enumerate(headings) if value == candidate]
         if len(matches) != 1:
             raise ValueError("--refresh needs exactly one current changelog section")
         index, start = matches[0]
         end = headings[index + 1][1] if index + 1 < len(headings) else len(changelog)
-        changelog = changelog[:start] + f"\n{notes.strip()}\n\n" + changelog[end:]
+        changelog = changelog[:start] + f"{release_heading}\n\n{notes.strip()}\n\n" + changelog[end:]
     else:
         heading = re.search(r"(?m)^# Changelog[ \t]*\n", changelog)
         if heading is None:
             raise ValueError("missing changelog document heading")
-        changelog = changelog[:heading.end()] + f"\n## {candidate}\n\n{notes.strip()}\n\n" + changelog[heading.end():].lstrip("\n")
+        changelog = changelog[:heading.end()] + f"\n{release_heading}\n\n{notes.strip()}\n\n" + changelog[heading.end():].lstrip("\n")
     return {"Cargo.toml": manifest, "Cargo.lock": lock,
             "packaging/arch/PKGBUILD": pkgbuild, "CHANGELOG.md": changelog}
 
@@ -139,7 +147,7 @@ def main():
         worktree = Path(directory) / "source"
         run(["git", "-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", str(worktree), source_sha])
         try:
-            updates = version_updates(worktree, args.version, notes, refresh=args.refresh)
+            updates = version_updates(worktree, args.version, notes, refresh=args.refresh, repo=repo)
             updates[".github/release-source.json"] = json.dumps({
                 "schema": 1, "version": args.version, "source_sha": source_sha,
                 "previous_tag": previous, "previous_sha": previous_sha}, indent=2) + "\n"
