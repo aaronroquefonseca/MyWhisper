@@ -30,7 +30,10 @@ test|lib|i18n::tests::desktop_ui_literal_translation_tags_exist|run
 test|lib|i18n::tests::english_and_spanish_have_matching_placeholders|run
 test|lib|media::tests::no_players_is_empty_success|run
 test|lib|mic::tests::builtin_picker_prefers_onboard|run
+test|lib|mic::tests::close_now_and_sim_clear_hold|run
+test|lib|mic::tests::hold_merge_never_extends|run
 test|lib|mic::tests::mic_gated_on_dictation_active|run
+test|lib|mic::tests::settle_hold_covers_tail_then_warm|run
 test|lib|net::tests::loopback_sync_converges_and_rejects_untrusted|run
 test|lib|net::tests::spoofed_node_id_rejected|run
 test|lib|private_fs::tests::bounded_read_rejects_oversized_files_and_symlinks_without_modifying_them|run
@@ -49,10 +52,12 @@ test|lib|speculative::tests::window_keeps_overlap|run
 test|lib|store::tests::activity_counts_all_history_and_only_measured_speed|run
 test|lib|store::tests::auto_delete_keeps_tombstones|run
 test|lib|store::tests::bulk_deletion_survives_sync_with_an_older_peer|run
+test|lib|store::tests::db_key_hex_helpers_roundtrip|run
 test|lib|store::tests::discarded_rows_filter_and_sync|run
 test|lib|store::tests::divergent_edits_converge_with_newest_winning|run
 test|lib|store::tests::older_write_does_not_resurrect|run
 test|lib|store::tests::retained_history_deletion_survives_sync|run
+test|lib|store::tests::secret_service_backend_preserves_credentials|run
 test|lib|store::tests::server_cmd_is_one_shot|run
 test|lib|store::tests::settings_engine_switch_roundtrip|run
 test|lib|store::tests::shared_gen_moves_on_write|run
@@ -65,7 +70,9 @@ test|lib|stt::tests::downloads_tiny_model|ignored
 test|lib|stt::tests::find_model_resolves_all_ids|run
 test|lib|stt::tests::registry_is_complete_and_consistent|run
 test|lib|stt::tests::whisper_stems_map_to_filenames|run
+test|lib|stt::tests::zip_extract_installs_layout_without_escape|run
 test|lib|textnorm::tests::dict_key_keeps_accents_but_unifies_case_and_canonical_forms|run
+test|lib|textnorm::tests::dictionary_budget_preserves_complete_utf8_entries|run
 test|lib|textnorm::tests::prompt_joins_and_trims_at_comma|run
 test|lib|textnorm::tests::snippets_accent_and_case_insensitive|run
 test|lib|textnorm::tests::snippets_empty_is_passthrough|run
@@ -75,6 +82,8 @@ test|lib|textnorm::tests::snippets_turkish_dot|run
 test|lib|transcribe::tests::chain_falls_back_past_broken_first|run
 test|lib|transcribe::tests::cloud_url_join|run
 test|lib|transcribe::tests::deepgram_pointer|run
+test|lib|transcribe::tests::deepgram_sends_encoded_dictionary_terms|run
+test|lib|transcribe::tests::gemini_sends_dictionary_with_audio|run
 test|lib|transcribe::tests::lang_param_auto_omits|run
 test|lib|transcribe::tests::live_oruk_offline_roundtrip|ignored
 test|lib|transcribe::tests::marker_like_detection_and_token_namespaces|run
@@ -106,6 +115,8 @@ test|lib|transcribe::tests::plan_cohere_unsupported|run
 test|lib|transcribe::tests::plan_routing_needs_files|run
 test|lib|transcribe::tests::plans_selfhosted_ws_and_bearer|run
 test|lib|transcribe::tests::prompt_defaults_and_suffix|run
+test|lib|transcribe::tests::remote_dictionary_respects_provider_limits|run
+test|lib|transcribe::tests::remote_http_sends_dictionary|run
 test|lib|transcribe::tests::server_net_defaults_and_overrides|run
 test|lib|transcribe::tests::sherpa_text_field|run
 test|lib|transcribe::tests::snippet_token_with_uses_controlled_candidates|run
