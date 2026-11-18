@@ -3430,15 +3430,6 @@ pub fn has_live() -> bool {
     live().lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
-/// Release-side cancel consumption: set by `cancel_utterance`, cleared
-/// by the next `begin_utterance`. Lets a release after Escape skip the
-/// Processing flash (and second Stop cue) instead of toggling.
-static CANCELLED: AtomicBool = AtomicBool::new(false);
-
-pub fn take_cancelled() -> bool {
-    CANCELLED.swap(false, Ordering::SeqCst)
-}
-
 /// Speculative-streaming session (whisper only): background passes
 /// while held, internal agreement, tail finalized on release.
 struct SpecHandle {
@@ -3741,7 +3732,6 @@ pub fn begin_utterance_for(
         generation = server_generation();
         stop_epoch = ticket.stop_epoch;
     }
-    CANCELLED.store(false, Ordering::Relaxed);
     let mut plans = match plans_for(&stt, data_dir) {
         Ok(v) => v,
         Err(e) => {
@@ -4097,7 +4087,6 @@ pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
     sess.stop.store(true, Ordering::Relaxed);
     sess.cancel.store(true, Ordering::Relaxed);
     sess.settled.store(true, Ordering::Relaxed);
-    CANCELLED.store(true, Ordering::Relaxed);
     let held_secs = sess.started.elapsed().as_secs_f64();
     // Revoke before dropping: queued warmups bound to this utterance
     // must stand down even though cancellation bumps no generation.

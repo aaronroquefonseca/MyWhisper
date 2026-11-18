@@ -321,12 +321,6 @@ fn run_headless(
                             }
                         }
                         PillCmd::Hide => {
-                            // Release after an Escape cancel: the pill
-                            // already hid, no flash, no second cue.
-                            if mywhisper::transcribe::take_cancelled() {
-                                overlay.hide();
-                                return gtk4::glib::ControlFlow::Continue;
-                            }
                             mywhisper::sound::play(mywhisper::sound::UiSound::Stop);
                             mywhisper::media::resume(
                                 &paused.borrow_mut().drain(..).collect::<Vec<_>>(),
