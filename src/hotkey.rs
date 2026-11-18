@@ -68,173 +68,159 @@ static HOTKEY_LOOP: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // ---------------------------------------------------------------- parsing
 
+/// Physical Linux key positions. Capture, typed shortcuts and conflict checks
+/// share this vocabulary; symbols are aliases rather than layout-dependent IDs.
+const KEY_TOKENS: &[(&str, KeyCode)] = &[
+    ("Escape", KeyCode::KEY_ESC),
+    ("Tab", KeyCode::KEY_TAB),
+    ("Enter", KeyCode::KEY_ENTER),
+    ("Backspace", KeyCode::KEY_BACKSPACE),
+    ("Space", KeyCode::KEY_SPACE),
+    ("Insert", KeyCode::KEY_INSERT),
+    ("Delete", KeyCode::KEY_DELETE),
+    ("Home", KeyCode::KEY_HOME),
+    ("End", KeyCode::KEY_END),
+    ("PageUp", KeyCode::KEY_PAGEUP),
+    ("PageDown", KeyCode::KEY_PAGEDOWN),
+    ("Up", KeyCode::KEY_UP),
+    ("Down", KeyCode::KEY_DOWN),
+    ("Left", KeyCode::KEY_LEFT),
+    ("Right", KeyCode::KEY_RIGHT),
+    ("A", KeyCode::KEY_A),
+    ("B", KeyCode::KEY_B),
+    ("C", KeyCode::KEY_C),
+    ("D", KeyCode::KEY_D),
+    ("E", KeyCode::KEY_E),
+    ("F", KeyCode::KEY_F),
+    ("G", KeyCode::KEY_G),
+    ("H", KeyCode::KEY_H),
+    ("I", KeyCode::KEY_I),
+    ("J", KeyCode::KEY_J),
+    ("K", KeyCode::KEY_K),
+    ("L", KeyCode::KEY_L),
+    ("M", KeyCode::KEY_M),
+    ("N", KeyCode::KEY_N),
+    ("O", KeyCode::KEY_O),
+    ("P", KeyCode::KEY_P),
+    ("Q", KeyCode::KEY_Q),
+    ("R", KeyCode::KEY_R),
+    ("S", KeyCode::KEY_S),
+    ("T", KeyCode::KEY_T),
+    ("U", KeyCode::KEY_U),
+    ("V", KeyCode::KEY_V),
+    ("W", KeyCode::KEY_W),
+    ("X", KeyCode::KEY_X),
+    ("Y", KeyCode::KEY_Y),
+    ("Z", KeyCode::KEY_Z),
+    ("0", KeyCode::KEY_0),
+    ("1", KeyCode::KEY_1),
+    ("2", KeyCode::KEY_2),
+    ("3", KeyCode::KEY_3),
+    ("4", KeyCode::KEY_4),
+    ("5", KeyCode::KEY_5),
+    ("6", KeyCode::KEY_6),
+    ("7", KeyCode::KEY_7),
+    ("8", KeyCode::KEY_8),
+    ("9", KeyCode::KEY_9),
+    ("F1", KeyCode::KEY_F1),
+    ("F2", KeyCode::KEY_F2),
+    ("F3", KeyCode::KEY_F3),
+    ("F4", KeyCode::KEY_F4),
+    ("F5", KeyCode::KEY_F5),
+    ("F6", KeyCode::KEY_F6),
+    ("F7", KeyCode::KEY_F7),
+    ("F8", KeyCode::KEY_F8),
+    ("F9", KeyCode::KEY_F9),
+    ("F10", KeyCode::KEY_F10),
+    ("F11", KeyCode::KEY_F11),
+    ("F12", KeyCode::KEY_F12),
+    ("F13", KeyCode::KEY_F13),
+    ("F14", KeyCode::KEY_F14),
+    ("F15", KeyCode::KEY_F15),
+    ("F16", KeyCode::KEY_F16),
+    ("F17", KeyCode::KEY_F17),
+    ("F18", KeyCode::KEY_F18),
+    ("F19", KeyCode::KEY_F19),
+    ("F20", KeyCode::KEY_F20),
+    ("F21", KeyCode::KEY_F21),
+    ("F22", KeyCode::KEY_F22),
+    ("F23", KeyCode::KEY_F23),
+    ("F24", KeyCode::KEY_F24),
+    ("Minus", KeyCode::KEY_MINUS),
+    ("Equal", KeyCode::KEY_EQUAL),
+    ("LeftBracket", KeyCode::KEY_LEFTBRACE),
+    ("RightBracket", KeyCode::KEY_RIGHTBRACE),
+    ("Semicolon", KeyCode::KEY_SEMICOLON),
+    ("Apostrophe", KeyCode::KEY_APOSTROPHE),
+    ("Grave", KeyCode::KEY_GRAVE),
+    ("Backslash", KeyCode::KEY_BACKSLASH),
+    ("Comma", KeyCode::KEY_COMMA),
+    ("Period", KeyCode::KEY_DOT),
+    ("Slash", KeyCode::KEY_SLASH),
+    ("IntlBackslash", KeyCode::KEY_102ND),
+];
+
 fn key_by_name(name: &str) -> Option<KeyCode> {
     let upper = name.to_ascii_uppercase();
-    match upper.as_str() {
-        "F1" => Some(KeyCode::KEY_F1),
-        "F2" => Some(KeyCode::KEY_F2),
-        "F3" => Some(KeyCode::KEY_F3),
-        "F4" => Some(KeyCode::KEY_F4),
-        "F5" => Some(KeyCode::KEY_F5),
-        "F6" => Some(KeyCode::KEY_F6),
-        "F7" => Some(KeyCode::KEY_F7),
-        "F8" => Some(KeyCode::KEY_F8),
-        "F9" => Some(KeyCode::KEY_F9),
-        "F10" => Some(KeyCode::KEY_F10),
-        "F11" => Some(KeyCode::KEY_F11),
-        "F12" => Some(KeyCode::KEY_F12),
-        "F13" => Some(KeyCode::KEY_F13),
-        "F14" => Some(KeyCode::KEY_F14),
-        "F15" => Some(KeyCode::KEY_F15),
-        "F16" => Some(KeyCode::KEY_F16),
-        "F17" => Some(KeyCode::KEY_F17),
-        "F18" => Some(KeyCode::KEY_F18),
-        "F19" => Some(KeyCode::KEY_F19),
-        "F20" => Some(KeyCode::KEY_F20),
-        "F21" => Some(KeyCode::KEY_F21),
-        "F22" => Some(KeyCode::KEY_F22),
-        "F23" => Some(KeyCode::KEY_F23),
-        "F24" => Some(KeyCode::KEY_F24),
-        "SPACE" => Some(KeyCode::KEY_SPACE),
-        "ESC" | "ESCAPE" => Some(KeyCode::KEY_ESC),
-        "TAB" => Some(KeyCode::KEY_TAB),
-        "ENTER" | "RETURN" => Some(KeyCode::KEY_ENTER),
-        "BACKSPACE" => Some(KeyCode::KEY_BACKSPACE),
-        "INSERT" => Some(KeyCode::KEY_INSERT),
-        "DELETE" => Some(KeyCode::KEY_DELETE),
-        "HOME" => Some(KeyCode::KEY_HOME),
-        "END" => Some(KeyCode::KEY_END),
-        "PAGEUP" => Some(KeyCode::KEY_PAGEUP),
-        "PAGEDOWN" => Some(KeyCode::KEY_PAGEDOWN),
-        "UP" => Some(KeyCode::KEY_UP),
-        "DOWN" => Some(KeyCode::KEY_DOWN),
-        "LEFT" => Some(KeyCode::KEY_LEFT),
-        "RIGHT" => Some(KeyCode::KEY_RIGHT),
-        _ => {
-            if name.len() == 1 {
-                let c = upper.chars().next().unwrap();
-                match c {
-                    'A' => Some(KeyCode::KEY_A),
-                    'B' => Some(KeyCode::KEY_B),
-                    'C' => Some(KeyCode::KEY_C),
-                    'D' => Some(KeyCode::KEY_D),
-                    'E' => Some(KeyCode::KEY_E),
-                    'F' => Some(KeyCode::KEY_F),
-                    'G' => Some(KeyCode::KEY_G),
-                    'H' => Some(KeyCode::KEY_H),
-                    'I' => Some(KeyCode::KEY_I),
-                    'J' => Some(KeyCode::KEY_J),
-                    'K' => Some(KeyCode::KEY_K),
-                    'L' => Some(KeyCode::KEY_L),
-                    'M' => Some(KeyCode::KEY_M),
-                    'N' => Some(KeyCode::KEY_N),
-                    'O' => Some(KeyCode::KEY_O),
-                    'P' => Some(KeyCode::KEY_P),
-                    'Q' => Some(KeyCode::KEY_Q),
-                    'R' => Some(KeyCode::KEY_R),
-                    'S' => Some(KeyCode::KEY_S),
-                    'T' => Some(KeyCode::KEY_T),
-                    'U' => Some(KeyCode::KEY_U),
-                    'V' => Some(KeyCode::KEY_V),
-                    'W' => Some(KeyCode::KEY_W),
-                    'X' => Some(KeyCode::KEY_X),
-                    'Y' => Some(KeyCode::KEY_Y),
-                    'Z' => Some(KeyCode::KEY_Z),
-                    '0' => Some(KeyCode::KEY_0),
-                    '1' => Some(KeyCode::KEY_1),
-                    '2' => Some(KeyCode::KEY_2),
-                    '3' => Some(KeyCode::KEY_3),
-                    '4' => Some(KeyCode::KEY_4),
-                    '5' => Some(KeyCode::KEY_5),
-                    '6' => Some(KeyCode::KEY_6),
-                    '7' => Some(KeyCode::KEY_7),
-                    '8' => Some(KeyCode::KEY_8),
-                    '9' => Some(KeyCode::KEY_9),
-                    _ => None,
-                }
-            } else {
-                None
-            }
-        }
+    let token = match upper.as_str() {
+        "ESC" => "Escape",
+        "RETURN" => "Enter",
+        "PAGE_UP" | "PRIOR" => "PageUp",
+        "PAGE_DOWN" | "NEXT" => "PageDown",
+        "-" => "Minus",
+        "=" => "Equal",
+        "[" | "BRACKETLEFT" => "LeftBracket",
+        "]" | "BRACKETRIGHT" => "RightBracket",
+        ";" => "Semicolon",
+        "'" => "Apostrophe",
+        "`" => "Grave",
+        "\\" => "Backslash",
+        "," => "Comma",
+        "." | "DOT" => "Period",
+        "/" => "Slash",
+        _ => name,
+    };
+    KEY_TOKENS
+        .iter()
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(token))
+        .map(|(_, code)| *code)
+}
+
+/// GTK XKB hardware keycode minus eight is an evdev code on both supported
+/// Linux backends. Capturing a physical position stays stable across layouts.
+pub fn token_for_evdev_code(code: u16) -> Option<&'static str> {
+    KEY_TOKENS
+        .iter()
+        .find(|(_, candidate)| candidate.code() == code)
+        .map(|(token, _)| *token)
+}
+
+/// Canonical token for a supported typed or symbolic key.
+pub(crate) fn canonical_key_token(name: &str) -> Option<&'static str> {
+    token_for_evdev_code(key_by_name(name)?.code())
+}
+
+pub(crate) fn modifier_slot_for_evdev_code(code: u16) -> Option<usize> {
+    match KeyCode(code) {
+        KeyCode::KEY_LEFTCTRL | KeyCode::KEY_RIGHTCTRL => Some(0),
+        KeyCode::KEY_LEFTALT | KeyCode::KEY_RIGHTALT => Some(1),
+        KeyCode::KEY_LEFTSHIFT | KeyCode::KEY_RIGHTSHIFT => Some(2),
+        KeyCode::KEY_LEFTMETA | KeyCode::KEY_RIGHTMETA => Some(3),
+        _ => None,
     }
 }
 
-/// Inverse of `key_by_name`: evdev code -> combo token.
-/// Used by GTK press-to-record capture, which sees hardware keycodes
-/// (XKB keycode = evdev code + 8) while GDK keyvals go through the
-/// layout and may surface as XF86 symbols (e.g. a key wired as F13
-/// reporting `Tools`). Keycodes keep capture and listener in exactly
-/// one vocabulary.
-pub fn token_for_evdev_code(code: u16) -> Option<&'static str> {
-    Some(match code {
-        1 => "Escape",
-        2 => "1",
-        3 => "2",
-        4 => "3",
-        5 => "4",
-        6 => "5",
-        7 => "6",
-        8 => "7",
-        9 => "8",
-        10 => "9",
-        11 => "0",
-        12 => "-",
-        13 => "=",
-        14 => "Backspace",
-        15 => "Tab",
-        16 => "Q",
-        17 => "W",
-        18 => "E",
-        19 => "R",
-        20 => "T",
-        21 => "Y",
-        22 => "U",
-        23 => "I",
-        24 => "O",
-        25 => "P",
-        28 => "Enter",
-        30 => "A",
-        48 => "B",
-        54 => "C",
-        56 => "Alt",
-        57 => "Space",
-        103 => "Up",
-        104 => "PageUp",
-        105 => "Left",
-        106 => "Right",
-        107 => "End",
-        108 => "Down",
-        109 => "PageDown",
-        110 => "Insert",
-        111 => "Delete",
-        183 => "F13",
-        184 => "F14",
-        185 => "F15",
-        186 => "F16",
-        187 => "F17",
-        188 => "F18",
-        189 => "F19",
-        190 => "F20",
-        191 => "F21",
-        192 => "F22",
-        193 => "F23",
-        194 => "F24",
-        _ => return None,
-    })
-}
 pub fn parse_combo(raw: &str) -> Option<Combo> {
     let mut ctrl = false;
     let mut alt = false;
     let mut shift = false;
     let mut super_ = false;
     let mut target = None;
-    let mut any = false;
     for token in raw.split('+') {
         let t = token.trim();
         if t.is_empty() {
-            continue;
+            return None;
         }
-        any = true;
         let u = t.to_ascii_uppercase();
         match u.as_str() {
             "CTRL" | "CONTROL" | "COMMANDORCONTROL" | "CMDORCTRL" => ctrl = true,
@@ -243,16 +229,15 @@ pub fn parse_combo(raw: &str) -> Option<Combo> {
             "SUPER" | "META" | "WIN" | "CMD" | "COMMAND" => super_ = true,
             _ => {
                 if let Some(code) = key_by_name(t) {
-                    target = Some(code);
+                    if target.replace(code).is_some() {
+                        return None;
+                    }
                 } else {
                     eprintln!("[hotkey] WARNING: unknown key {t:?} in {raw:?}");
                     return None;
                 }
             }
         }
-    }
-    if !any {
-        return None;
     }
     if target.is_none() && !(ctrl || alt || shift || super_) {
         return None;
@@ -376,13 +361,8 @@ fn mods_ok(combo: &Combo, held: &HashSet<KeyCode>) -> bool {
 }
 
 fn required_modifier(combo: &Combo, key: KeyCode) -> bool {
-    match key {
-        KeyCode::KEY_LEFTCTRL | KeyCode::KEY_RIGHTCTRL => combo.ctrl,
-        KeyCode::KEY_LEFTALT | KeyCode::KEY_RIGHTALT => combo.alt,
-        KeyCode::KEY_LEFTSHIFT | KeyCode::KEY_RIGHTSHIFT => combo.shift,
-        KeyCode::KEY_LEFTMETA | KeyCode::KEY_RIGHTMETA => combo.super_,
-        _ => false,
-    }
+    modifier_slot_for_evdev_code(key.code())
+        .is_some_and(|slot| [combo.ctrl, combo.alt, combo.shift, combo.super_][slot])
 }
 
 /// One watched binding: parsed combo + its action + its own mode +
@@ -854,6 +834,8 @@ mod tests {
         assert_eq!(c.target, Some(KeyCode::KEY_SPACE));
         assert!(parse_combo("").is_none());
         assert!(parse_combo("Nope+NotAKey").is_none());
+        assert!(parse_combo("Ctrl+A+B").is_none());
+        assert!(parse_combo("Ctrl++").is_none());
     }
 
     #[test]
@@ -1049,6 +1031,15 @@ mod tests {
         assert_eq!(token_for_evdev_code(57), Some("Space"));
         assert_eq!(token_for_evdev_code(1), Some("Escape"));
         assert_eq!(token_for_evdev_code(9999), None);
+        assert_eq!(token_for_evdev_code(KeyCode::KEY_RIGHTSHIFT.code()), None);
+        for &(token, code) in KEY_TOKENS {
+            assert_eq!(token_for_evdev_code(code.code()), Some(token));
+            assert_eq!(parse_combo(token).unwrap().target, Some(code), "{token}");
+        }
+        assert_eq!(
+            parse_combo("Ctrl+-").unwrap().target,
+            Some(KeyCode::KEY_MINUS)
+        );
         // Modifier codes stay out (handled as modifiers, not keys).
         assert_eq!(token_for_evdev_code(29), None);
         for code in [183u16, 30, 57, 1, 28, 48, 16] {
