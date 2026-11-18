@@ -7841,30 +7841,9 @@ mod tests {
         // answers `/load` (like the real server) so `/load` model-swap
         // never blocks the test on HTTP. Explicit `\n` (no `\`-newline
         // continuations) so Python indentation survives Rust stripping.
-        let pack = stt::GPU_PACKS
-            .iter()
-            .find(|p| p.id == "whisper-cpu")
-            .unwrap();
-        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        let bin = bin_dir.join("whisper-server");
-        std::fs::write(
-            &bin,
-            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).unwrap();
-        }
+        install_fake_whisper_http(root.path());
         // Fake model file for plan resolution.
-        let entry = stt::find_model("tiny").unwrap();
-        let dir = stt::model_dir(root.path(), entry);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("ggml-tiny.bin"), b"synthetic").unwrap();
+        let dir = stt::fake_install(root.path(), "tiny");
         let port = free_port();
         let model = dir.join("ggml-tiny.bin");
         // Start wildcard.
@@ -8003,10 +7982,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         drop_servers(root.path());
         // Valid whisper config (synthetic model file).
-        let entry = stt::find_model("tiny").unwrap();
-        let dir = stt::model_dir(root.path(), entry);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("ggml-tiny.bin"), b"synthetic").unwrap();
+        stt::fake_install(root.path(), "tiny");
         let mut stt = SttSettings {
             local_provider: LocalSttProvider::OpenAi,
             whisper_model: "tiny".into(),
@@ -8050,18 +8026,8 @@ mod tests {
             ..Default::default()
         };
         // Seed a resolvable sherpa model dir via the registry layout.
-        let pentry = stt::find_model("parakeet-tdt-0.6b-v3").unwrap();
-        let pdir = stt::model_dir(root.path(), pentry);
-        std::fs::create_dir_all(&pdir).unwrap();
-        for f in [
-            "encoder.int8.onnx",
-            "decoder.int8.onnx",
-            "joiner.int8.onnx",
-            "tokens.txt",
-            "bpe.vocab",
-        ] {
-            std::fs::write(pdir.join(f), b"synthetic").unwrap();
-        }
+        let model_dir = stt::fake_install(root.path(), "parakeet-tdt-0.6b-v3");
+        std::fs::write(model_dir.join("bpe.vocab"), b"synthetic").unwrap();
         let base = stt_primary_id(&sstt, root.path());
         // Dictionary edit changes effective hotwords → must move.
         // Typed table is authoritative (settings JSON words are not).
@@ -8149,10 +8115,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         drop_servers(root.path());
         // Seed Store with a valid whisper config (synthetic model).
-        let entry = stt::find_model("tiny").unwrap();
-        let dir = stt::model_dir(root.path(), entry);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("ggml-tiny.bin"), b"synthetic").unwrap();
+        stt::fake_install(root.path(), "tiny");
         let writer = crate::store::Store::open(&root.path().join("state.db")).unwrap();
         let mut settings = writer.load_settings();
         settings.stt.local_provider = LocalSttProvider::OpenAi;
@@ -8175,25 +8138,7 @@ mod tests {
         }
         // Fake whisper pack for the new port (respects --host/--port,
         // answers `/load` so reconcile never blocks on HTTP).
-        let pack = stt::GPU_PACKS
-            .iter()
-            .find(|p| p.id == "whisper-cpu")
-            .unwrap();
-        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        let bin = bin_dir.join("whisper-server");
-        std::fs::write(
-            &bin,
-            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).unwrap();
-        }
+        install_fake_whisper_http(root.path());
         let (probe_tx, probe_rx) = mpsc::channel::<()>();
         let (release_tx, release_rx) = mpsc::channel::<()>();
         let (done_tx, done_rx) = mpsc::channel::<Result<bool, String>>();
@@ -8248,10 +8193,7 @@ mod tests {
     /// Seed an isolated Store with a resolvable whisper-tiny config
     /// (synthetic model bytes, no packs installed).
     fn seed_whisper_tiny(root: &Path) -> crate::store::Store {
-        let entry = stt::find_model("tiny").unwrap();
-        let dir = stt::model_dir(root, entry);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("ggml-tiny.bin"), b"synthetic").unwrap();
+        stt::fake_install(root, "tiny");
         let store = crate::store::Store::open(&root.join("state.db")).unwrap();
         let mut settings = store.load_settings();
         settings.stt.local_provider = LocalSttProvider::OpenAi;
@@ -8273,25 +8215,14 @@ mod tests {
     /// real binary), so a test can observe an actual launch when
     /// protection is (temporarily) removed. Respects `--host`/`--port`.
     fn install_fake_whisper_http(root: &Path) {
-        let pack = stt::GPU_PACKS
-            .iter()
-            .find(|p| p.id == "whisper-cpu")
-            .unwrap();
-        let bin_dir = stt::gpu_bin_dir(root, pack);
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::write(
-            bin_dir.join("whisper-server"),
-            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let bin = bin_dir.join("whisper-server");
-            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).unwrap();
-        }
+        stt::fake_install_with_script(
+            root,
+            "whisper-cpu",
+            Some((
+                "whisper-server",
+                "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
+            )),
+        );
     }
 
     /// Synthetic listener like `spawn_owned`, but reaching startup
@@ -8473,25 +8404,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         drop_servers(root.path());
         // Startable synthetic whisper HTTP server (answers `/load`).
-        let pack = stt::GPU_PACKS
-            .iter()
-            .find(|p| p.id == "whisper-cpu")
-            .unwrap();
-        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::write(
-            bin_dir.join("whisper-server"),
-            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let bin = bin_dir.join("whisper-server");
-            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).unwrap();
-        }
+        install_fake_whisper_http(root.path());
         let writer = seed_whisper_tiny(root.path());
         let port_a = free_port();
         let mut settings = writer.load_settings();
@@ -8567,25 +8480,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         drop_servers(root.path());
         // Startable synthetic whisper HTTP server (answers `/load`).
-        let pack = stt::GPU_PACKS
-            .iter()
-            .find(|p| p.id == "whisper-cpu")
-            .unwrap();
-        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::write(
-            bin_dir.join("whisper-server"),
-            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let bin = bin_dir.join("whisper-server");
-            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).unwrap();
-        }
+        install_fake_whisper_http(root.path());
         let writer = seed_whisper_tiny(root.path());
         let port_a = free_port();
         let mut settings = writer.load_settings();
@@ -8663,25 +8558,7 @@ mod tests {
         clear_reconcile_ensure_pause();
         let root = tempfile::tempdir().unwrap();
         drop_servers(root.path());
-        let pack = stt::GPU_PACKS
-            .iter()
-            .find(|p| p.id == "whisper-cpu")
-            .unwrap();
-        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::write(
-            bin_dir.join("whisper-server"),
-            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let bin = bin_dir.join("whisper-server");
-            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).unwrap();
-        }
+        install_fake_whisper_http(root.path());
         let writer = seed_whisper_tiny(root.path());
         // Configuration A starts through reconciliation.
         let port_a = free_port();
@@ -8764,25 +8641,7 @@ mod tests {
         clear_reconcile_ensure_pause();
         let root = tempfile::tempdir().unwrap();
         drop_servers(root.path());
-        let pack = stt::GPU_PACKS
-            .iter()
-            .find(|p| p.id == "whisper-cpu")
-            .unwrap();
-        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::write(
-            bin_dir.join("whisper-server"),
-            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let bin = bin_dir.join("whisper-server");
-            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).unwrap();
-        }
+        install_fake_whisper_http(root.path());
         let writer = seed_whisper_tiny(root.path());
         let port_a = free_port();
         let mut settings = writer.load_settings();
@@ -8849,25 +8708,7 @@ mod tests {
         clear_reconcile_ensure_pause();
         let root = tempfile::tempdir().unwrap();
         drop_servers(root.path());
-        let pack = stt::GPU_PACKS
-            .iter()
-            .find(|p| p.id == "whisper-cpu")
-            .unwrap();
-        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::write(
-            bin_dir.join("whisper-server"),
-            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let bin = bin_dir.join("whisper-server");
-            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).unwrap();
-        }
+        install_fake_whisper_http(root.path());
         let writer = seed_whisper_tiny(root.path());
         // Local A starts through reconciliation.
         let port_a = free_port();
@@ -8932,25 +8773,7 @@ mod tests {
         clear_expiry_pause();
         let root = tempfile::tempdir().unwrap();
         drop_servers(root.path());
-        let pack = stt::GPU_PACKS
-            .iter()
-            .find(|p| p.id == "whisper-cpu")
-            .unwrap();
-        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::write(
-            bin_dir.join("whisper-server"),
-            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let bin = bin_dir.join("whisper-server");
-            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).unwrap();
-        }
+        install_fake_whisper_http(root.path());
         let writer = seed_whisper_tiny(root.path());
         // Local A starts through reconciliation.
         let port_a = free_port();
@@ -9058,25 +8881,7 @@ mod tests {
         clear_note_pause();
         let root = tempfile::tempdir().unwrap();
         drop_servers(root.path());
-        let pack = stt::GPU_PACKS
-            .iter()
-            .find(|p| p.id == "whisper-cpu")
-            .unwrap();
-        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::write(
-            bin_dir.join("whisper-server"),
-            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let bin = bin_dir.join("whisper-server");
-            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).unwrap();
-        }
+        install_fake_whisper_http(root.path());
         let writer = seed_whisper_tiny(root.path());
         // Local A starts through reconciliation.
         let port_a = free_port();
@@ -9169,25 +8974,7 @@ mod tests {
         clear_reconcile_ensure_pause();
         let root = tempfile::tempdir().unwrap();
         drop_servers(root.path());
-        let pack = stt::GPU_PACKS
-            .iter()
-            .find(|p| p.id == "whisper-cpu")
-            .unwrap();
-        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::write(
-            bin_dir.join("whisper-server"),
-            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let bin = bin_dir.join("whisper-server");
-            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).unwrap();
-        }
+        install_fake_whisper_http(root.path());
         let writer = seed_whisper_tiny(root.path());
         // Local A starts through reconciliation.
         let port_a = free_port();
@@ -9292,25 +9079,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         drop_servers(root.path());
         // Startable synthetic whisper HTTP server (answers `/load`).
-        let pack = stt::GPU_PACKS
-            .iter()
-            .find(|p| p.id == "whisper-cpu")
-            .unwrap();
-        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::write(
-            bin_dir.join("whisper-server"),
-            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let bin = bin_dir.join("whisper-server");
-            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).unwrap();
-        }
+        install_fake_whisper_http(root.path());
         let writer = seed_whisper_tiny(root.path());
         // Configuration A starts through reconciliation on private port A.
         let port_a = free_port();
@@ -9448,25 +9217,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         drop_servers(root.path());
         // Startable synthetic whisper HTTP server (answers `/load`).
-        let pack = stt::GPU_PACKS
-            .iter()
-            .find(|p| p.id == "whisper-cpu")
-            .unwrap();
-        let bin_dir = stt::gpu_bin_dir(root.path(), pack);
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::write(
-            bin_dir.join("whisper-server"),
-            "#!/usr/bin/python3\nimport sys\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nhost=sys.argv[sys.argv.index('--host')+1]\nport=int(sys.argv[sys.argv.index('--port')+1])\nclass H(BaseHTTPRequestHandler):\n    def log_message(self,*a):\n        pass\n    def do_POST(self):\n        n=int(self.headers.get('Content-Length','0'))\n        self.rfile.read(n)\n        body=b'{\"status\":\"ok\"}'\n        self.send_response(200)\n        self.send_header('Content-Length',str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\nThreadingHTTPServer((host,port),H).serve_forever()\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let bin = bin_dir.join("whisper-server");
-            let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).unwrap();
-        }
+        install_fake_whisper_http(root.path());
         let writer = seed_whisper_tiny(root.path());
         // Configuration A starts through reconciliation on private port A.
         let port_a = free_port();

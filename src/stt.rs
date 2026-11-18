@@ -888,6 +888,8 @@ struct Asset {
     executable: bool,
     /// Old installers wrote no marker; see `installed`.
     legacy: bool,
+    /// Sherpa can use a vocabulary supplied by an earlier install.
+    legacy_vocab: bool,
 }
 
 fn model_asset(data_dir: &Path, entry: &ModelEntry) -> Asset {
@@ -900,6 +902,7 @@ fn model_asset(data_dir: &Path, entry: &ModelEntry) -> Asset {
         executable: false,
         // Bark shipped with its marker.
         legacy: entry.kind != ModelKind::Bark,
+        legacy_vocab: entry.kind == ModelKind::Parakeet,
     }
 }
 
@@ -1116,6 +1119,20 @@ impl Asset {
                     std::fs::Permissions::from_mode(0o755),
                 )
                 .map_err(|e| format!("chmod {}: {e}", pin.name))?;
+            }
+        }
+        // Keep the optional local vocabulary used for Sherpa hotwords.
+        // A pinned vocabulary always comes from the verified install.
+        if self.legacy_vocab && !self.files.iter().any(|pin| pin.name == "bpe.vocab") {
+            let live = self.dir.join("bpe.vocab");
+            match live.metadata() {
+                Ok(meta) if meta.is_file() => {
+                    std::fs::copy(&live, staging.join("bpe.vocab"))
+                        .map_err(|e| format!("preserve bpe.vocab: {e}"))?;
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("inspect bpe.vocab: {e}")),
             }
         }
         // The dir rename keeps the files' times, so the marker stays valid.
@@ -1624,6 +1641,17 @@ pub fn spawn_legacy_verification(
 /// Sparse files at the pinned sizes plus a marker: a verified install
 /// of `id` (model or runtime pack) for tests.
 pub(crate) fn fake_install(data_dir: &Path, id: &str) -> PathBuf {
+    fake_install_with_script(data_dir, id, None)
+}
+
+#[cfg(test)]
+pub(crate) fn fake_install_with_script(
+    data_dir: &Path,
+    id: &str,
+    executable: Option<(&str, &str)>,
+) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
     let asset = all_assets(data_dir)
         .into_iter()
         .find(|a| a.id == id)
@@ -1631,10 +1659,18 @@ pub(crate) fn fake_install(data_dir: &Path, id: &str) -> PathBuf {
     for pin in unique(asset.files) {
         let path = asset.dir.join(pin.name);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::File::create(path)
-            .unwrap()
-            .set_len(pin.bytes)
-            .unwrap();
+        if let Some((name, script)) = executable.filter(|(name, _)| *name == pin.name) {
+            let mut contents = script.as_bytes().to_vec();
+            assert!(contents.len() <= pin.bytes as usize, "{name}");
+            contents.resize(pin.bytes as usize, b'\n');
+            std::fs::write(&path, &contents).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        } else {
+            std::fs::File::create(path)
+                .unwrap()
+                .set_len(pin.bytes)
+                .unwrap();
+        }
     }
     write_marker(&asset.dir, asset.files).unwrap();
     asset.dir
@@ -1843,6 +1879,7 @@ mod tests {
             files,
             executable: false,
             legacy: false,
+            legacy_vocab: false,
         }
     }
 
@@ -2257,6 +2294,7 @@ mod tests {
             url: format!("{base}/{}", archive.file.name),
             archive: Some(archive),
             executable,
+            legacy_vocab: !executable,
             ..loose(dest, base, files)
         }
     }
@@ -2341,6 +2379,7 @@ mod tests {
         // one. Failed repair must leave both live files and the marker.
         let offline = archived(&dest, "http://127.0.0.1:9", archive_of(&good), files, false);
         std::fs::write(dest.join("tokens.txt"), b"b 0\n").unwrap();
+        std::fs::write(dest.join("bpe.vocab"), b"legacy vocab").unwrap();
         assert!(!asset.installed());
         std::fs::create_dir(&staging).unwrap();
         std::fs::write(staging.join("encoder.int8.onnx"), b"weightz").unwrap();
@@ -2361,6 +2400,10 @@ mod tests {
             encoder_inode
         );
         assert_eq!(std::fs::read(dest.join("tokens.txt")).unwrap(), b"a 0\n");
+        assert_eq!(
+            std::fs::read(dest.join("bpe.vocab")).unwrap(),
+            b"legacy vocab"
+        );
         std::fs::remove_file(dest.join(MARKER)).unwrap();
         assert!(
             !offline.installed(),
@@ -2391,7 +2434,7 @@ mod tests {
         );
         run(&offline).unwrap();
         assert!(offline.installed());
-        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 3);
+        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 4);
         assert!(!staging.exists());
     }
 
@@ -2680,6 +2723,7 @@ fn gpu_asset(data_dir: &Path, pack: &GpuPack) -> Asset {
         files: pack.files,
         executable: true,
         legacy: true,
+        legacy_vocab: false,
     }
 }
 
@@ -2897,6 +2941,7 @@ fn sherpa_asset(data_dir: &Path, pack: &SherpaPack) -> Asset {
         files: pack.files,
         executable: true,
         legacy: true,
+        legacy_vocab: false,
     }
 }
 
@@ -2992,6 +3037,7 @@ fn needle_asset(data_dir: &Path) -> Result<Asset, String> {
         files,
         executable: true,
         legacy: true,
+        legacy_vocab: false,
     })
 }
 
