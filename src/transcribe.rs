@@ -3613,6 +3613,7 @@ fn run_spec(
 }
 
 struct LiveUtterance {
+    press_seq: u64,
     /// Admission id from `begin_utterance`: the press warmup proves this
     /// id is still the latest admitted and unrevoked before destroying
     /// anything inside startup admission.
@@ -3747,16 +3748,32 @@ pub fn register_press() -> PressTicket {
     }
 }
 
-fn close_pending_presses() {
-    PRESS_CLOSED.fetch_max(PRESS_SEQ.load(Ordering::Acquire), Ordering::AcqRel);
+fn close_pending_presses() -> u64 {
+    let through = PRESS_SEQ.load(Ordering::Acquire);
+    PRESS_CLOSED.fetch_max(through, Ordering::AcqRel);
+    through
 }
 
-fn press_closed(ticket: PressTicket) -> bool {
-    PRESS_CLOSED.load(Ordering::Acquire) >= ticket.seq
+fn press_can_publish(ticket: PressTicket) -> bool {
+    PRESS_SEQ.load(Ordering::Acquire) == ticket.seq
+        && PRESS_CLOSED.load(Ordering::Acquire) < ticket.seq
+}
+
+fn take_live_through(through: u64) -> Option<LiveUtterance> {
+    let mut slot = live().lock().unwrap_or_else(|p| p.into_inner());
+    if slot.as_ref().is_some_and(|sess| sess.press_seq <= through) {
+        slot.take()
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
 static PRESS_ADMISSION_PAUSE: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> =
+    Mutex::new(None);
+
+#[cfg(test)]
+static PRESS_PUBLISH_PAUSE: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> =
     Mutex::new(None);
 
 #[cfg(test)]
@@ -3795,15 +3812,16 @@ pub fn begin_utterance_for(
             let _ = proceed_.recv_timeout(Duration::from_secs(10));
         }
         let mut live_guard = live().lock().unwrap_or_else(|p| p.into_inner());
-        if press_closed(ticket) {
-            eprintln!("[stt] press: released before capture armed; ignoring");
+        if !press_can_publish(ticket) {
+            eprintln!("[stt] press: capture ticket expired before arming");
             return;
         }
         if let Some(sess) = live_guard.take() {
             eprintln!("[stt] previous utterance never ended; closing it");
+            sess.cancel.store(true, Ordering::Relaxed);
             sess.stop.store(true, Ordering::Relaxed);
             sess.settled.store(true, Ordering::Relaxed);
-            audio::set_recorder(None);
+            audio::clear_recorder_if(&sess.recorder);
             revoke_owner(sess.owner);
             active_dec();
         }
@@ -3875,7 +3893,14 @@ pub fn begin_utterance_for(
     let recorder = Arc::new(Mutex::new(Recorder::default()));
     let settled = Arc::new(AtomicBool::new(false));
     recorder.lock().unwrap().start(0); // rate learned from first tap
-    audio::set_recorder(Some(recorder.clone()));
+    #[cfg(test)]
+    {
+        let pause = PRESS_PUBLISH_PAUSE.lock().unwrap().take();
+        if let Some((entered, proceed)) = pause {
+            let _ = entered.send(());
+            let _ = proceed.recv_timeout(Duration::from_secs(10));
+        }
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
     // Speculative passes: whisper plans only, opt-in. Everything else
@@ -3921,20 +3946,23 @@ pub fn begin_utterance_for(
     let stream_plan = plan.clone();
     {
         let mut live_guard = live().lock().unwrap_or_else(|p| p.into_inner());
-        if press_closed(ticket) {
+        if !press_can_publish(ticket) {
             // Released/cancelled while arming: never publish. Same
             // teardown as cancel (spec aborts, warmup ownership revoked).
             drop(live_guard);
-            eprintln!("[stt] press: released while arming; discarding capture");
+            eprintln!("[stt] press: capture ticket expired during arming");
             stop.store(true, Ordering::Relaxed);
             cancel.store(true, Ordering::Relaxed);
             settled.store(true, Ordering::Relaxed);
-            audio::clear_recorder_if(&recorder);
             revoke_owner(owner);
             active_dec();
             return;
         }
+        // Publish the tap with LIVE. An expired worker must never replace
+        // a recorder that a newer press has already installed.
+        audio::set_recorder(Some(recorder.clone()));
         *live_guard = Some(LiveUtterance {
+            press_seq: ticket.seq,
             stop_epoch,
             owner,
             recorder: recorder.clone(),
@@ -4136,16 +4164,14 @@ fn pump_online(
 /// row (setting-gated, see below). The pill hides immediately; the
 /// row lands via the normal home refresh.
 pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
-    close_pending_presses();
-    let sess = live().lock().unwrap().take();
-    audio::set_recorder(None);
-    let Some(sess) = sess else {
+    let Some(sess) = take_live_through(close_pending_presses()) else {
         on_done();
         return;
     };
-    sess.stop.store(true, Ordering::Relaxed);
     sess.cancel.store(true, Ordering::Relaxed);
+    sess.stop.store(true, Ordering::Relaxed);
     sess.settled.store(true, Ordering::Relaxed);
+    audio::clear_recorder_if(&sess.recorder);
     let held_secs = sess.started.elapsed().as_secs_f64();
     // Revoke before dropping: queued warmups bound to this utterance
     // must stand down even though cancellation bumps no generation.
@@ -4211,8 +4237,7 @@ pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
 /// thread: returns immediately. `on_done` fires on the worker when the
 /// pill may hide (success, empty, or failure alike).
 pub fn end_utterance(on_done: impl FnOnce() + Send + 'static) {
-    close_pending_presses();
-    end_utterance_inner(false, Some(Box::new(on_done)));
+    end_utterance_inner(close_pending_presses(), Some(Box::new(on_done)));
 }
 
 /// Release settle: bound on waiting for in-flight slices to land
@@ -4236,10 +4261,8 @@ fn wait_settled(settled: &AtomicBool) {
     }
 }
 
-fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
-    let sess = live().lock().unwrap().take();
-    let Some(sess) = sess else {
-        audio::set_recorder(None);
+fn end_utterance_inner(through: u64, on_done: Option<Box<dyn FnOnce() + Send>>) {
+    let Some(sess) = take_live_through(through) else {
         if let Some(done) = on_done {
             done();
         }
@@ -4250,15 +4273,10 @@ fn end_utterance_inner(stale: bool, on_done: Option<Box<dyn FnOnce() + Send>>) {
     // so revoke the press warmup's ownership on every take, including
     // the release path itself.
     revoke_owner(sess.owner);
-    if stale {
-        audio::set_recorder(None);
-        sess.settled.store(true, Ordering::Relaxed);
-        active_dec();
-        return; // replaced, not transcribed
-    }
     if BUSY.swap(true, Ordering::SeqCst) {
         eprintln!("[stt] worker busy; dropping overlapping utterance");
-        audio::set_recorder(None);
+        sess.cancel.store(true, Ordering::Relaxed);
+        audio::clear_recorder_if(&sess.recorder);
         sess.settled.store(true, Ordering::Relaxed);
         active_dec();
         if let Some(done) = on_done {
@@ -11263,8 +11281,7 @@ mod tests {
     /// Release side of `end_utterance` minus `deliver` (which writes to
     /// the real data dir): take the published capture and finalize it.
     fn take_and_finish() -> Option<Result<Option<FinishedTranscript>, String>> {
-        close_pending_presses();
-        let sess = live().lock().unwrap().take()?;
+        let sess = take_live_through(close_pending_presses())?;
         sess.stop.store(true, Ordering::Relaxed);
         revoke_owner(sess.owner);
         audio::clear_recorder_if(&sess.recorder);
@@ -11365,6 +11382,7 @@ mod tests {
         fallback_port: u16,
     ) -> LiveUtterance {
         LiveUtterance {
+            press_seq: 0,
             stop_epoch: STOP_EPOCH.load(Ordering::Acquire).wrapping_sub(1),
             owner: 0,
             recorder,
@@ -11536,6 +11554,44 @@ mod tests {
         let (text, _, _) = finish_session(sess, &[]).unwrap().expect("no transcript");
         assert_eq!(text, "full chain");
         assert_eq!(fallback_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn closed_press_worker_cannot_disarm_the_next_recorder() {
+        let _guard = serial();
+        let _ = crate::runtime::init();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let writer = seed_whisper_tiny(root.path());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (proceed_tx, proceed_rx) = mpsc::channel();
+        *PRESS_PUBLISH_PAUSE.lock().unwrap() = Some((entered_tx, proceed_rx));
+        let ticket = register_press();
+        let data = root.path().to_path_buf();
+        let stt = writer.load_settings().stt;
+        let old_press = std::thread::spawn(move || {
+            begin_utterance_for(ticket, stt, false, &data, 0);
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let old_release = close_pending_presses();
+        release_and_wait();
+        begin_utterance(writer.load_settings().stt, false, root.path(), 0);
+        let recorder = live().lock().unwrap().as_ref().unwrap().recorder.clone();
+        proceed_tx.send(()).unwrap();
+        old_press.join().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        end_utterance_inner(
+            old_release,
+            Some(Box::new(move || {
+                let _ = done_tx.send(());
+            })),
+        );
+        done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        audio::tap_samples(&[42; 320], 16_000);
+        let captured = recorder.lock().unwrap().len();
+        cancel_and_drain();
+        assert_eq!(active_count(), 0);
+        assert_eq!(captured, 320);
     }
 
     #[test]
