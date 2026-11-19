@@ -635,6 +635,7 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "action.clearcache" => ("Clear cache", "Limpiar caché"),
         "action.openfolder" => ("Open folder", "Abrir carpeta"),
         "action.resetdots" => ("Reset app data…", "Restablecer datos…"),
+        "action.finish_reset" => ("Finish reset…", "Completar restablecimiento…"),
         "action.sendrequest" => ("Send request", "Enviar solicitud"),
         "action.syncnow" => ("Sync now", "Sincronizar ahora"),
         "action.check" => ("Check for updates", "Buscar actualizaciones"),
@@ -903,6 +904,11 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Models or runtimes are being changed. Wait for the operation to finish, then try again.",
             "Hay cambios en curso en los modelos o motores. Espera a que termine la operación e inténtalo de nuevo.",
         ),
+        "feedback.reset_running" => ("Resetting…", "Restableciendo…"),
+        "feedback.reset_incomplete" => (
+            "Your data was reset. Some downloads or recordings still need to be removed.",
+            "Se restablecieron tus datos. Aún quedan descargas o grabaciones por eliminar.",
+        ),
         "feedback.cleared" => ("Saved data cleared", "Datos guardados borrados"),
         "home.history" => ("Recent dictations", "Dictados recientes"),
         "home.search" => ("Search recent dictations", "Buscar dictados recientes"),
@@ -1002,6 +1008,11 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "confirm.reset.body" => (
             "Deletes history, words, snippets, recordings, downloads, and settings on this device. Paired devices and device identity are kept, and sync is turned off: turning it back on brings back what paired devices still have. This cannot be undone.",
             "Elimina historial, palabras, fragmentos, grabaciones, descargas y ajustes de este dispositivo. Se conservan los dispositivos emparejados y la identidad, y la sincronización se desactiva: al reactivarla vuelve lo que aún tengan los dispositivos emparejados. No se puede deshacer.",
+        ),
+        "confirm.finish_reset.title" => ("Finish reset?", "¿Completar el restablecimiento?"),
+        "confirm.finish_reset.body" => (
+            "Remove the remaining downloads or recordings from the folders still pending. This cannot be undone.",
+            "Elimina las descargas o grabaciones de las carpetas pendientes. Esta acción no se puede deshacer.",
         ),
         "settings.saved" => (
             "Preferences save automatically",

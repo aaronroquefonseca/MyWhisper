@@ -98,6 +98,92 @@ fn respond(window: &gtk4::ApplicationWindow, response: &str) {
     target.emit_clicked();
 }
 
+pub const RESET_TEST_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+pub fn run_reset(
+    app: &gtk4::Application,
+    state: &Rc<AppState>,
+    window: &gtk4::ApplicationWindow,
+    scratch: tempfile::TempDir,
+) {
+    use std::time::{Duration, Instant};
+
+    let app = app.clone();
+    let state = state.clone();
+    let window = window.clone();
+    gtk4::glib::spawn_future_local(async move {
+        let obstruction = scratch.path().join("models");
+        std::fs::write(&obstruction, b"fixture obstruction").unwrap();
+        let writer = rusqlite::Connection::open(&state.db_path).unwrap();
+        writer
+            .execute_batch(&format!(
+                "PRAGMA key=\"x'{RESET_TEST_KEY}'\"; BEGIN IMMEDIATE"
+            ))
+            .unwrap();
+        named::<gtk4::Stack>(window.upcast_ref(), "main-pages").set_visible_child_name("settings");
+        named::<gtk4::Stack>(window.upcast_ref(), "settings-pages")
+            .set_visible_child_name("System");
+        named::<gtk4::Button>(window.upcast_ref(), "reset-all").emit_clicked();
+        gtk4::glib::timeout_future(Duration::from_millis(50)).await;
+        let start = Instant::now();
+        respond(&window, "confirm");
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "reset blocked GTK"
+        );
+        gtk4::glib::timeout_future(Duration::from_millis(100)).await;
+        assert!(!window.is_sensitive());
+        writer.execute_batch("ROLLBACK").unwrap();
+        drop(writer);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let recovery_window = loop {
+            if let Some(next) = app
+                .active_window()
+                .and_downcast::<gtk4::ApplicationWindow>()
+                && next != window
+            {
+                break next;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "reset did not refresh the window"
+            );
+            gtk4::glib::timeout_future(Duration::from_millis(20)).await;
+        };
+        let recovery: gtk4::Button = named(recovery_window.upcast_ref(), "finish-reset");
+        assert!(recovery.is_visible());
+        assert!(
+            named::<gtk4::Label>(recovery_window.upcast_ref(), "reset-incomplete").is_visible()
+        );
+        assert!(state.store.load_history(10, true).unwrap().is_empty());
+        assert!(!state.store.load_settings().sync.enabled);
+        state
+            .store
+            .add_history("new", "new", 1, 1, "preview")
+            .unwrap();
+        std::fs::remove_file(&obstruction).unwrap();
+        recovery.emit_clicked();
+        gtk4::glib::timeout_future(Duration::from_millis(50)).await;
+        respond(&recovery_window, "confirm");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(next) = app.active_window()
+                && next.upcast_ref::<gtk4::Window>() != recovery_window.upcast_ref::<gtk4::Window>()
+            {
+                assert!(named::<gtk4::Button>(next.upcast_ref(), "reset-all").is_visible());
+                break;
+            }
+            assert!(Instant::now() < deadline, "reset retry did not finish");
+            gtk4::glib::timeout_future(Duration::from_millis(20)).await;
+        }
+        assert!(obstruction.is_dir());
+        assert_eq!(state.store.load_history(10, true).unwrap().len(), 1);
+        eprintln!("reset smoke passed");
+        app.quit();
+    });
+}
+
 pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::ApplicationWindow) {
     let app = app.clone();
     let state = state.clone();

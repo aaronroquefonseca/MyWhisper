@@ -13,10 +13,26 @@ fn main() -> gtk4::glib::ExitCode {
         .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
         .build();
     app.connect_activate(move |app| {
-        let mut state = AppState::fresh();
+        let reset_fixture = args.iter().any(|arg| arg == "--reset-smoke").then(|| {
+            assert_eq!(
+                std::env::var("MYWHISPER_DB_KEY").as_deref(),
+                Ok(smoke::RESET_TEST_KEY),
+                "reset smoke requires the disposable database key"
+            );
+            tempfile::tempdir().unwrap()
+        });
+        let state = if let Some(root) = &reset_fixture {
+            let db = root.path().join("state.db");
+            let store = std::rc::Rc::new(mywhisper::store::Store::open(&db).unwrap());
+            let identity = mywhisper::device::DeviceIdentity::ephemeral();
+            AppState::load(&store, "preview", &db, identity.creds(), Default::default())
+        } else {
+            let mut state = AppState::fresh();
+            std::rc::Rc::get_mut(&mut state).unwrap().db_path =
+                std::env::temp_dir().join("mywhisper-ui-preview/state.db");
+            state
+        };
         state.settings.borrow_mut().sync.enabled = false;
-        std::rc::Rc::get_mut(&mut state).unwrap().db_path =
-            std::env::temp_dir().join("mywhisper-ui-preview/state.db");
         if !args.iter().any(|a| a == "empty") {
             for (raw, text) in [
                 (
@@ -80,6 +96,9 @@ fn main() -> gtk4::glib::ExitCode {
         }
         if args.iter().any(|a| a == "--smoke") {
             smoke::run(app, &state, &window);
+        }
+        if let Some(root) = reset_fixture {
+            smoke::run_reset(app, &state, &window, root);
         }
     });
     app.run_with_args::<&str>(&[])

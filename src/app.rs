@@ -16,6 +16,7 @@ pub struct AppState {
     /// Interior mutability: pages render from here, and the (few)
     /// already-wired controls write back here.
     pub settings: std::cell::RefCell<AppSettings>,
+    pub(crate) reset_busy: std::cell::Cell<bool>,
     pub history: Vec<HistoryEntry>,
     pub stats: UsageStats,
     pub store: Rc<crate::store::Store>,
@@ -36,6 +37,7 @@ impl AppState {
     pub fn fresh() -> Rc<Self> {
         Rc::new(Self {
             settings: std::cell::RefCell::new(AppSettings::default()),
+            reset_busy: std::cell::Cell::new(false),
             history: Vec::new(),
             stats: UsageStats::default(),
             store: Rc::new(crate::store::Store::open_memory().expect("in-memory store")),
@@ -71,6 +73,7 @@ impl AppState {
         stats.streak_days = streak(&store.active_days().unwrap_or_default());
         Rc::new(Self {
             settings: std::cell::RefCell::new(settings),
+            reset_busy: std::cell::Cell::new(false),
             history,
             stats,
             store: store.clone(),

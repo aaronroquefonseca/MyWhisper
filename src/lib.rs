@@ -16,6 +16,7 @@ pub mod net;
 pub mod overlay;
 pub mod paths;
 pub mod provider_test;
+mod reset;
 pub mod runtime;
 
 /// Single source for the app version (Cargo.toml package

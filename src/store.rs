@@ -20,6 +20,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::settings::{AppSettings, HistoryEntry, Snippet};
 
+pub(crate) const RESET_DIRS: [&str; 3] = ["models", "bin", "audio"];
+
 /// Milliseconds since the Unix epoch (wall clock). Sync conflict
 /// resolution compares these; ties break on node id (total order).
 pub fn now_ms() -> i64 {
@@ -941,10 +943,37 @@ impl Store {
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             [],
         )?;
+        for dir in RESET_DIRS {
+            tx.execute(
+                "INSERT OR IGNORE INTO sync_meta (key, value) VALUES (?1, '1')",
+                [format!("reset_cleanup:{dir}")],
+            )?;
+        }
         tx.commit()?;
         bump_data_gen();
         bump_gen(&self.conn);
         self.truncate_wal_soon();
+        Ok(())
+    }
+
+    pub(crate) fn pending_reset_dirs(&self) -> rusqlite::Result<Vec<&'static str>> {
+        let mut query = self
+            .conn
+            .prepare("SELECT EXISTS(SELECT 1 FROM sync_meta WHERE key = ?1)")?;
+        let mut pending = Vec::new();
+        for dir in RESET_DIRS {
+            if query.query_row([format!("reset_cleanup:{dir}")], |row| row.get(0))? {
+                pending.push(dir);
+            }
+        }
+        Ok(pending)
+    }
+
+    pub(crate) fn complete_reset_dir(&self, dir: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM sync_meta WHERE key = ?1",
+            [format!("reset_cleanup:{dir}")],
+        )?;
         Ok(())
     }
 
