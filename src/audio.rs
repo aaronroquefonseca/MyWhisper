@@ -301,6 +301,29 @@ pub fn audio_vault_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.join("audio")
 }
 
+pub(crate) fn save_retained_audio(
+    store: &crate::store::Store,
+    data_dir: &std::path::Path,
+    uuid: &str,
+    wav: &[u8],
+) -> Result<bool, String> {
+    use std::io::Write;
+
+    if !store.may_retain_audio(uuid).map_err(|e| e.to_string())? {
+        return Ok(false);
+    }
+    let dir = audio_vault_dir(data_dir);
+    crate::private_fs::directory(&dir).map_err(|e| e.to_string())?;
+    let mut staged = tempfile::NamedTempFile::new_in(&dir).map_err(|e| e.to_string())?;
+    staged.write_all(wav).map_err(|e| e.to_string())?;
+    store.publish_retained_audio(uuid, move || {
+        staged
+            .persist_noclobber(dir.join(format!("{uuid}.wav")))
+            .map(|_| ())
+            .map_err(|e| e.error)
+    })
+}
+
 /// Delete every vault file. Returns files removed.
 pub fn clear_audio(data_dir: &std::path::Path) -> usize {
     let dir = audio_vault_dir(data_dir);
@@ -471,6 +494,57 @@ mod tests {
             VadResult::Speech(whole) => assert_eq!(whole.len(), sig.len()),
             VadResult::Silence => panic!("gate 0 must pass"),
         }
+    }
+
+    #[test]
+    fn retained_audio_requires_current_permission_and_a_live_history_row() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let data = tempfile::tempdir().unwrap();
+        let path = data.path().join("state.db");
+        let store = crate::store::Store::open(&path).unwrap();
+        let writer = crate::store::Store::open(&path).unwrap();
+        let mut settings = writer.load_settings();
+        settings.privacy.keep_audio_recordings = true;
+        settings.privacy.history_enabled = true;
+        writer.save_settings(&settings).unwrap();
+        let uuid = store.add_history("raw", "final", 1, 1, "node").unwrap();
+        let wav = wav_bytes_16k(&[1i16; 32]);
+        assert!(save_retained_audio(&store, data.path(), &uuid, &wav).unwrap());
+        let vault = audio_vault_dir(data.path());
+        let saved = vault.join(format!("{uuid}.wav"));
+        assert_eq!(std::fs::read(&saved).unwrap(), wav);
+        assert_eq!(
+            vault.metadata().unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            saved.metadata().unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let pending = store.add_history("raw", "final", 1, 1, "node").unwrap();
+        assert!(store.may_retain_audio(&pending).unwrap());
+        settings.privacy.keep_audio_recordings = false;
+        writer.save_settings(&settings).unwrap();
+        assert!(
+            !store
+                .publish_retained_audio(&pending, || panic!("audio publication after opt-out"))
+                .unwrap()
+        );
+        assert!(!save_retained_audio(&store, data.path(), &pending, &wav).unwrap());
+        assert!(!vault.join(format!("{pending}.wav")).exists());
+
+        settings.privacy.keep_audio_recordings = true;
+        writer.save_settings(&settings).unwrap();
+        writer.delete_history(&pending).unwrap();
+        assert!(
+            !store
+                .publish_retained_audio(&pending, || panic!(
+                    "audio publication for deleted history"
+                ))
+                .unwrap()
+        );
     }
 
     #[test]

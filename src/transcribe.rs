@@ -3685,6 +3685,20 @@ impl LiveUtterance {
         }
         audio::clear_recorder_if(&self.recorder);
     }
+
+    fn retained_stream_wav(&self) -> Option<Vec<u8>> {
+        if !self.keep_audio {
+            return None;
+        }
+        let (pcm, rate) = self.recorder.lock().ok()?.finish();
+        if rate == 0 || pcm.is_empty() {
+            return None;
+        }
+        if rate == audio::ENGINE_RATE {
+            return Some(wav_bytes_16k(&pcm));
+        }
+        wav_of(&Resampler::resample_all(rate, &pcm), true)
+    }
 }
 
 static LIVE: OnceLock<Mutex<Option<LiveUtterance>>> = OnceLock::new();
@@ -4455,15 +4469,13 @@ fn finish_session(
         }
     }
     eprintln!("[stt] release: engine ready, transcribing ({secs:.1}s window)");
-    if let Some(rx) = sess.result_rx {
-        // Streaming: the pump owns the tail; wait for the final.
-        // Audio retention skips streaming utterances (chunks live in
-        // the pump, never materialize here).
-        if sess.keep_audio {
-            eprintln!("[stt] release: audio retention skips streaming utterances");
-        }
+    if let Some(rx) = &sess.result_rx {
+        // The pump owns the tail. The settled recorder still holds
+        // the original capture if the user opted into audio retention.
         match rx.recv().map_err(|_| "online pump died".to_string())? {
-            Ok(text) => return Ok(empty_to_none(text).map(|t| (t, secs, None))),
+            Ok(text) => {
+                return Ok(empty_to_none(text).map(|t| (t, secs, sess.retained_stream_wav())));
+            }
             Err(e) if e == "cancelled" => return Ok(None),
             Err(e) => {
                 // Stream failed mid-hold: the recorder is intact
@@ -4472,11 +4484,13 @@ fn finish_session(
             }
         }
     }
-    if let Some(rx) = sess.whistle_rx {
+    if let Some(rx) = &sess.whistle_rx {
         // Live needle stream: committed text arrives as audio flows;
         // failure falls back to single-file decode below.
         match rx.recv().map_err(|_| "whistle pump died".to_string())? {
-            Ok(text) => return Ok(empty_to_none(text).map(|t| (t, secs, None))),
+            Ok(text) => {
+                return Ok(empty_to_none(text).map(|t| (t, secs, sess.retained_stream_wav())));
+            }
             Err(e) if e == "cancelled" => return Ok(None),
             Err(e) => {
                 eprintln!("[stt] whistle stream failed ({e}); file fallback");
@@ -5808,8 +5822,8 @@ fn restore_protected(cleaned: &str, token: &str, replacements: &[String]) -> Opt
     Some(out)
 }
 
-/// Store in history (raw + final text, never audio) and paste the
-/// FINAL transcript via the configured clipboard pipeline.
+/// Store history and any opted-in audio, then paste the final
+/// transcript via the configured clipboard pipeline.
 /// Retention: history off pastes without storing; auto-delete purges
 /// old rows first (tombstones survive).
 fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
@@ -5870,16 +5884,9 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
         match store.add_history(&raw, &text, words, secs.round() as i64, &node) {
             Ok(uuid) => {
                 if let Some(wav) = wav {
-                    let data_dir = paths
-                        .db_file()
-                        .parent()
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_default();
-                    let dir = crate::audio::audio_vault_dir(&data_dir);
-                    match std::fs::create_dir_all(&dir)
-                        .and_then(|_| std::fs::write(dir.join(format!("{uuid}.wav")), wav))
-                    {
-                        Ok(()) => eprintln!("[stt] audio kept: {uuid}.wav"),
+                    match audio::save_retained_audio(&store, &paths.data_dir, &uuid, &wav) {
+                        Ok(true) => eprintln!("[stt] audio kept: {uuid}.wav"),
+                        Ok(false) => {}
                         Err(e) => eprintln!("[stt] audio vault write: {e}"),
                     }
                 }
@@ -11499,6 +11506,38 @@ mod tests {
                 host: "127.0.0.1",
                 port_override: Some(free_port()),
             },
+        }
+    }
+
+    #[test]
+    fn successful_streams_return_settled_audio_when_retention_was_enabled() {
+        let _guard = serial();
+        let root = tempfile::tempdir().unwrap();
+        let pcm = [1_720; 4_800];
+        for (whistle, keep_audio) in [(false, true), (true, true), (false, false), (true, false)] {
+            let recorder = Arc::new(Mutex::new(Recorder::default()));
+            recorder.lock().unwrap().start(16_000);
+            recorder.lock().unwrap().push(&pcm);
+            let (release, _released) = mpsc::channel();
+            let (_spec_done, done_rx) = mpsc::channel();
+            let spec = SpecHandle { release, done_rx };
+            let mut session = stopped_whisper_session(root.path(), recorder, spec, free_port());
+            session.spec = None;
+            session.keep_audio = keep_audio;
+            let (reply, receive) = mpsc::channel();
+            reply.send(Ok("fixture transcript".into())).unwrap();
+            if whistle {
+                session.whistle_rx = Some(receive);
+            } else {
+                session.result_rx = Some(receive);
+            }
+            let (text, _, wav) = finish_session(session, &[]).unwrap().unwrap();
+            assert_eq!(text, "fixture transcript");
+            let expected = keep_audio.then(|| wav_bytes_16k(&pcm));
+            assert!(
+                wav == expected,
+                "unexpected retained audio: whistle={whistle}, keep_audio={keep_audio}"
+            );
         }
     }
 
