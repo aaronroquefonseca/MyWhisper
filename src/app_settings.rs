@@ -464,6 +464,9 @@ impl LmDraft {
 /// preference changes propagate to the service through the DB).
 pub(crate) fn persist_prefs(state: Rc<AppState>) -> Rc<dyn Fn()> {
     Rc::new(move || {
+        if state.reset_busy.get() {
+            return;
+        }
         let settings = state.settings.borrow();
         if let Err(e) = state.store.save_settings(&settings) {
             eprintln!("[app] prefs save failed: {e}");
@@ -5063,6 +5066,62 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
     root
 }
 
+fn start_reset(button: &Button, state: Rc<AppState>, cleanup_only: bool) {
+    let Some(window) = button
+        .root()
+        .and_then(|root| root.downcast::<gtk4::Window>().ok())
+    else {
+        return;
+    };
+    if state.reset_busy.replace(true) {
+        return;
+    }
+    let hold = window.application().map(|app| app.hold());
+    window.set_sensitive(false);
+    let previous_label = button.label();
+    button.set_label(tr("feedback.reset_running"));
+    let button = button.downgrade();
+    let window = window.downgrade();
+    let db = state.db_path.clone();
+    gtk4::glib::spawn_future_local(async move {
+        let _hold = hold;
+        let mut outcome =
+            gtk4::gio::spawn_blocking(move || crate::reset::run(&db, cleanup_only)).await;
+        if let Ok(Ok(result)) = &mut outcome
+            && let Some(fresh) = result.settings.take()
+        {
+            *state.settings.borrow_mut() = fresh;
+            crate::i18n::set_lang(crate::i18n::UiLang::System);
+            apply_theme(crate::settings::Theme::System);
+        }
+        state.reset_busy.set(false);
+        if let Some(window) = window.upgrade() {
+            window.set_sensitive(true);
+        }
+        if let Some(button) = button.upgrade() {
+            button.set_label(previous_label.as_deref().unwrap_or_default());
+        }
+        match outcome {
+            Ok(Ok(result)) => {
+                if window.upgrade().is_some_and(|window| window.is_visible()) {
+                    crate::i18n::rebuild_ui();
+                    super::app::notify(tr(if result.incomplete {
+                        "feedback.reset_incomplete"
+                    } else {
+                        "feedback.cleared"
+                    }));
+                }
+            }
+            Ok(Err(crate::reset::Failure::Cache(error))) => report_download_delete_error(&error),
+            Ok(Err(crate::reset::Failure::Database(error))) => {
+                eprintln!("[system] reset db: {error}");
+                super::app::notify(tr("feedback.deletefailed"));
+            }
+            Err(_) => super::app::notify(tr("feedback.deletefailed")),
+        }
+    });
+}
+
 fn system_page(state: &Rc<AppState>) -> GtkBox {
     let root = section_box(tr("settings.system"), tr("settings.system.sub"));
 
@@ -5207,51 +5266,46 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
     let (card, rows) = group(tr("group.danger"));
     let (b, _) = row(tr("row.resetall"));
     let reset = Button::with_label(tr("action.resetdots"));
-    {
-        let state = state.clone();
-        let data_dir = data_dir.clone();
-        super::app::connect_confirmed(
+    reset.set_widget_name("reset-all");
+    let recovery = Button::with_label(tr("action.finish_reset"));
+    recovery.set_widget_name("finish-reset");
+    let pending = state
+        .store
+        .pending_reset_dirs()
+        .is_ok_and(|dirs| !dirs.is_empty());
+    reset.set_visible(!pending);
+    recovery.set_visible(pending);
+    for (button, cleanup_only, title, body, label) in [
+        (
             &reset,
-            tr("confirm.reset.title"),
-            tr("confirm.reset.body"),
-            tr("action.resetdots"),
-            move |_| {
-                let Some(_cache) = lock_download_cache(&data_dir) else {
-                    return;
-                };
-                // Wipe user data + downloads. Identity (device key) and
-                // the running service survive: the next dictation
-                // re-reads defaults from the fresh DB and reports missing
-                // models; restart the service for a fully clean slate.
-                // Sync stays off until the user turns it back on, so
-                // paired devices cannot refill the cleared data unasked.
-                let mut fresh = crate::settings::AppSettings::default();
-                fresh.sync.enabled = false;
-                if let Err(e) = state.store.reset_all_data(&fresh) {
-                    eprintln!("[system] reset db: {e}");
-                    super::app::notify(tr("feedback.deletefailed"));
-                    return;
-                }
-                for sub in ["models", "bin", "audio"] {
-                    let dir = data_dir.join(sub);
-                    if dir.exists()
-                        && let Err(e) =
-                            std::fs::remove_dir_all(&dir).and(std::fs::create_dir_all(&dir))
-                    {
-                        eprintln!("[system] reset {sub}: {e}");
-                    }
-                }
-                *state.settings.borrow_mut() = fresh;
-                eprintln!("[system] application data reset");
-                crate::i18n::set_lang(crate::i18n::UiLang::System);
-                apply_theme(crate::settings::Theme::System);
-                crate::i18n::rebuild_ui();
-                super::app::notify(tr("feedback.cleared"));
-            },
-        );
+            false,
+            "confirm.reset.title",
+            "confirm.reset.body",
+            "action.resetdots",
+        ),
+        (
+            &recovery,
+            true,
+            "confirm.finish_reset.title",
+            "confirm.finish_reset.body",
+            "action.finish_reset",
+        ),
+    ] {
+        let state = state.clone();
+        super::app::connect_confirmed(button, tr(title), tr(body), tr(label), move |button| {
+            start_reset(button, state.clone(), cleanup_only)
+        });
     }
     b.append(&reset);
+    b.append(&recovery);
     rows.append(&b);
+    if pending {
+        let notice = Label::new(Some(tr("feedback.reset_incomplete")));
+        notice.set_widget_name("reset-incomplete");
+        notice.set_wrap(true);
+        notice.set_xalign(0.0);
+        rows.append(&notice);
+    }
     root.append(&card);
 
     root
