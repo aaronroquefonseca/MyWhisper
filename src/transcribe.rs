@@ -3392,7 +3392,9 @@ pub fn has_live() -> bool {
 /// Speculative-streaming session (whisper only): background passes
 /// while held, internal agreement, tail finalized on release.
 struct SpecHandle {
-    stop: Arc<AtomicBool>,
+    /// Explicit release finalizes the tail. Dropping the sender aborts
+    /// speculative work when a capture is cancelled or abandoned.
+    release: mpsc::Sender<()>,
     /// Final (committed_text, committed_audio_len, full 16k buffer).
     done_rx: mpsc::Receiver<(String, usize, Vec<f32>)>,
 }
@@ -3413,7 +3415,7 @@ struct SpecConfig {
 
 fn run_spec(
     rec: Arc<Mutex<Recorder>>,
-    stop: Arc<AtomicBool>,
+    release: mpsc::Receiver<()>,
     data_dir: PathBuf,
     config: SpecConfig,
     tx: mpsc::Sender<(String, usize, Vec<f32>)>,
@@ -3424,11 +3426,7 @@ fn run_spec(
         overlap,
         whisper_port,
     } = config;
-    let words = crate::store::Store::open(&data_dir.join("state.db"))
-        .ok()
-        .map(|store| store.load_words().unwrap_or_default())
-        .unwrap_or_default();
-    let prompt = crate::textnorm::dictionary_prompt(&words, crate::textnorm::WHISPER_PROMPT_CHARS);
+    let mut prompt = None;
     let mut resampler: Option<(u32, Resampler)> = None;
     let mut append_pending =
         |consumed: &mut usize, buffer: &mut Vec<f32>| -> Result<bool, String> {
@@ -3449,9 +3447,10 @@ fn run_spec(
     let mut committed = (String::new(), 0usize);
     let tick = Duration::from_secs_f32(update_secs.max(0.5));
     loop {
-        std::thread::sleep(tick);
-        if stop.load(Ordering::Relaxed) {
-            break;
+        match release.recv_timeout(tick) {
+            Ok(()) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
         match append_pending(&mut consumed, &mut buffer) {
             Ok(true) => {}
@@ -3463,6 +3462,18 @@ fn run_spec(
         }
         let window = crate::speculative::unconfirmed_window(&buffer, committed.1, overlap);
         let wav = wav_bytes_16k(&audio::f32_to_i16(&window));
+        let prompt = prompt.get_or_insert_with(|| {
+            let words = crate::store::Store::open(&data_dir.join("state.db"))
+                .ok()
+                .map(|store| store.load_words().unwrap_or_default())
+                .unwrap_or_default();
+            crate::textnorm::dictionary_prompt(&words, crate::textnorm::WHISPER_PROMPT_CHARS)
+        });
+        match release.try_recv() {
+            Ok(()) => break,
+            Err(mpsc::TryRecvError::Disconnected) => return,
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
         match whisper_transcribe(&wav, prompt.clone(), whisper_port) {
             Ok(hyp) => {
                 let agreed = crate::speculative::confirm_prefix(&prev_hyp, &hyp);
@@ -3757,18 +3768,17 @@ pub fn begin_utterance_for(
     // either streams natively or decodes after release.
     let spec: Option<SpecHandle> = if matches!(plan, Plan::WhisperHttp { .. }) && stt.spec_enabled {
         let (tx, rx) = mpsc::channel();
-        let spec_stop = Arc::new(AtomicBool::new(false));
+        let (release, release_rx) = mpsc::channel();
         let rec = recorder.clone();
         let data = data_dir.clone();
         let update = stt.spec_update_secs.clamp(0.5, 10.0);
         let overlap = (stt.spec_overlap_secs.clamp(0.0, 5.0) * 16_000.0) as usize;
-        let sstop = spec_stop.clone();
         let spec_port = engine_port(&server_net(&stt), WHISPER_PORT);
         let spec_settled = settled.clone();
         if let Err(e) = crate::runtime::submit("stt-spec", move || {
             run_spec(
                 rec,
-                sstop,
+                release_rx,
                 data,
                 SpecConfig {
                     update_secs: update,
@@ -3784,7 +3794,7 @@ pub fn begin_utterance_for(
         } else {
             eprintln!("[stt] speculative passes on (every {update:.1}s)");
             Some(SpecHandle {
-                stop: spec_stop,
+                release,
                 done_rx: rx,
             })
         }
@@ -3805,9 +3815,6 @@ pub fn begin_utterance_for(
             stop.store(true, Ordering::Relaxed);
             cancel.store(true, Ordering::Relaxed);
             settled.store(true, Ordering::Relaxed);
-            if let Some(spec) = &spec {
-                spec.stop.store(true, Ordering::Relaxed);
-            }
             audio::clear_recorder_if(&recorder);
             revoke_owner(owner);
             active_dec();
@@ -4241,10 +4248,10 @@ fn finish_session(
         .overflowed()
     {
         sess.cancel.store(true, Ordering::Relaxed);
-        if let Some(spec) = &sess.spec {
-            spec.stop.store(true, Ordering::Relaxed);
-        }
         return Err(CAPTURE_LIMIT_REACHED.to_string());
+    }
+    if let Some(spec) = &sess.spec {
+        let _ = spec.release.send(());
     }
     let secs = sess.started.elapsed().as_secs_f64();
     // Accepted inference owns the engine for its duration (blocking
@@ -4320,7 +4327,6 @@ fn finish_session(
     // samples. Any failure or empty result falls through to
     // the full recording + fallback chain.
     if let Some(spec) = sess.spec {
-        spec.stop.store(true, Ordering::Relaxed);
         match spec.done_rx.recv() {
             Ok((committed, committed_len, buf)) => {
                 eprintln!(
@@ -6150,15 +6156,14 @@ mod tests {
             })
             .collect();
         rec.lock().unwrap().push(&tone);
-        let stop = Arc::new(AtomicBool::new(false));
+        let (release, release_rx) = mpsc::channel();
         let (tx, rx) = mpsc::channel();
         let r = rec.clone();
-        let s = stop.clone();
         let data = crate::paths::AppPaths::create().unwrap().data_dir;
         std::thread::spawn(move || {
             run_spec(
                 r,
-                s,
+                release_rx,
                 data,
                 SpecConfig {
                     update_secs: 1.0,
@@ -6170,7 +6175,7 @@ mod tests {
             )
         });
         std::thread::sleep(Duration::from_secs(5));
-        stop.store(true, Ordering::Relaxed);
+        release.send(()).unwrap();
         let (committed, clen, buf) = rx.recv_timeout(Duration::from_secs(120)).unwrap();
         eprintln!("spec committed={committed:?} clen={clen} buf={}", buf.len());
         assert!(buf.len() >= 60_000, "buffer doesn't cover 4 s");
@@ -11184,19 +11189,47 @@ mod tests {
             CAPTURE_LIMIT_REACHED
         );
         let (_done_tx, done_rx) = mpsc::channel();
-        let stop = Arc::new(AtomicBool::new(false));
-        let spec = SpecHandle {
-            stop: stop.clone(),
-            done_rx,
-        };
+        let (release, release_rx) = mpsc::channel();
+        let spec = SpecHandle { release, done_rx };
         let sess = stopped_whisper_session(root.path(), recorder, spec, 9);
         let cancel = sess.cancel.clone();
         assert_eq!(
             finish_session(sess, &[]).unwrap_err(),
             CAPTURE_LIMIT_REACHED
         );
-        assert!(stop.load(Ordering::Relaxed));
+        assert_eq!(release_rx.try_recv(), Err(mpsc::TryRecvError::Disconnected));
         assert!(cancel.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn abandoned_spec_preview_exits_without_waiting_for_its_next_tick() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().to_path_buf();
+        let (release, release_rx) = mpsc::channel();
+        let (done, done_rx) = mpsc::channel();
+        let (started, started_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            run_spec(
+                Arc::new(Mutex::new(Recorder::default())),
+                release_rx,
+                data,
+                SpecConfig {
+                    update_secs: 10.0,
+                    overlap: 0,
+                    whisper_port: 9,
+                },
+                done,
+                Arc::new(AtomicBool::new(false)),
+            );
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        drop(release);
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_secs(2)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
+        worker.join().unwrap();
     }
 
     /// Finding: a speculative tail decode failing (ownership error after
@@ -11220,8 +11253,9 @@ mod tests {
         spec_tx
             .send((String::new(), 0, vec![0.1f32; 32_000]))
             .unwrap();
+        let (release, _release_rx) = mpsc::channel();
         let spec = SpecHandle {
-            stop: Arc::new(AtomicBool::new(false)),
+            release,
             done_rx: spec_rx,
         };
         let sess = stopped_whisper_session(root.path(), recorder, spec, fallback_port);
@@ -11249,29 +11283,25 @@ mod tests {
         }
         // Real spec thread; its first tick lands after release.
         let (spec_tx, spec_rx) = mpsc::channel();
-        let spec_stop = Arc::new(AtomicBool::new(false));
-        let (rec, sstop, data) = (
-            recorder.clone(),
-            spec_stop.clone(),
-            root.path().to_path_buf(),
-        );
+        let (release, release_rx) = mpsc::channel();
+        let rec = recorder.clone();
+        let data = root.path().to_path_buf();
         std::thread::spawn(move || {
-            let config = SpecConfig {
-                update_secs: 1.0,
-                overlap: 0,
-                whisper_port: free_port(),
-            };
             run_spec(
                 rec,
-                sstop,
+                release_rx,
                 data,
-                config,
+                SpecConfig {
+                    update_secs: 10.0,
+                    overlap: 0,
+                    whisper_port: free_port(),
+                },
                 spec_tx,
                 Arc::new(AtomicBool::new(true)),
             );
         });
         let spec = SpecHandle {
-            stop: spec_stop,
+            release,
             done_rx: spec_rx,
         };
         let sess = stopped_whisper_session(root.path(), recorder, spec, fallback_port);
