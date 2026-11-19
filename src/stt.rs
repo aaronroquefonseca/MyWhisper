@@ -880,6 +880,7 @@ const MARKER: &str = ".verified";
 /// pinned files come from, and how they are checked.
 struct Asset {
     id: &'static str,
+    data_dir: PathBuf,
     dir: PathBuf,
     url: String,
     archive: Option<Archive>,
@@ -895,6 +896,7 @@ struct Asset {
 fn model_asset(data_dir: &Path, entry: &ModelEntry) -> Asset {
     Asset {
         id: entry.id,
+        data_dir: data_dir.to_path_buf(),
         dir: model_dir(data_dir, entry),
         url: entry.download_url.to_string(),
         archive: entry.archive,
@@ -904,6 +906,29 @@ fn model_asset(data_dir: &Path, entry: &ModelEntry) -> Asset {
         legacy: entry.kind != ModelKind::Bark,
         legacy_vocab: entry.kind == ModelKind::Parakeet,
     }
+}
+
+fn asset_lock_dir(data_dir: &Path) -> std::io::Result<PathBuf> {
+    // Clear Cache and Reset All remove models/ and bin/. Keep the lock
+    // files outside both so every process continues to open the same inodes.
+    let locks = data_dir.join(".asset-locks");
+    crate::private_fs::directory(&locks)?;
+    Ok(locks)
+}
+
+#[derive(Debug)]
+pub(crate) struct AssetLock(std::fs::File);
+
+impl Drop for AssetLock {
+    fn drop(&mut self) {
+        // A concurrent fork can hold a copy of the descriptor until
+        // exec. Unlock now so that copy cannot delay the next operation.
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
+pub(crate) fn try_lock_download_cache(data_dir: &Path) -> std::io::Result<AssetLock> {
+    crate::private_fs::try_lock(&asset_lock_dir(data_dir)?.join("cache.lock")).map(AssetLock)
 }
 
 /// First pin per name. A name listed twice is a file upstream replaced
@@ -979,11 +1004,26 @@ impl Asset {
         staging_dir(&self.dir)
     }
 
+    fn lock_for_change(&self) -> std::io::Result<(AssetLock, AssetLock)> {
+        let locks = asset_lock_dir(&self.data_dir)?;
+        let cache = AssetLock(crate::private_fs::try_lock_shared(
+            &locks.join("cache.lock"),
+        )?);
+        let asset = AssetLock(crate::private_fs::try_lock(
+            &locks.join(format!("{}.lock", self.id)),
+        )?);
+        Ok((asset, cache))
+    }
+
     fn delete(&self) -> std::io::Result<()> {
         // A stale Delete button must not remove files a running job owns.
         if busy(self.id) {
-            return Err(std::io::Error::other("download in progress"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "download in progress",
+            ));
         }
+        let _locks = self.lock_for_change()?;
         for dir in [self.staging(), self.dir.clone()] {
             if dir.exists() {
                 std::fs::remove_dir_all(&dir)?;
@@ -1009,6 +1049,9 @@ impl Asset {
         if cancelled() {
             return Err(cancel_err());
         }
+        let _locks = self
+            .lock_for_change()
+            .map_err(|e| format!("asset lock: {e}"))?;
         if self.dir.join(MARKER).is_file() && self.installed() {
             on_event(DownloadEvent::Done);
             return Ok(());
@@ -1174,6 +1217,9 @@ impl Asset {
     /// Hash an install that has no marker yet in place. On mismatch,
     /// record that it needs repair without moving any files.
     fn adopt(&self, cancel: &AtomicBool, on_event: &DownloadCallback) -> Result<(), String> {
+        let _locks = self
+            .lock_for_change()
+            .map_err(|e| format!("asset lock: {e}"))?;
         on_event(DownloadEvent::Installing);
         let before = fingerprint(&self.dir, self.files).ok_or("install incomplete")?;
         for pin in unique(self.files) {
@@ -1873,6 +1919,7 @@ mod tests {
     fn loose(dest: &Path, base: &str, files: &'static [PinnedFile]) -> Asset {
         Asset {
             id: "fixture",
+            data_dir: dest.parent().unwrap().to_path_buf(),
             dir: dest.to_path_buf(),
             url: base.to_string(),
             archive: None,
@@ -1902,6 +1949,52 @@ mod tests {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn delete_rejects_an_install_that_owns_the_staging_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let data_dir = root.path().to_path_buf();
+        let dest = root.path().join("fixture");
+        let pack = fixture_pack(vec![pin_body("weights.bin", b"weights")]);
+        let asset = loose(&dest, "", pack);
+        let same_asset = loose(&dest, "", pack);
+        std::fs::create_dir_all(asset.staging()).unwrap();
+        std::fs::write(asset.staging().join("weights.bin"), b"weights").unwrap();
+        let cb: DownloadCallback = Arc::new(move |event| {
+            if matches!(event, DownloadEvent::Installing) {
+                assert_eq!(
+                    same_asset.delete().unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock
+                );
+                assert_eq!(
+                    try_lock_download_cache(&data_dir).unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock
+                );
+            }
+        });
+        asset
+            .install(
+                std::time::Duration::from_secs(1),
+                &AtomicBool::new(false),
+                &cb,
+            )
+            .unwrap();
+        assert!(asset.installed());
+        let clear_cache = try_lock_download_cache(root.path()).unwrap();
+        assert_eq!(
+            asset.delete().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(
+            asset.lock_for_change().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        let inherited_handle = clear_cache.0.try_clone().unwrap();
+        drop(clear_cache);
+        asset.delete().unwrap();
+        drop(inherited_handle);
+        assert!(!asset.installed());
     }
 
     #[test]
@@ -2717,6 +2810,7 @@ pub fn gpu_bin_dir(data_dir: &Path, pack: &GpuPack) -> PathBuf {
 fn gpu_asset(data_dir: &Path, pack: &GpuPack) -> Asset {
     Asset {
         id: pack.id,
+        data_dir: data_dir.to_path_buf(),
         dir: gpu_bin_dir(data_dir, pack),
         url: gpu_url(pack.archive.file.name),
         archive: Some(pack.archive),
@@ -2935,6 +3029,7 @@ pub fn sherpa_bin_dir(data_dir: &Path, pack: &SherpaPack) -> PathBuf {
 fn sherpa_asset(data_dir: &Path, pack: &SherpaPack) -> Asset {
     Asset {
         id: pack.id,
+        data_dir: data_dir.to_path_buf(),
         dir: sherpa_bin_dir(data_dir, pack),
         url: sherpa_url(pack.archive.file.name),
         archive: Some(pack.archive),
@@ -3029,6 +3124,7 @@ fn needle_asset(data_dir: &Path) -> Result<Asset, String> {
     let (folder, files) = needle_build()?;
     Ok(Asset {
         id: NEEDLE_ENGINE_ID,
+        data_dir: data_dir.to_path_buf(),
         dir: needle_bin_dir(data_dir),
         url: format!(
             "https://huggingface.co/Cactus-Compute/needle3/resolve/{NEEDLE_REVISION}/{folder}"

@@ -899,6 +899,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "Could not delete. Try again.",
             "No se pudo eliminar. Inténtalo de nuevo.",
         ),
+        "feedback.downloadbusy" => (
+            "Models or runtimes are being changed. Wait for the operation to finish, then try again.",
+            "Hay cambios en curso en los modelos o motores. Espera a que termine la operación e inténtalo de nuevo.",
+        ),
         "feedback.cleared" => ("Saved data cleared", "Datos guardados borrados"),
         "home.history" => ("Recent dictations", "Dictados recientes"),
         "home.search" => ("Search recent dictations", "Buscar dictados recientes"),
