@@ -2593,6 +2593,9 @@ pub struct OnlineSession {
     pub preview: bool,
 }
 
+#[cfg(test)]
+static ONLINE_SEND_PAUSE: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> = Mutex::new(None);
+
 fn ws_tcp_stream(ws: &Ws) -> Option<&TcpStream> {
     use tungstenite::stream::MaybeTlsStream;
 
@@ -2682,6 +2685,14 @@ impl OnlineSession {
     /// socket default is minutes — without this the pump stalls on
     /// the first silent chunk waiting for a partial that never comes.)
     pub fn send_chunk(&mut self, samples: &[f32]) -> Result<(), String> {
+        #[cfg(test)]
+        {
+            let pause = ONLINE_SEND_PAUSE.lock().unwrap().take();
+            if let Some((entered, proceed)) = pause {
+                let _ = entered.send(());
+                let _ = proceed.recv_timeout(Duration::from_secs(10));
+            }
+        }
         {
             let ws = self.ws.as_mut().ok_or("online session closed")?;
             ws_send_binary(ws, &f32le(samples))?;
@@ -3626,6 +3637,9 @@ struct LiveUtterance {
     spec: Option<SpecHandle>,
     /// Streaming engines: pump thread exit + final text channel.
     result_rx: Option<mpsc::Receiver<Result<String, String>>>,
+    /// Duplicate of the online pump's socket, so discard can interrupt
+    /// a send or read without waiting for the pump to see its flag.
+    online_abort: Option<TcpStream>,
     /// Whistle live stream: pump-owned finish, same channel shape.
     whistle_rx: Option<mpsc::Receiver<Result<String, String>>>,
     /// Primary plan (drives session setup) + named fallbacks, in
@@ -3659,6 +3673,18 @@ struct LiveUtterance {
     net: ServerNet,
     /// `STOP_EPOCH` at the GTK press (see `ActiveDefer::Utterance`).
     stop_epoch: u64,
+}
+
+impl LiveUtterance {
+    fn discard_capture(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        self.stop.store(true, Ordering::Relaxed);
+        self.settled.store(true, Ordering::Relaxed);
+        if let Some(socket) = &self.online_abort {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        }
+        audio::clear_recorder_if(&self.recorder);
+    }
 }
 
 static LIVE: OnceLock<Mutex<Option<LiveUtterance>>> = OnceLock::new();
@@ -3818,10 +3844,7 @@ pub fn begin_utterance_for(
         }
         if let Some(sess) = live_guard.take() {
             eprintln!("[stt] previous utterance never ended; closing it");
-            sess.cancel.store(true, Ordering::Relaxed);
-            sess.stop.store(true, Ordering::Relaxed);
-            sess.settled.store(true, Ordering::Relaxed);
-            audio::clear_recorder_if(&sess.recorder);
+            sess.discard_capture();
             revoke_owner(sess.owner);
             active_dec();
         }
@@ -3970,6 +3993,7 @@ pub fn begin_utterance_for(
             cancel: cancel.clone(),
             spec,
             result_rx: None,
+            online_abort: None,
             whistle_rx: None,
             plan,
             fallbacks,
@@ -3991,23 +4015,23 @@ pub fn begin_utterance_for(
     // and the stream is dropped unstarted.
     let attach = |rx: mpsc::Receiver<Result<String, String>>,
                   start: Box<dyn FnOnce() + Send>,
-                  whistle: bool|
+                  online_abort: Option<TcpStream>|
      -> bool {
         let mut live_guard = live().lock().unwrap_or_else(|p| p.into_inner());
         let Some(sess) = live_guard.as_mut().filter(|s| s.owner == owner) else {
             return false;
         };
-        if let Err(e) =
-            crate::runtime::submit(if whistle { "whistle-pump" } else { "stt-pump" }, start)
-        {
+        let (name, result) = if online_abort.is_some() {
+            ("stt-pump", &mut sess.result_rx)
+        } else {
+            ("whistle-pump", &mut sess.whistle_rx)
+        };
+        if let Err(e) = crate::runtime::submit(name, start) {
             eprintln!("[stt] press: {e}");
             return false;
         }
-        if whistle {
-            sess.whistle_rx = Some(rx);
-        } else {
-            sess.result_rx = Some(rx);
-        }
+        *result = Some(rx);
+        sess.online_abort = online_abort;
         true
     };
     if stream_plan.streaming() {
@@ -4018,8 +4042,17 @@ pub fn begin_utterance_for(
             }
             _ => OnlineSession::open_owned(online_port, INFERENCE_TIMEOUT),
         };
-        match open {
-            Ok(mut session) => {
+        match open.and_then(|session| {
+            let socket = session
+                .ws
+                .as_ref()
+                .and_then(ws_tcp_stream)
+                .ok_or("online session has no TCP stream")?
+                .try_clone()
+                .map_err(|e| format!("prepare stream cancellation: {e}"))?;
+            Ok((session, socket))
+        }) {
+            Ok((mut session, abort)) => {
                 session.preview = stt.live_preview;
                 let (tx, rx) = mpsc::channel();
                 let rec = recorder.clone();
@@ -4031,7 +4064,7 @@ pub fn begin_utterance_for(
                     Box::new(move || {
                         pump_online(session, rec, stop_pump, cancel_pump, pump_settled, tx);
                     }),
-                    false,
+                    Some(abort),
                 ) {
                     eprintln!("[stt] press: released during stream setup; one-shot decode");
                 }
@@ -4081,7 +4114,7 @@ pub fn begin_utterance_for(
                             let _ = std::fs::remove_file(kw);
                         }
                     }),
-                    true,
+                    None,
                 ) && let Some(kw) = kw
                 {
                     let _ = std::fs::remove_file(kw);
@@ -4159,24 +4192,20 @@ fn pump_online(
     let _ = tx.send(session.finish());
 }
 
-/// Escape midway: drop the audio, never transcribe, never paste,
-/// never touch the clipboard. Optionally keeps a discarded marker
-/// row (setting-gated, see below). The pill hides immediately; the
-/// row lands via the normal home refresh.
+/// Escape midway: discard the recording, close its stream, and skip
+/// final transcription and delivery. Settings may allow a discarded
+/// marker row, which appears via the normal home refresh.
 pub fn cancel_utterance(on_done: impl FnOnce() + Send + 'static) {
     let Some(sess) = take_live_through(close_pending_presses()) else {
         on_done();
         return;
     };
-    sess.cancel.store(true, Ordering::Relaxed);
-    sess.stop.store(true, Ordering::Relaxed);
-    sess.settled.store(true, Ordering::Relaxed);
-    audio::clear_recorder_if(&sess.recorder);
+    sess.discard_capture();
     let held_secs = sess.started.elapsed().as_secs_f64();
     // Revoke before dropping: queued warmups bound to this utterance
     // must stand down even though cancellation bumps no generation.
     revoke_owner(sess.owner);
-    drop(sess); // result_rx drop unblocks the aborting pump
+    drop(sess);
     active_dec();
     let on_done = Arc::new(Mutex::new(Some(
         Box::new(on_done) as Box<dyn FnOnce() + Send>
@@ -4262,28 +4291,27 @@ fn wait_settled(settled: &AtomicBool) {
 }
 
 fn end_utterance_inner(through: u64, on_done: Option<Box<dyn FnOnce() + Send>>) {
-    let Some(sess) = take_live_through(through) else {
+    let Some(mut sess) = take_live_through(through) else {
         if let Some(done) = on_done {
             done();
         }
         return;
     };
-    sess.stop.store(true, Ordering::Relaxed);
     // The release worker owns warming from here (authoritative ensure),
     // so revoke the press warmup's ownership on every take, including
     // the release path itself.
     revoke_owner(sess.owner);
     if BUSY.swap(true, Ordering::SeqCst) {
         eprintln!("[stt] worker busy; dropping overlapping utterance");
-        sess.cancel.store(true, Ordering::Relaxed);
-        audio::clear_recorder_if(&sess.recorder);
-        sess.settled.store(true, Ordering::Relaxed);
+        sess.discard_capture();
         active_dec();
         if let Some(done) = on_done {
             done();
         }
         return;
     }
+    drop(sess.online_abort.take());
+    sess.stop.store(true, Ordering::Relaxed);
     // Tail settle off the GTK thread (the pill already shows
     // Processing): wait for in-flight slices to land past release,
     // truncate the recorder AT release (nothing before cut, nothing
@@ -6515,6 +6543,58 @@ mod tests {
             assert_eq!(connection.unwrap().finish().unwrap(), "fixture");
             server.join().unwrap();
         }
+    }
+
+    #[test]
+    fn escape_closes_stream_before_a_prepared_chunk_can_send() {
+        use crate::settings::{SttChainEntry, SttEntryKind};
+
+        let _guard = serial();
+        let _ = crate::runtime::init();
+        let root = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (tcp, _) = listener.accept().unwrap();
+            tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            match tungstenite::accept(tcp).unwrap().read() {
+                Err(tungstenite::Error::Io(e))
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    false
+                }
+                result => result.is_err(),
+            }
+        });
+        let store = crate::store::Store::open(&root.path().join("state.db")).unwrap();
+        let mut settings = store.load_settings();
+        settings.stt.entries = vec![SttChainEntry {
+            id: "ws-fixture".into(),
+            name: "WS fixture".into(),
+            kind: SttEntryKind::SelfHosted,
+            enabled: true,
+            url: format!("ws://{address}"),
+            streaming: true,
+            api_key: String::new(),
+            provider: String::new(),
+            model: String::new(),
+        }];
+        settings.stt.live_preview = false;
+        store.save_settings(&settings).unwrap();
+        let (entered, entered_rx) = mpsc::channel();
+        let (proceed, proceed_rx) = mpsc::channel();
+        *ONLINE_SEND_PAUSE.lock().unwrap() = Some((entered, proceed_rx));
+        begin_utterance(settings.stt, false, root.path(), 0);
+        audio::tap_samples(&[42; 3200], 16_000);
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        cancel_and_drain();
+        let closed = server.join().unwrap();
+        proceed.send(()).unwrap();
+        assert!(closed, "cancel did not close the socket before the send");
+        assert_eq!(active_count(), 0);
     }
 
     #[test]
@@ -11390,6 +11470,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             spec: Some(spec),
             result_rx: None,
+            online_abort: None,
             whistle_rx: None,
             plan: Plan::WhisperHttp {
                 model_bin: root.join("m.bin"),
