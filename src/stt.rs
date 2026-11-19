@@ -923,7 +923,7 @@ pub fn capabilities(entry: &ModelEntry) -> (bool, bool) {
         ModelKind::Bark => (false, false),
         ModelKind::Qwen => (true, true),
         ModelKind::Parakeet => match entry.id {
-            "orukeet-v0.1.0" => (false, false),
+            "orukeet-v0.1.0" | "cohere-transcribe-03-2026" => (false, false),
             _ if entry.runtime == Some(ParakeetRuntime::Online) => (true, true),
             _ => (false, true),
         },

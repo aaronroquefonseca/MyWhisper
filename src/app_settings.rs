@@ -2540,7 +2540,7 @@ fn update_gpu_progress(container: &GtkBox) {
 /// servers take none, so auto on a multilingual sherpa model means
 /// "model decides" (mechanically identical to any selection, but
 /// the user's working choice); single-language ones lock. Cohere
-/// resolves auto to en at spawn (the server demands exactly one).
+/// requires an explicit language.
 struct SttLang {
     opts: Vec<String>,
     locked: bool,
@@ -2603,7 +2603,10 @@ fn stt_lang(state: &Rc<AppState>) -> SttLang {
             locked: true,
         };
     }
-    let mut v = vec!["auto".to_string()];
+    let mut v = Vec::new();
+    if s.stt.local_provider != LocalSttProvider::Cohere {
+        v.push("auto".to_string());
+    }
     v.extend(langs);
     SttLang {
         opts: v,
