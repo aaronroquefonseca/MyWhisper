@@ -2395,6 +2395,47 @@ fn ws_connect(port: u16, read_timeout: Duration) -> Result<Ws, String> {
 /// WS/TLS upgrade: a peer that accepts and never answers must not
 /// strand press/release.
 const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const WS_DNS_TIMEOUT: Duration = Duration::from_secs(5);
+
+// The system resolver can outlive our wait. An outstanding lookup keeps
+// its slot until it exits, so retries cannot accumulate resolver threads.
+static WS_DNS_SLOTS: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
+
+struct WsDnsSlot(&'static AtomicBool);
+
+impl Drop for WsDnsSlot {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
+
+fn bounded_ws_lookup(
+    slots: &'static [AtomicBool],
+    timeout: Duration,
+    lookup: impl FnOnce() -> std::io::Result<Vec<std::net::SocketAddr>> + Send + 'static,
+) -> Result<Vec<std::net::SocketAddr>, String> {
+    let slot = slots
+        .iter()
+        .find(|slot| !slot.swap(true, Ordering::Relaxed))
+        .map(WsDnsSlot)
+        .ok_or("hostname lookup slots are busy")?;
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("ws-dns".into())
+        .spawn(move || {
+            let addresses = lookup();
+            drop(slot);
+            let _ = tx.send(addresses);
+        })
+        .map_err(|e| format!("start hostname lookup: {e}"))?;
+
+    rx.recv_timeout(timeout)
+        .map_err(|e| match e {
+            mpsc::RecvTimeoutError::Timeout => "hostname lookup timed out",
+            mpsc::RecvTimeoutError::Disconnected => "hostname lookup worker stopped",
+        })?
+        .map_err(|e| e.to_string())
+}
 
 fn ws_connect_url(url: &str, key: &str, read_timeout: Duration) -> Result<Ws, String> {
     use tungstenite::client::IntoClientRequest;
@@ -2410,10 +2451,15 @@ fn ws_connect_url(url: &str, key: &str, read_timeout: Duration) -> Result<Ws, St
         request.headers_mut().insert(AUTHORIZATION, value);
     }
     let fail = |e: String| format!("ws connect: {e}");
-    let addrs = reqwest::Url::parse(url)
-        .map_err(|e| fail(e.to_string()))?
-        .socket_addrs(|| None)
-        .map_err(|e| fail(e.to_string()))?;
+    let target = reqwest::Url::parse(url).map_err(|e| fail(e.to_string()))?;
+    let addrs = if target.domain().is_some() {
+        bounded_ws_lookup(&WS_DNS_SLOTS, WS_DNS_TIMEOUT, move || {
+            target.socket_addrs(|| None)
+        })
+    } else {
+        target.socket_addrs(|| None).map_err(|e| e.to_string())
+    }
+    .map_err(fail)?;
     let mut last = "no address".to_string();
     let stream = addrs
         .iter()
@@ -6379,11 +6425,14 @@ mod tests {
         use tungstenite::handshake::server::{Request, Response};
         use tungstenite::http::header::AUTHORIZATION;
 
-        for (key, expected_header) in [("", None), ("fixture-key", Some("Bearer fixture-key"))] {
+        for (host, key, expected_header) in [
+            ("127.0.0.1", "", None),
+            ("localhost", "fixture-key", Some("Bearer fixture-key")),
+        ] {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let url = format!(
-                "ws://{}/speech/?profile=test/",
-                listener.local_addr().unwrap()
+                "ws://{host}:{}/speech/?profile=test/",
+                listener.local_addr().unwrap().port()
             );
             let server = std::thread::spawn(move || {
                 let (stream, _) = listener.accept().unwrap();
@@ -6404,6 +6453,26 @@ mod tests {
             connection.unwrap();
             server.join().unwrap();
         }
+    }
+
+    #[test]
+    fn stalled_ws_dns_lookup_keeps_its_slot_after_timeout() {
+        static SLOTS: [AtomicBool; 1] = [AtomicBool::new(false)];
+        let address = "127.0.0.1:6006".parse().unwrap();
+        let resolved = bounded_ws_lookup(&SLOTS, Duration::from_secs(1), move || Ok(vec![address]));
+        assert_eq!(resolved.unwrap(), vec![address]);
+
+        let (release, wait) = mpsc::channel::<()>();
+        let stalled = bounded_ws_lookup(&SLOTS, Duration::from_millis(30), move || {
+            let _ = wait.recv_timeout(Duration::from_secs(3));
+            Ok(vec![address])
+        });
+        assert_eq!(stalled.unwrap_err(), "hostname lookup timed out");
+        let retry = bounded_ws_lookup(&SLOTS, Duration::from_secs(1), || {
+            panic!("lookup started while the only slot was occupied")
+        });
+        assert_eq!(retry.unwrap_err(), "hostname lookup slots are busy");
+        drop(release);
     }
 
     #[test]
