@@ -837,6 +837,39 @@ impl Store {
         self.add_history_full(raw_text, text, words, duration_secs, false, node_id)
     }
 
+    pub(crate) fn may_retain_audio(&self, uuid: &str) -> rusqlite::Result<bool> {
+        if !self.saved_settings()?.is_some_and(|settings| {
+            settings.privacy.history_enabled && settings.privacy.keep_audio_recordings
+        }) {
+            return Ok(false);
+        }
+        self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM history WHERE uuid = ?1 AND deleted = 0 AND discarded = 0)",
+            [uuid],
+            |row| row.get(0),
+        )
+    }
+
+    /// Publish a prepared audio file under the same SQLite write lock
+    /// as preference updates and history removal. The file body is
+    /// written before taking this lock.
+    pub(crate) fn publish_retained_audio(
+        &self,
+        uuid: &str,
+        publish: impl FnOnce() -> std::io::Result<()>,
+    ) -> Result<bool, String> {
+        let _tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(|e| e.to_string())?;
+        if !self.may_retain_audio(uuid).map_err(|e| e.to_string())? {
+            return Ok(false);
+        }
+        publish().map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
     /// Discarded (cancelled-midway) row: no text, no words, but a real
     /// duration. No audio is ever stored (RAM-only capture posture —
     /// stricter than the reference, which keeps the clip).
