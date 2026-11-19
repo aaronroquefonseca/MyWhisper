@@ -2437,6 +2437,40 @@ fn bounded_ws_lookup(
         .map_err(|e| e.to_string())
 }
 
+/// Socket timeouts apply per I/O call. Shut down the underlying TCP
+/// stream at the deadline even if the peer keeps sending data.
+fn with_ws_deadline<T>(
+    socket: TcpStream,
+    timeout: Duration,
+    phase: &str,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let deadline = Instant::now() + timeout;
+    let (done, pending) = mpsc::channel::<()>();
+    let watchdog = std::thread::Builder::new()
+        .name("ws-deadline".into())
+        .spawn(move || {
+            let timed_out = pending
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                == Err(mpsc::RecvTimeoutError::Timeout);
+            if timed_out {
+                let _ = socket.shutdown(std::net::Shutdown::Both);
+            }
+            timed_out
+        })
+        .map_err(|e| format!("{phase}: start deadline worker: {e}"))?;
+    let result = operation();
+    drop(done);
+    if watchdog
+        .join()
+        .map_err(|_| format!("{phase}: deadline worker stopped"))?
+    {
+        Err(format!("{phase} timed out"))
+    } else {
+        result
+    }
+}
+
 fn ws_connect_url(url: &str, key: &str, read_timeout: Duration) -> Result<Ws, String> {
     use tungstenite::client::IntoClientRequest;
     use tungstenite::http::header::{AUTHORIZATION, HeaderValue};
@@ -2477,20 +2511,12 @@ fn ws_connect_url(url: &str, key: &str, read_timeout: Duration) -> Result<Ws, St
     let _ = sock.set_nodelay(true);
     let _ = sock.set_read_timeout(Some(WS_HANDSHAKE_TIMEOUT));
     let _ = sock.set_write_timeout(Some(WS_HANDSHAKE_TIMEOUT));
-    // Per-op timeouts alone let a trickling peer stretch the upgrade:
-    // a watchdog shuts the socket at the deadline unless it finished.
-    let (done_tx, done_rx) = mpsc::channel::<()>();
     let watchdog = sock.try_clone().map_err(|e| fail(e.to_string()))?;
-    std::thread::spawn(move || {
-        if done_rx.recv_timeout(WS_HANDSHAKE_TIMEOUT) == Err(mpsc::RecvTimeoutError::Timeout) {
-            let _ = watchdog.shutdown(std::net::Shutdown::Both);
-        }
-    });
-    let res = tungstenite::client_tls_with_config(request, stream, None, None);
-    drop(done_tx);
-    let (ws, _) = res.map_err(|e| match e {
-        tungstenite::HandshakeError::Failure(f) => fail(f.to_string()),
-        tungstenite::HandshakeError::Interrupted(_) => fail("handshake timed out".into()),
+    let (ws, _) = with_ws_deadline(watchdog, WS_HANDSHAKE_TIMEOUT, "ws handshake", || {
+        tungstenite::client_tls_with_config(request, stream, None, None).map_err(|e| match e {
+            tungstenite::HandshakeError::Failure(f) => fail(f.to_string()),
+            tungstenite::HandshakeError::Interrupted(_) => fail("handshake timed out".into()),
+        })
     })?;
     let _ = sock.set_read_timeout(Some(read_timeout));
     let _ = sock.set_write_timeout(Some(Duration::from_secs(30)));
@@ -2567,15 +2593,20 @@ pub struct OnlineSession {
     pub preview: bool,
 }
 
-fn ws_read_timeout(ws: &Ws, timeout: Duration) {
+fn ws_tcp_stream(ws: &Ws) -> Option<&TcpStream> {
     use tungstenite::stream::MaybeTlsStream;
 
-    let socket = match ws.get_ref() {
-        MaybeTlsStream::Plain(stream) => stream,
-        MaybeTlsStream::Rustls(stream) => stream.get_ref(),
-        _ => return,
-    };
-    let _ = socket.set_read_timeout(Some(timeout));
+    match ws.get_ref() {
+        MaybeTlsStream::Plain(stream) => Some(stream),
+        MaybeTlsStream::Rustls(stream) => Some(stream.get_ref()),
+        _ => None,
+    }
+}
+
+fn ws_read_timeout(ws: &Ws, timeout: Duration) {
+    if let Some(socket) = ws_tcp_stream(ws) {
+        let _ = socket.set_read_timeout(Some(timeout));
+    }
 }
 
 impl OnlineSession {
@@ -2691,28 +2722,34 @@ impl OnlineSession {
         Ok(())
     }
 
-    /// End the utterance, collect the final text. The engine may lag
-    /// behind realtime; this blocks (worker thread) until it lands.
+    /// End the utterance and collect the final text within the
+    /// configured inference timeout.
     pub fn finish(mut self) -> Result<String, String> {
         let mut ws = self.ws.take().ok_or("online session closed")?;
         ws_read_timeout(&ws, self.read_timeout);
-        ws.send(tungstenite::Message::text("Done"))
-            .map_err(|e| format!("ws done: {e}"))?;
-        loop {
-            match ws.read().map_err(|e| format!("ws read: {e}"))? {
-                tungstenite::Message::Text(t) => {
-                    let s: &str = &t;
-                    if s == "Done!" {
-                        break;
+        let watchdog = ws_tcp_stream(&ws)
+            .ok_or("ws final response: unsupported stream")?
+            .try_clone()
+            .map_err(|e| format!("ws final response: {e}"))?;
+        with_ws_deadline(watchdog, self.read_timeout, "ws final response", || {
+            ws.send(tungstenite::Message::text("Done"))
+                .map_err(|e| format!("ws done: {e}"))?;
+            loop {
+                match ws.read().map_err(|e| format!("ws read: {e}"))? {
+                    tungstenite::Message::Text(t) => {
+                        let s: &str = &t;
+                        if s == "Done!" {
+                            break;
+                        }
+                        self.ingest(s);
                     }
-                    self.ingest(s);
+                    tungstenite::Message::Close(_) => break,
+                    _ => {}
                 }
-                tungstenite::Message::Close(_) => break,
-                _ => {}
             }
-        }
-        let _ = ws.close(None);
-        Ok(self.transcript())
+            let _ = ws.close(None);
+            Ok(self.transcript())
+        })
     }
 }
 
@@ -6437,22 +6474,56 @@ mod tests {
             let server = std::thread::spawn(move || {
                 let (stream, _) = listener.accept().unwrap();
                 stream.set_read_timeout(Some(WS_HANDSHAKE_TIMEOUT)).unwrap();
-                tungstenite::accept_hdr(stream, |request: &Request, response: Response| {
-                    let header = request.headers().get(AUTHORIZATION);
-                    assert_eq!(header.map(|value| value.to_str().unwrap()), expected_header);
-                    assert_eq!(
-                        request.uri().path_and_query().unwrap().as_str(),
-                        "/speech/?profile=test/"
-                    );
-                    Ok(response)
-                })
+                let mut ws =
+                    tungstenite::accept_hdr(stream, |request: &Request, response: Response| {
+                        let header = request.headers().get(AUTHORIZATION);
+                        assert_eq!(header.map(|value| value.to_str().unwrap()), expected_header);
+                        assert_eq!(
+                            request.uri().path_and_query().unwrap().as_str(),
+                            "/speech/?profile=test/"
+                        );
+                        Ok(response)
+                    })
+                    .unwrap();
+                assert_eq!(ws.read().unwrap().into_text().unwrap(), "Done");
+                ws.send(tungstenite::Message::text(
+                    r#"{"text":"fixture","is_final":true}"#,
+                ))
                 .unwrap();
+                ws.send(tungstenite::Message::text("Done!")).unwrap();
             });
             let connection =
                 OnlineSession::open_with_authorization(&url, key, WS_HANDSHAKE_TIMEOUT);
-            connection.unwrap();
+            assert_eq!(connection.unwrap().finish().unwrap(), "fixture");
             server.join().unwrap();
         }
+    }
+
+    #[test]
+    fn ws_partial_replies_cannot_extend_final_deadline() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(WS_HANDSHAKE_TIMEOUT)).unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            assert_eq!(ws.read().unwrap().into_text().unwrap(), "Done");
+            for sent in 0..50 {
+                if ws
+                    .send(tungstenite::Message::text(r#"{"text":"still decoding"}"#))
+                    .is_err()
+                {
+                    return sent;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let _ = ws.send(tungstenite::Message::text("Done!"));
+            50
+        });
+        let session = OnlineSession::open_with(port, Duration::from_millis(200)).unwrap();
+        let result = session.finish();
+        assert!(server.join().unwrap() > 0);
+        assert_eq!(result.unwrap_err(), "ws final response timed out");
     }
 
     #[test]
