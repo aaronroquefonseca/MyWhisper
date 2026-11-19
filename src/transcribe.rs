@@ -2521,10 +2521,15 @@ pub struct OnlineSession {
     pub preview: bool,
 }
 
-fn ws_read_timeout(ws: &mut Ws, timeout: Duration) {
-    if let tungstenite::stream::MaybeTlsStream::Plain(s) = ws.get_ref() {
-        let _ = s.set_read_timeout(Some(timeout));
-    }
+fn ws_read_timeout(ws: &Ws, timeout: Duration) {
+    use tungstenite::stream::MaybeTlsStream;
+
+    let socket = match ws.get_ref() {
+        MaybeTlsStream::Plain(stream) => stream,
+        MaybeTlsStream::Rustls(stream) => stream.get_ref(),
+        _ => return,
+    };
+    let _ = socket.set_read_timeout(Some(timeout));
 }
 
 impl OnlineSession {
@@ -2644,7 +2649,7 @@ impl OnlineSession {
     /// behind realtime; this blocks (worker thread) until it lands.
     pub fn finish(mut self) -> Result<String, String> {
         let mut ws = self.ws.take().ok_or("online session closed")?;
-        ws_read_timeout(&mut ws, self.read_timeout);
+        ws_read_timeout(&ws, self.read_timeout);
         ws.send(tungstenite::Message::text("Done"))
             .map_err(|e| format!("ws done: {e}"))?;
         loop {
