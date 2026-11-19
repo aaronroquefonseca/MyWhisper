@@ -1015,6 +1015,25 @@ impl Asset {
         Ok((asset, cache))
     }
 
+    fn recover_interrupted_parts(&self) -> std::io::Result<()> {
+        let staging = self.staging();
+        let has_staging = || staging.symlink_metadata().is_ok_and(|meta| meta.is_dir());
+        if !has_staging() {
+            return Ok(());
+        }
+        let _locks = self.lock_for_change()?;
+        if !has_staging() {
+            return Ok(());
+        }
+        let mut partials: Vec<_> = unique(self.files)
+            .map(|pin| staging.join(format!("{}.part", pin.name)))
+            .collect();
+        if self.archive.is_some() {
+            partials.push(staging.join(".archive.part"));
+        }
+        remove_interrupted_parts(&staging, &partials)
+    }
+
     fn delete(&self) -> std::io::Result<()> {
         // A stale Delete button must not remove files a running job owns.
         if busy(self.id) {
@@ -1288,6 +1307,22 @@ fn prune_staging(dir: &Path, pinned: &[PathBuf]) -> std::io::Result<()> {
             }
         } else if !ty.is_file() || !pinned.contains(&path) {
             std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Startup cleanup only removes regular files at known partial paths.
+/// Completed stage members remain available for verification on retry.
+fn remove_interrupted_parts(dir: &Path, partials: &[PathBuf]) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        if kind.is_dir() && partials.iter().any(|part| part.starts_with(&path)) {
+            remove_interrupted_parts(&path, partials)?;
+        } else if kind.is_file() && partials.contains(&path) {
+            remove_if_present(&path)?;
         }
     }
     Ok(())
@@ -1738,10 +1773,8 @@ fn all_assets(data_dir: &Path) -> Vec<Asset> {
         .collect()
 }
 
-/// Installs from before markers existed count at their pinned sizes;
-/// hash each once here, off the GTK thread, and mark it verified or in
-/// need of repair. A repair reuses files that still verify. Progress shows as an
-/// install in Settings, which also blocks Delete meanwhile.
+/// Clean interrupted download parts and verify pre-marker installs on
+/// a worker thread. A retry reuses completed stage files that still verify.
 pub fn spawn_legacy_verification(
     data_dir: PathBuf,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
@@ -1749,6 +1782,11 @@ pub fn spawn_legacy_verification(
         .name("verify-installs".to_string())
         .spawn(move || {
             for asset in all_assets(&data_dir) {
+                if let Err(error) = asset.recover_interrupted_parts()
+                    && error.kind() != std::io::ErrorKind::WouldBlock
+                {
+                    tracing::warn!(%error, asset = asset.id, "could not clean interrupted download");
+                }
                 if !asset.legacy || asset.dir.join(MARKER).exists() || !asset.installed() {
                     continue;
                 }
@@ -2759,6 +2797,45 @@ mod tests {
         install(&dest, files, &base, &cancel).unwrap();
         assert!(legacy.installed());
         assert!(dest.join(MARKER).exists());
+    }
+
+    #[test]
+    fn startup_cleans_only_unlocked_installer_parts() {
+        let data = tempfile::tempdir().unwrap();
+        let model = model_asset(data.path(), find_model("tiny").unwrap());
+        let model_stage = model.staging();
+        std::fs::create_dir_all(model_stage.parent().unwrap()).unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let untouched = elsewhere.path().join("ggml-tiny.bin.part");
+        std::fs::write(&untouched, b"outside staging").unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), &model_stage).unwrap();
+
+        let pack = SHERPA_PACKS.iter().find(|p| p.id == "sherpa-cpu").unwrap();
+        let runtime = sherpa_asset(data.path(), pack);
+        let stage = runtime.staging();
+        std::fs::create_dir_all(stage.join("lib")).unwrap();
+        let library = stage.join("lib/libonnxruntime.so");
+        let library_part = stage.join("lib/libonnxruntime.so.part");
+        let archive_part = stage.join(".archive.part");
+        let unknown_part = stage.join("custom.part");
+        for path in [&library, &library_part, &archive_part, &unknown_part] {
+            std::fs::write(path, b"fixture").unwrap();
+        }
+
+        let start = || {
+            spawn_legacy_verification(data.path().to_path_buf())
+                .unwrap()
+                .join()
+                .unwrap();
+        };
+        let live_install = runtime.lock_for_change().unwrap();
+        start();
+        assert!(library_part.is_file() && archive_part.is_file());
+        drop(live_install);
+        start();
+        assert!(!library_part.exists() && !archive_part.exists());
+        assert!(library.is_file() && unknown_part.is_file());
+        assert_eq!(std::fs::read(&untouched).unwrap(), b"outside staging");
     }
 
     #[test]
