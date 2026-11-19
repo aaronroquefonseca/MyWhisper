@@ -131,6 +131,7 @@ pub enum Plan {
     /// definition); streaming like SherpaOnline.
     SelfHostedWs {
         url: String,
+        key: String,
     },
     CloudDeepgram {
         base: String,
@@ -167,9 +168,7 @@ impl Plan {
             Plan::CloudOpenAiCompat { base, model, .. } => {
                 format!("cloud {base} ({model})")
             }
-            Plan::SelfHostedWs { url } => {
-                format!("self-hosted ws {url}")
-            }
+            Plan::SelfHostedWs { .. } => "self-hosted WebSocket transcription".to_string(),
             Plan::CloudDeepgram { model, .. } => format!("deepgram ({model})"),
             Plan::CloudGemini { model, .. } => format!("gemini ({model})"),
         }
@@ -178,7 +177,7 @@ impl Plan {
 
 /// ws:// or wss:// (sherpa streaming protocol, plain or TLS).
 pub fn is_ws_url(url: &str) -> bool {
-    url.starts_with("ws://") || url.starts_with("wss://")
+    reqwest::Url::parse(url.trim()).is_ok_and(|url| matches!(url.scheme(), "ws" | "wss"))
 }
 
 fn missing(what: &str) -> String {
@@ -230,25 +229,32 @@ pub fn entry_plan(
     match entry.kind {
         crate::settings::SttEntryKind::Local => local_plan(s, data_dir),
         crate::settings::SttEntryKind::SelfHosted => {
-            let url = entry.url.trim().trim_end_matches('/').to_string();
+            let url = entry.url.trim();
             if url.is_empty() {
-                Err("self-hosted URL is empty".to_string())
-            } else if entry.streaming && is_ws_url(&url) {
-                // Streaming sherpa protocol (our sherpa-online
-                // servers speak it, including spawned ones).
-                // Never spawned here: foreign by definition.
-                Ok(Plan::SelfHostedWs { url })
-            } else {
-                Ok(Plan::CloudOpenAiCompat {
-                    base: url,
-                    key: entry.api_key.trim().to_string(),
+                return Err("self-hosted URL is empty".to_string());
+            }
+            let parsed = reqwest::Url::parse(url)
+                .ok()
+                .filter(|url| url.host_str().is_some())
+                .ok_or("invalid self-hosted URL")?;
+            let key = entry.api_key.trim().to_string();
+            match parsed.scheme() {
+                "ws" | "wss" if entry.streaming => Ok(Plan::SelfHostedWs {
+                    url: parsed.to_string(),
+                    key,
+                }),
+                "ws" | "wss" => Err("enable streaming for a self-hosted WebSocket URL".into()),
+                "http" | "https" => Ok(Plan::CloudOpenAiCompat {
+                    base: url.trim_end_matches('/').to_string(),
+                    key,
                     model: if entry.model.trim().is_empty() {
                         "default".to_string()
                     } else {
                         entry.model.clone()
                     },
                     lang: s.language.clone(),
-                })
+                }),
+                _ => Err("unsupported self-hosted URL scheme".into()),
             }
         }
         crate::settings::SttEntryKind::Cloud => {
@@ -2382,7 +2388,7 @@ fn ensure_sherpa_online(
 type Ws = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>;
 
 fn ws_connect(port: u16, read_timeout: Duration) -> Result<Ws, String> {
-    ws_connect_url(&format!("ws://127.0.0.1:{port}"), read_timeout)
+    ws_connect_url(&format!("ws://127.0.0.1:{port}"), "", read_timeout)
 }
 
 /// Bound for TCP connect (per address) and, separately, the whole
@@ -2390,8 +2396,20 @@ fn ws_connect(port: u16, read_timeout: Duration) -> Result<Ws, String> {
 /// strand press/release.
 const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn ws_connect_url(url: &str, read_timeout: Duration) -> Result<Ws, String> {
-    let fail = |e: String| format!("ws connect {url}: {e}");
+fn ws_connect_url(url: &str, key: &str, read_timeout: Duration) -> Result<Ws, String> {
+    use tungstenite::client::IntoClientRequest;
+    use tungstenite::http::header::{AUTHORIZATION, HeaderValue};
+
+    let mut request = url
+        .into_client_request()
+        .map_err(|_| "invalid WebSocket request URL")?;
+    if !key.is_empty() {
+        let mut value = HeaderValue::from_str(&format!("Bearer {key}"))
+            .map_err(|_| "invalid WebSocket authorization header")?;
+        value.set_sensitive(true);
+        request.headers_mut().insert(AUTHORIZATION, value);
+    }
+    let fail = |e: String| format!("ws connect: {e}");
     let addrs = reqwest::Url::parse(url)
         .map_err(|e| fail(e.to_string()))?
         .socket_addrs(|| None)
@@ -2422,7 +2440,7 @@ fn ws_connect_url(url: &str, read_timeout: Duration) -> Result<Ws, String> {
             let _ = watchdog.shutdown(std::net::Shutdown::Both);
         }
     });
-    let res = tungstenite::client_tls_with_config(url, stream, None, None);
+    let res = tungstenite::client_tls_with_config(request, stream, None, None);
     drop(done_tx);
     let (ws, _) = res.map_err(|e| match e {
         tungstenite::HandshakeError::Failure(f) => fail(f.to_string()),
@@ -2515,8 +2533,16 @@ impl OnlineSession {
     }
 
     pub fn open_with_url(url: &str, read_timeout: Duration) -> Result<Self, String> {
+        Self::open_with_authorization(url, "", read_timeout)
+    }
+
+    fn open_with_authorization(
+        url: &str,
+        key: &str,
+        read_timeout: Duration,
+    ) -> Result<Self, String> {
         Ok(Self {
-            ws: Some(ws_connect_url(url, read_timeout)?),
+            ws: Some(ws_connect_url(url, key, read_timeout)?),
             segments: Vec::new(),
             current: String::new(),
             read_timeout,
@@ -3871,7 +3897,9 @@ pub fn begin_utterance_for(
     if stream_plan.streaming() {
         let online_port = engine_port(&server_net(&stt), SHERPA_ONLINE_PORT);
         let open = match &stream_plan {
-            Plan::SelfHostedWs { url } => OnlineSession::open_with_url(url, INFERENCE_TIMEOUT),
+            Plan::SelfHostedWs { url, key } => {
+                OnlineSession::open_with_authorization(url, key, INFERENCE_TIMEOUT)
+            }
             _ => OnlineSession::open_owned(online_port, INFERENCE_TIMEOUT),
         };
         match open {
@@ -4476,8 +4504,8 @@ fn transcribe_blocking(
             }
             s.finish()
         }
-        Plan::SelfHostedWs { url } => {
-            let mut s = OnlineSession::open_with_url(url, INFERENCE_TIMEOUT)?;
+        Plan::SelfHostedWs { url, key } => {
+            let mut s = OnlineSession::open_with_authorization(url, key, INFERENCE_TIMEOUT)?;
             for chunk in f32s.chunks(8000) {
                 s.send_chunk(chunk)?;
             }
@@ -6288,15 +6316,25 @@ mod tests {
             ..Default::default()
         };
         let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
-        assert!(matches!(plans[0].1, Plan::SelfHostedWs { .. }));
+        assert!(matches!(&plans[0].1, Plan::SelfHostedWs { key, .. } if key.is_empty()));
         assert!(plans[0].1.streaming());
-        // wss:// resolves the same (TLS at connect time).
+        // Preserve the configured route and carry the optional bearer key.
         let s = SttSettings {
-            entries: vec![entry("wss://example.com:6006", true, "")],
+            entries: vec![entry(
+                " WSS://example.com:6006/speech/?profile=test/ ",
+                true,
+                " tok ",
+            )],
             ..Default::default()
         };
         let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
-        assert!(matches!(plans[0].1, Plan::SelfHostedWs { .. }));
+        match &plans[0].1 {
+            Plan::SelfHostedWs { url, key } => {
+                assert_eq!(url, "wss://example.com:6006/speech/?profile=test/");
+                assert_eq!(key, "tok");
+            }
+            p => panic!("expected WebSocket, got {}", p.describe()),
+        }
         // http + token = OpenAI-compat with bearer key; streaming
         // toggle inert for http.
         let s = SttSettings {
@@ -6309,13 +6347,58 @@ mod tests {
             p => panic!("expected compat, got {}", p.describe()),
         }
         assert!(!plans[0].1.streaming());
-        // ws:// + streaming off = compat fallback.
+        // A disabled WebSocket is skipped instead of routed to HTTP.
         let s = SttSettings {
-            entries: vec![entry("ws://127.0.0.1:6006", false, "")],
+            entries: vec![
+                entry("ws://127.0.0.1:6006", false, ""),
+                entry("http://127.0.0.1:8080", false, ""),
+            ],
             ..Default::default()
         };
+        assert!(
+            entry_plan(&s, &s.entries[0], Path::new("/nonexistent"))
+                .unwrap_err()
+                .contains("enable streaming")
+        );
         let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
+        assert_eq!(plans.len(), 1);
         assert!(matches!(plans[0].1, Plan::CloudOpenAiCompat { .. }));
+    }
+
+    #[test]
+    #[allow(
+        clippy::result_large_err,
+        reason = "tungstenite defines the callback error type"
+    )]
+    fn selfhosted_ws_sends_optional_bearer_during_upgrade() {
+        use tungstenite::handshake::server::{Request, Response};
+        use tungstenite::http::header::AUTHORIZATION;
+
+        for (key, expected_header) in [("", None), ("fixture-key", Some("Bearer fixture-key"))] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!(
+                "ws://{}/speech/?profile=test/",
+                listener.local_addr().unwrap()
+            );
+            let server = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(WS_HANDSHAKE_TIMEOUT)).unwrap();
+                tungstenite::accept_hdr(stream, |request: &Request, response: Response| {
+                    let header = request.headers().get(AUTHORIZATION);
+                    assert_eq!(header.map(|value| value.to_str().unwrap()), expected_header);
+                    assert_eq!(
+                        request.uri().path_and_query().unwrap().as_str(),
+                        "/speech/?profile=test/"
+                    );
+                    Ok(response)
+                })
+                .unwrap();
+            });
+            let connection =
+                OnlineSession::open_with_authorization(&url, key, WS_HANDSHAKE_TIMEOUT);
+            connection.unwrap();
+            server.join().unwrap();
+        }
     }
 
     #[test]

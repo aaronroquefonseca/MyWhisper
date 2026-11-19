@@ -142,12 +142,18 @@ pub fn llm_destination(entry: &LlmEntry) -> String {
 /// `/second`, or `?tenant=a` vs `?tenant=b`, are different services.
 fn service(url: &str) -> String {
     match Url::parse(url.trim()) {
-        Ok(u) => format!(
-            "{}{}{}",
-            u.origin().ascii_serialization(),
-            u.path().trim_end_matches('/'),
-            u.query().map(|q| format!("?{q}")).unwrap_or_default()
-        ),
+        Ok(u) => {
+            let path = if matches!(u.scheme(), "ws" | "wss") {
+                u.path()
+            } else {
+                u.path().trim_end_matches('/')
+            };
+            format!(
+                "{}{path}{}",
+                u.origin().ascii_serialization(),
+                u.query().map(|q| format!("?{q}")).unwrap_or_default()
+            )
+        }
         Err(_) => url.trim().to_string(),
     }
 }
@@ -185,7 +191,7 @@ pub fn stt_blocker(entry: &SttChainEntry) -> Option<Blocker> {
             } else if !valid_server_url(url, true) {
                 Some(Blocker::BadUrl)
             } else if crate::transcribe::is_ws_url(url) {
-                // Streaming probes connect without the key.
+                // Settings checks TCP reachability for these servers.
                 (!entry.streaming).then_some(Blocker::NeedsStreaming)
             } else {
                 None
@@ -293,7 +299,7 @@ pub fn probe_stt(entry: &SttChainEntry, s: &SttSettings, data_dir: &Path) -> Tes
                 },
             )
         }
-        Plan::SelfHostedWs { url } => timed(fallback_model, || match Url::parse(&url) {
+        Plan::SelfHostedWs { url, .. } => timed(fallback_model, || match Url::parse(&url) {
             Ok(url) => tcp_reachable(&url, PROBE_TIMEOUT),
             Err(_) => Outcome::Blocked(Blocker::BadUrl),
         }),
@@ -722,6 +728,9 @@ mod tests {
         assert_ne!(stt_destination(&s1), stt_destination(&s3));
         assert_ne!(stt_destination(&s1), stt_destination(&s4));
         assert_ne!(stt_destination(&a), stt_destination(&s1));
+        let ws = stt(SttEntryKind::SelfHosted, "", "wss://h:8000/v1", "k");
+        let ws_slash = stt(SttEntryKind::SelfHosted, "", "wss://h:8000/v1/", "k");
+        assert_ne!(stt_destination(&ws), stt_destination(&ws_slash));
         // Query-routed tenants are separate services too.
         let ta = stt(
             SttEntryKind::SelfHosted,
