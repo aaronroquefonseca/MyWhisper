@@ -533,6 +533,27 @@ impl Store {
         Ok(value.and_then(|v| v.parse().ok()).unwrap_or(0))
     }
 
+    pub(crate) fn capture_reset_stamp(&self) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM sync_meta WHERE key = 'capture_reset'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    /// Read the provider config and its reset stamp from one snapshot.
+    pub(crate) fn capture_settings(
+        &self,
+    ) -> rusqlite::Result<(crate::settings::SttSettings, Option<String>)> {
+        let snapshot = self.conn.unchecked_transaction()?;
+        let stamp = self.capture_reset_stamp()?;
+        let stt = self.load_settings().stt;
+        snapshot.commit()?;
+        Ok((stt, stamp))
+    }
+
     /// Take the write lock before checking permission for a merge batch.
     pub fn begin_merge(&self) -> rusqlite::Result<rusqlite::Transaction<'_>> {
         rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)
@@ -915,6 +936,11 @@ impl Store {
         self.save_settings(fresh)?;
         // Rounds already past their checks must not send pre-reset data.
         bump_epoch(&tx)?;
+        tx.execute(
+            "INSERT INTO sync_meta (key, value) VALUES ('capture_reset', hex(randomblob(16)))
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [],
+        )?;
         tx.commit()?;
         bump_data_gen();
         bump_gen(&self.conn);

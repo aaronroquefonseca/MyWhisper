@@ -2685,6 +2685,14 @@ impl OnlineSession {
     /// socket default is minutes — without this the pump stalls on
     /// the first silent chunk waiting for a partial that never comes.)
     pub fn send_chunk(&mut self, samples: &[f32]) -> Result<(), String> {
+        self.send_chunk_if(samples, || true)
+    }
+
+    fn send_chunk_if(
+        &mut self,
+        samples: &[f32],
+        allowed: impl FnOnce() -> bool,
+    ) -> Result<(), String> {
         #[cfg(test)]
         {
             let pause = ONLINE_SEND_PAUSE.lock().unwrap().take();
@@ -2695,7 +2703,11 @@ impl OnlineSession {
         }
         {
             let ws = self.ws.as_mut().ok_or("online session closed")?;
-            ws_send_binary(ws, &f32le(samples))?;
+            let bytes = f32le(samples);
+            if !allowed() {
+                return Err("cancelled".into());
+            }
+            ws_send_binary(ws, &bytes)?;
             ws_read_timeout(ws, Duration::from_millis(50));
         }
         // Drain pending partials without blocking: anything the
@@ -3623,8 +3635,24 @@ fn run_spec(
     let _ = tx.send((committed.0, committed.1, buffer));
 }
 
+struct CaptureResetCheck {
+    store: Mutex<crate::store::Store>,
+    stamp: Option<String>,
+}
+
+impl CaptureResetCheck {
+    fn current(&self) -> bool {
+        self.store
+            .lock()
+            .ok()
+            .and_then(|store| store.capture_reset_stamp().ok())
+            .is_some_and(|stamp| stamp == self.stamp)
+    }
+}
+
 struct LiveUtterance {
     press_seq: u64,
+    reset: Arc<CaptureResetCheck>,
     /// Admission id from `begin_utterance`: the press warmup proves this
     /// id is still the latest admitted and unrevoked before destroying
     /// anything inside startup admission.
@@ -3824,7 +3852,7 @@ pub(crate) fn set_press_admission_pause(tx: mpsc::Sender<()>, rx: mpsc::Receiver
 /// `begin_utterance` for a press registered via `register_press`.
 pub fn begin_utterance_for(
     ticket: PressTicket,
-    stt_param: crate::settings::SttSettings,
+    _stt_param: crate::settings::SttSettings,
     keep_audio: bool,
     data_dir: &Path,
     release_delay_ms: u64,
@@ -3839,11 +3867,20 @@ pub fn begin_utterance_for(
     // START_LOCK only, never under LIVE: the synchronous GTK release
     // needs LIVE and must not wait on SQLite.
     let (stt, generation, owner, stop_epoch): (crate::settings::SttSettings, u64, u64, u64);
+    let reset;
     {
         let _admission = SERVER_START_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let current = crate::store::Store::open(&data_dir.join("state.db"))
-            .map(|store| store.load_settings().stt)
-            .unwrap_or_else(|_| stt_param.clone());
+        let (current, stamp, store) = match crate::store::Store::open(&data_dir.join("state.db"))
+            .and_then(|store| {
+                let (settings, stamp) = store.capture_settings()?;
+                Ok((settings, stamp, store))
+            }) {
+            Ok(snapshot) => snapshot,
+            Err(e) => {
+                eprintln!("[stt] press: capture settings unavailable: {e}");
+                return;
+            }
+        };
         #[cfg(test)]
         if let Some((entered, proceed_)) =
             PRESS_ADMISSION_PAUSE.lock().ok().and_then(|mut g| g.take())
@@ -3864,6 +3901,10 @@ pub fn begin_utterance_for(
         }
         drop(live_guard);
         stt = current;
+        reset = Arc::new(CaptureResetCheck {
+            store: Mutex::new(store),
+            stamp,
+        });
         active_inc();
         owner = admit_owner();
         generation = server_generation();
@@ -4000,6 +4041,7 @@ pub fn begin_utterance_for(
         audio::set_recorder(Some(recorder.clone()));
         *live_guard = Some(LiveUtterance {
             press_seq: ticket.seq,
+            reset: reset.clone(),
             stop_epoch,
             owner,
             recorder: recorder.clone(),
@@ -4076,7 +4118,9 @@ pub fn begin_utterance_for(
                 if !attach(
                     rx,
                     Box::new(move || {
-                        pump_online(session, rec, stop_pump, cancel_pump, pump_settled, tx);
+                        let result =
+                            pump_online(session, rec, stop_pump, cancel_pump, pump_settled, reset);
+                        let _ = tx.send(result);
                     }),
                     Some(abort),
                 ) {
@@ -4145,16 +4189,16 @@ pub fn begin_utterance_for(
 }
 
 /// Streaming pump body: realtime ~200 ms cadence while held, tail
-/// drain + `Done`/final on stop. Runs on its own thread, reports
-/// through `tx` exactly once.
+/// drain + `Done`/final on stop. Drop the stream and capture policy
+/// reader before reporting the result.
 fn pump_online(
     mut session: OnlineSession,
     rec: Arc<Mutex<Recorder>>,
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
     settled: Arc<AtomicBool>,
-    tx: mpsc::Sender<Result<String, String>>,
-) {
+    reset: Arc<CaptureResetCheck>,
+) -> Result<String, String> {
     let mut resampler: Option<(u32, Resampler)> = None;
     // Rate is learned from the tap; recreate the resampler if the
     // device changed mid-stream.
@@ -4171,7 +4215,7 @@ fn pump_online(
         if f32c.is_empty() {
             return Ok(());
         }
-        session.send_chunk(&f32c)
+        session.send_chunk_if(&f32c, || !cancel.load(Ordering::Relaxed) && reset.current())
     };
     let mut consumed = 0usize;
     while !stop.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
@@ -4185,25 +4229,21 @@ fn pump_online(
         if behind_secs <= 1.0 {
             std::thread::sleep(Duration::from_millis(200));
         }
-        if let Err(e) = feed(&mut consumed) {
-            let _ = tx.send(Err(e));
-            return;
-        }
+        feed(&mut consumed)?;
     }
     if cancel.load(Ordering::Relaxed) {
         // Cancelled: drop the session without Done/final (unclean
         // close is routine for these servers; the discard worker
         // below owns the outcome).
-        let _ = tx.send(Err("cancelled".to_string()));
-        return;
+        return Err("cancelled".into());
     }
     // The release tail is settled and truncated before the final send.
     wait_settled(&settled);
-    if let Err(e) = feed(&mut consumed) {
-        let _ = tx.send(Err(e));
-        return;
+    feed(&mut consumed)?;
+    if !reset.current() {
+        return Err("cancelled".into());
     }
-    let _ = tx.send(session.finish());
+    session.finish()
 }
 
 /// Escape midway: discard the recording, close its stream, and skip
@@ -4373,13 +4413,16 @@ fn end_utterance_inner(through: u64, on_done: Option<Box<dyn FnOnce() + Send>>) 
                     hints
                 })
                 .unwrap_or_default();
+            let reset = sess.reset.clone();
             let out = finish_session(sess, &words);
             let _turn = delivery_turn(&BUSY, &DELIVERY);
             active_dec();
             match out {
                 Ok(Some((text, secs, wav))) => {
                     engine_ok();
-                    deliver(text, secs, wav)
+                    if reset.current() {
+                        deliver(text, secs, wav);
+                    }
                 }
                 Ok(None) => {
                     engine_ok();
@@ -4417,6 +4460,9 @@ fn finish_session(
     sess: LiveUtterance,
     words: &[String],
 ) -> Result<Option<FinishedTranscript>, String> {
+    if !sess.reset.current() {
+        return Ok(None);
+    }
     if sess
         .recorder
         .lock()
@@ -4472,7 +4518,11 @@ fn finish_session(
     if let Some(rx) = &sess.result_rx {
         // The pump owns the tail. The settled recorder still holds
         // the original capture if the user opted into audio retention.
-        match rx.recv().map_err(|_| "online pump died".to_string())? {
+        let result = rx.recv();
+        if !sess.reset.current() {
+            return Ok(None);
+        }
+        match result.map_err(|_| "online pump died".to_string())? {
             Ok(text) => {
                 return Ok(empty_to_none(text).map(|t| (t, secs, sess.retained_stream_wav())));
             }
@@ -4487,7 +4537,11 @@ fn finish_session(
     if let Some(rx) = &sess.whistle_rx {
         // Live needle stream: committed text arrives as audio flows;
         // failure falls back to single-file decode below.
-        match rx.recv().map_err(|_| "whistle pump died".to_string())? {
+        let result = rx.recv();
+        if !sess.reset.current() {
+            return Ok(None);
+        }
+        match result.map_err(|_| "whistle pump died".to_string())? {
             Ok(text) => {
                 return Ok(empty_to_none(text).map(|t| (t, secs, sess.retained_stream_wav())));
             }
@@ -4503,7 +4557,11 @@ fn finish_session(
     // samples. Any failure or empty result falls through to
     // the full recording + fallback chain.
     if let Some(spec) = sess.spec {
-        match spec.done_rx.recv() {
+        let result = spec.done_rx.recv();
+        if !sess.reset.current() {
+            return Ok(None);
+        }
+        match result {
             Ok((committed, committed_len, buf)) => {
                 eprintln!(
                     "[stt] release: spec agreed on {} words, tail from {:.1}s",
@@ -4526,11 +4584,15 @@ fn finish_session(
                         words,
                         crate::textnorm::WHISPER_PROMPT_CHARS,
                     );
-                    match whisper_transcribe(
-                        &tail_wav,
-                        prompt,
-                        engine_port(&sess.net, WHISPER_PORT),
-                    ) {
+                    if !sess.reset.current() {
+                        return Ok(None);
+                    }
+                    let result =
+                        whisper_transcribe(&tail_wav, prompt, engine_port(&sess.net, WHISPER_PORT));
+                    if !sess.reset.current() {
+                        return Ok(None);
+                    }
+                    match result {
                         Ok(tail_text) => {
                             let merged = crate::speculative::merge_tail(&committed, &tail_text);
                             eprintln!(
@@ -4587,7 +4649,14 @@ fn finish_session(
     attempts.extend(sess.fallbacks.iter().map(|(n, p)| (n.clone(), p)));
     let mut last_err = String::new();
     for (name, plan) in attempts {
-        match transcribe_blocking(plan, &f32s, words, &sess.net) {
+        if !sess.reset.current() {
+            return Ok(None);
+        }
+        let result = transcribe_blocking(plan, &f32s, words, &sess.net);
+        if !sess.reset.current() {
+            return Ok(None);
+        }
+        match result {
             Ok(r) => {
                 eprintln!(
                     "[stt] release: inference took {:.1}s ({name})",
@@ -6554,6 +6623,15 @@ mod tests {
 
     #[test]
     fn escape_closes_stream_before_a_prepared_chunk_can_send() {
+        discarded_capture_sends_no_prepared_chunk(false);
+    }
+
+    #[test]
+    fn reset_blocks_a_prepared_streaming_chunk() {
+        discarded_capture_sends_no_prepared_chunk(true);
+    }
+
+    fn discarded_capture_sends_no_prepared_chunk(reset: bool) {
         use crate::settings::{SttChainEntry, SttEntryKind};
 
         let _guard = serial();
@@ -6597,10 +6675,43 @@ mod tests {
         begin_utterance(settings.stt, false, root.path(), 0);
         audio::tap_samples(&[42; 3200], 16_000);
         entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        cancel_and_drain();
-        let closed = server.join().unwrap();
-        proceed.send(()).unwrap();
-        assert!(closed, "cancel did not close the socket before the send");
+        let outcome = live()
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .result_rx
+            .take()
+            .unwrap();
+        if reset {
+            let mut clean = crate::settings::AppSettings::default();
+            clean.sync.enabled = false;
+            crate::store::Store::open(&root.path().join("state.db"))
+                .unwrap()
+                .reset_all_data(&clean)
+                .unwrap();
+            proceed.send(()).unwrap();
+            assert_eq!(
+                outcome
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap_err(),
+                "cancelled"
+            );
+            cancel_and_drain();
+            assert!(server.join().unwrap(), "revoked recording sent a frame");
+        } else {
+            cancel_and_drain();
+            let closed = server.join().unwrap();
+            proceed.send(()).unwrap();
+            assert!(
+                outcome
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .is_err()
+            );
+            assert!(closed, "cancel did not close the socket before the send");
+        }
         assert_eq!(active_count(), 0);
     }
 
@@ -11470,6 +11581,10 @@ mod tests {
     ) -> LiveUtterance {
         LiveUtterance {
             press_seq: 0,
+            reset: Arc::new(CaptureResetCheck {
+                store: Mutex::new(crate::store::Store::open_memory().unwrap()),
+                stamp: None,
+            }),
             stop_epoch: STOP_EPOCH.load(Ordering::Acquire).wrapping_sub(1),
             owner: 0,
             recorder,
@@ -11827,6 +11942,75 @@ mod tests {
             }
         });
         hits
+    }
+
+    #[test]
+    fn reset_during_primary_attempt_does_not_upload_to_fallback() {
+        use crate::settings::{SttChainEntry, SttEntryKind};
+        use std::io::{Read, Write};
+
+        let _guard = serial();
+        let _ = crate::runtime::init();
+        let data = tempfile::tempdir().unwrap();
+        let db = data.path().join("state.db");
+        let settings_store = crate::store::Store::open(&db).unwrap();
+        let primary = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let primary_url = format!("http://{}", primary.local_addr().unwrap());
+        let fallback = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let fallback_url = format!("http://{}", fallback.local_addr().unwrap());
+        let hits = canned_http(fallback, openai_text_reply("fallback fixture"));
+        let (started, request_started) = mpsc::channel();
+        let (finish_primary, wait) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = primary.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream.read_exact(&mut [0; 1]).unwrap();
+            started.send(()).unwrap();
+            wait.recv_timeout(Duration::from_secs(5)).unwrap();
+            let _ = stream.write_all(
+                b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        });
+        let mut settings = settings_store.load_settings();
+        settings.stt.entries = [("primary", primary_url), ("fallback", fallback_url)]
+            .into_iter()
+            .map(|(id, url)| SttChainEntry {
+                id: id.into(),
+                name: id.into(),
+                kind: SttEntryKind::SelfHosted,
+                enabled: true,
+                url,
+                streaming: false,
+                api_key: String::new(),
+                provider: String::new(),
+                model: String::new(),
+            })
+            .collect();
+        settings.stt.vad_enabled = false;
+        settings_store.save_settings(&settings).unwrap();
+        begin_utterance(settings.stt, false, data.path(), 0);
+        audio::tap_samples(&[1000; 16_000], 16_000);
+        let worker = std::thread::spawn(take_and_finish);
+        request_started
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let mut clean = crate::settings::AppSettings::default();
+        clean.sync.enabled = false;
+        crate::store::Store::open(&db)
+            .unwrap()
+            .reset_all_data(&clean)
+            .unwrap();
+        finish_primary.send(()).unwrap();
+        server.join().unwrap();
+        let result = worker.join().unwrap().unwrap();
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "revoked audio reached fallback"
+        );
+        assert!(result.unwrap().is_none());
     }
 
     /// Finding: with HTTP_PROXY set, local Whisper audio went to the
