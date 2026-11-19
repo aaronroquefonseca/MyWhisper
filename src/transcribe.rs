@@ -30,9 +30,8 @@
 //!   decoding continues after release if the engine lags, paste
 //!   happens when the final arrives. Dictionary words ride the
 //!   upstream `context` bias in both modes.
-//! - Local / Cohere → unsupported: `offline-websocket-server`
-//!   v1.13.8 exposes no `cohere-transcribe-*` flags (library-only
-//!   model). Clear error, revisit when the server grows flags.
+//! - Local / Cohere → offline Sherpa WebSocket with a dedicated
+//!   encoder, decoder, and explicitly selected language.
 //! - Cloud OpenAI / Groq / Mistral → OpenAI-compatible
 //!   `POST {base}/audio/transcriptions` after release. (Mistral's
 //!   endpoint mirrors the OpenAI shape for its transcription model;
@@ -430,11 +429,19 @@ fn local_plan(s: &SttSettings, data_dir: &Path) -> Result<Plan, String> {
                 lang: s.language.clone(),
             })
         }
-        LocalSttProvider::Cohere => Err(
-            "Cohere Transcribe has no websocket-server flags in sherpa-onnx v1.13.8 \
-             (library-only model); pick another local provider for now"
-                .to_string(),
-        ),
+        LocalSttProvider::Cohere => {
+            let entry = stt::find_model("cohere-transcribe-03-2026")
+                .ok_or_else(|| missing("Cohere Transcribe model"))?;
+            let model_dir = stt::model_dir(data_dir, entry);
+            cohere_lang(&model_dir, &s.language)?;
+            if !stt::is_installed(data_dir, entry) {
+                return Err(missing("Cohere Transcribe model"));
+            }
+            Ok(Plan::SherpaOffline {
+                model_dir,
+                lang: s.language.clone(),
+            })
+        }
         LocalSttProvider::Qwen => {
             let entry = stt::find_model(&s.qwen_model)
                 .ok_or_else(|| format!("unknown qwen model {:?}", s.qwen_model))?;
@@ -1995,22 +2002,23 @@ fn whisper_key(bin: &Path, model: &Path, lang: &str, net: &ServerNet) -> String 
     )
 }
 
-/// Cohere is the only offline model taking a language (required:
-/// exactly one of its 14 codes). Detected by model dir; the dropdown
-/// guarantees a valid code, "en" as backstop.
-fn cohere_lang(model_dir: &Path, lang: &str) -> Option<String> {
-    let cohere = model_dir
-        .file_name()
-        .map(|n| n.to_string_lossy().contains("cohere"))
-        .unwrap_or(false);
-    cohere.then(|| {
-        let valid = crate::stt::model_languages("cohere-transcribe-03-2026");
-        if valid.contains(&lang) {
-            lang.to_string()
-        } else {
-            "en".to_string()
-        }
-    })
+fn is_cohere_model(model_dir: &Path) -> bool {
+    model_dir.file_name() == Some(std::ffi::OsStr::new("cohere-transcribe-03-2026"))
+}
+
+/// Cohere requires exactly one supported language. Other offline
+/// Sherpa models ignore the shared language setting.
+fn cohere_lang<'a>(model_dir: &Path, lang: &'a str) -> Result<Option<&'a str>, String> {
+    if !is_cohere_model(model_dir) {
+        return Ok(None);
+    }
+    if stt::model_languages("cohere-transcribe-03-2026").contains(&lang) {
+        return Ok(Some(lang));
+    }
+    Err(
+        "Cohere Transcribe requires a specific supported language. Choose one in Speech to Text."
+            .to_string(),
+    )
 }
 
 /// Sherpa has no bind flag (always 0.0.0.0): host is intentionally
@@ -2080,7 +2088,7 @@ fn launch_key(
                 &sherpa_binary(data_dir, sherpa, "sherpa-onnx-offline-websocket-server").ok()?,
                 model_dir,
                 &hotwords_hash(data_dir, model_dir),
-                cohere_lang(model_dir, lang).as_deref(),
+                cohere_lang(model_dir, lang).ok()?,
             ),
             engine_port(net, SHERPA_OFFLINE_PORT),
         ),
@@ -2315,7 +2323,7 @@ fn sherpa_hotwords(
     words: &[String],
 ) -> (Option<PathBuf>, Vec<String>) {
     let vocab = model_dir.join("bpe.vocab");
-    if !vocab.exists() {
+    if is_cohere_model(model_dir) || !vocab.exists() {
         return (None, Vec::new());
     }
     let clean: Vec<&str> = words
@@ -2371,18 +2379,17 @@ fn ensure_sherpa_offline(
     expected_fp: Option<String>,
 ) -> Result<(), String> {
     let bin = sherpa_binary(data_dir, backend, "sherpa-onnx-offline-websocket-server")?;
-    let cohere_lang = cohere_lang(model_dir, lang);
+    let cohere_lang = cohere_lang(model_dir, lang)?;
     let words = load_hint_words(data_dir);
     let (_hw_file, hw_args) = sherpa_hotwords(data_dir, model_dir, &words);
     let key = sherpa_offline_key(
         &bin,
         model_dir,
         &hotwords_digest(&hw_args, &words),
-        cohere_lang.as_deref(),
+        cohere_lang,
     );
     let (bin_s, dir_s) = (bin.clone(), model_dir.to_path_buf());
     let offline_port = engine_port(net, SHERPA_OFFLINE_PORT);
-    let cohere_arg = cohere_lang.clone();
     ensure_server(
         data_dir,
         "sherpa-offline",
@@ -2404,14 +2411,21 @@ fn ensure_sherpa_offline(
                 format!("--port={offline_port}"),
                 provider_flag,
                 format!("--tokens={}", f("tokens.txt")),
-                format!("--encoder={}", f("encoder.int8.onnx")),
-                format!("--decoder={}", f("decoder.int8.onnx")),
-                format!("--joiner={}", f("joiner.int8.onnx")),
                 format!("--num-threads={}", threads_arg()),
                 "--log-file=/dev/null".to_string(),
             ];
-            if let Some(lang) = cohere_arg {
-                args.push(format!("--cohere-transcribe-language={lang}"));
+            if let Some(lang) = cohere_lang {
+                args.extend([
+                    format!("--cohere-transcribe-encoder={}", f("encoder.int8.onnx")),
+                    format!("--cohere-transcribe-decoder={}", f("decoder.int8.onnx")),
+                    format!("--cohere-transcribe-language={lang}"),
+                ]);
+            } else {
+                args.extend([
+                    format!("--encoder={}", f("encoder.int8.onnx")),
+                    format!("--decoder={}", f("decoder.int8.onnx")),
+                    format!("--joiner={}", f("joiner.int8.onnx")),
+                ]);
             }
             args.extend(hw_args);
             cmd.args(args)
@@ -7058,13 +7072,32 @@ mod tests {
     }
 
     #[test]
-    fn plan_cohere_unsupported() {
-        let s = SttSettings {
+    fn plan_cohere_requires_verified_model_and_explicit_language() {
+        let data = tempfile::tempdir().unwrap();
+        let mut s = SttSettings {
             local_provider: LocalSttProvider::Cohere,
+            language: "en".into(),
             ..Default::default()
         };
-        let err = plan_for(&s, Path::new("/nonexistent")).unwrap_err();
-        assert!(err.contains("Cohere"), "{err}");
+        let err = plan_for(&s, data.path()).unwrap_err();
+        assert!(err.contains("Cohere Transcribe model"), "{err}");
+        let model = stt::fake_install(data.path(), "cohere-transcribe-03-2026");
+        for language in ["en", "ja"] {
+            s.language = language.into();
+            let Plan::SherpaOffline { model_dir, lang } = plan_for(&s, data.path()).unwrap() else {
+                panic!("Cohere should use offline Sherpa");
+            };
+            assert_eq!(model_dir, model);
+            assert_eq!(lang, language);
+        }
+        for language in ["auto", "ru"] {
+            s.language = language.into();
+            let err = plan_for(&s, data.path()).unwrap_err();
+            assert!(
+                err.contains("requires a specific supported language"),
+                "{err}"
+            );
+        }
     }
 
     #[test]
