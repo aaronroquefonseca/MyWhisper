@@ -128,6 +128,16 @@ pub(crate) fn backend_text(text: &'static str) -> &'static str {
         "English dictation ASR, drops ums and uhs (CC-BY-4.0)" => "backend.caption.23",
         "English verbatim ASR, SOTA at its size (CC-BY-4.0)" => "backend.caption.24",
         "English verbatim ASR, larger sibling (CC-BY-4.0)" => "backend.caption.25",
+        "LLM-based multilingual ASR, 30 languages + dialects" => "backend.caption.26",
+        "Lightweight LLM-based ASR, 30 languages + dialects" => "backend.caption.27",
+        "Qwen transformers runtime" => "backend.caption.28",
+        "Qwen vLLM runtime" => "backend.caption.29",
+        "CPU or NVIDIA GPU, offline decode (no live streaming); self-contained Python 3.12" => {
+            "backend.caption.30"
+        }
+        "NVIDIA GPU only, offline + live streaming; self-contained Python 3.12" => {
+            "backend.caption.31"
+        }
         _ => return text,
     };
     tr(tag)
@@ -288,6 +298,24 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "stt.sherpa.backend" => ("Sherpa backend", "Motor Sherpa"),
         "stt.sherpa.cpu" => ("CPU", "CPU"),
         "stt.sherpa.cuda" => ("CUDA", "CUDA"),
+        "stt.qwen.backend" => ("Qwen backend", "Motor Qwen"),
+        "stt.qwen.vram" => ("vLLM GPU footprint", "Memoria GPU vLLM"),
+        "stt.qwen.vram.compact" => ("Compact (~6 GB, 0.6B only)", "Compacta (~6 GB, solo 0.6B)"),
+        "stt.qwen.vram.balanced" => ("Balanced (~9 GB)", "Equilibrada (~9 GB)"),
+        "stt.qwen.vram.large" => ("Large (~14 GB)", "Amplia (~14 GB)"),
+        "stt.qwen.transformers" => (
+            "Transformers (CPU/GPU, offline)",
+            "Transformers (CPU/GPU, sin streaming)",
+        ),
+        "stt.qwen.vllm" => (
+            "vLLM (NVIDIA GPU, streaming)",
+            "vLLM (GPU NVIDIA, streaming)",
+        ),
+        "stt.qwen.installed" => ("Installed", "Instalado"),
+        "stt.dl.cancelled" => (
+            "Cancelled (Retry to resume)",
+            "Cancelado (Reintentar para continuar)",
+        ),
         "group.sttchain" => ("Transcription priority", "Prioridad de transcripción"),
         "stt.local.add" => ("Add on-device engine", "Añadir motor local"),
         "stt.models.compatnote" => (
@@ -1155,6 +1183,24 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "backend.caption.25" => (
             "English verbatim ASR, larger sibling (CC-BY-4.0)",
             "ASR inglés literal, hermano mayor (CC-BY-4.0)",
+        ),
+        "backend.caption.26" => (
+            "LLM-based multilingual ASR, 30 languages + dialects",
+            "ASR multilingüe basado en LLM, 30 idiomas + dialectos",
+        ),
+        "backend.caption.27" => (
+            "Lightweight LLM-based ASR, 30 languages + dialects",
+            "ASR ligero basado en LLM, 30 idiomas + dialectos",
+        ),
+        "backend.caption.28" => ("Qwen transformers runtime", "Runtime Qwen transformers"),
+        "backend.caption.29" => ("Qwen vLLM runtime", "Runtime Qwen vLLM"),
+        "backend.caption.30" => (
+            "CPU or NVIDIA GPU, offline decode (no live streaming); self-contained Python 3.12",
+            "CPU o GPU NVIDIA, decodificación offline (sin streaming); Python 3.12 incluido",
+        ),
+        "backend.caption.31" => (
+            "NVIDIA GPU only, offline + live streaming; self-contained Python 3.12",
+            "Solo GPU NVIDIA, offline + streaming en directo; Python 3.12 incluido",
         ),
         "lm.residency.default" => ("Ollama default", "Predeterminado de Ollama"),
         "lm.residency.forever" => ("Until server restarts", "Hasta reiniciar el servidor"),

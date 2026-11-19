@@ -1533,7 +1533,7 @@ pub struct PeerGossip {
 /// sherpa servers) with the real name in `local_vendor`, a field old
 /// builds ignore. Add new providers here; this build restores them on
 /// load and, for names it does not know, keeps the stored fallback.
-const LEGACY_LOCAL_PROVIDERS: &[(&str, &str)] = &[("Bark", "Nvidia")];
+const LEGACY_LOCAL_PROVIDERS: &[(&str, &str)] = &[("Bark", "Nvidia"), ("Qwen", "OpenAi")];
 
 fn stash_local_vendor(settings: &mut serde_json::Value) {
     let Some(stt) = settings.get_mut("stt").and_then(|v| v.as_object_mut()) else {

@@ -29,6 +29,7 @@ pub enum ModelKind {
     Parakeet,
     Whistle,
     Bark,
+    Qwen,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -687,6 +688,128 @@ pub const BARK_MODELS: &[ModelEntry] = &[
     },
 ];
 
+/// Pinned upstream Qwen3-ASR model snapshots.
+pub const QWEN_MODELS: &[ModelEntry] = &[
+    ModelEntry {
+        id: "qwen3-asr-1.7b",
+        kind: ModelKind::Qwen,
+        name: "Qwen3-ASR 1.7B",
+        description: "LLM-based multilingual ASR, 30 languages + dialects",
+        size_label: "4.7GB",
+        size_mb: 4700,
+        download_url: "https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5",
+        files: &[
+            pin(
+                "config.json",
+                6_194,
+                "2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f",
+            ),
+            pin(
+                "generation_config.json",
+                142,
+                "1da527824d81e07118facff437e03f2e24a23311e3bdeb2368973fe77e5f275c",
+            ),
+            pin(
+                "preprocessor_config.json",
+                330,
+                "45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d",
+            ),
+            pin(
+                "tokenizer_config.json",
+                12_487,
+                "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c",
+            ),
+            pin(
+                "vocab.json",
+                2_776_833,
+                "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+            ),
+            pin(
+                "merges.txt",
+                1_671_853,
+                "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+            ),
+            pin(
+                "chat_template.json",
+                1_161,
+                "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff",
+            ),
+            pin(
+                "model.safetensors.index.json",
+                64_821,
+                "f994739fe38e5210b9e3e8ce6c6307315e2ceac3cb630e7b7414d69dce520f60",
+            ),
+            pin(
+                "model-00001-of-00002.safetensors",
+                4_220_320_824,
+                "a4cd1f1a04d90b757dc7f7dd26254e69a013b19e80efe590a83c6a3bde8608d6",
+            ),
+            pin(
+                "model-00002-of-00002.safetensors",
+                478_200_688,
+                "6e0b9d9e09e2e0238e7ef3cc8a484ab387e91b90f1900bedf88bc92d7929ccfc",
+            ),
+        ],
+        archive: None,
+        runtime: None,
+        recommended: true,
+    },
+    ModelEntry {
+        id: "qwen3-asr-0.6b",
+        kind: ModelKind::Qwen,
+        name: "Qwen3-ASR 0.6B",
+        description: "Lightweight LLM-based multilingual ASR, 30 languages + dialects",
+        size_label: "1.9GB",
+        size_mb: 1900,
+        download_url: "https://huggingface.co/Qwen/Qwen3-ASR-0.6B/resolve/5eb144179a02acc5e5ba31e748d22b0cf3e303b0",
+        files: &[
+            pin(
+                "config.json",
+                6_193,
+                "76d3ae4601ce939830b2517f4a6cadb86cc51316c3900af6b020b051c21a478c",
+            ),
+            pin(
+                "generation_config.json",
+                142,
+                "1da527824d81e07118facff437e03f2e24a23311e3bdeb2368973fe77e5f275c",
+            ),
+            pin(
+                "preprocessor_config.json",
+                330,
+                "45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d",
+            ),
+            pin(
+                "tokenizer_config.json",
+                12_487,
+                "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c",
+            ),
+            pin(
+                "vocab.json",
+                2_776_833,
+                "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+            ),
+            pin(
+                "merges.txt",
+                1_671_853,
+                "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+            ),
+            pin(
+                "chat_template.json",
+                1_161,
+                "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff",
+            ),
+            pin(
+                "model.safetensors",
+                1_876_091_704,
+                "79d6cbd4c98c7bbffe9db2edac07f56cd6637d0d5944b27f6c2b8353840323ea",
+            ),
+        ],
+        archive: None,
+        runtime: None,
+        recommended: false,
+    },
+];
+
 /// Full whisper.cpp language list (99 codes + Cantonese), pulled from
 /// upstream whisper.cpp. The UI prepends "auto".
 pub const WHISPER_LANGS: &[&str] = &[
@@ -715,8 +838,14 @@ const COHERE_14: &[&str] = &[
 /// Supported transcription languages for one registry model.
 /// Whisper reads the full upstream list; sherpa models carry their
 /// own list (single-language models return just that one).
+const QWEN_30: &[&str] = &[
+    "zh", "en", "yue", "ar", "de", "fr", "es", "pt", "id", "it", "ko", "ru", "th", "vi", "ja",
+    "tr", "hi", "ms", "nl", "sv", "da", "fi", "pl", "cs", "fil", "fa", "el", "hu", "mk", "ro",
+];
+
 pub fn model_languages(model_id: &str) -> &'static [&'static str] {
     match model_id {
+        "qwen3-asr-1.7b" | "qwen3-asr-0.6b" => QWEN_30,
         "parakeet-tdt-0.6b-v3" | "orukeet-v0.1.0" => PARAKEET_25,
         "whistle-v1" => WHISTLE_LANGS,
         "bark-3.0" | "bark-3.0-plus" | "bark-3.0-clean" => &["en"],
@@ -746,6 +875,7 @@ pub fn models_for_vendor(vendor: crate::settings::LocalSttProvider) -> Vec<&'sta
             .filter(|m| m.id == "cohere-transcribe-03-2026")
             .collect(),
         V::Bark => BARK_MODELS.iter().collect(),
+        V::Qwen => QWEN_MODELS.iter().collect(),
     }
 }
 
@@ -770,6 +900,7 @@ mod lang_tests {
             .iter()
             .chain(super::PARAKEET_MODELS.iter())
             .chain(super::BARK_MODELS.iter())
+            .chain(super::QWEN_MODELS.iter())
         {
             let langs = if m.kind == super::ModelKind::Whisper {
                 super::WHISPER_LANGS
@@ -790,6 +921,7 @@ pub fn capabilities(entry: &ModelEntry) -> (bool, bool) {
         ModelKind::Whisper => (false, true),
         ModelKind::Whistle => (true, true),
         ModelKind::Bark => (false, false),
+        ModelKind::Qwen => (true, true),
         ModelKind::Parakeet => match entry.id {
             "orukeet-v0.1.0" => (false, false),
             _ if entry.runtime == Some(ParakeetRuntime::Online) => (true, true),
@@ -804,6 +936,7 @@ pub fn find_model(id: &str) -> Option<&'static ModelEntry> {
         .chain(PARAKEET_MODELS.iter())
         .chain(WHISTLE_MODELS.iter())
         .chain(BARK_MODELS.iter())
+        .chain(QWEN_MODELS.iter())
         .find(|m| m.id == id)
 }
 
@@ -820,6 +953,7 @@ pub fn model_dir(data_dir: &Path, entry: &ModelEntry) -> PathBuf {
         ModelKind::Parakeet => "parakeet",
         ModelKind::Whistle => "whistle",
         ModelKind::Bark => "bark",
+        ModelKind::Qwen => "qwen",
     };
     models_dir(data_dir).join(sub).join(entry.id)
 }
@@ -931,6 +1065,17 @@ pub(crate) fn try_lock_download_cache(data_dir: &Path) -> std::io::Result<AssetL
     crate::private_fs::try_lock(&asset_lock_dir(data_dir)?.join("cache.lock")).map(AssetLock)
 }
 
+fn lock_asset_change(data_dir: &Path, id: &str) -> std::io::Result<(AssetLock, AssetLock)> {
+    let locks = asset_lock_dir(data_dir)?;
+    let cache = AssetLock(crate::private_fs::try_lock_shared(
+        &locks.join("cache.lock"),
+    )?);
+    let asset = AssetLock(crate::private_fs::try_lock(
+        &locks.join(format!("{id}.lock")),
+    )?);
+    Ok((asset, cache))
+}
+
 /// First pin per name. A name listed twice is a file upstream replaced
 /// in place; either build verifies.
 fn unique(files: &[PinnedFile]) -> impl Iterator<Item = &PinnedFile> {
@@ -1005,14 +1150,7 @@ impl Asset {
     }
 
     fn lock_for_change(&self) -> std::io::Result<(AssetLock, AssetLock)> {
-        let locks = asset_lock_dir(&self.data_dir)?;
-        let cache = AssetLock(crate::private_fs::try_lock_shared(
-            &locks.join("cache.lock"),
-        )?);
-        let asset = AssetLock(crate::private_fs::try_lock(
-            &locks.join(format!("{}.lock", self.id)),
-        )?);
-        Ok((asset, cache))
+        lock_asset_change(&self.data_dir, self.id)
     }
 
     fn recover_interrupted_parts(&self) -> std::io::Result<()> {
@@ -1763,6 +1901,7 @@ fn all_assets(data_dir: &Path) -> Vec<Asset> {
         .chain(PARAKEET_MODELS)
         .chain(WHISTLE_MODELS)
         .chain(BARK_MODELS)
+        .chain(QWEN_MODELS)
         .map(|m| model_asset(data_dir, m));
     let gpu = GPU_PACKS.iter().map(|p| gpu_asset(data_dir, p));
     let sherpa = SHERPA_PACKS.iter().map(|p| sherpa_asset(data_dir, p));
@@ -2426,6 +2565,7 @@ mod tests {
                 + PARAKEET_MODELS.len()
                 + WHISTLE_MODELS.len()
                 + BARK_MODELS.len()
+                + QWEN_MODELS.len()
                 + GPU_PACKS.len()
                 + SHERPA_PACKS.len()
                 + 1
@@ -3352,4 +3492,773 @@ pub fn start_needle_download(data_dir: PathBuf) {
         total,
         Box::new(move |cancel, cb| download_needle_pack(&data_dir, cancel, cb)),
     );
+}
+
+// ---------------------------------------------------------------- Qwen runtime
+//
+// Qwen3-ASR runs on the upstream `qwen-asr` Python package (torch),
+// not a native binary: a "runtime pack" here is a managed Python
+// 3.12 environment under `<data>/bin/<subdir>/` (private interpreter
+// + `venv` + locked pip specs) plus the sidecar server script
+// (embedded in `crate::transcribe`, written on server ensure). Two
+// packs mirror the two `qwen-asr` backends: transformers (CPU or
+// CUDA, offline decode) and vLLM (NVIDIA GPU, offline + live
+// streaming).
+//
+// Provisioning is self-contained: a private pinned `uv` binary
+// fetches a pinned portable CPython 3.12 into owned staging
+// storage — system `python3`, `pip`, `python3-venv`, user
+// environments and shell configuration are never consulted, and
+// nothing is added to the global `PATH`. See `crate::qwen_runtime`
+// for pins, the lock audit, staging/activation and cancellation.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QwenRuntime {
+    Transformers,
+    Vllm,
+}
+
+#[derive(Debug, Clone)]
+pub struct QwenPack {
+    pub id: &'static str,
+    pub backend: QwenRuntime,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub size_label: &'static str,
+    pub size_bytes: u64,
+    pub subdir: &'static str,
+}
+
+impl QwenPack {
+    /// Locked pip specs for this backend (see `crate::qwen_runtime`).
+    pub fn pip_specs(&self) -> &'static [&'static str] {
+        match self.backend {
+            QwenRuntime::Transformers => crate::qwen_runtime::locked_specs_transformers(),
+            QwenRuntime::Vllm => crate::qwen_runtime::locked_specs_vllm(),
+        }
+    }
+
+    pub fn import_checks(&self) -> &'static [&'static str] {
+        match self.backend {
+            QwenRuntime::Transformers => crate::qwen_runtime::import_checks_transformers(),
+            QwenRuntime::Vllm => crate::qwen_runtime::import_checks_vllm(),
+        }
+    }
+}
+
+pub const QWEN_PACKS: &[QwenPack] = &[
+    QwenPack {
+        id: "qwen-transformers",
+        backend: QwenRuntime::Transformers,
+        name: "Qwen transformers runtime",
+        description: "CPU or NVIDIA GPU, offline decode (no live streaming); self-contained Python 3.12",
+        size_label: "~4GB",
+        size_bytes: 4_000_000_000,
+        subdir: "qwen-transformers",
+    },
+    QwenPack {
+        id: "qwen-vllm",
+        backend: QwenRuntime::Vllm,
+        name: "Qwen vLLM runtime",
+        description: "NVIDIA GPU only, offline + live streaming; self-contained Python 3.12",
+        size_label: "~9GB",
+        size_bytes: 9_000_000_000,
+        subdir: "qwen-vllm",
+    },
+];
+
+pub fn qwen_runtime_dir(data_dir: &Path, pack: &QwenPack) -> PathBuf {
+    crate::qwen_runtime::runtime_dir(data_dir, pack.subdir)
+}
+
+pub fn qwen_venv_python(data_dir: &Path, pack: &QwenPack) -> PathBuf {
+    crate::qwen_runtime::venv_python(&qwen_runtime_dir(data_dir, pack))
+}
+
+/// Installed = venv provisioned by the managed installer AND
+/// verified (v2 marker written after post-activation import checks
+/// at the final path) AND self-contained (the venv interpreter
+/// resolves inside the runtime dir — a venv left pointing at deleted
+/// staging is broken, never trusted). No per-poll python spawn: the
+/// marker pins the backend spec set + interpreter, so a spec bump or
+/// an old system-python (e.g. 3.14) venv reinstalls instead of being
+/// trusted. Incomplete installs never write the marker.
+pub fn qwen_installed(data_dir: &Path, pack: &QwenPack) -> bool {
+    let dir = qwen_runtime_dir(data_dir, pack);
+    if !qwen_venv_python(data_dir, pack).exists() {
+        return false;
+    }
+    if !crate::qwen_runtime::venv_python_self_contained(&dir) {
+        return false;
+    }
+    match std::fs::read_to_string(dir.join(".installed")) {
+        Ok(mark) => crate::qwen_runtime::marker_valid(&mark, pack.subdir, pack.pip_specs()),
+        Err(_) => false,
+    }
+}
+
+fn dir_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries.flatten().fold(0u64, |sum, entry| {
+        let size = entry.file_type().map_or(0, |kind| {
+            if kind.is_dir() {
+                dir_bytes(&entry.path())
+            } else if kind.is_file() {
+                entry.metadata().map_or(0, |m| m.len())
+            } else {
+                0
+            }
+        });
+        sum.saturating_add(size)
+    })
+}
+
+/// Approximate unpack meter scoped to exactly the dirs being
+/// written. Returns the stop flag + join handle; the caller must set
+/// the flag and join (stopping the thread) once the child exits.
+fn spawn_meter(
+    dirs: Vec<PathBuf>,
+    total: u64,
+    on_event: &DownloadCallback,
+) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+    let done = Arc::new(AtomicBool::new(false));
+    let flag = done.clone();
+    let cb = on_event.clone();
+    let handle = std::thread::spawn(move || {
+        while !flag.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let mut sum = 0u64;
+            for dir in &dirs {
+                sum = sum.saturating_add(dir_bytes(dir));
+            }
+            cb(DownloadEvent::Progress {
+                received: sum.min(total),
+                total: Some(total),
+            });
+            if flag.load(Ordering::SeqCst) {
+                break;
+            }
+        }
+    });
+    (done, handle)
+}
+
+/// Download resolved wheels with exact byte progress (sizes via
+/// HEAD; unknown sizes still download, the bar clamps at 100%),
+/// then install offline from the local wheel dir. Unpack progress
+/// rides a meter scoped to the venv tree against the pack estimate.
+#[allow(clippy::too_many_arguments)]
+fn install_wheels_offline(
+    pip: &Path,
+    refs: &[crate::qwen_runtime::WheelRef],
+    wheels: &Path,
+    runtime: &Path,
+    pack: &QwenPack,
+    cancel: &AtomicBool,
+    on_event: &DownloadCallback,
+    log_path: &Path,
+) -> Result<(), String> {
+    use crate::qwen_runtime as qr;
+    let sizes = qr::wheel_sizes(refs, cancel)?;
+    let total: u64 = sizes.iter().flatten().sum::<u64>().max(1);
+    let mut base = 0u64;
+    for (w, _size) in refs.iter().zip(sizes.iter()) {
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".to_string());
+        }
+        eprintln!("[qwen] {}: fetching {}=={}", pack.id, w.name, w.version);
+        let dest = wheels.join(qr::filename_of_url(&w.url));
+        // Transient network blips must not fail a multi-GB fetch:
+        // retry the single GET (pip itself retries 5x). Cancel still
+        // aborts between attempts; the last error surfaces.
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let cb = |rec: u64, _tot: Option<u64>| {
+                on_event(DownloadEvent::Progress {
+                    received: base.saturating_add(rec),
+                    total: Some(total),
+                });
+            };
+            match qr::download_verified(&w.url, &dest, &w.sha256, cancel, &cb) {
+                Ok(()) => break,
+                Err(e) if qr::is_cancel_error(&e) || attempt >= 3 => {
+                    if attempt >= 3 && !qr::is_cancel_error(&e) {
+                        eprintln!(
+                            "[qwen] {}: {}=={} failed after 3 attempts",
+                            pack.id, w.name, w.version
+                        );
+                    }
+                    return Err(e);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[qwen] {}: {}=={} attempt {attempt}/3 failed ({e}); retrying",
+                        pack.id, w.name, w.version
+                    );
+                    std::thread::sleep(std::time::Duration::from_secs(2 * attempt as u64));
+                }
+            }
+        }
+        base = base.saturating_add(std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0));
+    }
+    if cancel.load(Ordering::SeqCst) {
+        return Err("cancelled".to_string());
+    }
+    let wheels_s = wheels.to_string_lossy().to_string();
+    let (done, meter) = spawn_meter(vec![runtime.join("venv")], pack.size_bytes, on_event);
+    let mut cmd = std::process::Command::new(pip);
+    cmd.args([
+        "install",
+        "--no-index",
+        "--find-links",
+        &wheels_s,
+        "--prefer-binary",
+        "--disable-pip-version-check",
+    ])
+    .args(pack.pip_specs())
+    .env("PIP_NO_CACHE_DIR", "1")
+    .env_remove("PYTHONHOME")
+    .env_remove("PYTHONPATH")
+    .env_remove("VIRTUAL_ENV");
+    let r = qr::run_cancellable(&mut cmd, cancel, log_path, "pip install (offline)");
+    done.store(true, Ordering::SeqCst);
+    let _ = meter.join();
+    r
+}
+
+/// Fallback when wheels cannot be prefetched: direct install with a
+/// meter scoped to exactly the dirs pip writes (its cache + the venv
+/// tree) against the pack estimate.
+fn install_direct_with_meter(
+    pip: &Path,
+    pack: &QwenPack,
+    staging: &Path,
+    runtime: &Path,
+    cancel: &AtomicBool,
+    on_event: &DownloadCallback,
+    log_path: &Path,
+) -> Result<(), String> {
+    use crate::qwen_runtime as qr;
+    let cache = staging.join("pip-cache");
+    let (done, meter) = spawn_meter(
+        vec![cache.clone(), runtime.join("venv")],
+        pack.size_bytes,
+        on_event,
+    );
+    let mut cmd = std::process::Command::new(pip);
+    cmd.args(["install", "--prefer-binary", "--disable-pip-version-check"])
+        .args(pack.pip_specs())
+        .env("PIP_CACHE_DIR", &cache)
+        .env_remove("PYTHONHOME")
+        .env_remove("PYTHONPATH")
+        .env_remove("VIRTUAL_ENV");
+    let r = qr::run_cancellable(&mut cmd, cancel, log_path, "pip install");
+    done.store(true, Ordering::SeqCst);
+    let _ = meter.join();
+    r
+}
+
+/// Provision the managed runtime: private Python 3.12 + venv at the
+/// final path + locked deps + verification, transactionally.
+/// Blocking; run on a worker thread. Reuses the download
+/// event/cancel machinery (pip yields no byte counts, so dependency
+/// installation reports the Installing phase with stages in
+/// install.log).
+///
+/// Guarantees: GPU-gated before large vLLM downloads; staging under
+/// owned storage with sha/version verification; venv created at its
+/// final path (never relocated); previous working runtime restored
+/// on failure/cancel; `"cancelled"` preserved distinctly; detailed
+/// diagnostics in `<staging>/install.log` (+ `<runtime>/install.log`
+/// on success), concise error strings otherwise.
+pub fn download_qwen_runtime(
+    data_dir: &Path,
+    pack: &QwenPack,
+    cancel: &AtomicBool,
+    on_event: &DownloadCallback,
+) -> Result<(), String> {
+    let _locks = lock_asset_change(data_dir, pack.id).map_err(|e| format!("asset lock: {e}"))?;
+    use crate::qwen_runtime as qr;
+    qr::supported_platform()?;
+    qr::check_locked_compat()?;
+    if pack.backend == QwenRuntime::Vllm {
+        qr::check_gpu_for_vllm()?;
+    }
+    if cancel.load(Ordering::SeqCst) {
+        return Err("cancelled".to_string());
+    }
+    let _ = std::fs::remove_file(qr::failed_log(data_dir, pack.subdir));
+    let staging = qr::staging_dir(data_dir, pack.subdir);
+    let runtime = qr::runtime_dir(data_dir, pack.subdir);
+    let backup = qr::backup_dir(data_dir, pack.subdir);
+    // A killed installer can leave the old runtime in backup and an
+    // unverified replacement at its original path.
+    if backup.exists() && !qwen_installed(data_dir, pack) {
+        if runtime.exists() {
+            std::fs::remove_dir_all(&runtime).map_err(|e| format!("clear partial runtime: {e}"))?;
+        }
+        std::fs::rename(&backup, &runtime).map_err(|e| format!("restore previous runtime: {e}"))?;
+    }
+    // Stale staging from an interrupted (SIGKILL) run: owned, drop it.
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging).map_err(|e| format!("mkdir staging: {e}"))?;
+    let log_path = staging.join("install.log");
+    let _ = std::fs::write(&log_path, format!("qwen {} install\n", pack.id));
+    let stage = |s: qr::Stage| {
+        eprintln!("[qwen] {}: {}", pack.id, s.label());
+        on_event(DownloadEvent::Installing);
+    };
+    let mut replacing = false;
+    let result: Result<(), String> = (|| {
+        stage(qr::Stage::FetchUv);
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".to_string());
+        }
+        let progress = |received: u64, total: Option<u64>| {
+            on_event(DownloadEvent::Progress { received, total });
+        };
+        let uv = qr::ensure_private_uv(&staging, cancel, &progress)?;
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".to_string());
+        }
+        // Preserve a working runtime across replacement; partial,
+        // legacy (system-python/3.14), or staging-linked (venv python
+        // resolving outside the runtime) installs are not working.
+        let had_working = qwen_installed(data_dir, pack);
+        if runtime.exists() {
+            if had_working {
+                let _ = std::fs::remove_dir_all(&backup);
+                std::fs::rename(&runtime, &backup)
+                    .map_err(|e| format!("stage previous runtime: {e}"))?;
+            } else {
+                std::fs::remove_dir_all(&runtime)
+                    .map_err(|e| format!("clear stale runtime: {e}"))?;
+            }
+        }
+        replacing = true;
+        std::fs::create_dir_all(&runtime).map_err(|e| format!("mkdir runtime: {e}"))?;
+        // Managed interpreter INSIDE the final runtime root: venvs
+        // symlink (and share the stdlib of) their base interpreter,
+        // so a base under staging would dangle as soon as staging is
+        // cleaned. Only downloads live in staging.
+        stage(qr::Stage::InstallPython);
+        let python =
+            qr::ensure_managed_python(&uv, &runtime.join("python"), &staging, cancel, &log_path)?;
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".to_string());
+        }
+        // Venv at the FINAL path (venvs embed absolute paths), from
+        // the FINAL interpreter above.
+        stage(qr::Stage::CreateVenv);
+        let mut venv_cmd = std::process::Command::new(&python);
+        venv_cmd
+            .args(["-m", "venv", "venv"])
+            .current_dir(&runtime)
+            .env_remove("PYTHONHOME")
+            .env_remove("PYTHONPATH")
+            .env_remove("VIRTUAL_ENV");
+        qr::run_cancellable(&mut venv_cmd, cancel, &log_path, "create venv")?;
+        let venv_python = qr::venv_python(&runtime);
+        if !venv_python.exists() {
+            return Err("venv python missing after create (see install.log)".to_string());
+        }
+        // Locked deps via the venv pip (private, prefer wheels).
+        // Two phases so the multi-GB fetch has exact byte progress:
+        // pip only draws % on a TTY (a log file is not one), so we
+        // first resolve to pinned wheel URLs (`--dry-run --report`),
+        // download each wheel ourselves with per-byte events, then
+        // install offline from the local wheel dir. Anything the
+        // resolver cannot pin to sha-verified wheels (sdists, report
+        // failures) falls back to a direct install whose meter is
+        // scoped to exactly the dirs pip writes (cache + venv).
+        stage(qr::Stage::InstallDeps);
+        let pip = runtime.join("venv").join("bin").join("pip");
+        let wheels = staging.join("wheels");
+        std::fs::create_dir_all(&wheels).map_err(|e| format!("mkdir wheels: {e}"))?;
+        let report = staging.join("pip-report.json");
+        let mut resolve_cmd = std::process::Command::new(&pip);
+        resolve_cmd
+            .args([
+                "install",
+                "--dry-run",
+                "--report",
+                &report.to_string_lossy(),
+                "--prefer-binary",
+                "--disable-pip-version-check",
+            ])
+            .args(pack.pip_specs())
+            .env("PIP_NO_CACHE_DIR", "1")
+            .env_remove("PYTHONHOME")
+            .env_remove("PYTHONPATH")
+            .env_remove("VIRTUAL_ENV");
+        let resolved = qr::run_cancellable(&mut resolve_cmd, cancel, &log_path, "pip resolve")
+            .and_then(|()| {
+                if cancel.load(Ordering::SeqCst) {
+                    return Err("cancelled".to_string());
+                }
+                qr::parse_pip_report(&report)
+            });
+        match resolved {
+            Ok(refs) if refs.iter().all(|w| w.is_wheel) => install_wheels_offline(
+                &pip, &refs, &wheels, &runtime, pack, cancel, on_event, &log_path,
+            )?,
+            Ok(_) => {
+                eprintln!(
+                    "[qwen] {}: sdist in resolution set; direct install (see install.log)",
+                    pack.id
+                );
+                install_direct_with_meter(
+                    &pip, pack, &staging, &runtime, cancel, on_event, &log_path,
+                )?;
+            }
+            Err(e) => {
+                eprintln!(
+                    "[qwen] {}: wheel prefetch unavailable ({e}); direct install",
+                    pack.id
+                );
+                install_direct_with_meter(
+                    &pip, pack, &staging, &runtime, cancel, on_event, &log_path,
+                )?;
+            }
+        }
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".to_string());
+        }
+        // Post-activation verification AT the final path.
+        stage(qr::Stage::Verify);
+        let check = format!("import {}", pack.import_checks().join(", "));
+        let mut check_cmd = std::process::Command::new(&venv_python);
+        check_cmd.args(["-c", &check]);
+        check_cmd
+            .env_remove("PYTHONHOME")
+            .env_remove("PYTHONPATH")
+            .env_remove("VIRTUAL_ENV");
+        qr::run_cancellable(&mut check_cmd, cancel, &log_path, "import check")?;
+        // Interpreter identity at the final path (never 3.14).
+        let out = std::process::Command::new(&venv_python)
+            .arg("--version")
+            .env_remove("PYTHONHOME")
+            .env_remove("PYTHONPATH")
+            .env_remove("VIRTUAL_ENV")
+            .output()
+            .map_err(|e| format!("runtime python --version: {e}"))?;
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        match qr::parse_python_version(&text) {
+            Some((maj, min)) if qr::managed_python_ok(maj, min) => {}
+            _ => {
+                return Err(format!(
+                    "runtime python is not 3.12 (saw {text:?}; remove and reinstall)"
+                ));
+            }
+        }
+        if !qr::venv_python_self_contained(&runtime) {
+            return Err("venv interpreter escapes the runtime dir (see install.log)".to_string());
+        }
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".to_string());
+        }
+        stage(qr::Stage::Activate);
+        crate::private_fs::replace(
+            &runtime.join(".python-version"),
+            qr::QWEN_PYTHON_VERSION.as_bytes(),
+        )
+        .map_err(|e| format!("version marker: {e}"))?;
+        crate::private_fs::replace(
+            &runtime.join(".installed"),
+            qr::marker_text(pack.subdir, pack.pip_specs()).as_bytes(),
+        )
+        .map_err(|e| format!("install marker: {e}"))?;
+        let _ = std::fs::copy(&log_path, qr::install_log(&runtime));
+        let _ = std::fs::remove_dir_all(&backup);
+        let _ = std::fs::remove_dir_all(&staging);
+        on_event(DownloadEvent::Done);
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            let _ = std::fs::remove_file(qr::failed_log(data_dir, pack.subdir));
+            Ok(())
+        }
+        Err(e) => {
+            // Restore the previous working runtime; never leave a
+            // half-installed tree marked installed (marker is only
+            // written on success, and partial trees are removed).
+            let rollback = if replacing {
+                std::fs::remove_dir_all(&runtime)
+                    .or_else(|error| {
+                        if error.kind() == std::io::ErrorKind::NotFound {
+                            Ok(())
+                        } else {
+                            Err(error)
+                        }
+                    })
+                    .and_then(|()| {
+                        if backup.exists() {
+                            std::fs::rename(&backup, &runtime)
+                        } else {
+                            Ok(())
+                        }
+                    })
+            } else {
+                Ok(())
+            };
+            // Persist diagnostics BEFORE staging is cleaned: the
+            // concise error references this file, which survives
+            // restarts (the in-memory Failed state does not).
+            let failed = qr::failed_log(data_dir, pack.subdir);
+            if !qr::is_cancel_error(&e) {
+                let _ = qr::copy_log_tail(&log_path, &failed, 262_144);
+            }
+            let _ = std::fs::remove_dir_all(&staging);
+            if let Err(error) = rollback {
+                return Err(format!("{e}; could not restore previous runtime: {error}"));
+            }
+            if qr::is_cancel_error(&e) {
+                return Err(e);
+            }
+            Err(format!("{e} (details: {})", failed.display()))
+        }
+    }
+}
+
+/// Remove a Qwen runtime + its staging/backup. Refuses while an
+/// install is in flight (cancel first): deleting files out from
+/// under the installer worker must not recreate them afterward.
+pub fn delete_qwen_runtime(data_dir: &Path, pack: &QwenPack) -> std::io::Result<()> {
+    if let Ok(map) = downloads().lock()
+        && let Some((snap, _)) = map.get(pack.id)
+        && matches!(snap.phase, DlPhase::Downloading | DlPhase::Installing)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "installation in progress (cancel it first)",
+        ));
+    }
+    let _locks = lock_asset_change(data_dir, pack.id)?;
+    for dir in [
+        qwen_runtime_dir(data_dir, pack),
+        crate::qwen_runtime::staging_dir(data_dir, pack.subdir),
+        crate::qwen_runtime::backup_dir(data_dir, pack.subdir),
+    ] {
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir)?;
+        }
+    }
+    let _ = std::fs::remove_file(crate::qwen_runtime::failed_log(data_dir, pack.subdir));
+    Ok(())
+}
+
+/// Start a Qwen runtime provision on a worker thread. No-op if running.
+/// Shares the download state map with model downloads (Retry after
+/// failure re-enters here; Cancel sets the flag the installer polls).
+pub fn start_qwen_runtime_download(data_dir: PathBuf, id: &'static str) {
+    let Some(pack) = QWEN_PACKS.iter().find(|p| p.id == id) else {
+        return;
+    };
+    start_job(
+        id,
+        Some(pack.size_bytes),
+        Box::new(move |cancel, on_event| download_qwen_runtime(&data_dir, pack, cancel, on_event)),
+    );
+}
+
+/// Cancel an in-flight Qwen runtime provision. Distinct from
+/// failure: the worker reports `"cancelled"` and the UI offers
+/// Retry (not Remove-only).
+pub fn cancel_qwen_runtime_download(id: &str) {
+    cancel_download(id);
+}
+
+#[cfg(test)]
+mod qwen_runtime_tests {
+    use super::*;
+
+    #[test]
+    fn qwen_packs_are_consistent() {
+        assert_eq!(QWEN_PACKS.len(), 2);
+        for p in QWEN_PACKS {
+            assert!(!p.pip_specs().is_empty(), "{}", p.id);
+            assert!(!p.import_checks().is_empty(), "{}", p.id);
+            assert!(p.size_bytes > 0, "{}", p.id);
+            assert!(p.description.contains("3.12"), "{}", p.id);
+        }
+        assert_eq!(QWEN_PACKS[0].backend, QwenRuntime::Transformers);
+        assert_eq!(QWEN_PACKS[1].backend, QwenRuntime::Vllm);
+    }
+
+    #[test]
+    fn qwen_models_live_under_qwen_dir() {
+        let entry = find_model("qwen3-asr-1.7b").unwrap();
+        let dir = model_dir(Path::new("/data"), entry);
+        assert_eq!(
+            dir,
+            Path::new("/data/models/qwen/qwen3-asr-1.7b"),
+            "{dir:?}"
+        );
+        assert!(model_languages("qwen3-asr-0.6b").contains(&"en"));
+        assert_eq!(model_languages("qwen3-asr-1.7b").len(), 30);
+    }
+
+    #[test]
+    fn qwen_marker_pins_specs_and_python() {
+        let pack = &QWEN_PACKS[0];
+        let mark = crate::qwen_runtime::marker_text(pack.subdir, pack.pip_specs());
+        assert!(mark.contains("qwen-runtime-v2"));
+        assert!(mark.contains("3.12"));
+        assert!(mark.contains(pack.pip_specs()[0]));
+        assert!(crate::qwen_runtime::marker_valid(
+            &mark,
+            pack.subdir,
+            pack.pip_specs()
+        ));
+        // Old system-python marker never validates.
+        assert!(!crate::qwen_runtime::marker_valid(
+            &format!("{}|{}\n", pack.id, pack.pip_specs().join(" ")),
+            pack.subdir,
+            pack.pip_specs()
+        ));
+    }
+
+    #[test]
+    fn stale_partial_runtime_is_not_installed() {
+        let data = std::env::temp_dir().join(format!("qwen-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let pack = &QWEN_PACKS[0];
+        let dir = qwen_runtime_dir(&data, pack);
+        std::fs::create_dir_all(dir.join("venv").join("bin")).unwrap();
+        // venv shell without marker/python: incomplete.
+        assert!(!qwen_installed(&data, pack));
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn qwen_bootstrap_cancel_preserves_working_runtime() {
+        use crate::qwen_runtime as qr;
+        let pack = &QWEN_PACKS[0];
+        for interrupted in [false, true] {
+            let data = tempfile::tempdir().unwrap();
+            let runtime = qwen_runtime_dir(data.path(), pack);
+            let python = qwen_venv_python(data.path(), pack);
+            std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+            std::fs::write(&python, b"working interpreter").unwrap();
+            std::fs::write(
+                runtime.join(".installed"),
+                qr::marker_text(pack.subdir, pack.pip_specs()),
+            )
+            .unwrap();
+            assert!(qwen_installed(data.path(), pack));
+            let backup = qr::backup_dir(data.path(), pack.subdir);
+            if interrupted {
+                std::fs::rename(&runtime, &backup).unwrap();
+                std::fs::create_dir(&runtime).unwrap();
+            }
+            let cancel = Arc::new(AtomicBool::new(false));
+            let on_event: DownloadCallback = {
+                let cancel = Arc::clone(&cancel);
+                Arc::new(move |_| cancel.store(true, Ordering::SeqCst))
+            };
+            let result = download_qwen_runtime(data.path(), pack, &cancel, &on_event);
+            assert_eq!(result, Err("cancelled".to_string()));
+            assert!(qwen_installed(data.path(), pack));
+            assert_eq!(std::fs::read(python).unwrap(), b"working interpreter");
+            assert!(!backup.exists());
+        }
+    }
+
+    #[test]
+    fn removal_refused_while_installing() {
+        let data = std::env::temp_dir().join(format!("qwen-busy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let pack = &QWEN_PACKS[0];
+        // Simulate in-flight state.
+        downloads().lock().unwrap().insert(
+            pack.id.to_string(),
+            (
+                DlSnapshot {
+                    received: 0,
+                    total: Some(pack.size_bytes),
+                    phase: DlPhase::Installing,
+                },
+                Arc::new(AtomicBool::new(false)),
+            ),
+        );
+        let err = delete_qwen_runtime(&data, pack).unwrap_err();
+        assert!(err.to_string().contains("cancel"));
+        downloads().lock().unwrap().remove(pack.id);
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// Live provisioning through the real installer: full managed
+    /// install of the transformers pack into disposable storage
+    /// (network + ~9 GB free). Ignored by default; run explicitly.
+    /// Proves the venv works after staging cleanup (the shipped
+    /// staging-linked-venv regression) and that a retry heals the
+    /// broken layout left by it.
+    #[test]
+    #[ignore]
+    fn live_provision_transformers() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let data = Path::new(&home)
+            .join(".cache")
+            .join(format!("qwen-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let pack = QWEN_PACKS
+            .iter()
+            .find(|p| p.id == "qwen-transformers")
+            .unwrap();
+        // Plant the shipped broken layout first: marker + venv whose
+        // python points at (deleted) staging. Retry must heal it.
+        let dir = qwen_runtime_dir(&data, pack);
+        std::fs::create_dir_all(dir.join("venv").join("bin")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            data.join("bin")
+                .join(".staging-qwen-qwen-transformers")
+                .join("python"),
+            dir.join("venv").join("bin").join("python"),
+        )
+        .unwrap();
+        std::fs::write(dir.join(".installed"), "qwen-runtime-v2|stale\n").unwrap();
+        assert!(
+            !qwen_installed(&data, pack),
+            "staging-linked venv must not count as installed"
+        );
+        let cancel = AtomicBool::new(false);
+        let cb: DownloadCallback = Arc::new(|ev| match ev {
+            DownloadEvent::Progress { received, total } => {
+                eprintln!("[live] progress {received}/{total:?}");
+            }
+            DownloadEvent::Installing => eprintln!("[live] installing"),
+            DownloadEvent::Done => eprintln!("[live] done"),
+        });
+        download_qwen_runtime(&data, pack, &cancel, &cb).unwrap();
+        assert!(qwen_installed(&data, pack));
+        // Staging is gone and the venv still works: the regression.
+        assert!(
+            !crate::qwen_runtime::staging_dir(&data, pack.subdir).exists(),
+            "staging must be cleaned"
+        );
+        let out = std::process::Command::new(qwen_venv_python(&data, pack))
+            .arg("--version")
+            .env_remove("PYTHONHOME")
+            .env_remove("PYTHONPATH")
+            .env_remove("VIRTUAL_ENV")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "venv python broken after cleanup");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(text.contains("3.12"), "{text}");
+        let _ = std::fs::remove_dir_all(&data);
+    }
 }

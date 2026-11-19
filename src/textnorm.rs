@@ -66,6 +66,8 @@ use unicode_normalization::UnicodeNormalization;
 pub const WHISPER_PROMPT_CHARS: usize = 900;
 /// Groq rejects prompts over 896 chars; margin for counting drift.
 pub const GROQ_PROMPT_CHARS: usize = 890;
+/// Character budget for the Qwen3-ASR context string built from dictionary and snippet triggers.
+pub const QWEN_CONTEXT_CHARS: usize = 500;
 
 /// Comma-joined hint list, cut at the last comma inside `max_chars`
 /// so no entry ships half-spelled. Empty input → None (no prompt).
