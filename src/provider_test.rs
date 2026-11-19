@@ -248,12 +248,17 @@ pub fn local_config(
     String,
     crate::settings::GpuBackendSetting,
     crate::settings::SherpaBackendSetting,
+    Option<(
+        crate::settings::QwenBackendSetting,
+        crate::settings::QwenVramSetting,
+    )>,
 ) {
     (
         s.local_provider,
         local_model_id(s),
         s.gpu_backend,
         s.sherpa_backend,
+        (s.local_provider == LocalSttProvider::Qwen).then_some((s.qwen_backend, s.qwen_vram)),
     )
 }
 
@@ -266,6 +271,7 @@ pub fn local_model_id(s: &SttSettings) -> String {
         LocalSttProvider::Cohere => "cohere-transcribe-03-2026".to_string(),
         LocalSttProvider::Whistle => "whistle-v1".to_string(),
         LocalSttProvider::Bark => s.bark_model.clone(),
+        LocalSttProvider::Qwen => s.qwen_model.clone(),
     }
 }
 
@@ -290,6 +296,8 @@ pub fn probe_stt(entry: &SttChainEntry, s: &SttSettings, data_dir: &Path) -> Tes
         Plan::WhisperHttp { .. }
         | Plan::SherpaOnline { .. }
         | Plan::SherpaOffline { .. }
+        | Plan::QwenHttp { .. }
+        | Plan::QwenStream { .. }
         | Plan::WhistleCli { .. } => {
             timed(
                 fallback_model,

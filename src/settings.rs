@@ -375,7 +375,7 @@ pub enum SherpaBackendSetting {
 /// Local vendor tabs, mirroring OpenWhispr: Oruk and Cohere ship
 /// exactly one model each; OpenAI is the whisper.cpp family, NVIDIA
 /// the sherpa parakeet/nemotron family, Bark the English Bark 3.0
-/// family (sherpa offline, same servers as NVIDIA).
+/// family, and Qwen the local Qwen3-ASR sidecar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalSttProvider {
     #[serde(alias = "Whisper")]
@@ -386,6 +386,44 @@ pub enum LocalSttProvider {
     Cohere,
     Whistle,
     Bark,
+    Qwen,
+}
+
+/// Qwen runtime backend. Transformers runs on CPU or CUDA (offline
+/// decode only); vLLM needs an NVIDIA GPU but adds live streaming.
+/// Manual choice, never auto-switched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum QwenBackendSetting {
+    #[default]
+    Transformers,
+    Vllm,
+}
+
+/// vLLM GPU footprint preset: vLLM preallocates its whole share
+/// eagerly, so the 4.7 GB weights always read larger in VRAM.
+/// Measured on a 24 GB card (1.7B serves in ~7.5 GB at Balanced):
+/// Compact fits the 0.6B model only (1.7B refuses to boot under it —
+/// the installer errors clearly instead of OOMing later).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum QwenVramSetting {
+    Compact,
+    #[default]
+    Balanced,
+    Large,
+}
+
+impl QwenVramSetting {
+    /// (gpu_memory_utilization, max_model_len).
+    pub fn profile(self) -> (f64, u32) {
+        match self {
+            // ~6 GB cap, 4k context (~2.5 min audio).
+            QwenVramSetting::Compact => (0.25, 4096),
+            // ~9 GB cap, 8k context (~5 min audio).
+            QwenVramSetting::Balanced => (0.375, 8192),
+            // ~14 GB cap, 16k context (~10 min audio).
+            QwenVramSetting::Large => (0.6, 16384),
+        }
+    }
 }
 
 /// Pre-chain engine selector. Deprecated: the chain supersedes it,
@@ -437,6 +475,10 @@ fn default_bark_model() -> String {
     "bark-3.0-clean".to_string()
 }
 
+fn default_qwen_model() -> String {
+    "qwen3-asr-1.7b".to_string()
+}
+
 impl SttChainEntry {
     pub fn summary(&self) -> String {
         match self.kind {
@@ -465,6 +507,10 @@ pub struct SttSettings {
     /// serde-defaulted so pre-Bark databases keep loading.
     #[serde(default = "default_bark_model")]
     pub bark_model: String,
+    /// Qwen3-ASR model id (registry id, e.g. "qwen3-asr-1.7b").
+    /// serde-defaulted so pre-Qwen databases keep loading.
+    #[serde(default = "default_qwen_model")]
+    pub qwen_model: String,
     pub cloud_provider: String,
     pub cloud_model: String,
     pub cloud_api_key: String,
@@ -514,6 +560,13 @@ pub struct SttSettings {
     /// Manual sherpa backend choice (never auto-switched).
     #[serde(default)]
     pub sherpa_backend: SherpaBackendSetting,
+    /// Manual Qwen backend choice (never auto-switched):
+    /// transformers (CPU/CUDA, offline) vs vLLM (CUDA, streaming).
+    #[serde(default)]
+    pub qwen_backend: QwenBackendSetting,
+    /// vLLM GPU footprint preset (ignored by transformers).
+    #[serde(default)]
+    pub qwen_vram: QwenVramSetting,
 }
 
 impl Default for SttSettings {
@@ -535,6 +588,7 @@ impl Default for SttSettings {
             whisper_model: "base".to_string(),
             parakeet_model: "parakeet-tdt-0.6b-v3".to_string(),
             bark_model: default_bark_model(),
+            qwen_model: default_qwen_model(),
             cloud_provider: "OpenAI".to_string(),
             cloud_model: "whisper-1".to_string(),
             cloud_api_key: String::new(),
@@ -553,6 +607,8 @@ impl Default for SttSettings {
             live_preview: false,
             gpu_backend: GpuBackendSetting::Cpu,
             sherpa_backend: SherpaBackendSetting::Cpu,
+            qwen_backend: QwenBackendSetting::Transformers,
+            qwen_vram: QwenVramSetting::Balanced,
         }
     }
 }

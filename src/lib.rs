@@ -16,6 +16,7 @@ pub mod net;
 pub mod overlay;
 pub mod paths;
 pub mod provider_test;
+pub mod qwen_runtime;
 mod reset;
 pub mod runtime;
 
