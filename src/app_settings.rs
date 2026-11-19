@@ -18,6 +18,21 @@ use crate::settings::{CopyBackend, PasteBackend, PasteCombo, Theme};
 
 // ---------------------------------------------------------------- helpers
 
+fn report_download_delete_error(error: &std::io::Error) {
+    eprintln!("[app] delete download: {error}");
+    super::app::notify(tr(if error.kind() == std::io::ErrorKind::WouldBlock {
+        "feedback.downloadbusy"
+    } else {
+        "feedback.deletefailed"
+    }));
+}
+
+fn lock_download_cache(data_dir: &std::path::Path) -> Option<crate::stt::AssetLock> {
+    crate::stt::try_lock_download_cache(data_dir)
+        .inspect_err(report_download_delete_error)
+        .ok()
+}
+
 fn connect_download_delete(button: &Button, remove: impl Fn() -> std::io::Result<()> + 'static) {
     super::app::connect_confirmed(
         button,
@@ -26,10 +41,7 @@ fn connect_download_delete(button: &Button, remove: impl Fn() -> std::io::Result
         tr("action.delete"),
         move |_| match remove() {
             Ok(()) => super::app::notify(tr("feedback.deleted")),
-            Err(error) => {
-                eprintln!("[app] delete download: {error}");
-                super::app::notify(tr("feedback.deletefailed"));
-            }
+            Err(error) => report_download_delete_error(&error),
         },
     );
 }
@@ -5158,6 +5170,9 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
             tr("confirm.cache.body"),
             tr("action.clearcache"),
             move |_| {
+                let Some(_cache) = lock_download_cache(&data_dir) else {
+                    return;
+                };
                 // Downloads only (models + runtimes): settings, history
                 // and identity survive. Next dictation reports exactly
                 // what to re-download.
@@ -5201,6 +5216,9 @@ fn system_page(state: &Rc<AppState>) -> GtkBox {
             tr("confirm.reset.body"),
             tr("action.resetdots"),
             move |_| {
+                let Some(_cache) = lock_download_cache(&data_dir) else {
+                    return;
+                };
                 // Wipe user data + downloads. Identity (device key) and
                 // the running service survive: the next dictation
                 // re-reads defaults from the fresh DB and reports missing
