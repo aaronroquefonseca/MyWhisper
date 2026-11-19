@@ -82,6 +82,10 @@ fn main() -> gtk4::glib::ExitCode {
         state.settings.borrow_mut().preferences.theme = theme;
         state.settings.borrow_mut().preferences.ui_language =
             mywhisper::i18n::lang().code().to_string();
+        let run_smoke = args.iter().any(|arg| arg == "--smoke");
+        if run_smoke {
+            smoke::seed_transcription_language(&state);
+        }
         state.store.save_settings(&state.settings.borrow()).unwrap();
         apply_theme(theme);
         let window = build_app_window(
@@ -94,7 +98,7 @@ fn main() -> gtk4::glib::ExitCode {
         if args.iter().any(|a| a == "--expanded") {
             smoke::expand(&window, args.get(4).map(String::as_str) == Some("Snippets"));
         }
-        if args.iter().any(|a| a == "--smoke") {
+        if run_smoke {
             smoke::run(app, &state, &window);
         }
         if let Some(root) = reset_fixture {

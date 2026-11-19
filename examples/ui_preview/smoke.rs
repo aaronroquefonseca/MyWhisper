@@ -184,6 +184,27 @@ pub fn run_reset(
     });
 }
 
+pub fn seed_transcription_language(state: &AppState) {
+    use mywhisper::settings::{LocalSttProvider, SttChainEntry, SttEntryKind};
+    let mut settings = state.settings.borrow_mut();
+    settings.stt.local_provider = LocalSttProvider::Whistle;
+    settings.stt.language = "ja".to_string();
+    settings.stt.entries.insert(
+        0,
+        SttChainEntry {
+            id: "remote-speech-smoke".to_string(),
+            name: "Remote speech fixture".to_string(),
+            kind: SttEntryKind::SelfHosted,
+            enabled: true,
+            provider: String::new(),
+            url: "http://127.0.0.1:9".to_string(),
+            model: String::new(),
+            api_key: String::new(),
+            streaming: false,
+        },
+    );
+}
+
 pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::ApplicationWindow) {
     let app = app.clone();
     let state = state.clone();
@@ -322,6 +343,13 @@ pub fn run(app: &gtk4::Application, state: &Rc<AppState>, window: &gtk4::Applica
                     settings.visible_child_name().as_deref(),
                     Some("Speech to Text")
                 );
+                assert_eq!(state.settings.borrow().stt.language, "ja");
+                assert_eq!(state.store.load_settings().stt.language, "ja");
+                let picker: gtk4::DropDown = named(&root, "transcription-language-picker");
+                let selected = picker.selected_item().and_downcast::<gtk4::StringObject>();
+                assert_eq!(selected.unwrap().string(), "ja");
+                picker.set_selected(0);
+                assert_eq!(state.store.load_settings().stt.language, "auto");
                 settings.set_visible_child_name("Language Models");
             }
             14 => button(&root, "action.edit").emit_clicked(),

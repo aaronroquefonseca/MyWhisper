@@ -141,11 +141,6 @@ fn spin_text_buttons(spin: &SpinButton) {
     }
 }
 
-/// Index of `value` in `options`, clamped to 0.
-fn idx_of(options: &[&str], value: &str) -> usize {
-    options.iter().position(|o| *o == value).unwrap_or(0)
-}
-
 fn delete_opts() -> [&'static str; 7] {
     [
         tr("opt.never"),
@@ -2551,6 +2546,24 @@ struct SttLang {
     locked: bool,
 }
 
+impl SttLang {
+    fn select_saved(&mut self, saved: &str) -> u32 {
+        if self.locked {
+            return 0;
+        }
+        if let Some(index) = self.opts.iter().position(|option| option == saved) {
+            return index as u32;
+        }
+        if saved.is_empty() || saved.contains('\0') {
+            return gtk4::INVALID_LIST_POSITION;
+        }
+        // Remote chain entries share this choice even when the local model
+        // does not offer it. Keep it selectable until the user changes it.
+        self.opts.push(saved.to_string());
+        (self.opts.len() - 1) as u32
+    }
+}
+
 fn stt_lang(state: &Rc<AppState>) -> SttLang {
     use crate::settings::LocalSttProvider;
     use crate::stt;
@@ -2596,26 +2609,6 @@ fn stt_lang(state: &Rc<AppState>) -> SttLang {
         opts: v,
         locked: false,
     }
-}
-
-/// Dropdown value for the stored language, and whether to persist it.
-/// A locked (single-language) model only displays its language: the
-/// stored code is shared with remote chain entries and must survive a
-/// trip through Bark or another English-only model. On open lists a
-/// code outside the list corrects to en (else the first option).
-fn shown_stt_lang(lang: &SttLang, stored: &str) -> (String, bool) {
-    if lang.locked {
-        return (lang.opts[0].clone(), false);
-    }
-    if lang.opts.iter().any(|o| o == stored) {
-        return (stored.to_string(), false);
-    }
-    let def = lang
-        .opts
-        .iter()
-        .find(|o| *o == "en")
-        .unwrap_or(&lang.opts[0]);
-    (def.clone(), true)
 }
 
 /// Shared handles of the STT remote form (mirrors LmForm).
@@ -3612,8 +3605,9 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
             while let Some(child) = lang_slot.first_child() {
                 lang_slot.remove(&child);
             }
-            let lang = stt_lang(&state);
-            let opts = &lang.opts;
+            let mut lang = stt_lang(&state);
+            let selected = lang.select_saved(&state.settings.borrow().stt.language);
+            let opts = lang.opts;
             let (b, _) = row(tr("row.language"));
             let lang_drop = DropDown::new(
                 Some(StringList::new(
@@ -3621,30 +3615,18 @@ fn stt_page(state: &Rc<AppState>) -> GtkBox {
                 )),
                 None::<gtk4::Expression>,
             );
-            // STT codes stay untranslated (server contract).
-            let stored = state.settings.borrow().stt.language.clone();
-            let (shown, corrected) = shown_stt_lang(&lang, &stored);
-            if corrected {
-                state.settings.borrow_mut().stt.language = shown.clone();
-                persist_prefs(state.clone())();
-            }
-            lang_drop
-                .set_selected(
-                    idx_of(&opts.iter().map(String::as_str).collect::<Vec<_>>(), &shown) as u32,
-                );
+            lang_drop.set_widget_name("transcription-language-picker");
+            lang_drop.set_selected(selected);
             lang_drop.set_sensitive(!lang.locked);
             if lang.locked {
                 lang_drop.set_tooltip_text(Some(tr("stt.lang.locked.tip")));
-            }
-            {
+            } else {
                 let state = state.clone();
                 lang_drop.connect_selected_notify(move |d| {
-                    let opts = stt_lang(&state).opts;
-                    let code = opts
-                        .get(d.selected().min(opts.len() as u32 - 1) as usize)
-                        .cloned()
-                        .unwrap_or_else(|| "auto".to_string());
-                    state.settings.borrow_mut().stt.language = code;
+                    let Some(code) = opts.get(d.selected() as usize) else {
+                        return;
+                    };
+                    state.settings.borrow_mut().stt.language.clone_from(code);
                     persist_prefs(state.clone())();
                 });
             }
@@ -5720,20 +5702,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn locked_models_show_their_language_without_rewriting_it() {
-        let en_only = SttLang {
+    fn stored_transcription_language_is_preserved_across_model_lists() {
+        let mut en_only = SttLang {
             opts: vec!["en".to_string()],
             locked: true,
         };
-        // Spanish cloud chain + Bark selected: shows en, persists nothing.
-        assert_eq!(shown_stt_lang(&en_only, "es"), ("en".to_string(), false));
-        let open = SttLang {
+        assert_eq!(en_only.select_saved("es"), 0);
+        assert_eq!(en_only.opts, ["en"]);
+        let mut open = SttLang {
             opts: ["auto", "en", "es"].map(String::from).to_vec(),
             locked: false,
         };
-        // Back on a multilingual model the stored es is still there.
-        assert_eq!(shown_stt_lang(&open, "es"), ("es".to_string(), false));
-        assert_eq!(shown_stt_lang(&open, "xx"), ("en".to_string(), true));
+        assert_eq!(open.select_saved("es"), 2);
+        assert_eq!(open.select_saved("ja"), 3);
+        assert_eq!(open.select_saved("ja"), 3);
+        assert_eq!(open.select_saved("bad\0code"), gtk4::INVALID_LIST_POSITION);
+        assert_eq!(open.opts, ["auto", "en", "es", "ja"]);
     }
 
     #[test]
