@@ -1180,10 +1180,29 @@ impl Asset {
         }
         // The dir rename keeps the files' times, so the marker stays valid.
         write_marker(&staging, self.files)?;
+        sync_install_tree(&staging, cancel).map_err(|e| {
+            if cancelled() {
+                cancel_err()
+            } else {
+                format!("sync staging: {e}")
+            }
+        })?;
+        // A first install can create the model/runtime parent directories.
+        // Persist their entries before publishing into the immediate parent.
+        for ancestor in staging
+            .ancestors()
+            .skip(2)
+            .take_while(|dir| dir.starts_with(&self.data_dir))
+        {
+            open_install_dir(ancestor)
+                .and_then(|dir| dir.sync_all())
+                .map_err(|e| format!("sync install ancestors: {e}"))?;
+        }
         if cancelled() {
             return Err(cancel_err());
         }
-        publish_install(&staging, &self.dir).map_err(|e| format!("install: {e}"))?;
+        publish_install(&staging, &self.dir, std::fs::File::sync_all)
+            .map_err(|e| format!("install: {e}"))?;
         on_event(DownloadEvent::Done);
         Ok(())
     }
@@ -1274,28 +1293,86 @@ fn prune_staging(dir: &Path, pinned: &[PathBuf]) -> std::io::Result<()> {
     Ok(())
 }
 
-fn publish_install(staging: &Path, dest: &Path) -> std::io::Result<()> {
-    if !dest.try_exists()? {
-        return std::fs::rename(staging, dest);
+fn open_install_dir(path: &Path) -> std::io::Result<std::fs::File> {
+    let path = if path.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        path
+    };
+    std::fs::File::open(path)
+}
+
+fn sync_install_tree(dir: &Path, cancel: &AtomicBool) -> std::io::Result<()> {
+    for item in std::fs::read_dir(dir)? {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled",
+            ));
+        }
+        let item = item?;
+        if item.file_type()?.is_dir() {
+            sync_install_tree(&item.path(), cancel)?;
+        } else {
+            crate::private_fs::open_regular(&item.path())?.sync_all()?;
+        }
     }
-    let staged = std::ffi::CString::new(staging.as_os_str().as_encoded_bytes())?;
-    let live = std::ffi::CString::new(dest.as_os_str().as_encoded_bytes())?;
+    open_install_dir(dir)?.sync_all()
+}
+
+fn exchange_install(left: &Path, right: &Path) -> std::io::Result<()> {
+    let left = std::ffi::CString::new(left.as_os_str().as_encoded_bytes())?;
+    let right = std::ffi::CString::new(right.as_os_str().as_encoded_bytes())?;
     // SAFETY: Both pointers refer to live, NUL-terminated paths. Exchange
     // commits both renames together or leaves both directories untouched.
     if unsafe {
         libc::renameat2(
             libc::AT_FDCWD,
-            staged.as_ptr(),
+            left.as_ptr(),
             libc::AT_FDCWD,
-            live.as_ptr(),
+            right.as_ptr(),
             libc::RENAME_EXCHANGE,
         )
     } != 0
     {
         return Err(std::io::Error::last_os_error());
     }
+    Ok(())
+}
+
+fn publish_install(
+    staging: &Path,
+    dest: &Path,
+    sync_parent: impl FnOnce(&std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let parent = open_install_dir(
+        dest.parent()
+            .ok_or_else(|| std::io::Error::other("install directory has no parent"))?,
+    )?;
+    let replacing = dest.try_exists()?;
+    if replacing {
+        exchange_install(staging, dest)?;
+    } else {
+        std::fs::rename(staging, dest)?;
+    }
+    if let Err(error) = sync_parent(&parent) {
+        // Until the new name is durable, keep the old tree intact.
+        let rollback = if replacing {
+            exchange_install(staging, dest)
+        } else {
+            std::fs::rename(dest, staging)
+        };
+        rollback
+            .and_then(|()| parent.sync_all())
+            .map_err(|rollback| {
+                std::io::Error::other(format!(
+                    "sync install: {error}; restore prior state: {rollback}"
+                ))
+            })?;
+        return Err(error);
+    }
     // The previous install is now at staging. Cleanup is retryable.
-    if let Err(error) = std::fs::remove_dir_all(staging) {
+    if replacing && let Err(error) = std::fs::remove_dir_all(staging) {
         tracing::warn!(%error, path = %staging.display(), "could not remove replaced install");
     }
     Ok(())
@@ -1949,6 +2026,39 @@ mod tests {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn install_sync_failure_restores_previous_directory_and_allows_retry() {
+        for replacing in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let dest = root.path().join("live");
+            let staging = staging_dir(&dest);
+            std::fs::create_dir(&staging).unwrap();
+            std::fs::write(staging.join("model"), "new").unwrap();
+            if replacing {
+                std::fs::create_dir(&dest).unwrap();
+                std::fs::write(dest.join("model"), "old").unwrap();
+            }
+            let error = publish_install(&staging, &dest, |_| {
+                assert_eq!(std::fs::read_to_string(dest.join("model")).unwrap(), "new");
+                Err(std::io::Error::other("injected parent sync failure"))
+            })
+            .unwrap_err();
+            assert_eq!(error.to_string(), "injected parent sync failure");
+            if replacing {
+                assert_eq!(std::fs::read_to_string(dest.join("model")).unwrap(), "old");
+            } else {
+                assert!(!dest.exists());
+            }
+            assert_eq!(
+                std::fs::read_to_string(staging.join("model")).unwrap(),
+                "new"
+            );
+            publish_install(&staging, &dest, std::fs::File::sync_all).unwrap();
+            assert_eq!(std::fs::read_to_string(dest.join("model")).unwrap(), "new");
+            assert!(!staging.exists());
+        }
     }
 
     #[test]
