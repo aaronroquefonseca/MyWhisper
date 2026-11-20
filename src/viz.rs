@@ -2,8 +2,10 @@
 //!
 //! Design notes borrow from the OpenWhispr recording pill
 //! (`PillWaveform.tsx` / `waveformMath.ts`): thin monochrome bars, no
-//! frantic idle motion, a scrolling level tape, and a compressive
-//! level curve (`(rms*8)^0.75`) that keeps quiet speech visible.
+//! frantic idle motion and a scrolling level tape. Every mode reads the
+//! level through the phone app's [`LevelNormalizer`] (adaptive noise
+//! floor plus auto-gain), so room noise stays flat and quiet talkers
+//! still fill the lane.
 //!
 //! Everything visual is runtime-switchable through the
 //! `Visualizer` setters (see the host CLI flags), so variants can be
@@ -47,20 +49,10 @@ const ORNAMENT_W: f64 = 22.0;
 /// when inference starts.
 const SPINNER_PX: i32 = 30;
 const MARK_PX: i32 = 18;
-const SPEECH_THRESHOLD: f32 = 0.12;
 const QUIET_ENV: f32 = 0.03;
 
-// Level curve from the reference: gain puts loud voicing at the top
-// of the lane, exponent 0.75 keeps quiet speech visible.
-const LEVEL_GAIN: f32 = 8.0;
-const LEVEL_EXPONENT: f32 = 0.75;
-
-fn to_bar_level(rms: f32) -> f32 {
-    (rms.max(0.0) * LEVEL_GAIN).powf(LEVEL_EXPONENT).min(1.0)
-}
-
-/// `mic.rs` publishes `(rms * 8).clamp(0, 1)`; Bloom undoes the gain
-/// to recover block RMS (clipping only above -18 dBFS, already loud).
+/// `mic.rs` publishes `(rms * 8).clamp(0, 1)`; undo the gain to feed
+/// the normalizer block RMS (clipping only above -18 dBFS, already loud).
 const MIC_GAIN: f32 = 8.0;
 
 /// Port of the phone app's `LevelNormalizer`: block RMS to 0..1 in dB
@@ -656,7 +648,8 @@ fn load_mark_pixbuf() -> Option<gtk4::gdk_pixbuf::Pixbuf> {
 /// Advance simulation + envelopes one frame (GTK thread only).
 fn tick(st: &mut VizState) {
     let dt = TICK_MS as f32 / 1000.0;
-    let level = st.mic.sample(dt);
+    // Normalized for every mode: noise gated to 0, voice auto-gained.
+    let level = st.norm.push(st.mic.sample(dt) / MIC_GAIN);
     st.phase += dt * 4.5;
     st.ticks += 1;
 
@@ -673,7 +666,11 @@ fn tick(st: &mut VizState) {
     };
 
     // Speech envelope: fast attack, slow release.
-    let target = if level > SPEECH_THRESHOLD { level } else { 0.0 };
+    let target = if level > Bloom::VOICE_GATE {
+        level
+    } else {
+        0.0
+    };
     if target > st.env {
         st.env += (target - st.env) * 0.5;
     } else {
@@ -681,9 +678,8 @@ fn tick(st: &mut VizState) {
     }
 
     if st.mode == VizMode::Bloom {
-        let voice = st.norm.push(level / MIC_GAIN);
         let count = st.bar_count;
-        st.bloom.step(voice, count, dt);
+        st.bloom.step(level, count, dt);
     }
 
     // Sample history/tape buffers at ~100 ms.
@@ -730,13 +726,13 @@ fn heights(st: &VizState) -> Vec<f32> {
             let center = n / 2;
             for (i, h) in out.iter_mut().enumerate() {
                 let age = i.abs_diff(center).min(31);
-                *h = to_bar_level(st.hist[age]);
+                *h = st.hist[age];
             }
         }
         VizMode::Tape => {
             for (i, h) in out.iter_mut().enumerate() {
                 let age = (n - 1 - i).min(31); // newest at right edge
-                *h = to_bar_level(st.hist[age]);
+                *h = st.hist[age];
             }
         }
     }
