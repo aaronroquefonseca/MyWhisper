@@ -2446,4 +2446,139 @@ mod tests {
             Err(keyring_core::Error::NoEntry)
         ));
     }
+
+    fn temp_store_path(tag: &str) -> PathBuf {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "mywhisper-store-{tag}-{}-{}.db",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ))
+    }
+
+    fn word_version(store: &Store, word: &str) -> (i64, String, bool) {
+        store
+            .conn
+            .query_row(
+                "SELECT updated_at, updated_by, deleted FROM words WHERE word = ?1",
+                [word],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)),
+            )
+            .unwrap()
+    }
+
+    /// R19: a merge on one connection reads the stored version, then
+    /// waits for the write lock while another connection commits a newer
+    /// one. The newer version must survive.
+    #[test]
+    fn a_merge_waiting_for_the_lock_keeps_the_newer_version() {
+        static WAITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        fn note_wait(_: i32) -> bool {
+            WAITING.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(1));
+            true
+        }
+        let path = temp_store_path("lww-race");
+        let holder = Store::open(&path).unwrap();
+        let record = |at: i64, by: &str| WordRecord {
+            word: "race".into(),
+            updated_at: at,
+            updated_by: by.into(),
+            deleted: false,
+        };
+        holder.apply_words(&[record(10, A)]).unwrap();
+        let lock = holder.begin_merge().unwrap();
+        let older = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let mut store = Store::open(&path).unwrap();
+                store.conn.busy_handler(Some(note_wait)).unwrap();
+                store.apply_words(&[record(20, B)]).unwrap();
+            })
+        };
+        while !WAITING.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        holder.apply_words(&[record(30, A)]).unwrap();
+        lock.commit().unwrap();
+        older.join().unwrap();
+        assert_eq!(word_version(&holder, "race").0, 30);
+        drop(holder);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    /// R20: a local edit always supersedes the version it replaces, even
+    /// within one millisecond, after a clock rollback, or against a peer
+    /// whose clock runs a day ahead.
+    #[test]
+    fn local_edits_supersede_any_stored_version() {
+        let store = Store::open_memory().unwrap();
+        let day = 24 * 60 * 60 * 1000;
+        // A peer one day ahead adds a word; we delete it locally.
+        store
+            .apply_words(&[WordRecord {
+                word: "ahead".into(),
+                updated_at: now_ms() + day,
+                updated_by: B.into(),
+                deleted: false,
+            }])
+            .unwrap();
+        store.delete_word("ahead", A).unwrap();
+        assert!(words(&store).is_empty(), "delete lost to a future version");
+        // Our own clock went back (or two edits share a millisecond).
+        store.upsert_snippet("sig", "old", A).unwrap();
+        store
+            .apply_snippets(&[SnippetRecord {
+                trigger: "sig".into(),
+                replacement: "rolled".into(),
+                updated_at: now_ms() + 60_000,
+                updated_by: A.into(),
+                deleted: false,
+            }])
+            .unwrap();
+        store.upsert_snippet("sig", "new", A).unwrap();
+        assert_eq!(snippet(&store, "sig").as_deref(), Some("new"));
+        for _ in 0..50 {
+            store.upsert_word("tick", A).unwrap();
+            store.delete_word("tick", A).unwrap();
+        }
+        assert!(words(&store).is_empty(), "same-millisecond delete lost");
+        // The local version outranks the peer's on the other side too.
+        let peer = Store::open_memory().unwrap();
+        sync(&store, &peer);
+        assert!(words(&peer).is_empty());
+        assert_eq!(snippet(&peer, "sig").as_deref(), Some("new"));
+    }
+
+    /// R20: a version too far in the future would outrank every edit
+    /// for its lifetime; it is refused (and retried on later rounds).
+    #[test]
+    fn far_future_versions_are_refused() {
+        let store = Store::open_memory().unwrap();
+        store.upsert_word("kept", A).unwrap();
+        let far = now_ms() + 30 * 24 * 60 * 60 * 1000;
+        for at in [far, i64::MAX] {
+            store
+                .apply_words(&[WordRecord {
+                    word: "kept".into(),
+                    updated_at: at,
+                    updated_by: B.into(),
+                    deleted: true,
+                }])
+                .unwrap();
+            store
+                .apply_snippets(&[SnippetRecord {
+                    trigger: "poison".into(),
+                    replacement: "x".into(),
+                    updated_at: at,
+                    updated_by: B.into(),
+                    deleted: false,
+                }])
+                .unwrap();
+        }
+        assert_eq!(words(&store), vec!["kept".to_string()]);
+        assert_eq!(snippet(&store, "poison"), None);
+    }
 }

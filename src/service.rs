@@ -686,3 +686,29 @@ pub fn ensure_unit_installed() -> Result<String, String> {
     systemctl(&["daemon-reload"])?;
     Ok(format!("unit installed ({})", exe.display()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// R42: a restart rebinds the same port right after the stop.
+    #[test]
+    fn stopping_the_engine_frees_its_port_at_once() {
+        let id = DeviceIdentity::ephemeral();
+        let db = std::env::temp_dir().join(format!("mywhisper-engine-{}.db", std::process::id()));
+        Store::open(&db).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        {
+            let stop = stop.clone();
+            let creds = id.creds();
+            let db = db.clone();
+            std::thread::spawn(move || crate::net::serve(listener, db, creds, "a".into(), vec![], &stop));
+        }
+        drop(SyncEngine { stop, mdns: None });
+        TcpListener::bind(("127.0.0.1", port)).expect("port still held after stop");
+        std::fs::remove_file(&db).ok();
+    }
+}

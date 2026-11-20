@@ -1736,4 +1736,63 @@ mod tests {
         std::fs::remove_file(&db_v).ok();
         std::fs::remove_file(&db_x).ok();
     }
+
+    /// One loopback round: B dials A. Returns (B's report, A's report).
+    fn round(id_a: &DeviceIdentity, id_b: &DeviceIdentity, db_a: &Path, db_b: &Path) -> (SyncReport, SyncReport) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let server = serve_one(listener, db_a.to_path_buf(), id_a.creds());
+        let client = sync_now(&[addr], db_b, &id_b.creds(), "b", &id_a.node_id).unwrap();
+        (client, server.join().unwrap().unwrap())
+    }
+
+    /// R44: once two peers converged, a round carries only what changed.
+    #[test]
+    fn later_rounds_send_only_changes() {
+        let (id_a, id_b, db_a, db_b) = paired();
+        add_bulk_history(&db_a, 50, 10);
+        let (b, a) = round(&id_a, &id_b, &db_a, &db_b);
+        assert_eq!((b.history_in, a.history_in), (51, 1));
+        // The next round still echoes what each side just merged.
+        round(&id_a, &id_b, &db_a, &db_b);
+        let (b, a) = round(&id_a, &id_b, &db_a, &db_b);
+        assert_eq!((b.history_in, a.history_in, b.words_in, a.words_in), (0, 0, 0, 0));
+        Store::open(&db_a).unwrap().upsert_word("fresh", &id_a.node_id).unwrap();
+        Store::open(&db_a).unwrap().delete_history("bulk-3").unwrap();
+        let (b, _) = round(&id_a, &id_b, &db_a, &db_b);
+        assert_eq!((b.words_in, b.history_in), (1, 1));
+        let store_b = Store::open(&db_b).unwrap();
+        assert_eq!(store_b.load_words().unwrap(), vec!["fresh".to_string()]);
+        assert_eq!(store_b.load_history(100, true).unwrap().len(), 51);
+        std::fs::remove_file(&db_a).ok();
+        std::fs::remove_file(&db_b).ok();
+    }
+
+    /// R42: a stale or unparsable first address, or one that now
+    /// belongs to another device, must not stop the dial.
+    #[test]
+    fn dialing_falls_through_bad_addresses() {
+        let (id_a, id_b, db_a, db_b) = paired();
+        let hang_up = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let hang_up_addr = hang_up.local_addr().unwrap().to_string();
+        let closer = std::thread::spawn(move || drop(hang_up.accept().unwrap()));
+        let id_c = DeviceIdentity::ephemeral();
+        let db_c = temp_db("other");
+        Store::open(&db_c).unwrap();
+        let other = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let other_addr = other.local_addr().unwrap().to_string();
+        let other = serve_one(other, db_c.clone(), id_c.creds());
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = serve_one(listener, db_a.clone(), id_a.creds());
+        let addresses = ["bogus".to_string(), hang_up_addr, other_addr, addr];
+        sync_now(&addresses, &db_b, &id_b.creds(), "b", &id_a.node_id).unwrap();
+        server.join().unwrap().unwrap();
+        closer.join().unwrap();
+        assert!(other.join().unwrap().is_err());
+        assert!(history_texts(&Store::open(&db_b).unwrap()).contains(&"from-a".to_string()));
+        for db in [db_a, db_b, db_c] {
+            std::fs::remove_file(db).ok();
+        }
+    }
 }
