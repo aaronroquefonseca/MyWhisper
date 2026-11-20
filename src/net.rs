@@ -5,6 +5,8 @@
 //! table-driven with Syncthing-style introduction:
 //!
 //! * unknown dialers are recorded as pending requests, never merged;
+//! * our own requests wait as untrusted `outgoing` rows; the other
+//!   side's dial-back after it accepts completes them (mutual consent);
 //! * accepting marks the peer trusted + introducer, then syncs;
 //! * introducers' vouched devices join automatically as trusted;
 //! * everyone exchanges peer lists, so addresses stay fresh without
@@ -609,11 +611,30 @@ pub fn exchange(
     let is_new = store
         .record_seen(&peer.node_id, &peer.name, &contact_addrs)
         .map_err(|e| format!("record contact: {e}"))?;
-    let trusted = store
+    let mut trusted = store
         .get_peer(&peer.node_id)
         .map_err(|e| format!("peer lookup: {e}"))?
         .map(|p| p.trusted)
         .unwrap_or(false);
+    // Responder only: the dialer proved its id, so this contact is its
+    // consent. If we asked to pair with it (outgoing), both sides have
+    // consented and pairing completes here without a local Accept.
+    // Initiator paths never get here: our own dial approves nothing.
+    if !initiator && !trusted {
+        store
+            .mark_incoming_request(&peer.node_id)
+            .map_err(|e| format!("record request: {e}"))?;
+        let mutual = store
+            .get_peer(&peer.node_id)
+            .map_err(|e| format!("peer lookup: {e}"))?
+            .is_some_and(|p| p.outgoing && !p.trusted);
+        if mutual {
+            store
+                .decide_request(&peer.node_id, true)
+                .map_err(|e| format!("trust peer: {e}"))?;
+            trusted = true;
+        }
+    }
 
     // What we already merged from this peer: it sends only later changes.
     let our_since = if watermarks() && trusted {
@@ -766,13 +787,16 @@ static DIALING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 /// order; first success wins. Runs the Noise handshake, then requires
 /// the proven session to belong to `expect_node` before any record
 /// moves. A round already running with that peer makes this one a
-/// no-op error instead of a duplicate full exchange.
+/// no-op error instead of a duplicate full exchange. `own_addresses`
+/// go out in our hello so the peer can dial back
+/// ([`own_listen_addrs`]).
 pub fn sync_now(
     addresses: &[String],
     db_path: &Path,
     creds: &SyncCreds,
     name: &str,
     expect_node: &str,
+    own_addresses: &[String],
 ) -> Result<SyncReport, String> {
     if addresses.is_empty() {
         return Err("no known address for peer".to_string());
@@ -813,7 +837,7 @@ pub fn sync_now(
                 db_path,
                 creds,
                 name,
-                &[],
+                own_addresses,
                 true,
                 Some(expect_node),
                 None,
@@ -929,6 +953,19 @@ pub fn lan_ip() -> Option<IpAddr> {
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
     socket.local_addr().ok().map(|a| a.ip())
+}
+
+/// Our dialable listen address for hello (configured port + LAN IP).
+/// Empty when we do not listen or have no LAN address. Without it a
+/// peer that only saw our dials knows just the ephemeral source port
+/// and cannot dial back to complete a pairing we requested.
+pub fn own_listen_addrs(port: u16) -> Vec<String> {
+    if port == 0 {
+        return Vec::new();
+    }
+    lan_ip()
+        .map(|ip| vec![SocketAddr::new(ip, port).to_string()])
+        .unwrap_or_default()
 }
 
 /// Dial our own sync port through our LAN address, the way a peer
@@ -1096,9 +1133,17 @@ pub fn sync_all_trusted(db_path: &Path, creds: &SyncCreds) -> Vec<String> {
         .into_iter()
         .filter(|p| p.trusted && !p.dial_targets().is_empty())
         .collect();
+    let own_addresses = own_listen_addrs(settings.sync.listen_port);
     let mut out = Vec::new();
     for peer in peers {
-        match sync_now(&peer.dial_targets(), db_path, creds, &name, &peer.node_id) {
+        match sync_now(
+            &peer.dial_targets(),
+            db_path,
+            creds,
+            &name,
+            &peer.node_id,
+            &own_addresses,
+        ) {
             Ok(r) => out.push(format!(
                 "synced {} ({} words in)",
                 short_id(&r.peer_node),
@@ -1324,6 +1369,7 @@ mod tests {
             &id_b.creds(),
             "b",
             &id_a.node_id,
+            &[],
         )
         .unwrap();
         server.join().unwrap();
@@ -1372,6 +1418,7 @@ mod tests {
             &id_c.creds(),
             "c",
             &id_a.node_id,
+            &[],
         )
         .unwrap_err();
         let server_err = server2.join().unwrap().unwrap_err();
@@ -1467,7 +1514,7 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
         let server = serve_one(listener, db_a.clone(), id_a.creds());
-        let err = sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id).unwrap_err();
+        let err = sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id, &[]).unwrap_err();
         assert!(err.contains("sync is off"), "client err: {err}");
         assert!(server.join().unwrap().is_err());
 
@@ -1475,7 +1522,7 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
         let server = serve_one(listener, db_b.clone(), id_b.creds());
-        let err = sync_now(&[addr], &db_a, &id_a.creds(), "a", &id_b.node_id).unwrap_err();
+        let err = sync_now(&[addr], &db_a, &id_a.creds(), "a", &id_b.node_id, &[]).unwrap_err();
         assert!(err.contains("sync is off"), "client err: {err}");
         assert!(server.join().unwrap().is_err());
 
@@ -1503,7 +1550,7 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
         let server = serve_one(listener, db_b.clone(), id_b.creds());
-        let err = sync_now(&[addr], &db_a, &id_a.creds(), "a", &id_b.node_id).unwrap_err();
+        let err = sync_now(&[addr], &db_a, &id_a.creds(), "a", &id_b.node_id, &[]).unwrap_err();
         assert!(err.contains("not trusted"), "client err: {err}");
         assert!(server.join().unwrap().is_err());
         assert_eq!(history_texts(&store_a), vec!["from-a".to_string()]);
@@ -1530,7 +1577,7 @@ mod tests {
         let server = serve_one_hooked(listener, db_a.clone(), id_a.creds(), move || {
             disable_sync(&Store::open(&hook_db).unwrap())
         });
-        assert!(sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id).is_err());
+        assert!(sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id, &[]).is_err());
         let err = server.join().unwrap().unwrap_err();
         assert!(err.contains("sync is off"), "server err: {err}");
         assert_eq!(history_texts(&Store::open(&db_a).unwrap()), vec!["from-a"]);
@@ -1548,7 +1595,7 @@ mod tests {
                 .upsert_peer(&b_node, "b", "", false)
                 .unwrap()
         })));
-        let err = sync_now(&[addr], &db_a, &id_a.creds(), "a", &id_b.node_id).unwrap_err();
+        let err = sync_now(&[addr], &db_a, &id_a.creds(), "a", &id_b.node_id, &[]).unwrap_err();
         set_before_send(None);
         assert!(err.contains("not trusted"), "client err: {err}");
         assert!(server.join().unwrap().is_err());
@@ -1564,7 +1611,7 @@ mod tests {
         let server = serve_one_hooked(listener, db_a.clone(), id_a.creds(), move || {
             reset_then_reenable(&Store::open(&hook_db).unwrap())
         });
-        assert!(sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id).is_err());
+        assert!(sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id, &[]).is_err());
         let err = server.join().unwrap().unwrap_err();
         assert!(
             err.contains("changed during the round"),
@@ -1607,7 +1654,7 @@ mod tests {
                 disable_sync(&Store::open(&hook_db).unwrap())
             }
         });
-        assert!(sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id).is_err());
+        assert!(sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id, &[]).is_err());
         let err = server.join().unwrap().unwrap_err();
         assert!(err.contains("sync is off"), "server err: {err}");
         assert_eq!(history_texts(&Store::open(&db_b).unwrap()), vec!["from-b"]);
@@ -1637,7 +1684,7 @@ mod tests {
                     .unwrap();
             })));
         });
-        let err = sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id).unwrap_err();
+        let err = sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id, &[]).unwrap_err();
         assert!(err.contains("changed during the round"), "{err}");
         server.join().unwrap().unwrap();
         let store = Store::open(&db_b).unwrap();
@@ -1772,6 +1819,119 @@ mod tests {
         std::fs::remove_file(&db_a).ok();
     }
 
+    /// A sent B a pairing request and never pressed Accept. B accepts
+    /// and dials back; B's proven dial-back is its consent, so A's
+    /// responder completes the pairing inside the round. B learns A's
+    /// listen address only from A's hello: nothing hands it over
+    /// out-of-band.
+    #[test]
+    fn requester_waiting_plus_acceptor_dialback_completes_without_accept() {
+        let id_a = DeviceIdentity::ephemeral();
+        let id_b = DeviceIdentity::ephemeral();
+        let id_c = DeviceIdentity::ephemeral();
+        let db_a = temp_db("ra");
+        let db_b = temp_db("rb");
+        let store_a = Store::open(&db_a).unwrap();
+        let store_b = Store::open(&db_b).unwrap();
+        store_a
+            .record_outgoing(&id_b.node_id, "b", &[], &id_a.node_id)
+            .unwrap();
+        assert!(store_a.list_pending().unwrap().is_empty());
+        assert_eq!(store_a.list_outgoing().unwrap().len(), 1);
+        // B vouches for C, who should reach A through the mesh.
+        store_b.upsert_peer(&id_c.node_id, "c", "", true).unwrap();
+        store_a.upsert_word("from-a", &id_a.node_id).unwrap();
+        store_b.upsert_word("from-b", &id_b.node_id).unwrap();
+
+        let listener_a = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr_a = listener_a.local_addr().unwrap().to_string();
+        let listener_b = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr_b = listener_b.local_addr().unwrap().to_string();
+
+        // Phase 1: A delivers the request; B's refusal is the delivery.
+        let server = serve_one(listener_b, db_b.clone(), id_b.creds());
+        let err = sync_now(
+            std::slice::from_ref(&addr_b),
+            &db_a,
+            &id_a.creds(),
+            "a",
+            &id_b.node_id,
+            std::slice::from_ref(&addr_a),
+        )
+        .unwrap_err();
+        assert!(err.contains("not trusted"), "got: {err}");
+        server.join().unwrap().unwrap_err();
+        assert!(!store_b.load_words().unwrap().contains(&"from-a".into()));
+
+        // B sees the request with A's advertised address, and accepts.
+        let request = store_b.get_peer(&id_a.node_id).unwrap().unwrap();
+        assert!(request.pending && !request.trusted);
+        let targets = request.dial_targets();
+        assert!(targets.contains(&addr_a), "got {targets:?}");
+        store_b.decide_request(&id_a.node_id, true).unwrap();
+
+        // Phase 2: B dials back using only stored addresses.
+        let server = serve_one(listener_a, db_a.clone(), id_a.creds());
+        let report = sync_now(
+            &targets,
+            &db_b,
+            &id_b.creds(),
+            "b",
+            &id_a.node_id,
+            std::slice::from_ref(&addr_b),
+        )
+        .unwrap();
+        server.join().unwrap().unwrap();
+        assert_eq!(report.peer_node, id_a.node_id);
+        assert!(store_a.load_words().unwrap().contains(&"from-b".into()));
+        assert!(store_b.load_words().unwrap().contains(&"from-a".into()));
+
+        // Completed on A with no local Accept: trusted + introducer.
+        let row = store_a.get_peer(&id_b.node_id).unwrap().unwrap();
+        assert!(row.trusted && row.introducer && !row.pending && !row.outgoing);
+        assert!(store_a.list_pending().unwrap().is_empty());
+        assert!(store_a.list_outgoing().unwrap().is_empty());
+        let c = store_a.get_peer(&id_c.node_id).unwrap().unwrap();
+        assert!(c.trusted && !c.pending && !c.outgoing);
+
+        std::fs::remove_file(&db_a).ok();
+        std::fs::remove_file(&db_b).ok();
+    }
+
+    /// Our own dial never approves our own request, even when the other
+    /// side already trusts us: nothing moves and the row keeps waiting
+    /// until their dial-back.
+    #[test]
+    fn requester_dial_never_self_approves() {
+        let id_a = DeviceIdentity::ephemeral();
+        let id_b = DeviceIdentity::ephemeral();
+        let db_a = temp_db("sa");
+        let db_b = temp_db("sb");
+        let store_a = Store::open(&db_a).unwrap();
+        let store_b = Store::open(&db_b).unwrap();
+        store_a
+            .record_outgoing(&id_b.node_id, "b", &[], &id_a.node_id)
+            .unwrap();
+        store_b.upsert_peer(&id_a.node_id, "a", "", true).unwrap();
+        store_a.upsert_word("from-a", &id_a.node_id).unwrap();
+        store_b.upsert_word("from-b", &id_b.node_id).unwrap();
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = serve_one(listener, db_b.clone(), id_b.creds());
+        let err = sync_now(&[addr], &db_a, &id_a.creds(), "a", &id_b.node_id, &[]).unwrap_err();
+        assert!(err.contains("not trusted"), "got: {err}");
+        server.join().unwrap().unwrap_err();
+
+        let row = store_a.get_peer(&id_b.node_id).unwrap().unwrap();
+        assert!(row.waiting() && !row.introducer);
+        assert!(!store_a.load_words().unwrap().contains(&"from-b".into()));
+        assert!(!store_b.load_words().unwrap().contains(&"from-a".into()));
+
+        std::fs::remove_file(&db_a).ok();
+        std::fs::remove_file(&db_b).ok();
+    }
+
     /// An attacker with their own valid keypair who claims someone
     /// else's node id in hello is rejected: the session proof cannot
     /// verify against the victim's key.
@@ -1862,7 +2022,7 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
         let server = serve_one(listener, db_a.to_path_buf(), id_a.creds());
-        let client = sync_now(&[addr], db_b, &id_b.creds(), "b", &id_a.node_id).unwrap();
+        let client = sync_now(&[addr], db_b, &id_b.creds(), "b", &id_a.node_id, &[]).unwrap();
         (client, server.join().unwrap().unwrap())
     }
 
@@ -1915,7 +2075,7 @@ mod tests {
         let addr = listener.local_addr().unwrap().to_string();
         let server = serve_one(listener, db_a.clone(), id_a.creds());
         let addresses = ["bogus".to_string(), hang_up_addr, other_addr, addr];
-        sync_now(&addresses, &db_b, &id_b.creds(), "b", &id_a.node_id).unwrap();
+        sync_now(&addresses, &db_b, &id_b.creds(), "b", &id_a.node_id, &[]).unwrap();
         server.join().unwrap().unwrap();
         closer.join().unwrap();
         assert!(other.join().unwrap().is_err());
@@ -1959,7 +2119,7 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let server = serve_one_as_old(listener, db_a.clone(), id_a.creds());
-        sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id).unwrap();
+        sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id, &[]).unwrap();
         assert_eq!(server.join().unwrap().unwrap().history_in, 1);
         // Old dialer A, new responder B, twice: still full state.
         OLD_BUILD.with(|old| old.set(true));
@@ -1967,7 +2127,7 @@ mod tests {
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let addr = listener.local_addr().unwrap().to_string();
             let server = serve_one(listener, db_b.clone(), id_b.creds());
-            let report = sync_now(&[addr], &db_a, &id_a.creds(), "a", &id_b.node_id).unwrap();
+            let report = sync_now(&[addr], &db_a, &id_a.creds(), "a", &id_b.node_id, &[]).unwrap();
             assert_eq!(report.history_in, 2);
             server.join().unwrap().unwrap();
         }
@@ -2053,7 +2213,7 @@ mod tests {
                     .unwrap();
             })));
         });
-        sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id).unwrap_err();
+        sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id, &[]).unwrap_err();
         server.join().unwrap().unwrap();
         let partial = Store::open(&db_b)
             .unwrap()

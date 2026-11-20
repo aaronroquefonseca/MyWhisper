@@ -144,8 +144,9 @@ Ordinary preferences save automatically. The prompt editor saves its draft only 
 | Device name Save | Persists the friendly name; reports the result. |
 | Device ID Copy | Copies the ID and reports the clipboard result. |
 | Listen port Save | Accepts 0–65535; 0 retains the existing automatic-port meaning. Invalid input remains visible. |
-| Nearby → Send request | Records the discovered address and attempts the existing pairing handshake. Discovery alone does not establish mutual trust. |
+| Nearby → Send request | Records the discovered address as a waiting request (not trusted) and attempts the pairing handshake. Discovery alone does not establish mutual trust. |
 | Requests → Accept / Decline | Records the explicit trust decision. Accept attempts sync when the peer is available; both decisions show feedback. |
+| Requests → Waiting for response → Cancel | Our own sent requests list here with Cancel only, never Accept. The pairing completes when the other device accepts and dials back; Cancel withdraws the request without blocking the device. |
 | Paired device trust switch | Changes this device's trust decision in the existing peer record. |
 | Sync now | Runs a manual direct sync for a trusted peer with an address; disables duplicate requests while working; reports completion/errors. |
 | Remove paired device | Confirms unpairing. Existing words, snippets, and history remain on each device. |
