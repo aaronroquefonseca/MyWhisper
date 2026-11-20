@@ -1244,6 +1244,47 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
     rows.append(&b);
     root.append(&card);
 
+    {
+        use crate::settings::HotkeyBackend;
+        let (card, rows) = group(tr("group.hotkeysource"));
+        let (b, _) = row(tr("row.hotkeysource"));
+        let dd = DropDown::new(
+            Some(StringList::new(&[
+                tr("opt.hotkeyauto"),
+                tr("opt.hotkeyevdev"),
+                tr("opt.hotkeyportal"),
+            ])),
+            None::<gtk4::Expression>,
+        );
+        dd.set_selected(match state.settings.borrow().hotkeys.backend {
+            HotkeyBackend::Auto => 0,
+            HotkeyBackend::Evdev => 1,
+            HotkeyBackend::Portal => 2,
+        });
+        dd.set_valign(gtk4::Align::Center);
+        {
+            let state = state.clone();
+            let persist = persist.clone();
+            dd.connect_selected_notify(move |dd| {
+                state.settings.borrow_mut().hotkeys.backend = match dd.selected() {
+                    1 => HotkeyBackend::Evdev,
+                    2 => HotkeyBackend::Portal,
+                    _ => HotkeyBackend::Auto,
+                };
+                persist();
+            });
+        }
+        b.append(&dd);
+        rows.append(&b);
+        let note = Label::new(Some(tr("note.hotkeysource")));
+        note.add_css_class("page-subtitle");
+        note.set_xalign(0.0);
+        note.set_wrap(true);
+        note.set_max_width_chars(80);
+        rows.append(&note);
+        root.append(&card);
+    }
+
     let (smart_card, smart_rows) = group(tr("group.smart"));
     spin_row(
         &smart_rows,

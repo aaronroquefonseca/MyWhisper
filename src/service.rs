@@ -309,6 +309,7 @@ pub fn spawn_hotkey_watcher(
                 .map(|binding| (binding.combo, binding.mode))
                 .collect::<Vec<_>>(),
             settings.smart_tap_ms,
+            settings.backend,
         )
     };
     // The service already started the listener with this snapshot.
@@ -366,6 +367,7 @@ pub fn spawn_hotkey_watcher(
                 crate::hotkey::start_dictation(
                     hotkeys.effective_hotkeys(),
                     hotkeys.smart_tap_ms,
+                    hotkeys.backend,
                     down.clone(),
                     up.clone(),
                     cancel.clone(),

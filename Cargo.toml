@@ -27,7 +27,7 @@ sha2 = "0.11.0"
 snow = "0.10.0"
 tar = "0.4.46"
 tempfile = "3.27.0"
-tokio = { version = "1.53.2", features = ["rt"] }
+tokio = { version = "1.53.2", features = ["rt", "time"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = "0.3.23"
@@ -37,6 +37,7 @@ zbus = "6"
 zip = "9"
 gdk4-x11 = "0.11"
 x11rb = "0.14.0"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))'.dependencies]
 keyring-core = "1"
