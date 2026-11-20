@@ -211,6 +211,18 @@ pub enum ActivationMode {
     Smart,
 }
 
+/// Where global hotkeys come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum HotkeyBackend {
+    /// Desktop portal when it binds, otherwise keyboard devices.
+    #[default]
+    Auto,
+    /// Read `/dev/input` keyboards directly (needs the `input` group).
+    Evdev,
+    /// XDG GlobalShortcuts portal (KDE, GNOME 48+, Hyprland).
+    Portal,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotkeyBinding {
     /// Combo string, e.g. "F13" or "Ctrl+Alt+D".
@@ -266,6 +278,7 @@ pub struct HotkeySettings {
     /// events (presses never reach the pipeline). systemd owns the
     /// process; this only gates input.
     pub hotkeys_enabled: bool,
+    pub backend: HotkeyBackend,
 }
 
 #[derive(Deserialize)]
@@ -278,6 +291,8 @@ struct SavedHotkeys {
     smart_tap_ms: u64,
     #[serde(default = "default_true")]
     hotkeys_enabled: bool,
+    #[serde(default)]
+    backend: HotkeyBackend,
 }
 
 fn de_present_bindings<'de, D: serde::Deserializer<'de>>(
@@ -299,6 +314,7 @@ impl From<SavedHotkeys> for HotkeySettings {
             dictation_hotkey: saved.dictation_hotkey,
             smart_tap_ms: saved.smart_tap_ms,
             hotkeys_enabled: saved.hotkeys_enabled,
+            backend: saved.backend,
         }
     }
 }
@@ -314,6 +330,7 @@ impl Default for HotkeySettings {
             dictation_hotkey: String::new(),
             smart_tap_ms: default_smart_tap_ms(),
             hotkeys_enabled: true,
+            backend: HotkeyBackend::Auto,
         }
     }
 }

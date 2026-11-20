@@ -188,6 +188,7 @@ fn run_headless(
     mywhisper::hotkey::start_dictation(
         initial.hotkeys.effective_hotkeys(),
         initial.hotkeys.smart_tap_ms,
+        initial.hotkeys.backend,
         down.clone(),
         up.clone(),
         cancel.clone(),

@@ -22,6 +22,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 mod capture;
+mod portal;
 pub(crate) use capture::CaptureRequest;
 pub use capture::{acknowledge_capture_suspend, configure_capture_suspend};
 
@@ -48,6 +49,7 @@ pub enum HotkeyStatus {
     Listening,
     NoPermission,
     NoDevices,
+    PortalUnavailable,
 }
 
 /// Key-down / key-up for one action binding. The mode travels with
@@ -661,6 +663,7 @@ pub fn start(
 ) {
     start_with_bindings(
         bindings,
+        crate::settings::HotkeyBackend::Evdev,
         Arc::new(move |event, _| {
             if event != HotkeyEvent::Cancel || crate::transcribe::has_live() {
                 on_event(event);
@@ -672,6 +675,7 @@ pub fn start(
 
 fn start_with_bindings(
     bindings: HashMap<HotkeyAction, Vec<crate::settings::HotkeyBinding>>,
+    backend: crate::settings::HotkeyBackend,
     on_event: BindingCallback,
     on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static>,
 ) {
@@ -704,7 +708,24 @@ fn start_with_bindings(
     }
     // Dedicated loop: Builder-based so saturation logs instead of
     // panicking the caller (which may be the GTK-adjacent watcher).
+    use crate::settings::HotkeyBackend;
     if let Err(e) = crate::runtime::spawn_dedicated("hotkey-loop", move || {
+        let try_portal = match backend {
+            HotkeyBackend::Evdev => false,
+            HotkeyBackend::Portal => true,
+            HotkeyBackend::Auto => portal::desktop_supported(),
+        };
+        if try_portal && !watched.is_empty() {
+            match portal::run(generation, &watched, &on_event, &on_status) {
+                Ok(()) => return,
+                Err(e) if backend == HotkeyBackend::Portal => {
+                    eprintln!("[hotkey] portal unavailable: {e} (hotkeys idle)");
+                    on_status(HotkeyStatus::PortalUnavailable);
+                    return;
+                }
+                Err(e) => eprintln!("[hotkey] portal unavailable: {e}; using keyboard devices"),
+            }
+        }
         run_loop(generation, watched, on_event, on_status)
     }) {
         eprintln!("[hotkey] FATAL: {e} (hotkeys dead)");
@@ -810,6 +831,7 @@ impl Activation {
 pub fn start_dictation(
     bindings: Vec<crate::settings::HotkeyBinding>,
     tap_ms: u64,
+    backend: crate::settings::HotkeyBackend,
     down: DictationHook,
     up: DictationHook,
     cancel: DictationHook,
@@ -831,7 +853,7 @@ pub fn start_dictation(
     });
     let on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static> =
         Arc::new(|st| eprintln!("[hotkey] status: {st:?}"));
-    start_with_bindings(map, on_event, on_status);
+    start_with_bindings(map, backend, on_event, on_status);
 }
 
 #[cfg(test)]

@@ -2108,6 +2108,7 @@ dependencies = [
  "evdev",
  "flate2",
  "fs2",
+ "futures-util",
  "gdk4-x11",
  "getrandom 0.4.3",
  "gtk4",
