@@ -12547,7 +12547,8 @@ HTTPServer(("127.0.0.1", int(sys.argv[sys.argv.index("--port") + 1])), Handler).
         crate::service::stt_watcher_tick(&db_path, &data_dir, &mut last_primary, &mut last_auto);
         wait_gone(pid_a);
         assert!(!port_open(port_a), "stale CPU whisper kept serving");
-        assert!(!port_open(port_b));
+        // No port_b probe: a parallel test can bind the freed port; the
+        // empty registry already proves B never launched.
         assert!(servers().lock().unwrap().is_empty());
         // Nothing running: cold is not drift, later ticks are no-ops.
         assert!(!launch_drift(&stt_b, &data_dir));
