@@ -1,7 +1,51 @@
-# MyWhisper
+<div align="center">
+  <img src="assets/icons/app-icon.svg" alt="MyWhisper icon" width="112" />
+  <h1>MyWhisper</h1>
+  <p>Voice dictation for Linux: press a key, talk, and clean text lands in any app.</p>
+</div>
 
-Local-first voice dictation: press a key, talk, clean text lands anywhere.
+Hold a shortcut and speak. A small pill shows your voice level while you
+talk, and the text is typed into whatever app has focus. Transcribe on your
+own machine, on a self-hosted server, or with a cloud provider. An optional
+language model can clean up the result. History stays in an encrypted local
+database and syncs over your LAN with your other MyWhisper devices, desktop
+or [phone](https://github.com/aaronroquefonseca/MyWhisperMobile).
+
 GTK4 + Rust, Linux/Wayland-first.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/home.png" alt="Dictation page with service status, shortcuts, and recent dictations" /><br />
+      <sub><b>Dictation</b><br />status and recent dictations</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/insights.png" alt="Activity page with words spoken, speed, and a speaking-activity heatmap" /><br />
+      <sub><b>Activity</b><br />words, speed, and streaks</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/dictionary.png" alt="Dictionary page with custom words" /><br />
+      <sub><b>Dictionary</b><br />custom words and spoken snippets</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/sync.png" alt="Devices page with LAN sync, nearby devices, and pairing requests" /><br />
+      <sub><b>Devices</b><br />encrypted LAN sync between your devices</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2">
+      <img src="docs/screenshots/settings.png" alt="Settings page with appearance, sound, language, and microphone options" width="50%" /><br />
+      <sub><b>Settings</b><br />speech-to-text chain, text cleanup, shortcuts, and more</sub>
+    </td>
+  </tr>
+</table>
+
+Screenshots come from the isolated preview (no real data):
+`cargo run --example ui_preview -- <page> dark en --png <file>`.
 
 For fast local PR testing and PR-based release notes, see
 [the development workflow](docs/DEVELOPMENT.md).

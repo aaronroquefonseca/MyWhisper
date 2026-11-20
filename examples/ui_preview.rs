@@ -1,5 +1,7 @@
 //! Isolated native UI preview. No keychain, microphone, service, or real user data.
 //! Run with: cargo run --example ui_preview -- [home|insights|dictionary|sync|settings] [light|dark] [en|es] [section] [empty]
+//! Add `--png PATH` to render the window offscreen to a PNG and quit
+//! (README screenshots; works without a visible desktop).
 use gtk4::prelude::*;
 use mywhisper::app::{AppState, apply_theme, build_app_window};
 
@@ -13,6 +15,10 @@ fn main() -> gtk4::glib::ExitCode {
         .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
         .build();
     app.connect_activate(move |app| {
+        let png = args
+            .windows(2)
+            .find(|w| w[0] == "--png")
+            .map(|w| w[1].clone());
         let reset_fixture = args.iter().any(|arg| arg == "--reset-smoke").then(|| {
             assert_eq!(
                 std::env::var("MYWHISPER_DB_KEY").as_deref(),
@@ -34,18 +40,21 @@ fn main() -> gtk4::glib::ExitCode {
         };
         state.settings.borrow_mut().sync.enabled = false;
         if !args.iter().any(|a| a == "empty") {
-            for (raw, text) in [
+            for (raw, text, secs) in [
                 (
-                    "let's move the review to thursday so everyone has time to read the proposal",
-                    "Let’s move the review to Thursday so everyone has time to read the proposal.",
+                    "um so for the standup i finished the export feature and uh tomorrow i'm on the login bug",
+                    "For the standup: I finished the export feature, and tomorrow I'm on the login bug.",
+                    7,
                 ),
                 (
-                    "my email signature",
-                    "Aaron\nProduct & engineering\naaron@example.com",
+                    "meeting link",
+                    "https://meet.example.com/weekly-sync",
+                    2,
                 ),
                 (
-                    "the new microphone setup sounds much clearer",
-                    "The new microphone setup sounds much clearer.",
+                    "can you send me the slides from yesterday's design review when you get a chance",
+                    "Can you send me the slides from yesterday's design review when you get a chance?",
+                    6,
                 ),
             ] {
                 state
@@ -54,19 +63,19 @@ fn main() -> gtk4::glib::ExitCode {
                         raw,
                         text,
                         text.split_whitespace().count() as u32,
-                        8,
+                        secs,
                         "preview",
                     )
                     .unwrap();
             }
             state.store.add_discarded(3, "preview").unwrap();
             state.store.upsert_word("MyWhisper", "preview").unwrap();
-            state.store.upsert_word("CachyOS", "preview").unwrap();
+            state.store.upsert_word("PostgreSQL", "preview").unwrap();
             state
                 .store
                 .upsert_snippet(
-                    "my email signature",
-                    "Aaron\nProduct & engineering\naaron@example.com",
+                    "meeting link",
+                    "https://meet.example.com/weekly-sync",
                     "preview",
                 )
                 .unwrap();
@@ -104,6 +113,36 @@ fn main() -> gtk4::glib::ExitCode {
         if let Some(root) = reset_fixture {
             smoke::run_reset(app, &state, &window, root);
         }
+        if let Some(path) = png {
+            capture_after(app, 1500, path);
+        }
     });
     app.run_with_args::<&str>(&[])
+}
+
+/// After `delay_ms`, render the first mapped toplevel at 2x to `path`,
+/// then quit.
+fn capture_after(app: &gtk4::Application, delay_ms: u64, path: String) {
+    let app = app.clone();
+    gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(delay_ms), move || {
+        let window = app
+            .windows()
+            .into_iter()
+            .find(|w| w.is_mapped())
+            .expect("a mapped window to capture");
+        let target: gtk4::Widget = window.clone().upcast();
+        let (width, height) = (target.width() as f32, target.height() as f32);
+        let snapshot = gtk4::Snapshot::new();
+        snapshot.scale(2.0, 2.0);
+        gtk4::WidgetPaintable::new(Some(&target)).snapshot(&snapshot, width as f64, height as f64);
+        let node = snapshot.to_node().expect("window drew something");
+        let renderer = window.renderer().expect("realized window has a renderer");
+        let bounds = gtk4::graphene::Rect::new(0.0, 0.0, width * 2.0, height * 2.0);
+        renderer
+            .render_texture(&node, Some(&bounds))
+            .save_to_png(&path)
+            .expect("write png");
+        eprintln!("saved {path} ({width}x{height} @2x)");
+        app.quit();
+    });
 }
