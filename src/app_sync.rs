@@ -87,7 +87,8 @@ fn fill_peers(list: &ListBox, state: &Rc<AppState>, status: &Label) {
     let list = list.clone();
     let status = status.clone();
     clear_list(&list);
-    let peers = state.store.list_peers().unwrap_or_default();
+    let mut peers = state.store.list_peers().unwrap_or_default();
+    peers.retain(|p| !p.waiting());
     if peers.is_empty() {
         let l = Label::new(Some(tr("sync.devices.empty")));
         l.set_wrap(true);
@@ -280,18 +281,13 @@ fn fill_nearby(list: &ListBox, state: &Rc<AppState>, status: &Label) {
             add.connect_clicked(move |_| {
                 if state
                     .store
-                    .upsert_peer(&d.node_id, &d.name, "", true)
-                    .and_then(|_| state.store.set_peer_addresses(&d.node_id, &d.addresses))
+                    .record_outgoing(&d.node_id, &d.name, &d.addresses, &state.node_id)
                     .is_err()
                 {
                     super::app::notify(tr("sync.err.save"));
                     return;
                 }
-                if let Ok(Some(peer)) = state.store.get_peer(&d.node_id) {
-                    spawn_sync(&state, peer, &status);
-                }
-                status
-                    .set_text(trf("sync.request.sent", &[("id", &short_id(&d.node_id))]).as_str());
+                send_request(&state, &d.node_id, &status);
                 eprintln!(
                     "[app] sync: pairing requested with {}",
                     short_id(&d.node_id)
@@ -309,7 +305,8 @@ fn fill_requests(list: &ListBox, state: &Rc<AppState>, status: &Label) {
     let status = status.clone();
     clear_list(&list);
     let pending = state.store.list_pending().unwrap_or_default();
-    if pending.is_empty() {
+    let waiting = state.store.list_outgoing().unwrap_or_default();
+    if pending.is_empty() && waiting.is_empty() {
         let l = Label::new(Some(tr("sync.requests.empty")));
         l.set_wrap(true);
         l.set_max_width_chars(55);
@@ -379,6 +376,94 @@ fn fill_requests(list: &ListBox, state: &Rc<AppState>, status: &Label) {
         row.append(&decline);
         list.append(&row);
     }
+    // Our own requests: cancel only, never Accept.
+    for p in waiting {
+        let row = GtkBox::new(Orientation::Horizontal, 8);
+        let l = Label::new(Some(
+            trf(
+                "sync.waiting.row",
+                &[
+                    (
+                        "name",
+                        &if p.name.is_empty() {
+                            short_id(&p.node_id)
+                        } else {
+                            p.name.clone()
+                        },
+                    ),
+                    ("id", &short_id(&p.node_id)),
+                ],
+            )
+            .as_str(),
+        ));
+        l.set_xalign(0.0);
+        l.set_wrap(true);
+        l.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
+        l.set_hexpand(true);
+        row.append(&l);
+        let cancel = Button::with_label(tr("action.cancel"));
+        {
+            let state = state.clone();
+            let status = status.clone();
+            let node_id = p.node_id.clone();
+            cancel.connect_clicked(move |_| {
+                if state.store.withdraw_outgoing(&node_id).is_err() {
+                    super::app::notify(tr("sync.err.save"));
+                    return;
+                }
+                let msg = trf("sync.request.cancelled", &[("id", &short_id(&node_id))]);
+                status.set_text(&msg);
+                super::app::notify(&msg);
+            });
+        }
+        row.append(&cancel);
+        list.append(&row);
+    }
+}
+
+/// Deliver our pairing request: one dial to the peer's known
+/// addresses. Their "not trusted" verdict is the delivered request;
+/// their dial-back after they accept completes the pairing here.
+fn send_request(state: &Rc<AppState>, node_id: &str, status: &Label) {
+    let targets = state
+        .store
+        .get_peer(node_id)
+        .ok()
+        .flatten()
+        .map(|p| p.dial_targets())
+        .unwrap_or_default();
+    if targets.is_empty() {
+        status.set_text(trf("sync.request.noaddr", &[("id", &short_id(node_id))]).as_str());
+        return;
+    }
+    status.set_text(trf("sync.request.reaching", &[("id", &short_id(node_id))]).as_str());
+    let db_path = state.db_path.clone();
+    let creds = state.creds.clone();
+    let name = device_name(state);
+    let own = crate::net::own_listen_addrs(live_sync_port());
+    let expect = node_id.to_string();
+    let result: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let result_tx = result.clone();
+    std::thread::spawn(move || {
+        let msg = match crate::net::sync_now(&targets, &db_path, &creds, &name, &expect, &own) {
+            Ok(_) => tr("sync.request.delivered").to_string(),
+            Err(e) if e.contains("not trusted") => {
+                trf("sync.request.sent", &[("id", &short_id(&expect))])
+            }
+            Err(e) => trf("sync.request.unreachable", &[("err", &e.to_string())]),
+        };
+        *result_tx.lock().unwrap() = Some(msg);
+    });
+    let status = status.clone();
+    gtk4::glib::timeout_add_local(Duration::from_millis(300), move || {
+        match result.lock().unwrap().take() {
+            Some(msg) => {
+                status.set_text(&msg);
+                gtk4::glib::ControlFlow::Break
+            }
+            None => gtk4::glib::ControlFlow::Continue,
+        }
+    });
 }
 
 /// Run a sync round on a worker thread, then report + refresh.
@@ -404,10 +489,11 @@ fn spawn_sync(state: &Rc<AppState>, peer: crate::store::Peer, status: &Label) {
     let creds = state.creds.clone();
     let name = device_name(state);
     let expect = peer.node_id.clone();
+    let own = crate::net::own_listen_addrs(live_sync_port());
     let result_tx: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let result_poll = result_tx.clone();
     std::thread::spawn(move || {
-        let msg = match crate::net::sync_now(&targets, &db_path, &creds, &name, &expect) {
+        let msg = match crate::net::sync_now(&targets, &db_path, &creds, &name, &expect, &own) {
             Ok(r) => trf(
                 "sync.synced",
                 &[
@@ -899,66 +985,23 @@ pub fn page(state: &Rc<AppState>) -> GtkBox {
                 return;
             }
             id_entry.remove_css_class("error");
+            let addresses: Vec<String> = Some(address)
+                .filter(|a| !a.is_empty())
+                .into_iter()
+                .collect();
             if state
                 .store
-                .upsert_peer(&node_id, &name, &address, true)
+                .record_outgoing(&node_id, &name, &addresses, &state.node_id)
                 .is_err()
             {
                 status.set_text(tr("sync.err.save"));
                 return;
             }
-            if !address.is_empty() {
-                let _ = state.store.set_peer_addresses(&node_id, &[address]);
-            }
             id_entry.set_text("");
             addr_entry.set_text("");
             name_entry.set_text("");
             refresh_all(&nearby_list, &req_list, &list);
-            // If we already know an address, knock immediately: their
-            // side records the pending request on contact, so Accept
-            // appears without them typing anything.
-            let targets = state
-                .store
-                .get_peer(&node_id)
-                .ok()
-                .flatten()
-                .map(|p| p.dial_targets())
-                .unwrap_or_default();
-            if targets.is_empty() {
-                status
-                    .set_text(trf("sync.request.noaddr", &[("id", &short_id(&node_id))]).as_str());
-            } else {
-                status.set_text(
-                    trf("sync.request.reaching", &[("id", &short_id(&node_id))]).as_str(),
-                );
-                let db_path = state.db_path.clone();
-                let creds = state.creds.clone();
-                let name = device_name(&state);
-                let expect = node_id.clone();
-                let result: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-                let result_tx = result.clone();
-                std::thread::spawn(move || {
-                    let msg = match crate::net::sync_now(&targets, &db_path, &creds, &name, &expect)
-                    {
-                        Ok(_) => tr("sync.request.delivered").to_string(),
-                        Err(e) if e.contains("not trusted") => {
-                            trf("sync.request.sent", &[("id", &short_id(&expect))])
-                        }
-                        Err(e) => trf("sync.request.unreachable", &[("err", &e.to_string())]),
-                    };
-                    *result_tx.lock().unwrap() = Some(msg);
-                });
-                let status = status.clone();
-                gtk4::glib::timeout_add_local(Duration::from_millis(300), move || {
-                    match result.lock().unwrap().take() {
-                        Some(msg) => {
-                            status.set_text(&msg);
-                            gtk4::glib::ControlFlow::Break
-                        }
-                        None => gtk4::glib::ControlFlow::Continue,
-                    }
-                });
-            }
+            send_request(&state, &node_id, &status);
             eprintln!("[app] sync: pairing requested with {}", short_id(&node_id));
         });
     }

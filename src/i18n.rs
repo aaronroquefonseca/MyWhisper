@@ -779,6 +779,11 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
             "{name} · {id} · seen {seen}",
             "{name} · {id} · visto {seen}",
         ),
+        "sync.waiting.row" => (
+            "{name} · {id} · waiting for response",
+            "{name} · {id} · esperando respuesta",
+        ),
+        "sync.request.cancelled" => ("Request to {id} cancelled.", "Solicitud a {id} cancelada."),
         "sync.devices.title" => ("Devices", "Dispositivos"),
         "sync.devices.empty" => (
             "No paired devices. Send a request below or accept a request from your other device.",
@@ -795,8 +800,8 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "sync.request.reaching" => ("Reaching {id}…", "Contactando {id}…"),
         "sync.request.delivered" => ("Delivered and synced.", "Entregado y sincronizado."),
         "sync.request.unreachable" => (
-            "Unreachable right now ({err}). Kept; retry from Devices.",
-            "Inalcanzable ahora ({err}). Se conserva; reintenta desde Dispositivos.",
+            "Unreachable right now ({err}). Waiting under Requests; cancel and send again to retry.",
+            "Inalcanzable ahora ({err}). En espera en Solicitudes; cancela y envía de nuevo para reintentar.",
         ),
         "action.close" => ("Close", "Cerrar"),
         "action.copy" => ("Copy", "Copiar"),

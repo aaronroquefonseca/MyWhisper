@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS devices (
     addresses TEXT NOT NULL DEFAULT '[]',
     trusted INTEGER NOT NULL DEFAULT 0,
     pending INTEGER NOT NULL DEFAULT 0,
+    outgoing INTEGER NOT NULL DEFAULT 0,
     introducer INTEGER NOT NULL DEFAULT 0,
     last_seen INTEGER NOT NULL DEFAULT 0,
     last_sync INTEGER NOT NULL DEFAULT 0
@@ -452,6 +453,7 @@ fn migrate_schema(conn: &Connection) -> rusqlite::Result<()> {
         ("devices", "addresses", "TEXT NOT NULL DEFAULT '[]'"),
         ("devices", "trusted", "INTEGER NOT NULL DEFAULT 0"),
         ("devices", "pending", "INTEGER NOT NULL DEFAULT 0"),
+        ("devices", "outgoing", "INTEGER NOT NULL DEFAULT 0"),
         ("devices", "introducer", "INTEGER NOT NULL DEFAULT 0"),
         ("devices", "last_sync", "INTEGER NOT NULL DEFAULT 0"),
     ] {
@@ -1445,12 +1447,18 @@ pub struct Peer {
     pub addresses: Vec<String>,
     pub trusted: bool,
     pub pending: bool,
+    pub outgoing: bool,
     pub introducer: bool,
     pub last_seen: i64,
     pub last_sync: i64,
 }
 
 impl Peer {
+    /// Our request, not yet answered, and not also an incoming one.
+    pub fn waiting(&self) -> bool {
+        self.outgoing && !self.pending && !self.trusted
+    }
+
     /// All known dial targets, most-recent-first guess: explicit list
     /// first, then the legacy single address.
     pub fn dial_targets(&self) -> Vec<String> {
@@ -1490,7 +1498,7 @@ pub(crate) fn merge_addresses(current: &[String], seen: &[String]) -> Vec<String
 /// `revoked` table can re-add a removed peer as trusted from gossip.
 const PEER_COLUMNS: &str = "node_id, name, address, addresses,
     (trusted != 0 AND NOT EXISTS (SELECT 1 FROM revoked WHERE revoked.node_id = devices.node_id)),
-    pending, introducer, last_seen, last_sync";
+    pending, outgoing, introducer, last_seen, last_sync";
 
 impl Store {
     fn peer_from_row(row: &rusqlite::Row) -> rusqlite::Result<Peer> {
@@ -1503,9 +1511,10 @@ impl Store {
             addresses: parse_addresses(&addresses_raw, &address),
             trusted: row.get::<_, i64>(4)? != 0,
             pending: row.get::<_, i64>(5)? != 0,
-            introducer: row.get::<_, i64>(6)? != 0,
-            last_seen: row.get(7)?,
-            last_sync: row.get(8)?,
+            outgoing: row.get::<_, i64>(6)? != 0,
+            introducer: row.get::<_, i64>(7)? != 0,
+            last_seen: row.get(8)?,
+            last_sync: row.get(9)?,
         })
     }
 
@@ -1552,7 +1561,8 @@ impl Store {
                addresses = excluded.addresses,
                trusted = excluded.trusted,
                introducer = excluded.introducer,
-               pending = 0",
+               pending = 0,
+               outgoing = 0",
             (node_id, name, address, addresses, trusted as i64),
         )?;
         if trusted {
@@ -1576,7 +1586,7 @@ impl Store {
         tx.commit()
     }
 
-    /// Rename without touching trust, pending or introducer flags.
+    /// Rename without touching trust, pending, outgoing or introducer flags.
     pub fn rename_peer(&self, node_id: &str, name: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE devices SET name = ?2 WHERE node_id = ?1",
@@ -1646,14 +1656,105 @@ impl Store {
         }
     }
 
-    /// Decide a pending request. Accepting trusts the peer, marks it
+    /// Responder-side ONLY latch for an incoming pairing dial: sets
+    /// `pending` on a known untrusted row (`record_seen` parks only
+    /// unknown dialers), so a known device asking again stays visible.
+    /// Call only after the dialer's identity proof verified, and never
+    /// on initiator paths: our own dial must not turn into a request we
+    /// could accept ourselves.
+    pub fn mark_incoming_request(&self, node_id: &str) -> rusqlite::Result<bool> {
+        if !crate::device::valid_node_id(node_id) {
+            return Err(rusqlite::Error::ToSqlConversionFailure(
+                "invalid peer id".into(),
+            ));
+        }
+        let n = self.conn.execute(
+            "UPDATE devices SET pending = 1 WHERE node_id = ?1 AND trusted = 0",
+            [node_id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Record OUR pairing request. New rows park as untrusted
+    /// `outgoing` with `pending` clear (pending stays incoming-only, so
+    /// our own request never shows an Accept button). Known untrusted
+    /// rows gain the marker and fresh addresses; trusted rows only
+    /// refresh addresses. Our own id is refused: such a row could
+    /// never complete. A revocation stays until the peer's dial-back
+    /// completes the pairing (`decide_request` clears it).
+    pub fn record_outgoing(
+        &self,
+        node_id: &str,
+        name: &str,
+        addresses: &[String],
+        self_id: &str,
+    ) -> rusqlite::Result<bool> {
+        if !crate::device::valid_node_id(node_id) {
+            return Err(rusqlite::Error::ToSqlConversionFailure(
+                "invalid peer id".into(),
+            ));
+        }
+        if node_id.eq_ignore_ascii_case(self_id) {
+            return Err(rusqlite::Error::ToSqlConversionFailure(
+                "cannot pair with this device itself".into(),
+            ));
+        }
+        let now = now_ms() / 1000;
+        let Some(peer) = self.get_peer(node_id)? else {
+            self.conn.execute(
+                "INSERT INTO devices
+                   (node_id, name, addresses, trusted, pending, outgoing, last_seen)
+                 VALUES (?1, ?2, ?3, 0, 0, 1, ?4)",
+                (node_id, name, dump_addresses(addresses), now),
+            )?;
+            return Ok(true);
+        };
+        let merged = merge_addresses(&peer.addresses, addresses);
+        let peer_name = if name.is_empty() {
+            peer.name
+        } else {
+            name.to_string()
+        };
+        self.conn.execute(
+            "UPDATE devices
+             SET name = ?2, addresses = ?3, last_seen = ?4,
+                 outgoing = CASE WHEN ?5 THEN outgoing ELSE 1 END
+             WHERE node_id = ?1",
+            (
+                node_id,
+                peer_name,
+                dump_addresses(&merged),
+                now,
+                peer.trusted,
+            ),
+        )?;
+        Ok(false)
+    }
+
+    /// Withdraw OUR request without revoking: the row goes and the id
+    /// stays pairable (unlike a declined request). Refused unless the
+    /// row is an untrusted outgoing request.
+    pub fn withdraw_outgoing(&self, node_id: &str) -> rusqlite::Result<()> {
+        let n = self.conn.execute(
+            "DELETE FROM devices WHERE node_id = ?1 AND outgoing = 1 AND trusted = 0",
+            [node_id],
+        )?;
+        if n == 0 {
+            return Err(rusqlite::Error::ToSqlConversionFailure(
+                "no outgoing request to withdraw".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Decide a pairing request. Accepting trusts the peer, marks it
     /// an introducer (its vouched devices join automatically) and
-    /// clears the pending flag.
+    /// clears both request markers.
     pub fn decide_request(&self, node_id: &str, accept: bool) -> rusqlite::Result<()> {
         if accept {
             let tx = self.conn.unchecked_transaction()?;
             let updated = tx.execute(
-                "UPDATE devices SET trusted = 1, pending = 0, introducer = 1
+                "UPDATE devices SET trusted = 1, pending = 0, outgoing = 0, introducer = 1
                  WHERE node_id = ?1",
                 [node_id],
             )?;
@@ -1679,6 +1780,16 @@ impl Store {
             .list_peers()?
             .into_iter()
             .filter(|p| p.pending)
+            .collect())
+    }
+
+    /// Our sent requests still waiting for the other side. A row that
+    /// is also an incoming request lists as pending instead.
+    pub fn list_outgoing(&self) -> rusqlite::Result<Vec<Peer>> {
+        Ok(self
+            .list_peers()?
+            .into_iter()
+            .filter(Peer::waiting)
             .collect())
     }
 
@@ -2956,7 +3067,8 @@ mod tests {
             assert_eq!(history.len(), 1);
             assert_eq!(history[0].text, "one");
             assert_eq!(store.export_history().unwrap().len(), 2);
-            assert!(store.get_peer(&"ab".repeat(32)).unwrap().unwrap().trusted);
+            let peer = store.get_peer(&"ab".repeat(32)).unwrap().unwrap();
+            assert!(peer.trusted && !peer.outgoing);
         }
     }
 
@@ -3220,5 +3332,125 @@ mod tests {
         assert_eq!(store.peer_mark(B).unwrap(), Some(mark));
         store.reset_all_data(&AppSettings::default()).unwrap();
         assert_eq!(store.peer_mark(B).unwrap(), None);
+    }
+
+    fn node(n: u8) -> String {
+        format!("{n:02x}").repeat(32)
+    }
+
+    #[test]
+    fn outgoing_request_waits_and_never_shows_as_incoming() {
+        let store = Store::open_memory().unwrap();
+        let me = node(0xc4);
+        let peer = node(0xc5);
+        assert!(store.record_outgoing(&peer, "other", &[], &me).unwrap());
+        let row = store.get_peer(&peer).unwrap().unwrap();
+        assert!(row.waiting() && !row.pending && !row.trusted && !row.introducer);
+        assert!(store.list_pending().unwrap().is_empty());
+        assert_eq!(store.list_outgoing().unwrap().len(), 1);
+        // Our request is not something we vouch for.
+        assert!(store.export_gossip().unwrap().is_empty());
+        // Inbound contact still lands as an incoming request beside it.
+        let inbound = node(0xc6);
+        store.record_seen(&inbound, "asker", &[]).unwrap();
+        assert_eq!(store.list_pending().unwrap().len(), 1);
+        assert_eq!(store.list_outgoing().unwrap().len(), 1);
+        // Completing clears the marker and grants introduction.
+        store.decide_request(&peer, true).unwrap();
+        let row = store.get_peer(&peer).unwrap().unwrap();
+        assert!(row.trusted && row.introducer && !row.pending && !row.outgoing);
+        assert!(store.list_outgoing().unwrap().is_empty());
+        // Re-requesting a trusted peer only refreshes it.
+        assert!(!store.record_outgoing(&peer, "", &[], &me).unwrap());
+        assert!(!store.get_peer(&peer).unwrap().unwrap().outgoing);
+        // Cancelling withdraws without revoking: the id stays pairable.
+        let cancel = node(0xc7);
+        store.record_outgoing(&cancel, "c", &[], &me).unwrap();
+        store.withdraw_outgoing(&cancel).unwrap();
+        assert!(store.get_peer(&cancel).unwrap().is_none());
+        assert!(!store.is_revoked(&cancel).unwrap());
+        store.record_outgoing(&cancel, "c", &[], &me).unwrap();
+        assert_eq!(store.list_outgoing().unwrap().len(), 1);
+        // Only untrusted outgoing rows can be withdrawn.
+        assert!(store.withdraw_outgoing(&peer).is_err());
+        assert!(store.withdraw_outgoing(&inbound).is_err());
+        assert!(store.get_peer(&peer).unwrap().unwrap().trusted);
+    }
+
+    #[test]
+    fn record_outgoing_rejects_self_and_malformed_ids() {
+        let store = Store::open_memory().unwrap();
+        let me = node(0xca);
+        assert!(store.record_outgoing(&me, "me", &[], &me).is_err());
+        assert!(
+            store
+                .record_outgoing(&me.to_uppercase(), "me", &[], &me)
+                .is_err()
+        );
+        assert!(store.record_outgoing("p", "p", &[], &me).is_err());
+        assert!(store.list_peers().unwrap().is_empty());
+        assert!(
+            store
+                .record_outgoing(&node(0xcb), "peer", &[], &me)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn mark_incoming_request_latches_only_untrusted() {
+        let store = Store::open_memory().unwrap();
+        // Unknown id: nothing to latch.
+        assert!(!store.mark_incoming_request(&node(0xf5)).unwrap());
+        // A known untrusted row latches pending (our waiting row when
+        // they dial back, or a distrusted device asking again).
+        let peer = node(0xf6);
+        store
+            .record_outgoing(&peer, "wanted", &[], &node(0xf4))
+            .unwrap();
+        assert!(store.mark_incoming_request(&peer).unwrap());
+        let row = store.get_peer(&peer).unwrap().unwrap();
+        assert!(row.pending && row.outgoing && !row.trusted && !row.waiting());
+        // Trusted rows are untouched.
+        let buddy = node(0xf7);
+        store.upsert_peer(&buddy, "buddy", "", true).unwrap();
+        assert!(!store.mark_incoming_request(&buddy).unwrap());
+        assert!(!store.get_peer(&buddy).unwrap().unwrap().pending);
+        assert!(store.mark_incoming_request("bad").is_err());
+    }
+
+    /// A database from before the `outgoing` column gains it on open;
+    /// existing requests stay incoming and trusted peers stay trusted.
+    #[test]
+    fn database_without_outgoing_column_migrates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let old_schema = SCHEMA.replace("    outgoing INTEGER NOT NULL DEFAULT 0,\n", "");
+        assert!(!old_schema.contains("outgoing"));
+        let asker = node(0xe5);
+        let buddy = node(0xe6);
+        {
+            let conn = legacy_conn(&path);
+            conn.execute_batch(&old_schema).unwrap();
+            conn.execute(
+                "INSERT INTO devices (node_id, name, trusted, pending, introducer)
+                 VALUES (?1, 'asker', 0, 1, 0), (?2, 'buddy', 1, 0, 1)",
+                (&asker, &buddy),
+            )
+            .unwrap();
+            assert!(!has_column(&conn, "devices", "outgoing"));
+        }
+        let store = Store::open(&path).unwrap();
+        assert!(has_column(&store.conn, "devices", "outgoing"));
+        let row = store.get_peer(&asker).unwrap().unwrap();
+        assert!(row.pending && !row.outgoing && !row.trusted);
+        let row = store.get_peer(&buddy).unwrap().unwrap();
+        assert!(row.trusted && row.introducer && !row.outgoing);
+        assert_eq!(store.list_pending().unwrap().len(), 1);
+        assert!(store.list_outgoing().unwrap().is_empty());
+        let fresh = node(0xe7);
+        store
+            .record_outgoing(&fresh, "fresh", &[], &node(0xe4))
+            .unwrap();
+        assert_eq!(store.list_outgoing().unwrap().len(), 1);
     }
 }
