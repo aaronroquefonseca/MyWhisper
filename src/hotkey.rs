@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 mod capture;
 mod portal;
+mod x11;
 pub(crate) use capture::CaptureRequest;
 pub use capture::{acknowledge_capture_suspend, configure_capture_suspend};
 
@@ -49,7 +50,8 @@ pub enum HotkeyStatus {
     Listening,
     NoPermission,
     NoDevices,
-    PortalUnavailable,
+    /// The explicitly chosen source (portal, XInput2) could not start.
+    SourceUnavailable,
 }
 
 /// Key-down / key-up for one action binding. The mode travels with
@@ -460,10 +462,14 @@ const MAX_PUSH_SECS: u64 = 900;
 
 trait KeyDevice {
     fn events(&mut self) -> std::io::Result<Vec<evdev::InputEvent>>;
+    fn name(&self) -> String;
 }
 impl KeyDevice for Device {
     fn events(&mut self) -> std::io::Result<Vec<evdev::InputEvent>> {
         self.fetch_events().map(|events| events.collect())
+    }
+    fn name(&self) -> String {
+        Device::name(self).unwrap_or("?").to_string()
     }
 }
 
@@ -539,13 +545,15 @@ fn poll_events<D: KeyDevice>(
     pending
 }
 
-/// Blocking listener. Rereads the device dir every few seconds for
-/// hotplug (mirrors the C listener's inotify rescan, cheaply).
-fn run_loop(
+/// Blocking listener. Calls `scan` every few seconds for hotplug
+/// (mirrors the C listener's inotify rescan, cheaply): `/dev/input`
+/// keyboards, or the single XInput2 source.
+fn run_loop<D: KeyDevice>(
     generation: u64,
     mut watched: Vec<Watched>,
     on_event: BindingCallback,
     on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static>,
+    mut scan: impl FnMut() -> (Vec<(PathBuf, D)>, bool),
 ) {
     let _owner = HOTKEY_LOOP
         .lock()
@@ -554,7 +562,7 @@ fn run_loop(
         return;
     }
     let mut held = HeldKeys::default();
-    let mut devices: Vec<(std::path::PathBuf, Device)> = Vec::new();
+    let mut devices: Vec<(std::path::PathBuf, D)> = Vec::new();
     let mut reported = false;
     let mut rescan_in = 0u32;
     let mut listening = crate::transcribe::hotkeys_listening();
@@ -588,7 +596,7 @@ fn run_loop(
             notified = None;
         }
         if rescan_in == 0 && !watched.is_empty() {
-            let (found, denied) = open_keyboards();
+            let (found, denied) = scan();
             // Merge by node path: keep existing fds (with their
             // kernel-buffered events and held state), add only new
             // nodes, drop vanished ones. Replacing the whole set
@@ -608,10 +616,7 @@ fn run_loop(
                     reported = true;
                 }
             } else if !reported {
-                let names: Vec<String> = devices
-                    .iter()
-                    .map(|(_, d)| d.name().unwrap_or("?").to_string())
-                    .collect();
+                let names: Vec<String> = devices.iter().map(|(_, d)| d.name()).collect();
                 eprintln!(
                     "[hotkey] watching {} keyboard(s): {}",
                     devices.len(),
@@ -711,7 +716,7 @@ fn start_with_bindings(
     use crate::settings::HotkeyBackend;
     if let Err(e) = crate::runtime::spawn_dedicated("hotkey-loop", move || {
         let try_portal = match backend {
-            HotkeyBackend::Evdev => false,
+            HotkeyBackend::Evdev | HotkeyBackend::X11 => false,
             HotkeyBackend::Portal => true,
             HotkeyBackend::Auto => portal::desktop_supported(),
         };
@@ -720,13 +725,35 @@ fn start_with_bindings(
                 Ok(()) => return,
                 Err(e) if backend == HotkeyBackend::Portal => {
                     eprintln!("[hotkey] portal unavailable: {e} (hotkeys idle)");
-                    on_status(HotkeyStatus::PortalUnavailable);
+                    on_status(HotkeyStatus::SourceUnavailable);
                     return;
                 }
-                Err(e) => eprintln!("[hotkey] portal unavailable: {e}; using keyboard devices"),
+                Err(e) => eprintln!("[hotkey] portal unavailable: {e}; trying the next source"),
             }
         }
-        run_loop(generation, watched, on_event, on_status)
+        let try_x11 = match backend {
+            HotkeyBackend::X11 => true,
+            HotkeyBackend::Auto => x11::session_is_x11(),
+            _ => false,
+        };
+        if try_x11 {
+            match x11::open() {
+                Ok(source) => {
+                    // One persistent source: later rescans add nothing.
+                    let mut source = Some(source);
+                    return run_loop(generation, watched, on_event, on_status, move || {
+                        (source.take().into_iter().collect(), false)
+                    });
+                }
+                Err(e) if backend == HotkeyBackend::X11 => {
+                    eprintln!("[hotkey] XInput2 unavailable: {e} (hotkeys idle)");
+                    on_status(HotkeyStatus::SourceUnavailable);
+                    return;
+                }
+                Err(e) => eprintln!("[hotkey] XInput2 unavailable: {e}; using keyboard devices"),
+            }
+        }
+        run_loop(generation, watched, on_event, on_status, open_keyboards)
     }) {
         eprintln!("[hotkey] FATAL: {e} (hotkeys dead)");
     }
@@ -1096,6 +1123,9 @@ mod tests {
             self.0
                 .pop_front()
                 .ok_or_else(|| std::io::ErrorKind::WouldBlock.into())
+        }
+        fn name(&self) -> String {
+            "synthetic".into()
         }
     }
 

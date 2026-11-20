@@ -36,7 +36,7 @@ unicode-normalization = "0.1"
 zbus = "6"
 zip = "9"
 gdk4-x11 = "0.11"
-x11rb = "0.14.0"
+x11rb = { version = "0.14.0", features = ["xinput"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))'.dependencies]

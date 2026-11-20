@@ -267,9 +267,10 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "opt.hotkeyauto" => ("Automatic", "Automático"),
         "opt.hotkeyevdev" => ("Keyboard devices", "Dispositivos de teclado"),
         "opt.hotkeyportal" => ("Desktop portal", "Portal del escritorio"),
+        "opt.hotkeyx11" => ("X11 (XInput2)", "X11 (XInput2)"),
         "note.hotkeysource" => (
-            "Desktop portal: KDE, GNOME 48+ and Hyprland ask you to confirm the shortcut and may let you change it; Escape-to-cancel is not available. Keyboard devices: works everywhere but needs your user in the input group, which lets any app you run read every key. Automatic tries the portal first.",
-            "Portal del escritorio: KDE, GNOME 48+ e Hyprland te piden confirmar el atajo y pueden dejarte cambiarlo; Escape para cancelar no está disponible. Dispositivos de teclado: funciona en todas partes pero requiere que tu usuario esté en el grupo input, lo que permite a cualquier aplicación que ejecutes leer todas las teclas. Automático prueba primero el portal.",
+            "Desktop portal: KDE, GNOME 48+ and Hyprland ask you to confirm the shortcut and may let you change it; Escape-to-cancel is not available. X11: X11 sessions only, no extra permissions. Keyboard devices: works everywhere but needs your user in the input group, which lets any app you run read every key. Automatic tries the portal, then X11, then keyboard devices.",
+            "Portal del escritorio: KDE, GNOME 48+ e Hyprland te piden confirmar el atajo y pueden dejarte cambiarlo; Escape para cancelar no está disponible. X11: solo sesiones X11, sin permisos extra. Dispositivos de teclado: funciona en todas partes pero requiere que tu usuario esté en el grupo input, lo que permite a cualquier aplicación que ejecutes leer todas las teclas. Automático prueba el portal, luego X11 y luego los dispositivos de teclado.",
         ),
         "row.pastecombo" => ("Paste shortcut", "Atajo de pegado"),
         "status.available" => ("Available", "Disponible"),
