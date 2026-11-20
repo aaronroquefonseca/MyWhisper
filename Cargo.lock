@@ -1118,6 +1118,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "gdk4-x11"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "519725adee2c62e6ae4cc39e2ec9137b04f0c894f1c673ce17ab8753850534a3"
+dependencies = [
+ "gdk4",
+ "gdk4-x11-sys",
+ "gio",
+ "glib",
+ "libc",
+]
+
+[[package]]
+name = "gdk4-x11-sys"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cbf4849da10d077290e2bb8805278a0afd980af7928fbbb5a915821eb4b2b099"
+dependencies = [
+ "gdk4-sys",
+ "glib-sys",
+ "libc",
+ "system-deps 9.0.0",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1125,6 +1150,16 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
+]
+
+[[package]]
+name = "gethostname"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bd49230192a3797a9a4d6abe9b3eed6f7fa4c8a8a4947977c6f80025f92cbd8"
+dependencies = [
+ "rustix",
+ "windows-link",
 ]
 
 [[package]]
@@ -2073,6 +2108,7 @@ dependencies = [
  "evdev",
  "flate2",
  "fs2",
+ "gdk4-x11",
  "getrandom 0.4.3",
  "gtk4",
  "gtk4-layer-shell",
@@ -2096,6 +2132,7 @@ dependencies = [
  "tungstenite",
  "unicode-normalization",
  "windows-native-keyring-store",
+ "x11rb",
  "zbus",
  "zip",
 ]
@@ -3488,7 +3525,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -4407,6 +4444,23 @@ checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
 ]
+
+[[package]]
+name = "x11rb"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a8885a854a8bfdf87a301e53e41b17c5f8f33639903131338b997b1eb614f44"
+dependencies = [
+ "gethostname",
+ "rustix",
+ "x11rb-protocol",
+]
+
+[[package]]
+name = "x11rb-protocol"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acf4d1bc32aa46eec18caa634ec3cf4c05bfa151f12b93b510b15190f69a1ca8"
 
 [[package]]
 name = "xattr"

@@ -125,6 +125,8 @@ struct Inner {
     last_compact: Cell<(i32, i32)>,
     last_expanded: Cell<(i32, i32)>,
     layer_shell: bool,
+    /// Placement for the X11 fallback (layer-shell uses anchors).
+    position: Rc<Cell<crate::settings::FloatingPosition>>,
 }
 
 /// Handle to the single layer-shell overlay window.
@@ -139,12 +141,23 @@ pub struct VoiceOverlay {
 
 impl VoiceOverlay {
     pub fn new(app: &Application) -> Self {
-        let supported = gtk4::gdk::Display::default()
-            .is_some_and(|display| display.type_().name() == "GdkWaylandDisplay")
+        // Dev/testing override: MYWHISPER_PILL=x11 forces the X11 overlay.
+        let force_x11 = std::env::var("MYWHISPER_PILL").as_deref() == Ok("x11");
+        let supported = !force_x11
+            && gtk4::gdk::Display::default()
+                .is_some_and(|display| display.type_().name() == "GdkWaylandDisplay")
             && gtk4_layer_shell::is_supported();
         eprintln!("[poc] layer-shell supported: {supported}");
+        // Fallback order: layer-shell, X11 overlay (X11 or XWayland), plain window.
+        let x11 = (!supported).then(crate::overlay_x11::display).flatten();
+        let position = Rc::new(Cell::new(crate::settings::FloatingPosition::BottomCenter));
 
         let window = Window::new();
+        if let Some(display) = &x11 {
+            window.set_display(display);
+            crate::overlay_x11::attach(&window, position.clone());
+            eprintln!("[poc] pill: X11 overlay window");
+        }
         window.set_application(Some(app));
         window.set_decorated(false);
         window.add_css_class("mywhisper-pill");
@@ -169,13 +182,15 @@ impl VoiceOverlay {
                 "[poc] layer-shell configured: layer=Overlay bottom-anchored margin={BOTTOM_MARGIN} keyboard=None exclusive=0 ns={NAMESPACE}"
             );
         } else {
-            eprintln!(
-                "[poc] WARNING: layer-shell not supported; using undecorated fallback window"
-            );
+            if x11.is_none() {
+                eprintln!(
+                    "[poc] WARNING: no layer-shell or X11; using undecorated fallback window"
+                );
+            }
             window.set_default_size(280, 64);
         }
 
-        load_css();
+        load_css(&WidgetExt::display(&window));
 
         // Root container carries the pill styling.
         let root = GtkBox::new(Orientation::Vertical, 0);
@@ -234,6 +249,7 @@ impl VoiceOverlay {
                 last_compact: Cell::new((0, 0)),
                 last_expanded: Cell::new((0, 0)),
                 layer_shell: supported,
+                position,
             }),
         };
 
@@ -406,10 +422,11 @@ impl VoiceOverlay {
     }
 
     /// Pin the layer surface to a screen corner/edge. Bottom anchor is
-    /// constant; only the horizontal anchoring moves. No-op on the
-    /// undecorated fallback window.
+    /// constant; only the horizontal anchoring moves. The X11 overlay
+    /// applies it on its next map or resize; the plain window ignores it.
     pub fn set_position(&self, pos: crate::settings::FloatingPosition) {
         use crate::settings::FloatingPosition as P;
+        self.inner.position.set(pos);
         if !self.inner.layer_shell {
             return;
         }
@@ -705,16 +722,13 @@ impl VoiceOverlay {
     }
 }
 
-fn load_css() {
+/// The pill's own display: the X11 overlay may differ from the default.
+fn load_css(display: &gtk4::gdk::Display) {
     let provider = gtk4::CssProvider::new();
     provider.load_from_string(CSS);
-    if let Some(display) = gtk4::gdk::Display::default() {
-        gtk4::style_context_add_provider_for_display(
-            &display,
-            &provider,
-            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
-    } else {
-        eprintln!("[poc] WARNING: no default display; CSS provider not installed");
-    }
+    gtk4::style_context_add_provider_for_display(
+        display,
+        &provider,
+        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
 }
