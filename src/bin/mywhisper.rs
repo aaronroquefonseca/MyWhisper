@@ -21,9 +21,19 @@ fn main() -> gtk4::glib::ExitCode {
         println!("mywhisper {}", mywhisper::APP_VERSION);
         return gtk4::glib::ExitCode::SUCCESS;
     }
+    // Compositor keybinds: talk to the running service, nothing else.
+    if let Some(action) = value_of(&args, "--dictate") {
+        return match mywhisper::hotkey::command::send(&action) {
+            Ok(()) => gtk4::glib::ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("mywhisper: {e}");
+                gtk4::glib::ExitCode::FAILURE
+            }
+        };
+    }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "MyWhisper {}\nUsage: mywhisper [--service] [--page PAGE] [--section SECTION] [--theme system|light|dark]\n       mywhisper --version | --help",
+            "MyWhisper {}\nUsage: mywhisper [--service] [--page PAGE] [--section SECTION] [--theme system|light|dark]\n       mywhisper --dictate press|release|toggle|cancel\n       mywhisper --version | --help",
             mywhisper::APP_VERSION
         );
         return gtk4::glib::ExitCode::SUCCESS;
@@ -193,6 +203,7 @@ fn run_headless(
         up.clone(),
         cancel.clone(),
     );
+    mywhisper::hotkey::command::serve();
     mywhisper::service::spawn_hotkey_watcher(db_path.clone(), &initial.hotkeys, down, up, cancel);
     mywhisper::service::spawn_stt_watcher(db_path.clone());
     mywhisper::service::spawn_pill_watcher(db_path.clone(), tx.clone());

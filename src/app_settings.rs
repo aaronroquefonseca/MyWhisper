@@ -1254,6 +1254,7 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
                 tr("opt.hotkeyevdev"),
                 tr("opt.hotkeyportal"),
                 tr("opt.hotkeyx11"),
+                tr("opt.hotkeycommand"),
             ])),
             None::<gtk4::Expression>,
         );
@@ -1262,6 +1263,7 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
             HotkeyBackend::Evdev => 1,
             HotkeyBackend::Portal => 2,
             HotkeyBackend::X11 => 3,
+            HotkeyBackend::Command => 4,
         });
         dd.set_valign(gtk4::Align::Center);
         {
@@ -1272,6 +1274,7 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
                     1 => HotkeyBackend::Evdev,
                     2 => HotkeyBackend::Portal,
                     3 => HotkeyBackend::X11,
+                    4 => HotkeyBackend::Command,
                     _ => HotkeyBackend::Auto,
                 };
                 persist();

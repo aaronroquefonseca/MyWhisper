@@ -22,6 +22,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 mod capture;
+pub mod command;
 mod portal;
 mod x11;
 pub(crate) use capture::CaptureRequest;
@@ -73,6 +74,10 @@ static HOTKEY_GEN: AtomicU64 = AtomicU64::new(0);
 // A retiring loop must send its cancellation before the replacement
 // can dispatch a press to the same engine.
 static HOTKEY_LOOP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Current dictation callback + the mode `--dictate press/release`
+/// uses (the first binding's), refreshed on every (re)start.
+static COMMAND_SINK: std::sync::Mutex<Option<(BindingCallback, crate::settings::ActivationMode)>> =
+    std::sync::Mutex::new(None);
 
 // ---------------------------------------------------------------- parsing
 
@@ -685,6 +690,10 @@ fn start_with_bindings(
     on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static>,
 ) {
     let generation = HOTKEY_GEN.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+    if backend == crate::settings::HotkeyBackend::Command {
+        eprintln!("[hotkey] compositor keybinds only (mywhisper --dictate): no key listener");
+        return;
+    }
     let mut watched = Vec::new();
     for (action, binds) in bindings {
         for b in binds {
@@ -716,7 +725,7 @@ fn start_with_bindings(
     use crate::settings::HotkeyBackend;
     if let Err(e) = crate::runtime::spawn_dedicated("hotkey-loop", move || {
         let try_portal = match backend {
-            HotkeyBackend::Evdev | HotkeyBackend::X11 => false,
+            HotkeyBackend::Evdev | HotkeyBackend::X11 | HotkeyBackend::Command => false,
             HotkeyBackend::Portal => true,
             HotkeyBackend::Auto => portal::desktop_supported(),
         };
@@ -863,6 +872,9 @@ pub fn start_dictation(
     up: DictationHook,
     cancel: DictationHook,
 ) {
+    let command_mode = bindings
+        .first()
+        .map_or(crate::settings::ActivationMode::Push, |b| b.mode);
     let mut map = HashMap::new();
     map.insert(HotkeyAction::DictationToggle, bindings);
     let activation = std::sync::Mutex::new(Activation::default());
@@ -878,6 +890,10 @@ pub fn start_dictation(
             None => {}
         }
     });
+    *COMMAND_SINK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some((on_event.clone(), command_mode));
     let on_status: Arc<dyn Fn(HotkeyStatus) + Send + Sync + 'static> =
         Arc::new(|st| eprintln!("[hotkey] status: {st:?}"));
     start_with_bindings(map, backend, on_event, on_status);

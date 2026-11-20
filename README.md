@@ -79,6 +79,34 @@ Release notes use dated, release-linked headings and the categories in [the rele
 - **State**: single encrypted `state.db` (`~/.local/share/mywhisper/`),
   SQLCipher with the key in the OS keychain.
 
+## Shortcut sources
+
+Settings → Shortcuts → Shortcut source picks how hotkeys are heard:
+the desktop portal (KDE, GNOME 48+, Hyprland), X11 (XInput2) on X11
+sessions, or keyboard devices (`/dev/input`, needs the `input` group).
+Automatic tries them in that order.
+
+Compositor keybinds also work with any source (or alone, with
+"Compositor keybinds only"): bind a key to `mywhisper --dictate ACTION`.
+
+```kdl
+// niri: toggle (press starts, next press stops)
+binds { F13 { spawn "mywhisper" "--dictate" "toggle"; } }
+```
+
+```conf
+# Sway: hold to talk
+bindsym F13 exec mywhisper --dictate press
+bindsym --release F13 exec mywhisper --dictate release
+
+# Hyprland: hold to talk
+bind = , F13, exec, mywhisper --dictate press
+bindr = , F13, exec, mywhisper --dictate release
+```
+
+`press`/`release` follow the first binding's mode (hold, toggle or
+smart); `toggle` starts and stops; `cancel` discards the dictation.
+
 ## Install (private releases)
 
 Tagged versions ship binary tarballs on the private GitHub Release

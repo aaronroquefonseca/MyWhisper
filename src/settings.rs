@@ -224,6 +224,8 @@ pub enum HotkeyBackend {
     Portal,
     /// XInput2 raw key events (X11 sessions).
     X11,
+    /// No key listener: compositor keybinds run `mywhisper --dictate`.
+    Command,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
