@@ -9,7 +9,7 @@ const APP_ID: &str = "com.mywhisper.Pill";
 /// flags (useful for autostart entries); the pill itself exposes the
 /// same setters as a Rust API for the future pipeline/settings UI.
 ///
-///   --mode tape|history      --bars 7|11|15|21   --height 8..32
+///   --mode bloom|tape|history      --bars 7|11|15|21   --height 8..32
 ///   --theme white|grey|red  --ornament none|mark|mic|dot
 ///   --idle still|silhouette|calm   --mic real|sim
 ///   --sim lively|quiet|off      (sim auto-burst cadence)
@@ -45,7 +45,8 @@ fn apply_cli(overlay: &VoiceOverlay) {
 
     match value_of(&args, "--mode").as_deref() {
         Some("history") => overlay.set_viz_mode(VizMode::History),
-        Some("tape") | None => overlay.set_viz_mode(VizMode::Tape),
+        Some("tape") => overlay.set_viz_mode(VizMode::Tape),
+        Some("bloom") | None => overlay.set_viz_mode(VizMode::Bloom),
         Some(other) => eprintln!("[poc] WARNING: unknown --mode {other:?}"),
     }
     match value_of(&args, "--bars").as_deref() {

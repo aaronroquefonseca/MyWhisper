@@ -72,10 +72,10 @@ window.mywhisper-pill {
     background: transparent;
 }
 .voice-pill {
-    background: rgba(28, 28, 34, 0.92);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 16px;
-    padding: 10px 14px;
+    /* Phone app recording pill: 52px tall, 18px corners, #1D1B20 at 80%. */
+    background: rgba(29, 27, 32, 0.8);
+    border-radius: 18px;
+    padding: 13px 14px;
 }
 .voice-title {
     font-weight: bold;

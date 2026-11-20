@@ -558,6 +558,7 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "opt.day30" => ("30 days", "30 días"),
         "opt.day60" => ("60 days", "60 días"),
         "opt.day90" => ("90 days", "90 días"),
+        "opt.bloom" => ("Center bloom", "Desde el centro"),
         "opt.tape" => ("Tape", "Cinta"),
         "opt.history" => ("History", "Historial"),
         "opt.white" => ("White", "Blanco"),

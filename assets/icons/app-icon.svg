@@ -1,20 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1254 1254" width="1254" height="1254" fill="none" shape-rendering="geometricPrecision">
-  <title>Voice Assistant App Icon — initial design</title>
-  <defs>
-    <linearGradient id="tile" x1="150" y1="95" x2="1090" y2="1180" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#202B3D"/>
-      <stop offset="0.50" stop-color="#141D2A"/>
-      <stop offset="1" stop-color="#0A111C"/>
-    </linearGradient>
-    <linearGradient id="mark" x1="627" y1="273" x2="627" y2="953" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#3EF2FD"/>
-      <stop offset="0.34" stop-color="#3CCAFD"/>
-      <stop offset="0.68" stop-color="#3D93FC"/>
-      <stop offset="1" stop-color="#5B68FC"/>
-    </linearGradient>
-  </defs>
-  <rect x="84" y="84" width="1086" height="1086" rx="272" fill="url(#tile)"/>
-  <g fill="url(#mark)">
+  <title>MyWhisper app icon — flat Navy / cyan (phone stable default)</title>
+  <rect x="84" y="84" width="1086" height="1086" rx="272" fill="#142234"/>
+  <g fill="#5CD9EC">
     <rect x="195" y="532" width="124" height="195" rx="62"/>
     <rect x="350" y="430" width="137" height="384" rx="68.5"/>
     <rect x="766" y="430" width="137" height="384" rx="68.5"/>

@@ -111,7 +111,7 @@ pub enum PasteCombo {
 }
 
 /// Pill visualizer preferences. Defaults mirror the service runtime
-/// (tape, 11 bars, 18px lane, no ornament, still idle).
+/// (bloom, 11 bars, 18px lane, no ornament, still idle).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PillPrefs {
     pub position: FloatingPosition,
@@ -127,7 +127,7 @@ impl Default for PillPrefs {
     fn default() -> Self {
         Self {
             position: FloatingPosition::BottomCenter,
-            viz_mode: crate::viz::VizMode::Tape,
+            viz_mode: crate::viz::VizMode::Bloom,
             bars: 11,
             lane_max: 18.0,
             theme: crate::viz::VizTheme::White,
