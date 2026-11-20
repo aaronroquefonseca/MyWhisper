@@ -13,6 +13,7 @@ const APP_ID: &str = "com.mywhisper.Pill";
 ///   --theme white|grey|red  --ornament none|mark|mic|dot
 ///   --idle still|silhouette|calm   --mic real|sim
 ///   --sim lively|quiet|off      (sim auto-burst cadence)
+///   --error TEXT                (failed-dictation pill)
 ///   --say TEXT (show the assistant panel with TEXT)   --hide
 fn main() -> gtk4::glib::ExitCode {
     let paths = mywhisper::paths::AppPaths::create().expect("create app dirs");
@@ -100,6 +101,8 @@ fn apply_cli(overlay: &VoiceOverlay) {
 
     if args.iter().any(|a| a == "--hide") {
         overlay.hide();
+    } else if let Some(text) = value_of(&args, "--error") {
+        overlay.show_error(&text);
     } else if let Some(text) = value_of(&args, "--say") {
         overlay.show_assistant();
         overlay.set_assistant_text(&text);
