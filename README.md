@@ -56,8 +56,11 @@ Release notes use dated, release-linked headings and the categories in [the rele
 - **Service** (`mywhisper --service`): headless background engine —
   global hotkeys, capture, transcription, sync, heartbeat. Runs as a
   systemd user service (`mywhisper.service`).
-- **Pill**: Wayland layer-shell overlay with live mic visualizer,
-  streaming transcription preview and an animated Processing state.
+- **Pill**: overlay with live mic visualizer, streaming transcription
+  preview and an animated Processing state. Wayland layer-shell where
+  the compositor has it; otherwise an X11 overlay window (X11 sessions,
+  and GNOME through XWayland: always on top, never focused); a plain
+  window as the last resort.
 - **App** (`mywhisper`): desktop window — Dictation (health + recent
   history), Activity (stats + heatmap), Dictionary (words + spoken
   snippets), Devices, and Settings (including transcription and text cleanup).

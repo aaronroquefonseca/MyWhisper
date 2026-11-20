@@ -14,6 +14,7 @@ pub mod media;
 pub mod mic;
 pub mod net;
 pub mod overlay;
+pub mod overlay_x11;
 pub mod paths;
 pub mod provider_test;
 pub mod qwen_runtime;
