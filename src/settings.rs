@@ -81,6 +81,8 @@ pub enum MicSelection {
 pub enum CopyBackend {
     #[default]
     WlCopy,
+    /// X11 selection (X11 sessions; XWayland bridges it on Wayland).
+    Xclip,
 }
 
 fn default_true() -> bool {
@@ -100,6 +102,8 @@ pub enum PasteBackend {
     #[default]
     Wtype,
     Ydotool,
+    /// X11 XTEST (X11 sessions, or XWayland windows only).
+    Xdotool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

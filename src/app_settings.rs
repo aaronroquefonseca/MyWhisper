@@ -961,7 +961,21 @@ fn clipboard_page(state: &Rc<AppState>) -> GtkBox {
                 avail(status.ydotool),
                 avail(status.ydotoold_socket)
             ),
+            PasteBackend::Xdotool => {
+                format!(
+                    "{} — {}",
+                    paste_backend_deps(backend),
+                    avail(status.xdotool)
+                )
+            }
         }
+    }
+    fn copy_note_text(backend: CopyBackend, status: &BackendStatus) -> String {
+        let ok = match backend {
+            CopyBackend::WlCopy => status.wl_copy,
+            CopyBackend::Xclip => status.xclip,
+        };
+        format!("{} — {}", copy_backend_deps(backend), avail(ok))
     }
 
     let (card, rows) = group(tr("group.clipboard"));
@@ -1004,28 +1018,33 @@ fn clipboard_page(state: &Rc<AppState>) -> GtkBox {
     {
         let (b, _) = row(tr("row.copybackend"));
         let dd = DropDown::new(
-            Some(StringList::new(&["wl-copy"])),
+            Some(StringList::new(&["wl-copy", "xclip"])),
             None::<gtk4::Expression>,
         );
         dd.set_selected(match p.copy_backend {
             CopyBackend::WlCopy => 0,
+            CopyBackend::Xclip => 1,
         });
         dd.set_valign(gtk4::Align::Center);
-        dd.set_tooltip_text(Some(copy_backend_deps()));
+        dd.set_tooltip_text(Some(copy_backend_deps(p.copy_backend)));
+        let copy_note = dep_note(&copy_note_text(p.copy_backend, &status));
         {
             let state = state.clone();
-            dd.connect_selected_notify(move |_| {
-                state.settings.borrow_mut().preferences.copy_backend = CopyBackend::WlCopy;
+            let copy_note = copy_note.clone();
+            dd.connect_selected_notify(move |dd| {
+                let backend = match dd.selected() {
+                    1 => CopyBackend::Xclip,
+                    _ => CopyBackend::WlCopy,
+                };
+                state.settings.borrow_mut().preferences.copy_backend = backend;
+                dd.set_tooltip_text(Some(copy_backend_deps(backend)));
+                copy_note.set_text(&copy_note_text(backend, &status));
                 persist_prefs(state.clone())();
             });
         }
         b.append(&dd);
         rows.append(&b);
-        rows.append(&dep_note(&format!(
-            "{} — {}",
-            copy_backend_deps(),
-            avail(status.wl_copy)
-        )));
+        rows.append(&copy_note);
     }
     {
         let (b, _) = row(tr("row.hidehistory"));
@@ -1049,12 +1068,13 @@ fn clipboard_page(state: &Rc<AppState>) -> GtkBox {
     {
         let (b, _) = row(tr("row.pastebackend"));
         let dd = DropDown::new(
-            Some(StringList::new(&["wtype", "ydotool"])),
+            Some(StringList::new(&["wtype", "ydotool", "xdotool"])),
             None::<gtk4::Expression>,
         );
         dd.set_selected(match p.paste_backend {
             PasteBackend::Wtype => 0,
             PasteBackend::Ydotool => 1,
+            PasteBackend::Xdotool => 2,
         });
         dd.set_valign(gtk4::Align::Center);
         dd.set_tooltip_text(Some(paste_backend_deps(p.paste_backend)));
@@ -1065,6 +1085,7 @@ fn clipboard_page(state: &Rc<AppState>) -> GtkBox {
             dd.connect_selected_notify(move |dd| {
                 let backend = match dd.selected() {
                     1 => PasteBackend::Ydotool,
+                    2 => PasteBackend::Xdotool,
                     _ => PasteBackend::Wtype,
                 };
                 state.settings.borrow_mut().preferences.paste_backend = backend;
