@@ -506,6 +506,12 @@ fn openai_models(url: &str, configured: &str, key: &str, model: &str, strict: bo
         Err(outcome) => return outcome,
     };
     if let Err(outcome) = status_outcome(code) {
+        // Self-hosted servers are often POST-only (no model list: GET gives
+        // 404/405/501) yet transcribe fine; past the 401/403 key gate that
+        // still proves the server answers. Mirrors the phone app's probe.
+        if !strict && matches!(code, 404 | 405 | 501) {
+            return Outcome::ServerAnswered;
+        }
         // A missing list endpoint is not a missing model.
         return if outcome == Outcome::ModelMissing {
             Outcome::Http(code)
@@ -1206,6 +1212,24 @@ mod tests {
             "t",
         );
         assert_eq!(llm_blocker(&ollama), None);
+    }
+
+    #[test]
+    fn self_hosted_without_model_list_passes_but_rejected_key_fails() {
+        for status in [
+            "404 Not Found",
+            "405 Method Not Allowed",
+            "501 Not Implemented",
+        ] {
+            let server = serve(1, move |_| json(status, "{}"));
+            let entry = stt(SttEntryKind::SelfHosted, "", &server.base, "k");
+            let r = probe_stt(&entry, &SttSettings::default(), Path::new(""));
+            assert_eq!(r.outcome, Outcome::ServerAnswered, "{status}");
+        }
+        let gated = serve(1, |_| json("401 Unauthorized", "{}"));
+        let entry = stt(SttEntryKind::SelfHosted, "", &gated.base, "k");
+        let r = probe_stt(&entry, &SttSettings::default(), Path::new(""));
+        assert_eq!(r.outcome, Outcome::KeyRejected);
     }
 
     #[test]
