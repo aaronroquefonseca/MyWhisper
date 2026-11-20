@@ -44,6 +44,9 @@ fn main() -> gtk4::glib::ExitCode {
             }
         });
     }
+    // Retention runs at startup, hourly and on preference changes,
+    // whether or not anything is dictated.
+    mywhisper::retention::start(paths.data_dir.clone());
     let identity = mywhisper::device::DeviceIdentity::load_or_create(&paths.device_key_file())
         .expect("node identity");
     tracing::info!(
@@ -61,6 +64,8 @@ fn main() -> gtk4::glib::ExitCode {
             eprintln!("[service] another engine already runs, exiting");
             return gtk4::glib::ExitCode::FAILURE;
         }
+        // Engine owner, before any dictation: drop a crashed run's staging.
+        mywhisper::retention::sweep_leftovers(&paths.data_dir);
         // Discovery sink shared with the UI (built per activation).
         let discovered: std::sync::Arc<
             std::sync::Mutex<std::collections::HashMap<String, mywhisper::net::Discovered>>,

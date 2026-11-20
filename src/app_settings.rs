@@ -467,6 +467,8 @@ pub(crate) fn persist_prefs(state: Rc<AppState>) -> Rc<dyn Fn()> {
             eprintln!("[app] prefs save failed: {e}");
             super::app::notify(tr("feedback.savefailed"));
         }
+        // Retention windows may have shrunk: expire now, off the GTK thread.
+        crate::retention::request();
     })
 }
 
@@ -5166,7 +5168,7 @@ fn privacy_page(state: &Rc<AppState>) -> GtkBox {
                     .map(|p| p.to_path_buf())
                     .unwrap_or_default();
                 let dir = crate::audio::audio_vault_dir(&data_dir);
-                let _ = std::fs::create_dir_all(&dir);
+                let _ = crate::private_fs::directory(&dir);
                 if let Err(e) = std::process::Command::new("xdg-open")
                     .arg(&dir)
                     .stdin(std::process::Stdio::null())
