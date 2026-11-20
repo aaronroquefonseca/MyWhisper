@@ -214,13 +214,16 @@ pub enum ActivationMode {
 /// Where global hotkeys come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum HotkeyBackend {
-    /// Desktop portal when it binds, otherwise keyboard devices.
+    /// Desktop portal when it binds, XInput2 on X11 sessions,
+    /// otherwise keyboard devices.
     #[default]
     Auto,
     /// Read `/dev/input` keyboards directly (needs the `input` group).
     Evdev,
     /// XDG GlobalShortcuts portal (KDE, GNOME 48+, Hyprland).
     Portal,
+    /// XInput2 raw key events (X11 sessions).
+    X11,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
