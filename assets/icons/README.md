@@ -3,7 +3,7 @@
 Motif: 5-bar waveform, center bar = speech bubble tail. Voice → text.
 
 ## Files
-- `app-icon.svg` — source. Dark rounded tile `#0A111C→#202B3D`, gradient mark `#3EF2FD→#5B68FC`. 1254 viewBox. App launcher / store / about.
+- `app-icon.svg` — source. Flat navy tile `#142234`, flat cyan mark `#5CD9EC` (the phone app's stable Navy / cyan default; same geometry as the original gradient design). 1254 viewBox. App launcher / store / about.
 - `app-icon-preview-on-white-1254.png` — 1254px render on white bg. Preview only, not runtime.
 - `symbolic.svg` — source. `currentColor`, no tile. Tray / toolbar / Noctalia. Recolors via CSS/context.
 - `symbolic-preview-on-white-1254.png` — 1254px black-on-white render. Preview only.

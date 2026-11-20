@@ -746,20 +746,26 @@ fn preferences_page(state: &Rc<AppState>, on_theme: &Rc<dyn Fn(Theme)>) -> GtkBo
     {
         let (b, _) = row(tr("row.animation"));
         let mode = DropDown::new(
-            Some(StringList::new(&[tr("opt.tape"), tr("opt.history")])),
+            Some(StringList::new(&[
+                tr("opt.bloom"),
+                tr("opt.tape"),
+                tr("opt.history"),
+            ])),
             None::<gtk4::Expression>,
         );
         mode.set_selected(match p.pill.viz_mode {
-            crate::viz::VizMode::Tape => 0,
-            crate::viz::VizMode::History => 1,
+            crate::viz::VizMode::Bloom => 0,
+            crate::viz::VizMode::Tape => 1,
+            crate::viz::VizMode::History => 2,
         });
         {
             let state = state.clone();
             let persist = persist_prefs(state.clone());
             mode.connect_selected_notify(move |d| {
                 state.settings.borrow_mut().preferences.pill.viz_mode = match d.selected() {
-                    1 => crate::viz::VizMode::History,
-                    _ => crate::viz::VizMode::Tape,
+                    1 => crate::viz::VizMode::Tape,
+                    2 => crate::viz::VizMode::History,
+                    _ => crate::viz::VizMode::Bloom,
                 };
                 persist();
             });

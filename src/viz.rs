@@ -2,16 +2,19 @@
 //!
 //! Design notes borrow from the OpenWhispr recording pill
 //! (`PillWaveform.tsx` / `waveformMath.ts`): thin monochrome bars, no
-//! frantic idle motion, a scrolling level tape, and a compressive
-//! level curve (`(rms*8)^0.75`) that keeps quiet speech visible.
+//! frantic idle motion and a scrolling level tape. Every mode reads the
+//! level through the phone app's [`LevelNormalizer`] (adaptive noise
+//! floor plus auto-gain), so room noise stays flat and quiet talkers
+//! still fill the lane.
 //!
 //! Everything visual is runtime-switchable through the
 //! `Visualizer` setters (see the host CLI flags), so variants can be
 //! A/B-compared without recompiling:
 //!
-//! * mode: `tape` (OpenWhispr-style: newest sample at the right
-//!   edge) or `history` (center bar live, older samples propagate
-//!   outward ~100 ms/step).
+//! * mode: `bloom` (default, the phone app's center bloom: silence
+//!   shows dots, voice opens the bars from the middle out), `tape`
+//!   (OpenWhispr-style: newest sample at the right edge) or `history`
+//!   (center bar live, older samples propagate outward ~100 ms/step).
 //! * idle (level below threshold): `still` (bars rest at minimum),
 //!   `silhouette` (static resting profile), `calm` (faint slow sine).
 //! * bars: odd counts 7/11/15/21 (default 11, per reference).
@@ -46,16 +49,146 @@ const ORNAMENT_W: f64 = 22.0;
 /// when inference starts.
 const SPINNER_PX: i32 = 30;
 const MARK_PX: i32 = 18;
-const SPEECH_THRESHOLD: f32 = 0.12;
 const QUIET_ENV: f32 = 0.03;
 
-// Level curve from the reference: gain puts loud voicing at the top
-// of the lane, exponent 0.75 keeps quiet speech visible.
-const LEVEL_GAIN: f32 = 8.0;
-const LEVEL_EXPONENT: f32 = 0.75;
+/// `mic.rs` publishes `(rms * 8).clamp(0, 1)`; undo the gain to feed
+/// the normalizer block RMS (clipping only above -18 dBFS, already loud).
+const MIC_GAIN: f32 = 8.0;
 
-fn to_bar_level(rms: f32) -> f32 {
-    (rms.max(0.0) * LEVEL_GAIN).powf(LEVEL_EXPONENT).min(1.0)
+/// Port of the phone app's `LevelNormalizer`: block RMS to 0..1 in dB
+/// with an adaptive noise floor (gates room noise) and a decaying
+/// ceiling (auto-gain for quiet talkers). Constants are per ~32 ms
+/// block; the pill ticks every 33 ms.
+#[derive(Default)]
+struct LevelNormalizer {
+    floor_db: Option<f32>,
+    ceil_db: f32,
+}
+
+impl LevelNormalizer {
+    const FLOOR_RISE_DB: f32 = 0.05;
+    const CEIL_FALL_DB: f32 = 0.2;
+    const MIN_FLOOR_DB: f32 = -70.0;
+    const GATE_DB: f32 = 6.0;
+    const MIN_SPAN_DB: f32 = 24.0;
+
+    fn push(&mut self, rms: f32) -> f32 {
+        // Digital-zero blocks say nothing about room noise.
+        if rms <= 0.0 {
+            return 0.0;
+        }
+        let db = 20.0 * rms.max(1e-6).log10();
+        // Seeded from the first real block so a noisy room is learned at once.
+        let prev = match self.floor_db {
+            Some(floor) => floor,
+            None => {
+                self.ceil_db = db + Self::MIN_SPAN_DB;
+                db
+            }
+        };
+        let floor = if db < prev {
+            db
+        } else {
+            prev + Self::FLOOR_RISE_DB
+        }
+        .clamp(Self::MIN_FLOOR_DB, -20.0);
+        self.floor_db = Some(floor);
+        self.ceil_db = db
+            .max(self.ceil_db - Self::CEIL_FALL_DB)
+            .max(floor + Self::MIN_SPAN_DB);
+        let gate = floor + Self::GATE_DB;
+        ((db - gate) / (self.ceil_db - gate)).clamp(0.0, 1.0)
+    }
+}
+
+/// Port of the phone app's `BloomBars`: silence shows dots; voice
+/// opens the bars from the middle out, every bar showing the current
+/// level under a mirrored bell. Rates are "per 60 Hz frame", rescaled
+/// by `dt`.
+struct Bloom {
+    heights: Vec<f32>,
+    level: f32,
+    spread: f32,
+    clock: f32,
+    since_voice: f32,
+}
+
+impl Default for Bloom {
+    fn default() -> Self {
+        Self {
+            heights: Vec::new(),
+            level: 0.0,
+            spread: 0.0,
+            clock: 0.0,
+            since_voice: f32::INFINITY,
+        }
+    }
+}
+
+impl Bloom {
+    /// Normalized level above this counts as voice (the normalizer gates noise).
+    const VOICE_GATE: f32 = 0.08;
+    /// Voice stays "on" this long after the last loud block, bridging word gaps.
+    const HANGOVER_S: f32 = 0.22;
+    const BELL_SIGMA: f32 = 0.32;
+    const WOBBLE: f32 = 0.16;
+
+    fn step(&mut self, input: f32, count: usize, dt: f32) {
+        let input = input.clamp(0.0, 1.0);
+        self.heights.resize(count, 0.0);
+        self.clock += dt;
+        self.since_voice = if input > Self::VOICE_GATE {
+            0.0
+        } else {
+            self.since_voice + dt
+        };
+        let voice = self.since_voice < Self::HANGOVER_S;
+        let rise = if input > self.level { 0.55 } else { 0.18 };
+        self.level = approach(self.level, input, rise, dt);
+        // ~120 ms to open, ~400 ms to close.
+        let (target, rate) = if voice { (1.0, 0.22) } else { (0.0, 0.07) };
+        self.spread = approach(self.spread, target, rate, dt);
+        let c = count.saturating_sub(1) as f32 / 2.0;
+        for i in 0..count {
+            let d = if c == 0.0 {
+                0.0
+            } else {
+                (i as f32 - c).abs() / c
+            };
+            let reveal = ((self.spread * 1.25 - d) / 0.25).clamp(0.0, 1.0);
+            let sigma2 = 2.0 * Self::BELL_SIGMA * Self::BELL_SIGMA;
+            let bell = 0.12 + 0.88 * (-(d * d) / sigma2).exp();
+            // One phase set per mirrored pair, so both halves move together.
+            let p = bloom_phases(i.min(count - 1 - i));
+            let wobble = 1.0 - Self::WOBBLE
+                + Self::WOBBLE
+                    * (0.5
+                        + 0.25 * (self.clock * p[2] + p[0]).sin()
+                        + 0.25 * (self.clock * p[3] + p[1]).sin());
+            self.heights[i] = approach(
+                self.heights[i],
+                reveal * self.level * bell * wobble,
+                0.45,
+                dt,
+            );
+        }
+    }
+}
+
+/// Fixed pseudo-random phases/speeds per bar pair (std has no RNG).
+fn bloom_phases(pair: usize) -> [f32; 4] {
+    let r = |k: u32| {
+        let x = (pair as u32 + 1)
+            .wrapping_mul(2_654_435_761)
+            .wrapping_add(k.wrapping_mul(40_503).wrapping_mul(2_246_822_519));
+        (x >> 16) as f32 / 65_535.0
+    };
+    let tau = std::f32::consts::TAU;
+    [r(1) * tau, r(2) * tau, 2.0 + r(3) * 3.0, 3.0 + r(4) * 4.0]
+}
+
+fn approach(cur: f32, target: f32, per_frame_60: f32, dt: f32) -> f32 {
+    cur + (target - cur) * (1.0 - (1.0 - per_frame_60).powf(dt * 60.0))
 }
 
 // Resting silhouette from the reference (px in a 22px lane);
@@ -172,6 +305,7 @@ impl LevelSource for SimMic {
 pub enum VizMode {
     History,
     Tape,
+    Bloom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -236,6 +370,8 @@ struct VizState {
     mic: MicInput,
     /// Our monochrome symbolic mark, white-recolored SVG rasterized once.
     mark: Option<gtk4::gdk_pixbuf::Pixbuf>,
+    norm: LevelNormalizer,
+    bloom: Bloom,
 }
 
 /// Rounded-bars visualizer. Cloneable handle; the draw closure and
@@ -254,7 +390,7 @@ impl Visualizer {
         area.set_hexpand(true);
         area.set_vexpand(true);
         let state = Rc::new(RefCell::new(VizState {
-            mode: VizMode::Tape,
+            mode: VizMode::Bloom,
             theme: VizTheme::White,
             ornament: Ornament::None,
             idle: IdleStyle::Still,
@@ -271,6 +407,8 @@ impl Visualizer {
             ticks: 0,
             mic: MicInput::new(),
             mark: load_mark_pixbuf(),
+            norm: LevelNormalizer::default(),
+            bloom: Bloom::default(),
         }));
         size_area(&area, &state.borrow());
 
@@ -416,7 +554,13 @@ impl Visualizer {
     /// release (the mic's settle grace lands the tail; Processing
     /// never holds the device).
     pub fn set_mic_active(&self, active: bool) {
-        self.state.borrow_mut().mic.set_active(active);
+        let mut st = self.state.borrow_mut();
+        if active {
+            // Each utterance learns its room noise afresh, as on the phone.
+            st.norm = LevelNormalizer::default();
+            st.bloom = Bloom::default();
+        }
+        st.mic.set_active(active);
     }
 
     /// Immediate close for cancel: no tail to land, so skip the hold.
@@ -504,7 +648,8 @@ fn load_mark_pixbuf() -> Option<gtk4::gdk_pixbuf::Pixbuf> {
 /// Advance simulation + envelopes one frame (GTK thread only).
 fn tick(st: &mut VizState) {
     let dt = TICK_MS as f32 / 1000.0;
-    let level = st.mic.sample(dt);
+    // Normalized for every mode: noise gated to 0, voice auto-gained.
+    let level = st.norm.push(st.mic.sample(dt) / MIC_GAIN);
     st.phase += dt * 4.5;
     st.ticks += 1;
 
@@ -521,11 +666,20 @@ fn tick(st: &mut VizState) {
     };
 
     // Speech envelope: fast attack, slow release.
-    let target = if level > SPEECH_THRESHOLD { level } else { 0.0 };
+    let target = if level > Bloom::VOICE_GATE {
+        level
+    } else {
+        0.0
+    };
     if target > st.env {
         st.env += (target - st.env) * 0.5;
     } else {
         st.env *= 0.94;
+    }
+
+    if st.mode == VizMode::Bloom {
+        let count = st.bar_count;
+        st.bloom.step(level, count, dt);
     }
 
     // Sample history/tape buffers at ~100 ms.
@@ -541,7 +695,7 @@ fn heights(st: &VizState) -> Vec<f32> {
     let mut out = vec![0.0f32; n];
     let speaking = st.env >= QUIET_ENV;
 
-    if !speaking {
+    if !speaking && st.mode != VizMode::Bloom {
         match st.idle {
             IdleStyle::Still => {} // rest at minimum
             IdleStyle::Silhouette => {
@@ -567,17 +721,18 @@ fn heights(st: &VizState) -> Vec<f32> {
     }
 
     match st.mode {
+        VizMode::Bloom => return st.bloom.heights.clone(),
         VizMode::History => {
             let center = n / 2;
             for (i, h) in out.iter_mut().enumerate() {
                 let age = i.abs_diff(center).min(31);
-                *h = to_bar_level(st.hist[age]);
+                *h = st.hist[age];
             }
         }
         VizMode::Tape => {
             for (i, h) in out.iter_mut().enumerate() {
                 let age = (n - 1 - i).min(31); // newest at right edge
-                *h = to_bar_level(st.hist[age]);
+                *h = st.hist[age];
             }
         }
     }
@@ -585,7 +740,8 @@ fn heights(st: &VizState) -> Vec<f32> {
 }
 
 fn draw(cr: &cairo::Context, width: f64, height: f64, st: &VizState) {
-    let quiet = st.env < QUIET_ENV;
+    // Bloom already shows silence as dots, so it never dims.
+    let quiet = st.env < QUIET_ENV && st.mode != VizMode::Bloom;
     let (r, g, b, a) = st.theme.rgba(quiet);
     cr.set_source_rgba(r, g, b, a);
     cr.set_line_cap(cairo::LineCap::Round);
@@ -791,5 +947,65 @@ impl Default for SimMic {
 impl Default for Visualizer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod bloom_tests {
+    use super::{Bloom, LevelNormalizer};
+
+    const DT: f32 = 0.033;
+
+    fn rms(db: f32) -> f32 {
+        10f32.powf(db / 20.0)
+    }
+
+    fn run(b: &mut Bloom, level: f32, secs: f32) {
+        for _ in 0..(secs / DT) as usize {
+            b.step(level, 11, DT);
+        }
+    }
+
+    #[test]
+    fn normalizer_gates_room_noise_and_lifts_speech() {
+        let mut n = LevelNormalizer::default();
+        for _ in 0..200 {
+            assert_eq!(n.push(rms(-45.0)), 0.0);
+        }
+        let mut n = LevelNormalizer::default();
+        for _ in 0..30 {
+            n.push(rms(-65.0));
+        }
+        assert!(n.push(rms(-30.0)) > 0.9);
+        assert!((0.4..0.9).contains(&n.push(rms(-40.0))));
+    }
+
+    #[test]
+    fn silence_stays_flat() {
+        let mut b = Bloom::default();
+        run(&mut b, 0.0, 1.0);
+        assert!(b.heights.iter().all(|h| *h == 0.0));
+    }
+
+    #[test]
+    fn voice_is_symmetric_and_center_tallest() {
+        let mut b = Bloom::default();
+        run(&mut b, 0.8, 0.6);
+        let h = &b.heights;
+        for i in 0..5 {
+            assert!((h[i] - h[10 - i]).abs() < 1e-6);
+        }
+        assert!(h[5] > 0.5 && h[5] > h[2] && h[2] > h[0]);
+    }
+
+    #[test]
+    fn opens_from_center_then_settles() {
+        let mut b = Bloom::default();
+        run(&mut b, 0.8, 0.066);
+        assert!(b.heights[5] > 0.0);
+        assert_eq!(b.heights[0], 0.0);
+        run(&mut b, 0.8, 0.6);
+        run(&mut b, 0.0, 2.0);
+        assert!(b.heights.iter().all(|h| *h < 0.01));
     }
 }
