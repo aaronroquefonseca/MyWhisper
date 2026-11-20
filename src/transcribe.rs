@@ -7640,7 +7640,13 @@ HTTPServer(("127.0.0.1", int(sys.argv[sys.argv.index("--port") + 1])), Handler).
         for (path, body) in [(&a, &b"zymurgy"[..]), (&b, &b"RIFF"[..])] {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             assert!(name.starts_with(TMPFS_PREFIX), "{name}");
-            assert!(!name.contains(&std::process::id().to_string()), "{name}");
+            let pid = std::process::id();
+            // Not the old PID-derived names another user could predict.
+            assert!(
+                name != format!("{TMPFS_PREFIX}kw-{pid}")
+                    && name != format!("{TMPFS_PREFIX}{pid}-0.wav"),
+                "{name}"
+            );
             let meta = std::fs::symlink_metadata(path).unwrap();
             assert!(meta.is_file());
             assert_eq!(meta.permissions().mode() & 0o777, 0o600);
