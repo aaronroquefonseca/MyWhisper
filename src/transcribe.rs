@@ -63,6 +63,7 @@ use std::sync::{
     mpsc,
 };
 use std::time::{Duration, Instant};
+use tempfile::TempPath;
 
 use crate::audio::{self, ENGINE_RATE, MIN_SAMPLES_16K, Recorder, Resampler, wav_bytes_16k};
 use crate::settings::{
@@ -538,6 +539,36 @@ fn engine_ok() {
 
 fn engine_failed() {
     ENGINE_FAILURES.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Why the last dictation produced nothing, as an i18n tag for the
+/// pill. Fixed copy only: never engine output or transcript text.
+static FAILURE: Mutex<Option<&'static str>> = Mutex::new(None);
+
+fn report_failure(tag: &'static str) {
+    if let Ok(mut failure) = FAILURE.lock() {
+        *failure = Some(tag);
+    }
+}
+
+/// Take the failure reported by the dictation that just completed.
+/// shortcut: one global slot, so a stale completion can take a newer
+/// press's setup failure; key it by press ticket if that shows up.
+pub fn take_failure() -> Option<&'static str> {
+    FAILURE.lock().ok().and_then(|mut failure| failure.take())
+}
+
+/// Every engine of the accepted chain failed to start.
+const ENGINES_NOT_READY: &str = "no STT engine could start";
+
+fn failure_tag(error: &str) -> &'static str {
+    if error == CAPTURE_LIMIT_REACHED {
+        "dictation.err.toolong"
+    } else if error.starts_with(ENGINES_NOT_READY) {
+        "dictation.err.model"
+    } else {
+        "dictation.err.engine"
+    }
 }
 
 /// Hotkey input gate (banner toggle): false mutes all hotkey events.
@@ -2341,13 +2372,12 @@ fn sherpa_hotwords(
     let path = data_dir.join("hotwords").join(format!("{name}.txt"));
     let content = clean.join("\n");
     let rewrite = std::fs::read_to_string(&path).unwrap_or_default() != content;
-    if rewrite {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if std::fs::write(&path, &content).is_err() {
-            return (None, Vec::new());
-        }
+    if rewrite
+        && crate::private_fs::directory(&data_dir.join("hotwords"))
+            .and_then(|()| crate::private_fs::replace(&path, content.as_bytes()))
+            .is_err()
+    {
+        return (None, Vec::new());
     }
     let args = vec![
         "--decoding-method=modified_beam_search".to_string(),
@@ -3310,24 +3340,37 @@ impl OnlineSession {
 /// RAM-only except one tmpfs staging file (`/dev/shm`, never
 /// persisted): the CLI takes a path, not stdin. Telemetry is forced
 /// off in the child environment (on-device posture).
+/// Shared tmpfs for Whistle staging; every entry starts with
+/// `TMPFS_PREFIX` so the engine owner can sweep crash leftovers.
+pub(crate) const TMPFS_DIR: &str = "/dev/shm";
+pub(crate) const TMPFS_PREFIX: &str = "mywhisper-whistle-";
+
+/// Stage bytes in the shared tmpfs: random name, created O_EXCL with
+/// mode 0600 (never follows a planted link), removed on drop.
+fn stage_tmpfs(dir: &Path, tag: &str, suffix: &str, bytes: &[u8]) -> std::io::Result<TempPath> {
+    use std::io::Write;
+    let mut file = tempfile::Builder::new()
+        .prefix(&format!("{TMPFS_PREFIX}{tag}"))
+        .suffix(suffix)
+        .tempfile_in(dir)?;
+    file.write_all(bytes)?;
+    Ok(file.into_temp_path())
+}
+
 /// Dictionary keywords file for needle (`--audio-keywords`, plain
-/// words one per line). /dev/shm: RAM, removed after the utterance.
-fn write_keywords_file(words: &[String]) -> Option<PathBuf> {
+/// words one per line). /dev/shm: RAM, removed when dropped.
+fn write_keywords_file(words: &[String]) -> Option<TempPath> {
     if !words.iter().any(|w| !w.trim().is_empty()) {
         return None;
     }
-    let path = PathBuf::from(format!(
-        "/dev/shm/mywhisper-whistle-kw-{}",
-        std::process::id()
-    ));
     let content = words
         .iter()
         .map(|w| w.trim())
         .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    match std::fs::write(&path, content) {
-        Ok(()) => Some(path),
+    match stage_tmpfs(Path::new(TMPFS_DIR), "kw-", "", content.as_bytes()) {
+        Ok(path) => Some(path),
         Err(e) => {
             eprintln!("[stt] whistle keywords: {e}");
             None
@@ -3352,30 +3395,26 @@ pub fn whistle_transcribe(
     } else {
         samples_16k.chunks(WINDOW).collect()
     };
-    for (i, chunk) in chunks.iter().enumerate() {
+    for chunk in &chunks {
         let wav = wav_bytes_16k(&audio::f32_to_i16(chunk));
-        let path = write_tmpfs_wav(&wav, i)?;
-        let text = whistle_pass(engine, model, &path, kw_path.as_deref(), lang);
-        let _ = std::fs::remove_file(&path);
-        transcripts.push(text?);
-    }
-    if let Some(kw) = kw_path {
-        let _ = std::fs::remove_file(kw);
+        let path = write_tmpfs_wav(&wav)?;
+        transcripts.push(whistle_pass(
+            engine,
+            model,
+            &path,
+            kw_path.as_deref(),
+            lang,
+        )?);
     }
     Ok(transcripts.join(" ").trim().to_string())
 }
 
-fn write_tmpfs_wav(wav: &[u8], idx: usize) -> Result<PathBuf, String> {
-    let dir = Path::new("/dev/shm");
+fn write_tmpfs_wav(wav: &[u8]) -> Result<TempPath, String> {
+    let dir = Path::new(TMPFS_DIR);
     if !dir.is_dir() {
         return Err("whistle needs /dev/shm (tmpfs) for CLI staging".to_string());
     }
-    let path = dir.join(format!(
-        "mywhisper-whistle-{}-{idx}.wav",
-        std::process::id()
-    ));
-    std::fs::write(&path, wav).map_err(|e| format!("stage whistle wav: {e}"))?;
-    Ok(path)
+    stage_tmpfs(dir, "", ".wav", wav).map_err(|e| format!("stage whistle wav: {e}"))
 }
 
 fn whistle_pass(
@@ -3559,8 +3598,9 @@ impl WhistleStream {
     ) -> Result<Self, String> {
         use std::os::unix::ffi::OsStrExt;
         let dir = tempfile::Builder::new()
-            .prefix("mywhisper-whistle-")
-            .tempdir_in("/dev/shm")
+            .prefix(TMPFS_PREFIX)
+            .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .tempdir_in(TMPFS_DIR)
             .map_err(|e| format!("whistle FIFO dir: {e}"))?;
         let fifo = dir.path().join("audio.wav");
         let path = std::ffi::CString::new(fifo.as_os_str().as_bytes())
@@ -3848,8 +3888,56 @@ fn whisper_json_text(v: &serde_json::Value) -> String {
 }
 
 pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>, port: u16) -> Result<String, String> {
+    whisper_inference(wav, prompt, port, "json").map(|v| whisper_json_text(&v))
+}
+
+/// Speculative decode: segments with the engine's end timestamps, so
+/// confirmed text maps to the audio it covers. A reply without
+/// timestamps becomes one segment that never confirms.
+fn whisper_segments(
+    wav: &[u8],
+    prompt: Option<String>,
+    port: u16,
+) -> Result<Vec<crate::speculative::Segment>, String> {
+    whisper_inference(wav, prompt, port, "verbose_json").map(|v| whisper_json_segments(&v))
+}
+
+fn whisper_json_segments(v: &serde_json::Value) -> Vec<crate::speculative::Segment> {
+    let segments: Option<Vec<_>> =
+        v.get("segments")
+            .and_then(|s| s.as_array())
+            .and_then(|segments| {
+                segments
+                    .iter()
+                    .map(|s| {
+                        Some(crate::speculative::Segment {
+                            text: s
+                                .get("text")?
+                                .as_str()?
+                                .split_whitespace()
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                            end: (s.get("end")?.as_f64()?.max(0.0) * 16_000.0) as usize,
+                        })
+                    })
+                    .collect()
+            });
+    segments.unwrap_or_else(|| {
+        vec![crate::speculative::Segment {
+            text: whisper_json_text(v),
+            end: usize::MAX,
+        }]
+    })
+}
+
+fn whisper_inference(
+    wav: &[u8],
+    prompt: Option<String>,
+    port: u16,
+    format: &str,
+) -> Result<serde_json::Value, String> {
     let boundary = "mywhisperwav";
-    let mut fields = vec![("temperature", "0.0"), ("response_format", "json")];
+    let mut fields = vec![("temperature", "0.0"), ("response_format", format)];
     let prompt_owned;
     if let Some(p) = prompt.as_ref()
         && !p.is_empty()
@@ -3878,9 +3966,7 @@ pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>, port: u16) -> Resu
         return Err(format!("whisper /inference: http {}", res.status()));
     }
     let text = res.text().map_err(|e| format!("whisper body: {e}"))?;
-    let v: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("whisper json: {e}"))?;
-    Ok(whisper_json_text(&v))
+    serde_json::from_str(&text).map_err(|e| format!("whisper json: {e}"))
 }
 
 // ----------------------------------------------------------------- cloud
@@ -4133,9 +4219,11 @@ struct SpecHandle {
     /// Explicit release finalizes the tail. Dropping the sender aborts
     /// speculative work when a capture is cancelled or abandoned.
     release: mpsc::Sender<()>,
-    /// Final (committed_text, committed_audio_len, full 16k buffer).
-    done_rx: mpsc::Receiver<(String, usize, Vec<f32>)>,
+    /// Final confirmed agreement and the full settled 16k buffer.
+    done_rx: mpsc::Receiver<SpecDone>,
 }
+
+type SpecDone = (crate::speculative::Agreement, Vec<f32>);
 
 /// First audio before the first speculative pass (1.5 s @ 16 kHz).
 const SPEC_FIRST_PASS: usize = 24_000;
@@ -4156,7 +4244,7 @@ fn run_spec(
     release: mpsc::Receiver<()>,
     data_dir: PathBuf,
     config: SpecConfig,
-    tx: mpsc::Sender<(String, usize, Vec<f32>)>,
+    tx: mpsc::Sender<SpecDone>,
     settled: Arc<AtomicBool>,
 ) {
     let SpecConfig {
@@ -4181,8 +4269,7 @@ fn run_spec(
         };
     let mut buffer: Vec<f32> = Vec::new();
     let mut consumed = 0usize;
-    let mut prev_hyp = String::new();
-    let mut committed = (String::new(), 0usize);
+    let mut agreement = crate::speculative::Agreement::default();
     let tick = Duration::from_secs_f32(update_secs.max(0.5));
     loop {
         match release.recv_timeout(tick) {
@@ -4198,8 +4285,9 @@ fn run_spec(
         if buffer.len() < SPEC_FIRST_PASS {
             continue;
         }
-        let window = crate::speculative::unconfirmed_window(&buffer, committed.1, overlap);
-        let wav = wav_bytes_16k(&audio::f32_to_i16(&window));
+        let start = agreement.window_start(overlap);
+        let window = &buffer[start..];
+        let wav = wav_bytes_16k(&audio::f32_to_i16(window));
         let prompt = prompt.get_or_insert_with(|| {
             let words = crate::store::Store::open(&data_dir.join("state.db"))
                 .ok()
@@ -4212,17 +4300,13 @@ fn run_spec(
             Err(mpsc::TryRecvError::Disconnected) => return,
             Err(mpsc::TryRecvError::Empty) => {}
         }
-        match whisper_transcribe(&wav, prompt.clone(), whisper_port) {
+        match whisper_segments(&wav, prompt.clone(), whisper_port) {
             Ok(hyp) => {
-                let agreed = crate::speculative::confirm_prefix(&prev_hyp, &hyp);
-                if agreed.split_whitespace().count() > committed.0.split_whitespace().count() {
-                    committed = (
-                        agreed,
-                        buffer.len().saturating_sub(overlap + SPEC_UNSTABLE_AUDIO),
-                    );
+                let before = agreement.audio;
+                agreement.observe(start, window.len(), hyp, SPEC_UNSTABLE_AUDIO);
+                if agreement.audio > before {
                     eprintln!("[stt] spec advanced its committed prefix");
                 }
-                prev_hyp = hyp;
             }
             Err(e) => eprintln!("[stt] spec pass: {e}"),
         }
@@ -4233,7 +4317,7 @@ fn run_spec(
     if append_pending(&mut consumed, &mut buffer).is_err() {
         return;
     }
-    let _ = tx.send((committed.0, committed.1, buffer));
+    let _ = tx.send((agreement, buffer));
 }
 
 struct CaptureResetCheck {
@@ -4515,6 +4599,7 @@ pub fn begin_utterance_for(
         Ok(v) => v,
         Err(e) => {
             eprintln!("[stt] press: cannot start: {e}");
+            report_failure("dictation.err.model");
             revoke_owner(owner);
             active_dec();
             return;
@@ -4782,8 +4867,9 @@ pub fn begin_utterance_for(
     } = &stream_plan
     {
         let words = load_hint_words(&data_dir);
+        // Dropping the keywords file removes it: after the pump, or
+        // here when the stream never starts.
         let kw = write_keywords_file(&words);
-        let kw_cleanup = kw.clone();
         match WhistleStream::open(engine, model, kw.as_deref(), lang) {
             Ok(stream) => {
                 let (tx, rx) = mpsc::channel();
@@ -4792,7 +4878,7 @@ pub fn begin_utterance_for(
                 let cancel_pump = cancel.clone();
                 let preview = stt.live_preview;
                 let whistle_settled = settled.clone();
-                if !attach(
+                let _ = attach(
                     rx,
                     Box::new(move || {
                         let _ = tx.send(pump_whistle(
@@ -4803,22 +4889,14 @@ pub fn begin_utterance_for(
                             preview,
                             whistle_settled,
                         ));
-                        if let Some(kw) = kw_cleanup {
-                            let _ = std::fs::remove_file(kw);
-                        }
+                        drop(kw);
                     }),
                     None,
                     true,
-                ) && let Some(kw) = kw
-                {
-                    let _ = std::fs::remove_file(kw);
-                }
+                );
             }
             Err(e) => {
                 eprintln!("[stt] whistle stream unavailable ({e}); file fallback");
-                if let Some(kw) = kw {
-                    let _ = std::fs::remove_file(kw);
-                }
             }
         }
     }
@@ -4993,6 +5071,7 @@ fn end_utterance_inner(through: u64, on_done: Option<Box<dyn FnOnce() + Send>>) 
     revoke_owner(sess.owner);
     if BUSY.swap(true, Ordering::SeqCst) {
         eprintln!("[stt] worker busy; dropping overlapping utterance");
+        report_failure("dictation.err.busy");
         sess.discard_capture();
         active_dec();
         if let Some(done) = on_done {
@@ -5065,6 +5144,7 @@ fn end_utterance_inner(through: u64, on_done: Option<Box<dyn FnOnce() + Send>>) 
                 }
                 Err(e) => {
                     engine_failed();
+                    report_failure(failure_tag(&e));
                     eprintln!("[stt] transcription failed: {e}");
                 }
             }
@@ -5078,6 +5158,7 @@ fn end_utterance_inner(through: u64, on_done: Option<Box<dyn FnOnce() + Send>>) 
             // utterance is dropped, but the app survives to dictate again.
             BUSY.store(false, Ordering::SeqCst);
             active_dec();
+            report_failure("dictation.err.busy");
             eprintln!("[stt] release: {e}");
             if let Ok(mut g) = on_done.lock()
                 && let Some(done) = g.take()
@@ -5122,6 +5203,7 @@ fn finish_session(
     // Failure is per-plan: local audio I/O below is gated on a ready,
     // socket-verified owned server, so a failed ensure (foreign port,
     // Stop since press) never sends audio anywhere.
+    let mut any_ready = true;
     if let Err(e) = ensure_servers(
         &sess.plan,
         &sess.data_dir,
@@ -5135,6 +5217,7 @@ fn finish_session(
         None,
     ) {
         eprintln!("[stt] primary not ready: {e}");
+        any_ready = false;
     }
     for (name, plan) in &sess.fallbacks {
         if let Err(e) = ensure_servers(
@@ -5148,6 +5231,8 @@ fn finish_session(
             None,
         ) {
             eprintln!("[stt] fallback {name} not ready: {e}");
+        } else {
+            any_ready = true;
         }
     }
     eprintln!("[stt] release: engine ready, transcribing ({secs:.1}s window)");
@@ -5198,24 +5283,24 @@ fn finish_session(
             return Ok(None);
         }
         match result {
-            Ok((committed, committed_len, buf)) => {
+            Ok((agreement, buf)) => {
                 eprintln!(
                     "[stt] release: spec agreed on {} words, tail from {:.1}s",
-                    committed.split_whitespace().count(),
-                    committed_len as f64 / 16_000.0
+                    agreement.text.split_whitespace().count(),
+                    agreement.audio as f64 / 16_000.0
                 );
-                let tail =
-                    crate::speculative::unconfirmed_window(&buf, committed_len, sess.spec_overlap);
+                let start = agreement.window_start(sess.spec_overlap).min(buf.len());
+                let tail = &buf[start..];
                 if tail.len() < MIN_SAMPLES_16K / 2 {
                     // Nothing (much) left: committed text is the answer.
-                    if !committed.trim().is_empty() {
-                        return Ok(empty_to_none(committed)
+                    if !agreement.text.trim().is_empty() {
+                        return Ok(empty_to_none(agreement.text)
                             .map(|t| (t, secs, wav_of(&buf, sess.keep_audio))));
                     }
                     eprintln!("[stt] spec produced no text; full recording");
                 } else {
                     let t0 = Instant::now();
-                    let tail_wav = wav_bytes_16k(&audio::f32_to_i16(&tail));
+                    let tail_wav = wav_bytes_16k(&audio::f32_to_i16(tail));
                     let prompt = crate::textnorm::dictionary_prompt(
                         words,
                         crate::textnorm::WHISPER_PROMPT_CHARS,
@@ -5224,13 +5309,13 @@ fn finish_session(
                         return Ok(None);
                     }
                     let result =
-                        whisper_transcribe(&tail_wav, prompt, engine_port(&sess.net, WHISPER_PORT));
+                        whisper_segments(&tail_wav, prompt, engine_port(&sess.net, WHISPER_PORT));
                     if !sess.reset.current() {
                         return Ok(None);
                     }
                     match result {
-                        Ok(tail_text) => {
-                            let merged = crate::speculative::merge_tail(&committed, &tail_text);
+                        Ok(tail) => {
+                            let merged = agreement.append(start, &tail);
                             eprintln!(
                                 "[stt] release: tail decode took {:.1}s",
                                 t0.elapsed().as_secs_f64()
@@ -5251,6 +5336,7 @@ fn finish_session(
     let (pcm, rate) = sess.recorder.lock().unwrap().finish();
     if rate == 0 || pcm.is_empty() {
         eprintln!("[stt] release: no audio captured (mic unavailable or sim source)");
+        report_failure("dictation.err.mic");
         return Ok(None);
     }
     eprintln!("[stt] release: {} samples @ {} Hz", pcm.len(), rate);
@@ -5305,6 +5391,9 @@ fn finish_session(
                 last_err = e;
             }
         }
+    }
+    if !any_ready {
+        return Err(format!("{ENGINES_NOT_READY}; last: {last_err}"));
     }
     Err(format!("all STT options failed; last: {last_err}"))
 }
@@ -6601,22 +6690,7 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
         &snips,
     );
     eprintln!("[stt] final transcript ready");
-    if settings.privacy.keep_audio_recordings && settings.privacy.audio_retention_days > 0 {
-        let data_dir = paths
-            .db_file()
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
-        let n = crate::audio::purge_old_audio(&data_dir, settings.privacy.audio_retention_days);
-        if n > 0 {
-            eprintln!("[stt] audio auto-delete: {n} files");
-        }
-    }
-    if settings.privacy.transcript_auto_delete_days > 0
-        && let Err(e) = store.purge_old_history(settings.privacy.transcript_auto_delete_days)
-    {
-        eprintln!("[stt] auto-delete: {e}");
-    }
+    crate::retention::apply(&store, &paths.data_dir);
     if settings.privacy.history_enabled {
         let words = text.split_whitespace().count() as u32;
         let node = crate::device::DeviceIdentity::load_or_create(&paths.device_key_file())
@@ -7086,9 +7160,43 @@ mod tests {
         });
         std::thread::sleep(Duration::from_secs(5));
         release.send(()).unwrap();
-        let (committed, clen, buf) = rx.recv_timeout(Duration::from_secs(120)).unwrap();
-        eprintln!("spec committed={committed:?} clen={clen} buf={}", buf.len());
+        let (agreement, buf) = rx.recv_timeout(Duration::from_secs(120)).unwrap();
+        eprintln!("spec agreement={agreement:?} buf={}", buf.len());
         assert!(buf.len() >= 60_000, "buffer doesn't cover 4 s");
+    }
+
+    #[test]
+    fn whisper_segments_carry_end_timestamps() {
+        use crate::speculative::Segment;
+        let reply = serde_json::json!({
+            "text": " Hello, world. Again",
+            "segments": [
+                {"text": " Hello,\nworld.", "start": 0.0, "end": 1.5},
+                {"text": " Again", "start": 1.5, "end": 2.25},
+            ],
+        });
+        assert_eq!(
+            whisper_json_segments(&reply),
+            vec![
+                Segment {
+                    text: "Hello, world.".into(),
+                    end: 24_000
+                },
+                Segment {
+                    text: "Again".into(),
+                    end: 36_000
+                },
+            ]
+        );
+        // No timestamps: one segment that can never be confirmed early.
+        let plain = serde_json::json!({"text": "Hello world"});
+        assert_eq!(
+            whisper_json_segments(&plain),
+            vec![Segment {
+                text: "Hello world".into(),
+                end: usize::MAX
+            }]
+        );
     }
 
     #[test]
@@ -7719,6 +7827,68 @@ HTTPServer(("127.0.0.1", int(sys.argv[sys.argv.index("--port") + 1])), Handler).
         let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].0, "ok-cloud");
+    }
+
+    #[test]
+    fn tmpfs_staging_is_private_unique_and_removed_on_drop() {
+        use std::os::unix::fs::PermissionsExt;
+        let shm = tempfile::tempdir().unwrap();
+        let a = stage_tmpfs(shm.path(), "kw-", "", b"zymurgy").unwrap();
+        let b = stage_tmpfs(shm.path(), "", ".wav", b"RIFF").unwrap();
+        assert_ne!(a.to_path_buf(), b.to_path_buf());
+        for (path, body) in [(&a, &b"zymurgy"[..]), (&b, &b"RIFF"[..])] {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(name.starts_with(TMPFS_PREFIX), "{name}");
+            let pid = std::process::id();
+            // Not the old PID-derived names another user could predict.
+            assert!(
+                name != format!("{TMPFS_PREFIX}kw-{pid}")
+                    && name != format!("{TMPFS_PREFIX}{pid}-0.wav"),
+                "{name}"
+            );
+            let meta = std::fs::symlink_metadata(path).unwrap();
+            assert!(meta.is_file());
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::read(path).unwrap(), body);
+        }
+        drop((a, b));
+        assert_eq!(std::fs::read_dir(shm.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn whistle_stream_fifo_is_private_and_removed_with_the_stream() {
+        use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+        let _ = crate::runtime::init();
+        let engine = Path::new("/bin/true");
+        let stream = WhistleStream::open(engine, Path::new("model"), None, "auto").unwrap();
+        let fifo = stream.dir.path().join("audio.wav");
+        let stage = fifo.parent().unwrap().to_path_buf();
+        assert!(
+            std::fs::symlink_metadata(&fifo)
+                .unwrap()
+                .file_type()
+                .is_fifo()
+        );
+        assert_eq!(
+            std::fs::symlink_metadata(&fifo)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let dir = std::fs::symlink_metadata(&stage).unwrap();
+        assert!(dir.is_dir());
+        assert_eq!(dir.permissions().mode() & 0o777, 0o700);
+        assert!(
+            stage
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(TMPFS_PREFIX)
+        );
+        drop(stream);
+        assert!(!stage.exists());
     }
 
     /// Live whistle FIFO check (needs needle + model on disk):
@@ -12747,7 +12917,7 @@ HTTPServer(("127.0.0.1", int(sys.argv[sys.argv.index("--port") + 1])), Handler).
         // Spec agreed on nothing: the whole buffer is an unconfirmed tail.
         let (spec_tx, spec_rx) = mpsc::channel();
         spec_tx
-            .send((String::new(), 0, vec![0.1f32; 32_000]))
+            .send((Default::default(), vec![0.1f32; 32_000]))
             .unwrap();
         let (release, _release_rx) = mpsc::channel();
         let spec = SpecHandle {
@@ -12758,6 +12928,63 @@ HTTPServer(("127.0.0.1", int(sys.argv[sys.argv.index("--port") + 1])), Handler).
         let (text, _, _) = finish_session(sess, &[]).unwrap().expect("no transcript");
         assert_eq!(text, "full chain");
         assert_eq!(fallback_hits.load(Ordering::SeqCst), 1);
+    }
+
+    /// Finding R28: capture and engine failures only reached stderr;
+    /// the pill hid as if nothing was said.
+    #[test]
+    fn dictation_failures_report_a_localized_reason() {
+        let _guard = serial();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let session = |recorder: Recorder| {
+            let (release, _) = mpsc::channel();
+            let (_, done_rx) = mpsc::channel();
+            let mut session = stopped_whisper_session(
+                root.path(),
+                Arc::new(Mutex::new(recorder)),
+                SpecHandle { release, done_rx },
+                free_port(),
+            );
+            session.spec = None;
+            session
+        };
+        let speech = || {
+            let mut recorder = Recorder::default();
+            recorder.start(16_000);
+            recorder.push(&[2_000; 16_000]);
+            recorder
+        };
+        let _ = take_failure();
+        // Mic never delivered audio.
+        assert_eq!(finish_session(session(Recorder::default()), &[]), Ok(None));
+        assert_eq!(take_failure(), Some("dictation.err.mic"));
+        // Only engine cannot start (Stop since press, no fallback).
+        let mut local_only = session(speech());
+        local_only.fallbacks.clear();
+        let error = finish_session(local_only, &[]).unwrap_err();
+        assert_eq!(failure_tag(&error), "dictation.err.model");
+        // An engine was reachable but every attempt failed.
+        let error = finish_session(session(speech()), &[]).unwrap_err();
+        assert_eq!(failure_tag(&error), "dictation.err.engine");
+        assert_eq!(failure_tag(CAPTURE_LIMIT_REACHED), "dictation.err.toolong");
+        assert_eq!(
+            take_failure(),
+            None,
+            "errors are reported once, by the worker"
+        );
+        for tag in [
+            "dictation.err.mic",
+            "dictation.err.toolong",
+            "dictation.err.model",
+            "dictation.err.engine",
+            "dictation.err.busy",
+        ] {
+            let copy = crate::i18n::tr(tag);
+            assert_ne!(copy, tag);
+            // The pill shows at most its last 12 words.
+            assert!(copy.split_whitespace().count() <= 12, "{copy}");
+        }
     }
 
     /// Finding: release drained the recorder before the spec thread's

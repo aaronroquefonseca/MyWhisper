@@ -1255,7 +1255,13 @@ mod tests {
     fn temp_db(tag: &str) -> PathBuf {
         let n = TEST_SEQ.fetch_add(1, Ordering::SeqCst);
         let pid = std::process::id();
-        std::env::temp_dir().join(format!("mywhisper-sync-test-{pid}-{n}-{tag}.db"))
+        // Sandboxed runs reuse the same pid, so add a per-run nonce or a
+        // later run reopens an earlier run's database.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("mywhisper-sync-test-{pid}-{nonce}-{n}-{tag}.db"))
     }
 
     /// Full client/server round-trip over real loopback TCP with Noise

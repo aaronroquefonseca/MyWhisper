@@ -329,7 +329,7 @@ pub fn clear_audio(data_dir: &std::path::Path) -> usize {
     let dir = audio_vault_dir(data_dir);
     let entries = std::fs::read_dir(&dir).map(|r| r.count()).unwrap_or(0);
     let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::create_dir_all(&dir);
+    let _ = crate::private_fs::directory(&dir);
     entries
 }
 

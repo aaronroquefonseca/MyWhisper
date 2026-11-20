@@ -571,8 +571,9 @@ pub enum PillCmd {
     Cancel,
     /// The hotkey listener has stopped dispatching for this capture.
     ShortcutCaptureReady([u8; 16]),
-    /// Worker finished (success/empty/fail): hide if generation matches.
-    Done(u64),
+    /// Worker finished (success/empty/fail): hide if generation matches,
+    /// after showing the failure tag (i18n) when there is one.
+    Done(u64, Option<&'static str>),
     Apply(crate::settings::PillPrefs),
 }
 
