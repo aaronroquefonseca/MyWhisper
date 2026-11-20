@@ -7,7 +7,7 @@ arch=('x86_64')
 url="https://github.com/aaronroquefonseca/MyWhisper"
 license=('MIT')
 depends=('gtk4>=4.22' 'libadwaita>=1.5' 'gtk4-layer-shell' 'alsa-lib' 'hicolor-icon-theme' 'wl-clipboard' 'wtype' 'libpulse' 'ca-certificates')
-optdepends=('gnome-keyring: Secret Service for encrypted settings' 'ydotool: optional paste backend (requires ydotoold)')
+optdepends=('gnome-keyring: Secret Service for encrypted settings' 'ydotool: optional paste backend (requires ydotoold)' 'xclip: optional X11 copy backend' 'xdotool: optional X11 paste backend')
 # Private release tarball: fetched by update.sh via `gh` (makepkg
 # cannot send GitHub tokens), then built from this directory.
 source=("mywhisper-v${pkgver}-x86_64-unknown-linux-gnu.tar.gz")

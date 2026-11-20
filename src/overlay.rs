@@ -255,7 +255,9 @@ impl VoiceOverlay {
         {
             let o = overlay.clone();
             do_btn.connect_clicked(move |button| {
-                match crate::clipboard::copy_text(&o.inner.body.text(), false) {
+                // Assistant panel is a dev-host feature without settings access.
+                let backend = crate::settings::CopyBackend::default();
+                match crate::clipboard::copy_text(&o.inner.body.text(), false, backend) {
                     Ok(()) => button.set_label(crate::i18n::tr("feedback.copied")),
                     Err(_) => button.set_label(crate::i18n::tr("feedback.copyretry")),
                 }

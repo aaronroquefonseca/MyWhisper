@@ -1,12 +1,13 @@
 //! Clipboard write + paste injection for dictation output.
 //!
 //! Copy side: `wl-copy` (`wl-clipboard` package), with `--sensitive`
-//! when hiding from clipboard history. Paste side: `wtype`
-//! (`wtype` package, virtual-keyboard protocol) or `ydotool`
-//! (`ydotool` package + running `ydotoold` + input group). The chord
-//! is configurable: Ctrl+Shift+V (default), Ctrl+V, Shift+Insert.
+//! when hiding from clipboard history, or `xclip` (X11 CLIPBOARD
+//! selection). Paste side: `wtype` (`wtype` package, virtual-keyboard
+//! protocol), `ydotool` (`ydotool` package + running `ydotoold` +
+//! input group) or `xdotool` (X11 XTEST). The chord is configurable:
+//! Ctrl+Shift+V (default), Ctrl+V, Shift+Insert.
 
-use crate::settings::{PasteBackend, PasteCombo, Preferences};
+use crate::settings::{CopyBackend, PasteBackend, PasteCombo, Preferences};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -22,8 +23,11 @@ fn have(binary: &str) -> bool {
 }
 
 /// Dependency strings for the settings UI, per backend.
-pub fn copy_backend_deps() -> &'static str {
-    "wl-copy (wl-clipboard package)"
+pub fn copy_backend_deps(backend: CopyBackend) -> &'static str {
+    match backend {
+        CopyBackend::WlCopy => "wl-copy (wl-clipboard package)",
+        CopyBackend::Xclip => "xclip (xclip package; X11 selection, no history hiding)",
+    }
 }
 
 pub fn paste_backend_deps(backend: PasteBackend) -> &'static str {
@@ -32,6 +36,7 @@ pub fn paste_backend_deps(backend: PasteBackend) -> &'static str {
         PasteBackend::Ydotool => {
             "ydotool (ydotool package) + running ydotoold service + input group"
         }
+        PasteBackend::Xdotool => "xdotool (xdotool package; X11 sessions or XWayland windows)",
     }
 }
 
@@ -39,9 +44,11 @@ pub fn paste_backend_deps(backend: PasteBackend) -> &'static str {
 #[derive(Debug, Clone, Copy)]
 pub struct BackendStatus {
     pub wl_copy: bool,
+    pub xclip: bool,
     pub wtype: bool,
     pub ydotool: bool,
     pub ydotoold_socket: bool,
+    pub xdotool: bool,
 }
 
 pub fn probe() -> BackendStatus {
@@ -51,9 +58,11 @@ pub fn probe() -> BackendStatus {
         .unwrap_or(false);
     BackendStatus {
         wl_copy: have("wl-copy"),
+        xclip: have("xclip"),
         wtype: have("wtype"),
         ydotool: have("ydotool"),
         ydotoold_socket: socket,
+        xdotool: have("xdotool"),
     }
 }
 
@@ -79,13 +88,10 @@ fn exec(program: &str, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>, S
     } else {
         Stdio::null()
     });
-    // Only wl-paste prints; a piped stdout would also be inherited by
-    // wl-copy's forked server and block the read until it exits.
-    cmd.stdout(if program == "wl-paste" {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    });
+    // Only readers print; a piped stdout would also be inherited by
+    // wl-copy's/xclip's forked server and block the read until it exits.
+    let reads = program == "wl-paste" || (program == "xclip" && args.contains(&"-o"));
+    cmd.stdout(if reads { Stdio::piped() } else { Stdio::null() });
     let mut child = cmd.spawn().map_err(|e| format!("spawn {program}: {e}"))?;
     // Pipe dropped at statement end → EOF; the child is reaped even if
     // the write failed.
@@ -130,16 +136,31 @@ struct Snapshot {
     sensitive: bool,
 }
 
-fn paste_type(run: Run, mime: &str) -> Option<Vec<u8>> {
-    run("wl-paste", &["--no-newline", "--type", mime], None)
-        .ok()
-        .filter(|b| !b.is_empty())
+fn paste_type(run: Run, backend: CopyBackend, mime: &str) -> Option<Vec<u8>> {
+    match backend {
+        CopyBackend::WlCopy => run("wl-paste", &["--no-newline", "--type", mime], None),
+        CopyBackend::Xclip => run(
+            "xclip",
+            &["-selection", "clipboard", "-o", "-t", mime],
+            None,
+        ),
+    }
+    .ok()
+    .filter(|b| !b.is_empty())
 }
 
 /// Snapshot the current clipboard. `None` = empty or unreadable; the
 /// restore then clears instead of leaving the transcript behind.
-fn snapshot(run: Run) -> Option<Snapshot> {
-    let listed = run("wl-paste", &["--list-types"], None).ok()?;
+fn snapshot(run: Run, backend: CopyBackend) -> Option<Snapshot> {
+    let listed = match backend {
+        CopyBackend::WlCopy => run("wl-paste", &["--list-types"], None),
+        CopyBackend::Xclip => run(
+            "xclip",
+            &["-selection", "clipboard", "-o", "-t", "TARGETS"],
+            None,
+        ),
+    }
+    .ok()?;
     let types: Vec<String> = String::from_utf8_lossy(&listed)
         .lines()
         .map(|l| l.trim().to_string())
@@ -147,7 +168,7 @@ fn snapshot(run: Run) -> Option<Snapshot> {
         .collect();
     let sensitive = types.iter().any(|t| t == SENSITIVE_HINT);
     if let Some(t) = TEXT_TYPES.iter().find(|t| types.iter().any(|o| o == *t)) {
-        let bytes = paste_type(run, t)?;
+        let bytes = paste_type(run, backend, t)?;
         return Some(Snapshot {
             mime: None,
             bytes,
@@ -157,7 +178,7 @@ fn snapshot(run: Run) -> Option<Snapshot> {
     let mime = types
         .into_iter()
         .find(|t| t.contains('/') && t != SENSITIVE_HINT)?;
-    let bytes = paste_type(run, &mime)?;
+    let bytes = paste_type(run, backend, &mime)?;
     Some(Snapshot {
         mime: Some(mime),
         bytes,
@@ -165,7 +186,23 @@ fn snapshot(run: Run) -> Option<Snapshot> {
     })
 }
 
-fn wl_copy(run: Run, mime: Option<&str>, bytes: &[u8], sensitive: bool) -> Result<(), String> {
+fn set_clipboard(
+    run: Run,
+    backend: CopyBackend,
+    mime: Option<&str>,
+    bytes: &[u8],
+    sensitive: bool,
+) -> Result<(), String> {
+    if backend == CopyBackend::Xclip {
+        // xclip serves one target per process, so it cannot add the
+        // sensitive hint: history hiding is wl-copy only.
+        let mut args = vec!["-selection", "clipboard"];
+        if let Some(m) = mime {
+            args.extend(["-t", m]);
+        }
+        args.push("-i");
+        return run("xclip", &args, Some(bytes)).map(|_| ());
+    }
     let mut args = Vec::new();
     if sensitive {
         // Sensitive hint: history managers skip such entries.
@@ -180,16 +217,18 @@ fn wl_copy(run: Run, mime: Option<&str>, bytes: &[u8], sensitive: bool) -> Resul
 
 /// Put a snapshot back (sensitive stays sensitive); nothing saved →
 /// clear, so the borrowed transcript never lingers.
-fn restore(run: Run, saved: Option<&Snapshot>) -> Result<(), String> {
-    match saved {
-        Some(s) => wl_copy(run, s.mime.as_deref(), &s.bytes, s.sensitive),
-        None => run("wl-copy", &["--clear"], None).map(|_| ()),
+fn restore(run: Run, backend: CopyBackend, saved: Option<&Snapshot>) -> Result<(), String> {
+    match (saved, backend) {
+        (Some(s), _) => set_clipboard(run, backend, s.mime.as_deref(), &s.bytes, s.sensitive),
+        (None, CopyBackend::WlCopy) => run("wl-copy", &["--clear"], None).map(|_| ()),
+        // xclip has no clear: own the selection with empty text instead.
+        (None, CopyBackend::Xclip) => set_clipboard(run, backend, None, b"", false),
     }
 }
 
-/// Write text to the Wayland clipboard; Ok only once wl-copy owns it.
-pub fn copy_text(text: &str, hide_from_history: bool) -> Result<(), String> {
-    wl_copy(&mut exec, None, text.as_bytes(), hide_from_history)
+/// Write text to the clipboard; Ok only once the backend owns it.
+pub fn copy_text(text: &str, hide_from_history: bool, backend: CopyBackend) -> Result<(), String> {
+    set_clipboard(&mut exec, backend, None, text.as_bytes(), hide_from_history)
 }
 
 /// Inject the configured paste chord into the focused window.
@@ -222,6 +261,16 @@ fn paste(run: Run, backend: PasteBackend, combo: PasteCombo) -> Result<(), Strin
                 .map(|_| ())
                 .map_err(|e| format!("{e} (is ydotoold running?)"))
         }
+        PasteBackend::Xdotool => {
+            let chord = match combo {
+                PasteCombo::CtrlShiftV => "ctrl+shift+v",
+                PasteCombo::CtrlV => "ctrl+v",
+                PasteCombo::ShiftInsert => "shift+Insert",
+            };
+            // --clearmodifiers: a still-held hotkey modifier must not
+            // leak into the chord.
+            run("xdotool", &["key", "--clearmodifiers", chord], None).map(|_| ())
+        }
     }
 }
 
@@ -246,11 +295,17 @@ fn deliver_with(run: Run, text: &str, prefs: &Preferences) -> Result<&'static st
         return Ok("nothing to do");
     }
     let borrowed = !prefs.keep_transcription_in_clipboard;
-    let saved = if borrowed { snapshot(run) } else { None };
+    let backend = prefs.copy_backend;
+    let saved = if borrowed {
+        snapshot(run, backend)
+    } else {
+        None
+    };
     // A borrowed transcript is transient: keep it out of history even
     // when the user lets kept transcripts in.
-    wl_copy(
+    set_clipboard(
         run,
+        backend,
         None,
         text.as_bytes(),
         prefs.hide_from_history || borrowed,
@@ -274,10 +329,14 @@ fn deliver_with(run: Run, text: &str, prefs: &Preferences) -> Result<&'static st
     std::thread::sleep(Duration::from_millis(250));
     // Restore only while we still own the clipboard: a newer copy wins.
     // shortcut: check-then-set, a copy inside that window is overwritten.
-    if paste_type(run, "text/plain").as_deref() != Some(text.as_bytes()) {
+    let own_type = match backend {
+        CopyBackend::WlCopy => "text/plain",
+        CopyBackend::Xclip => "UTF8_STRING",
+    };
+    if paste_type(run, backend, own_type).as_deref() != Some(text.as_bytes()) {
         return Ok("clipboard changed since paste; not restoring");
     }
-    restore(run, saved.as_ref()).map_err(|e| format!("restore failed: {e}"))?;
+    restore(run, backend, saved.as_ref()).map_err(|e| format!("restore failed: {e}"))?;
     Ok("previous clipboard restored")
 }
 
@@ -287,9 +346,11 @@ mod tests {
 
     #[test]
     fn backend_dep_strings_present() {
-        assert!(copy_backend_deps().contains("wl-copy"));
+        assert!(copy_backend_deps(CopyBackend::WlCopy).contains("wl-copy"));
+        assert!(copy_backend_deps(CopyBackend::Xclip).contains("xclip"));
         assert!(paste_backend_deps(PasteBackend::Wtype).contains("wtype"));
         assert!(paste_backend_deps(PasteBackend::Ydotool).contains("ydotool"));
+        assert!(paste_backend_deps(PasteBackend::Xdotool).contains("xdotool"));
     }
 
     /// In-memory clipboard standing in for wl-copy/wl-paste/wtype.
@@ -332,6 +393,22 @@ mod tests {
                 ("wl-copy", ["--clear"]) => {
                     self.types.clear();
                     self.bytes.clear();
+                    Ok(Vec::new())
+                }
+                ("xclip", [.., "-o", "-t", "TARGETS"]) if self.types.is_empty() => {
+                    Err("empty".into())
+                }
+                ("xclip", [.., "-o", "-t", "TARGETS"]) => Ok(self.types.join("\n").into_bytes()),
+                ("xclip", [.., "-o", "-t", t]) if self.types.iter().any(|o| o == t) => {
+                    Ok(self.bytes.clone())
+                }
+                ("xclip", _) if args.contains(&"-o") => Err("type not offered".into()),
+                ("xclip", _) => {
+                    self.types = match args.iter().position(|a| *a == "-t") {
+                        Some(i) => vec![args[i + 1].to_string()],
+                        None => vec!["UTF8_STRING".into(), "STRING".into()],
+                    };
+                    self.bytes = stdin.expect("xclip -i reads stdin").to_vec();
                     Ok(Vec::new())
                 }
                 ("wl-copy", _) => {
@@ -437,6 +514,27 @@ mod tests {
             Ok("clipboard changed since paste; not restoring")
         );
         assert_eq!(fake.bytes, b"newer");
+    }
+
+    #[test]
+    fn x11_backends_paste_and_restore_the_previous_clipboard() {
+        let prefs = Preferences {
+            copy_backend: CopyBackend::Xclip,
+            paste_backend: PasteBackend::Xdotool,
+            ..Preferences::default()
+        };
+        let mut fake = Fake::holding(&["TARGETS", "UTF8_STRING"], b"old");
+        assert_eq!(fake.deliver(&prefs), Ok("previous clipboard restored"));
+        assert!(
+            fake.calls
+                .contains(&"xclip -selection clipboard -i".to_string())
+        );
+        assert!(
+            fake.calls
+                .contains(&"xdotool key --clearmodifiers ctrl+shift+v".to_string())
+        );
+        assert!(!fake.calls.iter().any(|c| c.starts_with("wl-")));
+        assert_eq!(fake.bytes, b"old");
     }
 
     #[test]

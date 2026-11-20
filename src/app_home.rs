@@ -180,15 +180,17 @@ fn entry_card(
     let copy = Button::with_label(tr("home.copy"));
     {
         let text = entry.text.clone();
-        copy.connect_clicked(
-            move |button| match crate::clipboard::copy_text(&text, false) {
+        let state = state.clone();
+        copy.connect_clicked(move |button| {
+            let backend = state.settings.borrow().preferences.copy_backend;
+            match crate::clipboard::copy_text(&text, false, backend) {
                 Ok(()) => super::app::toast(button, tr("feedback.copied")),
                 Err(e) => {
                     eprintln!("[home] copy: {e}");
                     super::app::toast(button, tr("feedback.copyfailed"));
                 }
-            },
-        );
+            }
+        });
     }
     head.append(&copy);
     let more = Button::from_icon_name("view-more-symbolic");
