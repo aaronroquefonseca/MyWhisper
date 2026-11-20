@@ -63,6 +63,7 @@ use std::sync::{
     mpsc,
 };
 use std::time::{Duration, Instant};
+use tempfile::TempPath;
 
 use crate::audio::{self, ENGINE_RATE, MIN_SAMPLES_16K, Recorder, Resampler, wav_bytes_16k};
 use crate::settings::{
@@ -2341,13 +2342,12 @@ fn sherpa_hotwords(
     let path = data_dir.join("hotwords").join(format!("{name}.txt"));
     let content = clean.join("\n");
     let rewrite = std::fs::read_to_string(&path).unwrap_or_default() != content;
-    if rewrite {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if std::fs::write(&path, &content).is_err() {
-            return (None, Vec::new());
-        }
+    if rewrite
+        && crate::private_fs::directory(&data_dir.join("hotwords"))
+            .and_then(|()| crate::private_fs::replace(&path, content.as_bytes()))
+            .is_err()
+    {
+        return (None, Vec::new());
     }
     let args = vec![
         "--decoding-method=modified_beam_search".to_string(),
@@ -3310,24 +3310,37 @@ impl OnlineSession {
 /// RAM-only except one tmpfs staging file (`/dev/shm`, never
 /// persisted): the CLI takes a path, not stdin. Telemetry is forced
 /// off in the child environment (on-device posture).
+/// Shared tmpfs for Whistle staging; every entry starts with
+/// `TMPFS_PREFIX` so the engine owner can sweep crash leftovers.
+pub(crate) const TMPFS_DIR: &str = "/dev/shm";
+pub(crate) const TMPFS_PREFIX: &str = "mywhisper-whistle-";
+
+/// Stage bytes in the shared tmpfs: random name, created O_EXCL with
+/// mode 0600 (never follows a planted link), removed on drop.
+fn stage_tmpfs(dir: &Path, tag: &str, suffix: &str, bytes: &[u8]) -> std::io::Result<TempPath> {
+    use std::io::Write;
+    let mut file = tempfile::Builder::new()
+        .prefix(&format!("{TMPFS_PREFIX}{tag}"))
+        .suffix(suffix)
+        .tempfile_in(dir)?;
+    file.write_all(bytes)?;
+    Ok(file.into_temp_path())
+}
+
 /// Dictionary keywords file for needle (`--audio-keywords`, plain
-/// words one per line). /dev/shm: RAM, removed after the utterance.
-fn write_keywords_file(words: &[String]) -> Option<PathBuf> {
+/// words one per line). /dev/shm: RAM, removed when dropped.
+fn write_keywords_file(words: &[String]) -> Option<TempPath> {
     if !words.iter().any(|w| !w.trim().is_empty()) {
         return None;
     }
-    let path = PathBuf::from(format!(
-        "/dev/shm/mywhisper-whistle-kw-{}",
-        std::process::id()
-    ));
     let content = words
         .iter()
         .map(|w| w.trim())
         .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    match std::fs::write(&path, content) {
-        Ok(()) => Some(path),
+    match stage_tmpfs(Path::new(TMPFS_DIR), "kw-", "", content.as_bytes()) {
+        Ok(path) => Some(path),
         Err(e) => {
             eprintln!("[stt] whistle keywords: {e}");
             None
@@ -3352,30 +3365,26 @@ pub fn whistle_transcribe(
     } else {
         samples_16k.chunks(WINDOW).collect()
     };
-    for (i, chunk) in chunks.iter().enumerate() {
+    for chunk in &chunks {
         let wav = wav_bytes_16k(&audio::f32_to_i16(chunk));
-        let path = write_tmpfs_wav(&wav, i)?;
-        let text = whistle_pass(engine, model, &path, kw_path.as_deref(), lang);
-        let _ = std::fs::remove_file(&path);
-        transcripts.push(text?);
-    }
-    if let Some(kw) = kw_path {
-        let _ = std::fs::remove_file(kw);
+        let path = write_tmpfs_wav(&wav)?;
+        transcripts.push(whistle_pass(
+            engine,
+            model,
+            &path,
+            kw_path.as_deref(),
+            lang,
+        )?);
     }
     Ok(transcripts.join(" ").trim().to_string())
 }
 
-fn write_tmpfs_wav(wav: &[u8], idx: usize) -> Result<PathBuf, String> {
-    let dir = Path::new("/dev/shm");
+fn write_tmpfs_wav(wav: &[u8]) -> Result<TempPath, String> {
+    let dir = Path::new(TMPFS_DIR);
     if !dir.is_dir() {
         return Err("whistle needs /dev/shm (tmpfs) for CLI staging".to_string());
     }
-    let path = dir.join(format!(
-        "mywhisper-whistle-{}-{idx}.wav",
-        std::process::id()
-    ));
-    std::fs::write(&path, wav).map_err(|e| format!("stage whistle wav: {e}"))?;
-    Ok(path)
+    stage_tmpfs(dir, "", ".wav", wav).map_err(|e| format!("stage whistle wav: {e}"))
 }
 
 fn whistle_pass(
@@ -3559,8 +3568,9 @@ impl WhistleStream {
     ) -> Result<Self, String> {
         use std::os::unix::ffi::OsStrExt;
         let dir = tempfile::Builder::new()
-            .prefix("mywhisper-whistle-")
-            .tempdir_in("/dev/shm")
+            .prefix(TMPFS_PREFIX)
+            .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .tempdir_in(TMPFS_DIR)
             .map_err(|e| format!("whistle FIFO dir: {e}"))?;
         let fifo = dir.path().join("audio.wav");
         let path = std::ffi::CString::new(fifo.as_os_str().as_bytes())
@@ -4782,8 +4792,9 @@ pub fn begin_utterance_for(
     } = &stream_plan
     {
         let words = load_hint_words(&data_dir);
+        // Dropping the keywords file removes it: after the pump, or
+        // here when the stream never starts.
         let kw = write_keywords_file(&words);
-        let kw_cleanup = kw.clone();
         match WhistleStream::open(engine, model, kw.as_deref(), lang) {
             Ok(stream) => {
                 let (tx, rx) = mpsc::channel();
@@ -4792,7 +4803,7 @@ pub fn begin_utterance_for(
                 let cancel_pump = cancel.clone();
                 let preview = stt.live_preview;
                 let whistle_settled = settled.clone();
-                if !attach(
+                let _ = attach(
                     rx,
                     Box::new(move || {
                         let _ = tx.send(pump_whistle(
@@ -4803,22 +4814,14 @@ pub fn begin_utterance_for(
                             preview,
                             whistle_settled,
                         ));
-                        if let Some(kw) = kw_cleanup {
-                            let _ = std::fs::remove_file(kw);
-                        }
+                        drop(kw);
                     }),
                     None,
                     true,
-                ) && let Some(kw) = kw
-                {
-                    let _ = std::fs::remove_file(kw);
-                }
+                );
             }
             Err(e) => {
                 eprintln!("[stt] whistle stream unavailable ({e}); file fallback");
-                if let Some(kw) = kw {
-                    let _ = std::fs::remove_file(kw);
-                }
             }
         }
     }
@@ -6601,22 +6604,7 @@ fn deliver(raw: String, secs: f64, wav: Option<Vec<u8>>) {
         &snips,
     );
     eprintln!("[stt] final transcript ready");
-    if settings.privacy.keep_audio_recordings && settings.privacy.audio_retention_days > 0 {
-        let data_dir = paths
-            .db_file()
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
-        let n = crate::audio::purge_old_audio(&data_dir, settings.privacy.audio_retention_days);
-        if n > 0 {
-            eprintln!("[stt] audio auto-delete: {n} files");
-        }
-    }
-    if settings.privacy.transcript_auto_delete_days > 0
-        && let Err(e) = store.purge_old_history(settings.privacy.transcript_auto_delete_days)
-    {
-        eprintln!("[stt] auto-delete: {e}");
-    }
+    crate::retention::apply(&store, &paths.data_dir);
     if settings.privacy.history_enabled {
         let words = text.split_whitespace().count() as u32;
         let node = crate::device::DeviceIdentity::load_or_create(&paths.device_key_file())
@@ -7719,6 +7707,68 @@ HTTPServer(("127.0.0.1", int(sys.argv[sys.argv.index("--port") + 1])), Handler).
         let plans = plans_for(&s, Path::new("/nonexistent")).unwrap();
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].0, "ok-cloud");
+    }
+
+    #[test]
+    fn tmpfs_staging_is_private_unique_and_removed_on_drop() {
+        use std::os::unix::fs::PermissionsExt;
+        let shm = tempfile::tempdir().unwrap();
+        let a = stage_tmpfs(shm.path(), "kw-", "", b"zymurgy").unwrap();
+        let b = stage_tmpfs(shm.path(), "", ".wav", b"RIFF").unwrap();
+        assert_ne!(a.to_path_buf(), b.to_path_buf());
+        for (path, body) in [(&a, &b"zymurgy"[..]), (&b, &b"RIFF"[..])] {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(name.starts_with(TMPFS_PREFIX), "{name}");
+            let pid = std::process::id();
+            // Not the old PID-derived names another user could predict.
+            assert!(
+                name != format!("{TMPFS_PREFIX}kw-{pid}")
+                    && name != format!("{TMPFS_PREFIX}{pid}-0.wav"),
+                "{name}"
+            );
+            let meta = std::fs::symlink_metadata(path).unwrap();
+            assert!(meta.is_file());
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::read(path).unwrap(), body);
+        }
+        drop((a, b));
+        assert_eq!(std::fs::read_dir(shm.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn whistle_stream_fifo_is_private_and_removed_with_the_stream() {
+        use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+        let _ = crate::runtime::init();
+        let engine = Path::new("/bin/true");
+        let stream = WhistleStream::open(engine, Path::new("model"), None, "auto").unwrap();
+        let fifo = stream.dir.path().join("audio.wav");
+        let stage = fifo.parent().unwrap().to_path_buf();
+        assert!(
+            std::fs::symlink_metadata(&fifo)
+                .unwrap()
+                .file_type()
+                .is_fifo()
+        );
+        assert_eq!(
+            std::fs::symlink_metadata(&fifo)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let dir = std::fs::symlink_metadata(&stage).unwrap();
+        assert!(dir.is_dir());
+        assert_eq!(dir.permissions().mode() & 0o777, 0o700);
+        assert!(
+            stage
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(TMPFS_PREFIX)
+        );
+        drop(stream);
+        assert!(!stage.exists());
     }
 
     /// Live whistle FIFO check (needs needle + model on disk):
