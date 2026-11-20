@@ -25,21 +25,30 @@
 //! * records both ways: `{"words":[…],"snippets":[…],
 //!   "history":[…],"peers":[…]}`
 //!
+//! Incremental rounds ride on optional fields that older builds ignore
+//! and never send: the verdict and the dialer's records carry `since`
+//! (the mark of the last complete merge from the other side), and both
+//! record messages carry `mark` (the position they cover). Records go
+//! out only when changed after the peer's `since`; without it, or for a
+//! mark from another database, a round sends everything as before.
+//!
 //! Reachability v1: same LAN (mDNS/discovered/gossiped addresses),
 //! VPN, or internet with a known address. Hole punching and relays
 //! (libp2p-class) are the later internet phase.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{Read, Write};
-use std::net::{IpAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
+use std::net::{
+    IpAddr, SocketAddr, SocketAddrV6, TcpListener, TcpStream, ToSocketAddrs, UdpSocket,
+};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::device::{DeviceIdentity, SyncCreds, short_id, valid_node_id};
-use crate::store::{HistoryRecord, PeerGossip, SnippetRecord, Store, WordRecord};
+use crate::store::{HistoryRecord, PeerGossip, SnippetRecord, Store, SyncMark, WordRecord};
 
 const PROTOCOL_V: u32 = 1;
 const NOISE_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
@@ -65,6 +74,8 @@ const POSTAUTH_MIN_RATE: u64 = 256 * 1024;
 const MAX_INBOUND: usize = 8;
 const AUTO_SYNC_SECS: u64 = 60;
 const MDNS_SERVICE: &str = "_mywhisper._tcp.local.";
+/// A reassigned address can reach another of the user's devices.
+const NODE_MISMATCH: &str = "peer node id mismatch";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Hello {
@@ -85,6 +96,8 @@ struct Verdict {
     ok: bool,
     #[serde(default)]
     error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    since: Option<SyncMark>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -97,6 +110,10 @@ struct Payload {
     history: Vec<HistoryRecord>,
     #[serde(default)]
     peers: Vec<PeerGossip>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    since: Option<SyncMark>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mark: Option<SyncMark>,
 }
 
 #[derive(Debug)]
@@ -463,6 +480,15 @@ fn may_sync(store: &Store, node_id: &str, epoch: i64) -> Result<(), String> {
     Ok(())
 }
 
+/// Off only in tests that play an older build, which neither sends nor
+/// uses incremental marks.
+fn watermarks() -> bool {
+    #[cfg(test)]
+    return !tests::playing_old_build();
+    #[cfg(not(test))]
+    true
+}
+
 #[derive(Clone, Copy)]
 struct FramePermission<'a> {
     store: &'a Store,
@@ -550,6 +576,7 @@ pub fn exchange(
         session.send_json(&Verdict {
             ok: false,
             error: "identity proof failed".to_string(),
+            since: None,
         })?;
         return Err("identity proof failed".to_string());
     }
@@ -561,13 +588,14 @@ pub fn exchange(
         session.send_json(&Verdict {
             ok: false,
             error: "sync is off".to_string(),
+            since: None,
         })?;
         return Err("sync is off".to_string());
     }
     if let Some(expected) = expect_node
         && peer.node_id != expected
     {
-        return Err("peer node id mismatch".to_string());
+        return Err(NODE_MISMATCH.to_string());
     }
 
     // Contact bookkeeping: unknown nodes become pending requests,
@@ -587,6 +615,15 @@ pub fn exchange(
         .map(|p| p.trusted)
         .unwrap_or(false);
 
+    // What we already merged from this peer: it sends only later changes.
+    let our_since = if watermarks() && trusted {
+        store
+            .peer_mark(&peer.node_id)
+            .map_err(|e| format!("sync mark: {e}"))?
+    } else {
+        None
+    };
+    let mut their_since = None;
     if initiator {
         let verdict: Verdict = session.recv_json()?;
         if !verdict.ok {
@@ -596,10 +633,12 @@ pub fn exchange(
                 verdict.error
             });
         }
+        their_since = verdict.since;
     } else if !trusted {
         session.send_json(&Verdict {
             ok: false,
             error: "not trusted: request recorded, ask them to accept".to_string(),
+            since: None,
         })?;
         return Err(if is_new {
             format!("new pairing request from {}", short_id(&peer.node_id))
@@ -611,6 +650,7 @@ pub fn exchange(
         session.send_json(&Verdict {
             ok: true,
             error: String::new(),
+            since: our_since.clone(),
         })?;
     }
     session.authenticated();
@@ -621,28 +661,33 @@ pub fn exchange(
     let epoch = store.sync_epoch().map_err(|e| format!("epoch: {e}"))?;
     may_sync(&store, &peer.node_id, epoch)?;
 
-    // Records, strict alternation again.
-    let ours = serde_json::to_vec(&Payload {
-        words: store.export_words().map_err(|e| format!("export: {e}"))?,
-        snippets: store
-            .export_snippets()
-            .map_err(|e| format!("export: {e}"))?,
-        history: store.export_history().map_err(|e| format!("export: {e}"))?,
-        peers: gossip_out(&store, &creds.node_id),
-    })
-    .map_err(|e| format!("encode: {e}"))?;
+    // Records, strict alternation again. The responder learns the
+    // dialer's `since` from its records, so it exports after reading them.
+    let export = |their_since: Option<SyncMark>| -> Result<Vec<u8>, String> {
+        let changes = store
+            .export_changes(their_since.as_ref().filter(|_| watermarks()))
+            .map_err(|e| format!("export: {e}"))?;
+        serde_json::to_vec(&Payload {
+            words: changes.words,
+            snippets: changes.snippets,
+            history: changes.history,
+            peers: gossip_out(&store, &creds.node_id),
+            since: our_since.clone(),
+            mark: watermarks().then_some(changes.mark),
+        })
+        .map_err(|e| format!("encode: {e}"))
+    };
     let permission = FramePermission {
         store: &store,
         node_id: &peer.node_id,
         epoch,
     };
-    let send_ours = |session: &mut NoiseStream| session.send_msg_checked(&ours, Some(permission));
-    let theirs: Payload = if initiator {
-        send_ours(session)?;
+    let mut theirs: Payload = if initiator {
+        session.send_msg_checked(&export(their_since)?, Some(permission))?;
         session.recv_json()?
     } else {
         let theirs: Payload = session.recv_json()?;
-        send_ours(session)?;
+        session.send_msg_checked(&export(theirs.since.clone())?, Some(permission))?;
         theirs
     };
 
@@ -662,13 +707,20 @@ pub fn exchange(
         merged_batch = true;
         Ok(())
     };
+    let mut refused = 0;
     for batch in merge_batches(&theirs.words, |w| w.word.len() + w.updated_by.len()) {
-        in_batch(&mut || store.apply_words(batch))?;
+        in_batch(&mut || {
+            refused += store.apply_words(batch)?;
+            Ok(())
+        })?;
     }
     for batch in merge_batches(&theirs.snippets, |s| {
         s.trigger.len() + s.replacement.len() + s.updated_by.len()
     }) {
-        in_batch(&mut || store.apply_snippets(batch))?;
+        in_batch(&mut || {
+            refused += store.apply_snippets(batch)?;
+            Ok(())
+        })?;
     }
     for batch in merge_batches(&theirs.history, |h| {
         h.uuid.len() + h.text.len() + h.raw_text.len()
@@ -687,7 +739,16 @@ pub fn exchange(
             Ok(())
         })?;
     }
-    in_batch(&mut || store.touch_peer_synced(&peer.node_id, &peer.name))?;
+    // Advance the mark only after a complete merge: an interrupted or
+    // partly refused round is sent again from the previous mark.
+    let mark = theirs.mark.take().filter(|_| watermarks() && refused == 0);
+    in_batch(&mut || {
+        store.touch_peer_synced(&peer.node_id, &peer.name)?;
+        match &mark {
+            Some(mark) => store.set_peer_mark(&peer.node_id, mark),
+            None => Ok(()),
+        }
+    })?;
     Ok(SyncReport {
         peer_node: peer.node_id,
         peer_name: peer.name,
@@ -698,9 +759,14 @@ pub fn exchange(
     })
 }
 
-/// Dial a peer's known addresses in order; first success wins.
-/// Runs the Noise handshake, then requires the proven session to
-/// belong to `expect_node` before any record moves.
+/// Peers with a dialed round running in this process.
+static DIALING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// Dial a peer's known addresses (every resolved address of each) in
+/// order; first success wins. Runs the Noise handshake, then requires
+/// the proven session to belong to `expect_node` before any record
+/// moves. A round already running with that peer makes this one a
+/// no-op error instead of a duplicate full exchange.
 pub fn sync_now(
     addresses: &[String],
     db_path: &Path,
@@ -711,39 +777,54 @@ pub fn sync_now(
     if addresses.is_empty() {
         return Err("no known address for peer".to_string());
     }
+    struct Dialing(String);
+    impl Drop for Dialing {
+        fn drop(&mut self) {
+            DIALING.lock().unwrap().remove(&self.0);
+        }
+    }
+    if !DIALING.lock().unwrap().insert(expect_node.to_string()) {
+        return Err("a round with this peer is already running".to_string());
+    }
+    let _dialing = Dialing(expect_node.to_string());
     let mut last_err = String::new();
     for address in addresses {
-        let addr = match address
-            .to_socket_addrs()
-            .map_err(|e| format!("resolve {address}: {e}"))?
-            .next()
-        {
-            Some(a) => a,
-            None => {
-                last_err = format!("no address for {address}");
-                continue;
-            }
-        };
-        let stream = match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
-            Ok(s) => s,
+        let resolved = match address.to_socket_addrs() {
+            Ok(resolved) => resolved,
             Err(e) => {
-                last_err = format!("dial {address}: {e}");
+                last_err = format!("resolve {address}: {e}");
                 continue;
             }
         };
-        let (mut session, hash, _remote_static) =
-            NoiseStream::handshake(stream, &creds.noise_static, true)?;
-        return exchange(
-            &mut session,
-            &hash,
-            db_path,
-            creds,
-            name,
-            &[],
-            true,
-            Some(expect_node),
-            None,
-        );
+        for addr in resolved {
+            let session = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)
+                .map_err(|e| format!("dial {address}: {e}"))
+                .and_then(|stream| NoiseStream::handshake(stream, &creds.noise_static, true));
+            let (mut session, hash, _remote_static) = match session {
+                Ok(session) => session,
+                Err(e) => {
+                    last_err = e;
+                    continue;
+                }
+            };
+            match exchange(
+                &mut session,
+                &hash,
+                db_path,
+                creds,
+                name,
+                &[],
+                true,
+                Some(expect_node),
+                None,
+            ) {
+                Err(e) if e == NODE_MISMATCH => last_err = format!("{address}: {e}"),
+                result => return result,
+            }
+        }
+    }
+    if last_err.is_empty() {
+        last_err = "no address for peer".to_string();
     }
     Err(last_err)
 }
@@ -755,7 +836,6 @@ pub fn serve(
     db_path: PathBuf,
     creds: SyncCreds,
     name: String,
-    addresses: Vec<String>,
     stop: &AtomicBool,
 ) {
     let _ = listener.set_nonblocking(true);
@@ -787,6 +867,12 @@ pub fn serve(
                     continue;
                 }
                 let slot = Slot(active.clone());
+                // The address the dialer reached: current after a network change.
+                let addresses: Vec<String> = stream
+                    .local_addr()
+                    .map(|a| a.to_string())
+                    .into_iter()
+                    .collect();
                 let remote = if remote.is_empty() {
                     None
                 } else {
@@ -795,7 +881,6 @@ pub fn serve(
                 let db_path = db_path.clone();
                 let creds = creds.clone();
                 let name = name.clone();
-                let addresses = addresses.clone();
                 std::thread::spawn(move || {
                     let _slot = slot;
                     let res = (|| -> Result<SyncReport, String> {
@@ -909,13 +994,11 @@ pub fn start_mdns(
         txt.insert("node".to_string(), node_id.to_string());
         txt.insert("name".to_string(), name.to_string());
         let host = format!("mywhisper-{short_id}.local.");
-        let mut addrs: Vec<IpAddr> = Vec::new();
-        if let Some(ip) = lan_ip() {
-            addrs.push(ip);
-        }
-        let info =
-            mdns_sd::ServiceInfo::new(MDNS_SERVICE, short_id, &host, &addrs[..], port, Some(txt))
-                .map_err(|e| format!("mdns service: {e}"))?;
+        // The daemon tracks interface addresses, so a DHCP or network
+        // change re-advertises the new address.
+        let info = mdns_sd::ServiceInfo::new(MDNS_SERVICE, short_id, &host, (), port, Some(txt))
+            .map_err(|e| format!("mdns service: {e}"))?
+            .enable_addr_auto();
         daemon
             .register(info)
             .map_err(|e| format!("mdns register: {e}"))?;
@@ -926,6 +1009,8 @@ pub fn start_mdns(
         .map_err(|e| format!("mdns browse: {e}"))?;
     let self_id = node_id.to_string();
     std::thread::spawn(move || {
+        // Service instance name -> node id, to forget removed services.
+        let mut instances: HashMap<String, String> = HashMap::new();
         while let Ok(event) = browser.recv() {
             match event {
                 mdns_sd::ServiceEvent::ServiceResolved(info) => {
@@ -945,12 +1030,13 @@ pub fn start_mdns(
                     let addresses: Vec<String> = info
                         .get_addresses()
                         .iter()
-                        .map(|ip| format!("{ip}:{port}"))
+                        .map(|ip| dial_address(ip, port))
                         .collect();
                     if addresses.is_empty() {
                         continue;
                     }
                     eprintln!("[sync] mdns found {name} {addresses:?}");
+                    instances.insert(info.get_fullname().to_string(), node.clone());
                     sink.lock().unwrap().insert(
                         node.clone(),
                         Discovered {
@@ -962,12 +1048,26 @@ pub fn start_mdns(
                 }
                 mdns_sd::ServiceEvent::ServiceRemoved(_, full_name) => {
                     eprintln!("[sync] mdns lost {full_name}");
+                    // Forget it, so its return counts as a new appearance.
+                    if let Some(node) = instances.remove(&full_name) {
+                        sink.lock().unwrap().remove(&node);
+                    }
                 }
                 _ => {}
             }
         }
     });
     Ok(MdnsHandles { _daemon: daemon })
+}
+
+/// `ip:port` a dial can parse: IPv6 gets brackets and its numeric scope.
+fn dial_address(ip: &mdns_sd::ScopedIp, port: u16) -> String {
+    match ip {
+        mdns_sd::ScopedIp::V6(v6) => {
+            SocketAddrV6::new(*v6.addr(), port, 0, v6.scope_id().index).to_string()
+        }
+        other => SocketAddr::new(other.to_ip_addr(), port).to_string(),
+    }
 }
 
 // -- periodic and triggered rounds ------------------------------------------
@@ -1065,7 +1165,7 @@ pub fn watch_discovered(
     stop: Arc<AtomicBool>,
 ) {
     std::thread::spawn(move || {
-        let mut known_present: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut present = HashSet::new();
         loop {
             for _ in 0..10 {
                 if stop.load(Ordering::Relaxed) {
@@ -1073,39 +1173,42 @@ pub fn watch_discovered(
                 }
                 std::thread::sleep(Duration::from_secs(1));
             }
-            let store = match Store::open(&db_path) {
-                Ok(s) => s,
-                Err(_) => continue,
+            let Ok(store) = Store::open(&db_path) else {
+                continue;
             };
-            let trusted: std::collections::HashSet<String> = store
-                .list_peers()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|p| p.trusted)
-                .map(|p| p.node_id)
-                .collect();
-            let present: std::collections::HashSet<String> = discovered
-                .lock()
-                .unwrap()
-                .keys()
-                .filter(|id| trusted.contains(*id) && !known_present.contains(*id))
-                .cloned()
-                .collect();
-            if !present.is_empty() {
+            let snapshot = discovered.lock().unwrap().clone();
+            if note_discovered(&store, &snapshot, &mut present) {
                 eprintln!("[sync] peer appeared, syncing now");
                 for line in sync_all_trusted(&db_path, &creds) {
                     eprintln!("[sync] on-appear: {line}");
                 }
             }
-            known_present = discovered
-                .lock()
-                .unwrap()
-                .keys()
-                .filter(|id| trusted.contains(*id))
-                .cloned()
-                .collect();
         }
     });
+}
+
+/// One appear-watcher pass: store the addresses discovery found for
+/// trusted peers (a DHCP move needs no open GUI), and report whether
+/// one appeared since the last pass (`present`).
+fn note_discovered(
+    store: &Store,
+    discovered: &HashMap<String, Discovered>,
+    present: &mut HashSet<String>,
+) -> bool {
+    let mut now_present = HashSet::new();
+    for peer in store.list_peers().unwrap_or_default() {
+        let Some(found) = discovered.get(&peer.node_id).filter(|_| peer.trusted) else {
+            continue;
+        };
+        let merged = crate::store::merge_addresses(&peer.addresses, &found.addresses);
+        if merged != peer.addresses {
+            let _ = store.set_peer_addresses(&peer.node_id, &merged);
+        }
+        now_present.insert(peer.node_id);
+    }
+    let appeared = now_present.iter().any(|id| !present.contains(id));
+    *present = now_present;
+    appeared
 }
 
 #[cfg(test)]
@@ -1123,6 +1226,12 @@ mod tests {
             const { std::cell::RefCell::new(None) };
         static BETWEEN_MERGE_BATCHES: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
             const { std::cell::RefCell::new(None) };
+        /// This thread's side of a round behaves like an older build.
+        static OLD_BUILD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    pub(super) fn playing_old_build() -> bool {
+        OLD_BUILD.with(|old| old.get())
     }
 
     pub(super) fn before_send() {
@@ -1638,7 +1747,7 @@ mod tests {
             let stop = stop.clone();
             let creds = id_a.creds();
             let db_a = db_a.clone();
-            std::thread::spawn(move || serve(listener, db_a, creds, "a".to_string(), vec![], &stop))
+            std::thread::spawn(move || serve(listener, db_a, creds, "a".to_string(), &stop))
         };
         // Idle sockets that never finish a handshake hold every slot.
         let idle: Vec<TcpStream> = (0..MAX_INBOUND)
@@ -1738,7 +1847,12 @@ mod tests {
     }
 
     /// One loopback round: B dials A. Returns (B's report, A's report).
-    fn round(id_a: &DeviceIdentity, id_b: &DeviceIdentity, db_a: &Path, db_b: &Path) -> (SyncReport, SyncReport) {
+    fn round(
+        id_a: &DeviceIdentity,
+        id_b: &DeviceIdentity,
+        db_a: &Path,
+        db_b: &Path,
+    ) -> (SyncReport, SyncReport) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
         let server = serve_one(listener, db_a.to_path_buf(), id_a.creds());
@@ -1756,9 +1870,18 @@ mod tests {
         // The next round still echoes what each side just merged.
         round(&id_a, &id_b, &db_a, &db_b);
         let (b, a) = round(&id_a, &id_b, &db_a, &db_b);
-        assert_eq!((b.history_in, a.history_in, b.words_in, a.words_in), (0, 0, 0, 0));
-        Store::open(&db_a).unwrap().upsert_word("fresh", &id_a.node_id).unwrap();
-        Store::open(&db_a).unwrap().delete_history("bulk-3").unwrap();
+        assert_eq!(
+            (b.history_in, a.history_in, b.words_in, a.words_in),
+            (0, 0, 0, 0)
+        );
+        Store::open(&db_a)
+            .unwrap()
+            .upsert_word("fresh", &id_a.node_id)
+            .unwrap();
+        Store::open(&db_a)
+            .unwrap()
+            .delete_history("bulk-3")
+            .unwrap();
         let (b, _) = round(&id_a, &id_b, &db_a, &db_b);
         assert_eq!((b.words_in, b.history_in), (1, 1));
         let store_b = Store::open(&db_b).unwrap();
@@ -1794,5 +1917,196 @@ mod tests {
         for db in [db_a, db_b, db_c] {
             std::fs::remove_file(db).ok();
         }
+    }
+
+    /// `serve_one` for a responder that plays an older build.
+    fn serve_one_as_old(
+        listener: TcpListener,
+        db: PathBuf,
+        creds: SyncCreds,
+    ) -> std::thread::JoinHandle<Result<SyncReport, String>> {
+        std::thread::spawn(move || {
+            OLD_BUILD.with(|old| old.set(true));
+            let (stream, _) = listener.accept().unwrap();
+            let (mut session, hash, _remote) =
+                NoiseStream::handshake(stream, &creds.noise_static, false)?;
+            exchange(
+                &mut session,
+                &hash,
+                &db,
+                &creds,
+                "old",
+                &[],
+                false,
+                None,
+                None,
+            )
+        })
+    }
+
+    /// Older builds neither send nor use marks: both directions still
+    /// converge, and this build keeps sending them everything.
+    #[test]
+    fn older_builds_still_sync_both_ways() {
+        let (id_a, id_b, db_a, db_b) = paired();
+        // New dialer B, old responder A.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = serve_one_as_old(listener, db_a.clone(), id_a.creds());
+        sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id).unwrap();
+        assert_eq!(server.join().unwrap().unwrap().history_in, 1);
+        // Old dialer A, new responder B, twice: still full state.
+        OLD_BUILD.with(|old| old.set(true));
+        for _ in 0..2 {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr = listener.local_addr().unwrap().to_string();
+            let server = serve_one(listener, db_b.clone(), id_b.creds());
+            let report = sync_now(&[addr], &db_a, &id_a.creds(), "a", &id_b.node_id).unwrap();
+            assert_eq!(report.history_in, 2);
+            server.join().unwrap().unwrap();
+        }
+        OLD_BUILD.with(|old| old.set(false));
+        let (store_a, store_b) = (Store::open(&db_a).unwrap(), Store::open(&db_b).unwrap());
+        assert_eq!(store_b.peer_mark(&id_a.node_id).unwrap(), None);
+        for store in [&store_a, &store_b] {
+            let mut texts = history_texts(store);
+            texts.sort();
+            assert_eq!(texts, vec!["from-a".to_string(), "from-b".to_string()]);
+        }
+        std::fs::remove_file(&db_a).ok();
+        std::fs::remove_file(&db_b).ok();
+    }
+
+    /// Messages from this build decode with the structs of the previous
+    /// release (copied here), which ignore unknown fields.
+    #[test]
+    fn new_messages_decode_as_old_ones() {
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OldVerdict {
+            #[serde(default)]
+            ok: bool,
+            #[serde(default)]
+            error: String,
+        }
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OldPayload {
+            #[serde(default)]
+            words: Vec<WordRecord>,
+            #[serde(default)]
+            snippets: Vec<SnippetRecord>,
+            #[serde(default)]
+            history: Vec<HistoryRecord>,
+            #[serde(default)]
+            peers: Vec<PeerGossip>,
+        }
+        let mark = SyncMark {
+            store: "ab".into(),
+            seq: 3,
+        };
+        let verdict = serde_json::to_vec(&Verdict {
+            ok: true,
+            error: String::new(),
+            since: Some(mark.clone()),
+        })
+        .unwrap();
+        assert!(serde_json::from_slice::<OldVerdict>(&verdict).unwrap().ok);
+        let payload = serde_json::to_vec(&Payload {
+            since: Some(mark.clone()),
+            mark: Some(mark),
+            ..Payload::default()
+        })
+        .unwrap();
+        serde_json::from_slice::<OldPayload>(&payload).unwrap();
+        // Without marks, the wire is byte-for-byte the old shape.
+        let plain = serde_json::to_string(&Payload::default()).unwrap();
+        assert_eq!(
+            plain,
+            r#"{"words":[],"snippets":[],"history":[],"peers":[]}"#
+        );
+    }
+
+    /// R44: a round that fails partway does not advance the mark, so
+    /// the next round sends the rest again.
+    #[test]
+    fn an_interrupted_round_is_sent_again() {
+        let (id_a, id_b, db_a, db_b) = paired();
+        round(&id_a, &id_b, &db_a, &db_b);
+        add_bulk_history(&db_a, MERGE_BATCH_ROWS + 1, 1);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = serve_one(listener, db_a.clone(), id_a.creds());
+        let local_db = db_b.clone();
+        BETWEEN_MERGE_BATCHES.with(|slot| {
+            slot.replace(Some(Box::new(move || {
+                let writer = Store::open(&local_db).unwrap();
+                disable_sync(&writer);
+                writer
+                    .save_settings(&crate::settings::AppSettings::default())
+                    .unwrap();
+            })));
+        });
+        sync_now(&[addr], &db_b, &id_b.creds(), "b", &id_a.node_id).unwrap_err();
+        server.join().unwrap().unwrap();
+        let partial = Store::open(&db_b)
+            .unwrap()
+            .load_history(500, true)
+            .unwrap()
+            .len();
+        assert!(partial < MERGE_BATCH_ROWS + 3, "{partial}");
+        let (b, _) = round(&id_a, &id_b, &db_a, &db_b);
+        assert!(b.history_in > MERGE_BATCH_ROWS, "{}", b.history_in);
+        let store_b = Store::open(&db_b).unwrap();
+        assert_eq!(
+            store_b.load_history(500, true).unwrap().len(),
+            MERGE_BATCH_ROWS + 3
+        );
+        std::fs::remove_file(&db_a).ok();
+        std::fs::remove_file(&db_b).ok();
+    }
+
+    /// R42: discovery refreshes a trusted peer's stored addresses, and a
+    /// peer that left and came back counts as a new appearance.
+    #[test]
+    fn discovery_refreshes_addresses_and_notices_returns() {
+        let store = Store::open_memory().unwrap();
+        let trusted = DeviceIdentity::ephemeral().node_id;
+        let stranger = DeviceIdentity::ephemeral().node_id;
+        store
+            .upsert_peer(&trusted, "t", "10.0.0.5:7000", true)
+            .unwrap();
+        store
+            .upsert_peer(&stranger, "s", "10.0.0.6:7000", false)
+            .unwrap();
+        let found = |id: &str, address: &str| Discovered {
+            node_id: id.to_string(),
+            name: String::new(),
+            addresses: vec![address.to_string()],
+        };
+        let lan: HashMap<String, Discovered> = [
+            (trusted.clone(), found(&trusted, "10.0.0.9:7000")),
+            (stranger.clone(), found(&stranger, "10.0.0.8:7000")),
+        ]
+        .into();
+        let mut present = HashSet::new();
+        assert!(note_discovered(&store, &lan, &mut present));
+        let targets = store.get_peer(&trusted).unwrap().unwrap().dial_targets();
+        assert_eq!(targets, vec!["10.0.0.9:7000", "10.0.0.5:7000"]);
+        let stranger_targets = store.get_peer(&stranger).unwrap().unwrap().dial_targets();
+        assert_eq!(stranger_targets, vec!["10.0.0.6:7000"]);
+        assert!(!note_discovered(&store, &lan, &mut present));
+        assert!(!note_discovered(&store, &HashMap::new(), &mut present));
+        assert!(note_discovered(&store, &lan, &mut present));
+    }
+
+    #[test]
+    fn mdns_addresses_are_dialable() {
+        let v6 = mdns_sd::ScopedIp::from("2001:db8::1".parse::<IpAddr>().unwrap());
+        let v6 = dial_address(&v6, 7000);
+        assert_eq!(v6, "[2001:db8::1]:7000");
+        assert!(v6.parse::<SocketAddr>().is_ok());
+        let v4 = mdns_sd::ScopedIp::from("10.0.0.9".parse::<IpAddr>().unwrap());
+        assert_eq!(dial_address(&v4, 7000), "10.0.0.9:7000");
     }
 }

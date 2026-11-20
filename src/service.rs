@@ -96,12 +96,14 @@ pub fn set_sync_port(port: u16) {
     SYNC_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
 }
 
-/// Running sync stack. Drop stops everything: the listener loop
-/// polls the flag, the periodic threads exit within a second, the
-/// mDNS daemon unregisters. In-flight syncs finish on their own.
+/// Running sync stack. Drop stops everything: it waits for the
+/// listener loop (so a restart can rebind the port at once), the
+/// periodic threads exit within a second, the mDNS daemon unregisters.
+/// In-flight syncs finish on their own.
 pub struct SyncEngine {
     stop: Arc<AtomicBool>,
     mdns: Option<crate::net::MdnsHandles>,
+    listener: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for SyncEngine {
@@ -109,6 +111,9 @@ impl Drop for SyncEngine {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Some(m) = self.mdns.take() {
             m.shutdown();
+        }
+        if let Some(listener) = self.listener.take() {
+            let _ = listener.join();
         }
         set_sync_port(0);
         eprintln!("[sync] engine stopped");
@@ -130,6 +135,8 @@ pub fn start_sync_engine(
     let saved = store.load_settings();
     let device_name = crate::device::display_name(&saved.sync.device_name, &identity.node_id);
     let stop = Arc::new(AtomicBool::new(false));
+    // Fresh discovery: the new browser reports who is still around.
+    discovered.lock().unwrap().clear();
     let port: u16 = match crate::net::listen(saved.sync.listen_port) {
         Ok(Some(listener)) => {
             let port = listener
@@ -139,16 +146,12 @@ pub fn start_sync_engine(
             eprintln!("[sync] listening on port {port}");
             let db_path = paths.db_file();
             let creds = identity.creds();
-            let mut hello_addrs = Vec::new();
-            if let Some(ip) = crate::net::lan_ip() {
-                hello_addrs.push(format!("{ip}:{port}"));
-            }
-            {
+            let listener = {
                 let stop = stop.clone();
                 std::thread::spawn(move || {
-                    crate::net::serve(listener, db_path, creds, device_name, hello_addrs, &stop)
-                });
-            }
+                    crate::net::serve(listener, db_path, creds, device_name, &stop)
+                })
+            };
             let mdns = match crate::net::start_mdns(
                 &identity.node_id,
                 &saved.sync.device_name.clone(),
@@ -187,7 +190,11 @@ pub fn start_sync_engine(
                 let stop = stop.clone();
                 crate::net::watch_discovered(db_path, identity.creds(), discovered.clone(), stop);
             }
-            *SYNC_ENGINE.lock().unwrap() = Some(SyncEngine { stop, mdns });
+            *SYNC_ENGINE.lock().unwrap() = Some(SyncEngine {
+                stop,
+                mdns,
+                listener: Some(listener),
+            });
             port
         }
         Ok(None) => 0,
@@ -220,6 +227,9 @@ pub fn spawn_sync_watcher(
         // Last applied (enabled, port, name, advertise): any move
         // restarts the engine, so all edits apply immediately.
         let mut applied: Option<(bool, u16, String, bool)> = None;
+        // A port still held elsewhere: retry the same settings with backoff.
+        let mut retry: Option<((bool, u16, String, bool), std::time::Instant)> = None;
+        let mut backoff = Duration::from_secs(2);
         loop {
             if !first {
                 std::thread::sleep(Duration::from_secs(2));
@@ -235,7 +245,11 @@ pub fn spawn_sync_watcher(
                 settings.sync.device_name.clone(),
                 settings.sync.advertise,
             );
-            if Some(want.clone()) == applied {
+            if Some(want.clone()) == applied
+                || retry
+                    .as_ref()
+                    .is_some_and(|(failed, at)| *failed == want && std::time::Instant::now() < *at)
+            {
                 continue;
             }
             if want.0 {
@@ -250,9 +264,15 @@ pub fn spawn_sync_watcher(
                 let Ok(store) = Store::open(&db_file) else {
                     continue;
                 };
-                start_sync_engine(&paths, &store, &identity, discovered.clone());
-                // If the listener failed, retry on the next change,
-                // not in a tight loop.
+                if start_sync_engine(&paths, &store, &identity, discovered.clone()) == 0
+                    && want.1 != 0
+                {
+                    retry = Some((want, std::time::Instant::now() + backoff));
+                    backoff = (backoff * 2).min(Duration::from_secs(60));
+                    applied = None;
+                    continue;
+                }
+                (retry, backoff) = (None, Duration::from_secs(2));
                 applied = Some(want);
             } else {
                 if applied.as_ref().map(|(on, _, _, _)| *on).unwrap_or(false) {
@@ -701,13 +721,17 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let stop = Arc::new(AtomicBool::new(false));
-        {
+        let serve = {
             let stop = stop.clone();
             let creds = id.creds();
             let db = db.clone();
-            std::thread::spawn(move || crate::net::serve(listener, db, creds, "a".into(), vec![], &stop));
-        }
-        drop(SyncEngine { stop, mdns: None });
+            std::thread::spawn(move || crate::net::serve(listener, db, creds, "a".into(), &stop))
+        };
+        drop(SyncEngine {
+            stop,
+            mdns: None,
+            listener: Some(serve),
+        });
         TcpListener::bind(("127.0.0.1", port)).expect("port still held after stop");
         std::fs::remove_file(&db).ok();
     }

@@ -10,7 +10,11 @@
 //! version exchange record sets; the union converges and concurrent
 //! edits to the same key resolve Last-Writer-Wins on
 //! `(updated_at_ms, updated_by)`. Deletes are tombstones so they win
-//! over concurrent edits only when newer (same LWW rule).
+//! over concurrent edits only when newer (same LWW rule). A local edit
+//! takes a version past the one it replaces (Lamport-style), so it wins
+//! even against a clock that runs ahead; incoming versions dated too
+//! far ahead are refused. Every synced row also carries a local change
+//! counter (`seq`) so rounds can send only what changed.
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::collections::BTreeMap;
@@ -29,6 +33,21 @@ pub fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Incoming versions further ahead of our clock are refused and retried
+/// on later rounds: a peer with a broken clock cannot pin a row forever.
+const MAX_FUTURE_SKEW_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+/// Newest version a merge accepts right now.
+fn skew_limit() -> i64 {
+    now_ms().saturating_add(MAX_FUTURE_SKEW_MS)
+}
+
+fn note_refused(refused: usize) {
+    if refused > 0 {
+        eprintln!("[sync] refused {refused} versions dated over 7 days ahead; check system clocks");
+    }
 }
 
 const SCHEMA: &str = "
@@ -133,6 +152,40 @@ fn bump_epoch(conn: &Connection) -> rusqlite::Result<()> {
          ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
         [],
     )?;
+    Ok(())
+}
+
+/// Change tracking for incremental sync: every insert or update of a
+/// synced row takes the next value of one counter, so a peer asks only
+/// for rows changed after the last value it merged. Triggers keep this
+/// true for writes by older builds sharing the database too.
+fn ensure_change_seq(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "INSERT OR IGNORE INTO sync_meta (key, value) VALUES ('seq', '0');
+         INSERT OR IGNORE INTO sync_meta (key, value)
+           VALUES ('store_id', lower(hex(randomblob(16))));",
+    )?;
+    for table in ["words", "snippets", "history"] {
+        if !has_column(conn, table, "seq") {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN seq INTEGER NOT NULL DEFAULT 0"),
+                [],
+            )?;
+        }
+        let bump = format!(
+            "UPDATE sync_meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'seq';
+             UPDATE {table} SET seq = (SELECT CAST(value AS INTEGER) FROM sync_meta
+                                       WHERE key = 'seq')
+             WHERE rowid = NEW.rowid;"
+        );
+        conn.execute_batch(&format!(
+            "CREATE INDEX IF NOT EXISTS {table}_seq ON {table} (seq);
+             CREATE TRIGGER IF NOT EXISTS {table}_seq_insert AFTER INSERT ON {table}
+             BEGIN {bump} END;
+             CREATE TRIGGER IF NOT EXISTS {table}_seq_update AFTER UPDATE ON {table}
+             WHEN NEW.seq = OLD.seq BEGIN {bump} END;"
+        ))?;
+    }
     Ok(())
 }
 
@@ -401,6 +454,11 @@ impl Store {
             "UPDATE history SET raw_text = text WHERE raw_text = '' AND text <> ''",
             [],
         );
+        // Serialized so racing first opens cannot both add the column.
+        let tx =
+            rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate)?;
+        ensure_change_seq(&tx)?;
+        tx.commit()?;
         Ok(Self { conn })
     }
 
@@ -641,22 +699,29 @@ impl Store {
 
     /// Local write: add or resurrect a word.
     pub fn upsert_word(&self, word: &str, node_id: &str) -> rusqlite::Result<()> {
-        self.apply_words(&[WordRecord {
-            word: word.to_string(),
-            updated_at: now_ms(),
-            updated_by: node_id.to_string(),
-            deleted: false,
-        }])
+        self.put_word_local(word, false, node_id)
     }
 
     /// Local write: tombstone a word (propagates as a delete).
     pub fn delete_word(&self, word: &str, node_id: &str) -> rusqlite::Result<()> {
-        self.apply_words(&[WordRecord {
-            word: word.to_string(),
-            updated_at: now_ms(),
-            updated_by: node_id.to_string(),
-            deleted: true,
-        }])
+        self.put_word_local(word, true, node_id)
+    }
+
+    /// A local edit outranks the version it replaces: its version is
+    /// past both our clock and the stored one, in one statement.
+    fn put_word_local(&self, word: &str, deleted: bool, node_id: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO words (word, updated_at, updated_by, deleted)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (word) DO UPDATE SET
+               updated_at = MAX(excluded.updated_at, MIN(updated_at, ?5) + 1),
+               updated_by = excluded.updated_by,
+               deleted = excluded.deleted",
+            (word, now_ms(), node_id, deleted as i64, skew_limit()),
+        )?;
+        bump_data_gen();
+        bump_gen(&self.conn);
+        Ok(())
     }
 
     pub fn load_snippets(&self) -> rusqlite::Result<Vec<Snippet>> {
@@ -679,24 +744,42 @@ impl Store {
         replacement: &str,
         node_id: &str,
     ) -> rusqlite::Result<()> {
-        self.apply_snippets(&[SnippetRecord {
-            trigger: trigger.to_string(),
-            replacement: replacement.to_string(),
-            updated_at: now_ms(),
-            updated_by: node_id.to_string(),
-            deleted: false,
-        }])
+        self.put_snippet_local(trigger, replacement, false, node_id)
     }
 
     /// Local write: tombstone a snippet.
     pub fn delete_snippet(&self, trigger: &str, node_id: &str) -> rusqlite::Result<()> {
-        self.apply_snippets(&[SnippetRecord {
-            trigger: trigger.to_string(),
-            replacement: String::new(),
-            updated_at: now_ms(),
-            updated_by: node_id.to_string(),
-            deleted: true,
-        }])
+        self.put_snippet_local(trigger, "", true, node_id)
+    }
+
+    /// Same versioning as `put_word_local`.
+    fn put_snippet_local(
+        &self,
+        trigger: &str,
+        replacement: &str,
+        deleted: bool,
+        node_id: &str,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO snippets (trigger, replacement, updated_at, updated_by, deleted)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (trigger) DO UPDATE SET
+               replacement = excluded.replacement,
+               updated_at = MAX(excluded.updated_at, MIN(updated_at, ?6) + 1),
+               updated_by = excluded.updated_by,
+               deleted = excluded.deleted",
+            (
+                trigger,
+                replacement,
+                now_ms(),
+                node_id,
+                deleted as i64,
+                skew_limit(),
+            ),
+        )?;
+        bump_data_gen();
+        bump_gen(&self.conn);
+        Ok(())
     }
 
     // -- history (append-only, union by uuid) ---------------------------------
@@ -935,6 +1018,8 @@ impl Store {
             tx.execute(&format!("DELETE FROM {table} WHERE deleted = 0"), [])?;
         }
         tx.execute("DELETE FROM kv", [])?;
+        // Pull peers' full state again, as before incremental sync.
+        tx.execute("DELETE FROM sync_meta WHERE key LIKE 'since:%'", [])?;
         self.save_settings(fresh)?;
         // Rounds already past their checks must not send pre-reset data.
         bump_epoch(&tx)?;
@@ -996,10 +1081,76 @@ impl Store {
     // -- sync: export + LWW apply --------------------------------------------
 
     pub fn export_words(&self) -> rusqlite::Result<Vec<WordRecord>> {
+        self.words_since(-1)
+    }
+
+    pub fn export_snippets(&self) -> rusqlite::Result<Vec<SnippetRecord>> {
+        self.snippets_since(-1)
+    }
+
+    pub fn export_history(&self) -> rusqlite::Result<Vec<HistoryRecord>> {
+        self.history_since(-1)
+    }
+
+    /// Rows changed after `since` (all rows when it names another store
+    /// or a counter ahead of ours) and the mark they bring a peer up to.
+    /// One snapshot, so the mark covers exactly the rows returned.
+    pub fn export_changes(&self, since: Option<&SyncMark>) -> rusqlite::Result<Changes> {
+        let snapshot = self.conn.unchecked_transaction()?;
+        let mark: SyncMark = self.conn.query_row(
+            "SELECT (SELECT value FROM sync_meta WHERE key = 'store_id'),
+                    (SELECT CAST(value AS INTEGER) FROM sync_meta WHERE key = 'seq')",
+            [],
+            |r| {
+                Ok(SyncMark {
+                    store: r.get(0)?,
+                    seq: r.get(1)?,
+                })
+            },
+        )?;
+        let from = match since {
+            Some(s) if s.store == mark.store && s.seq <= mark.seq => s.seq,
+            _ => -1,
+        };
+        let changes = Changes {
+            words: self.words_since(from)?,
+            snippets: self.snippets_since(from)?,
+            history: self.history_since(from)?,
+            mark,
+        };
+        snapshot.commit()?;
+        Ok(changes)
+    }
+
+    /// The mark of the last complete merge from `node_id`, if any.
+    pub fn peer_mark(&self, node_id: &str) -> rusqlite::Result<Option<SyncMark>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM sync_meta WHERE key = 'since:' || ?1",
+                [node_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(raw.and_then(|raw| serde_json::from_str(&raw).ok()))
+    }
+
+    pub fn set_peer_mark(&self, node_id: &str, mark: &SyncMark) -> rusqlite::Result<()> {
+        let raw = serde_json::to_string(mark)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+        self.conn.execute(
+            "INSERT INTO sync_meta (key, value) VALUES ('since:' || ?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            (node_id, raw),
+        )?;
+        Ok(())
+    }
+
+    fn words_since(&self, since: i64) -> rusqlite::Result<Vec<WordRecord>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT word, updated_at, updated_by, deleted FROM words")?;
-        stmt.query_map([], |row| {
+            .prepare("SELECT word, updated_at, updated_by, deleted FROM words WHERE seq > ?1")?;
+        stmt.query_map([since], |row| {
             Ok(WordRecord {
                 word: row.get(0)?,
                 updated_at: row.get(1)?,
@@ -1010,11 +1161,12 @@ impl Store {
         .collect()
     }
 
-    pub fn export_snippets(&self) -> rusqlite::Result<Vec<SnippetRecord>> {
+    fn snippets_since(&self, since: i64) -> rusqlite::Result<Vec<SnippetRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT trigger, replacement, updated_at, updated_by, deleted FROM snippets",
+            "SELECT trigger, replacement, updated_at, updated_by, deleted FROM snippets
+             WHERE seq > ?1",
         )?;
-        stmt.query_map([], |row| {
+        stmt.query_map([since], |row| {
             Ok(SnippetRecord {
                 trigger: row.get(0)?,
                 replacement: row.get(1)?,
@@ -1026,15 +1178,15 @@ impl Store {
         .collect()
     }
 
-    pub fn export_history(&self) -> rusqlite::Result<Vec<HistoryRecord>> {
+    fn history_since(&self, since: i64) -> rusqlite::Result<Vec<HistoryRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT uuid,
                     CASE WHEN deleted THEN '' ELSE text END,
                     CASE WHEN deleted THEN '' ELSE raw_text END,
                     words, duration_secs, deleted, discarded, recorded_at
-             FROM history",
+             FROM history WHERE seq > ?1",
         )?;
-        stmt.query_map([], |row| {
+        stmt.query_map([since], |row| {
             Ok(HistoryRecord {
                 uuid: row.get(0)?,
                 text: row.get(1)?,
@@ -1049,83 +1201,68 @@ impl Store {
         .collect()
     }
 
-    /// Returns true when `(new_at, new_by)` strictly beats the stored
-    /// version: the total order behind every conflict decision.
-    fn wins(new_at: i64, new_by: &str, old_at: i64, old_by: &str) -> bool {
-        (new_at, new_by) > (old_at, old_by)
-    }
-
     /// Merge remote word records. Union converges; concurrent edits to
-    /// the same word resolve to the newer `(updated_at, updated_by)`.
-    pub fn apply_words(&self, records: &[WordRecord]) -> rusqlite::Result<()> {
+    /// the same word resolve to the newer `(updated_at, updated_by)`,
+    /// compared inside the upsert so no other writer can interleave.
+    /// Returns how many records were refused as dated too far ahead.
+    pub fn apply_words(&self, records: &[WordRecord]) -> rusqlite::Result<usize> {
+        let limit = skew_limit();
+        let mut refused = 0;
         for r in records {
-            let existing: Option<(i64, String)> = self
-                .conn
-                .query_row(
-                    "SELECT updated_at, updated_by FROM words WHERE word = ?1",
-                    [&r.word],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .ok();
-            let take = match existing {
-                None => true,
-                Some((old_at, old_by)) => Self::wins(r.updated_at, &r.updated_by, old_at, &old_by),
-            };
-            if take {
-                self.conn.execute(
-                    "INSERT INTO words (word, updated_at, updated_by, deleted)
-                     VALUES (?1, ?2, ?3, ?4)
-                     ON CONFLICT (word) DO UPDATE SET
-                       updated_at = excluded.updated_at,
-                       updated_by = excluded.updated_by,
-                       deleted = excluded.deleted",
-                    (&r.word, r.updated_at, &r.updated_by, r.deleted as i64),
-                )?;
+            if r.updated_at > limit {
+                refused += 1;
+                continue;
             }
+            self.conn.execute(
+                "INSERT INTO words (word, updated_at, updated_by, deleted)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (word) DO UPDATE SET
+                   updated_at = excluded.updated_at,
+                   updated_by = excluded.updated_by,
+                   deleted = excluded.deleted
+                 WHERE (excluded.updated_at, excluded.updated_by)
+                       > (words.updated_at, words.updated_by)",
+                (&r.word, r.updated_at, &r.updated_by, r.deleted as i64),
+            )?;
         }
+        note_refused(refused);
         bump_data_gen();
         bump_gen(&self.conn);
-        Ok(())
+        Ok(refused)
     }
 
-    pub fn apply_snippets(&self, records: &[SnippetRecord]) -> rusqlite::Result<()> {
+    /// Same rule as `apply_words`.
+    pub fn apply_snippets(&self, records: &[SnippetRecord]) -> rusqlite::Result<usize> {
+        let limit = skew_limit();
+        let mut refused = 0;
         for r in records {
-            let existing: Option<(String, i64, String)> = self
-                .conn
-                .query_row(
-                    "SELECT replacement, updated_at, updated_by FROM snippets WHERE trigger = ?1",
-                    [&r.trigger],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .ok();
-            let take = match existing {
-                None => true,
-                Some((_, old_at, old_by)) => {
-                    Self::wins(r.updated_at, &r.updated_by, old_at, &old_by)
-                }
-            };
-            if take {
-                self.conn.execute(
-                    "INSERT INTO snippets (trigger, replacement, updated_at, updated_by, deleted)
-                     VALUES (?1, ?2, ?3, ?4, ?5)
-                     ON CONFLICT (trigger) DO UPDATE SET
-                       replacement = excluded.replacement,
-                       updated_at = excluded.updated_at,
-                       updated_by = excluded.updated_by,
-                       deleted = excluded.deleted",
-                    (
-                        &r.trigger,
-                        &r.replacement,
-                        r.updated_at,
-                        &r.updated_by,
-                        r.deleted as i64,
-                    ),
-                )?;
+            if r.updated_at > limit {
+                refused += 1;
+                continue;
             }
+            self.conn.execute(
+                "INSERT INTO snippets (trigger, replacement, updated_at, updated_by, deleted)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (trigger) DO UPDATE SET
+                   replacement = excluded.replacement,
+                   updated_at = excluded.updated_at,
+                   updated_by = excluded.updated_by,
+                   deleted = excluded.deleted
+                 WHERE (excluded.updated_at, excluded.updated_by)
+                       > (snippets.updated_at, snippets.updated_by)",
+                (
+                    &r.trigger,
+                    &r.replacement,
+                    r.updated_at,
+                    &r.updated_by,
+                    r.deleted as i64,
+                ),
+            )?;
         }
+        note_refused(refused);
         bump_data_gen();
         bump_gen(&self.conn);
-        Ok(())
+        Ok(refused)
     }
 
     /// Merge remote history: union on uuid. `deleted`/`discarded` only
@@ -1163,6 +1300,7 @@ impl Store {
     pub fn open_memory() -> rusqlite::Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
+        ensure_change_seq(&conn)?;
         Ok(Self { conn })
     }
 }
@@ -1197,6 +1335,22 @@ pub struct HistoryRecord {
     pub deleted: bool,
     pub discarded: bool,
     pub recorded_at: i64,
+}
+
+/// Incremental sync position: a store's random id and a value of its
+/// change counter.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SyncMark {
+    pub store: String,
+    pub seq: i64,
+}
+
+/// Rows for one outgoing payload and the mark they cover.
+pub struct Changes {
+    pub words: Vec<WordRecord>,
+    pub snippets: Vec<SnippetRecord>,
+    pub history: Vec<HistoryRecord>,
+    pub mark: SyncMark,
 }
 
 /// Trusted peer row.
@@ -1243,7 +1397,7 @@ fn dump_addresses(addresses: &[String]) -> String {
 }
 
 /// Merge new observations into a stored address list (dedup, cap 8).
-fn merge_addresses(current: &[String], seen: &[String]) -> Vec<String> {
+pub(crate) fn merge_addresses(current: &[String], seen: &[String]) -> Vec<String> {
     let mut out: Vec<String> = seen.to_vec();
     for a in current {
         if !out.contains(a) {
@@ -2487,16 +2641,13 @@ mod tests {
             deleted: false,
         };
         holder.apply_words(&[record(10, A)]).unwrap();
+        let mut store = Store::open(&path).unwrap();
+        store.conn.busy_handler(Some(note_wait)).unwrap();
         let lock = holder.begin_merge().unwrap();
-        let older = {
-            let path = path.clone();
-            std::thread::spawn(move || {
-                let mut store = Store::open(&path).unwrap();
-                store.conn.busy_handler(Some(note_wait)).unwrap();
-                store.apply_words(&[record(20, B)]).unwrap();
-            })
-        };
-        while !WAITING.load(std::sync::atomic::Ordering::SeqCst) {
+        let older = std::thread::spawn(move || {
+            store.apply_words(&[record(20, B)]).unwrap();
+        });
+        while !WAITING.load(std::sync::atomic::Ordering::SeqCst) && !older.is_finished() {
             std::thread::yield_now();
         }
         holder.apply_words(&[record(30, A)]).unwrap();
@@ -2580,5 +2731,91 @@ mod tests {
         }
         assert_eq!(words(&store), vec!["kept".to_string()]);
         assert_eq!(snippet(&store, "poison"), None);
+    }
+
+    /// R44 compatibility: a database from before change tracking gains
+    /// it on open, and writes made the way older builds write (no `seq`
+    /// column named) are still picked up by incremental exports.
+    #[test]
+    fn change_tracking_upgrades_old_databases_and_sees_old_writers() {
+        let path = temp_store_path("seq-upgrade");
+        {
+            let store = Store::open(&path).unwrap();
+            for table in ["words", "snippets", "history"] {
+                store
+                    .conn
+                    .execute_batch(&format!(
+                        "DROP TRIGGER {table}_seq_insert; DROP TRIGGER {table}_seq_update;
+                         DROP INDEX {table}_seq; ALTER TABLE {table} DROP COLUMN seq;"
+                    ))
+                    .unwrap();
+            }
+            store
+                .conn
+                .execute("DELETE FROM sync_meta WHERE key IN ('seq', 'store_id')", [])
+                .unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO words (word, updated_at, updated_by) VALUES ('old', 1, 'x')",
+                    [],
+                )
+                .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let all = store.export_changes(None).unwrap();
+        assert_eq!(all.words.len(), 1);
+        assert!(
+            store
+                .export_changes(Some(&all.mark))
+                .unwrap()
+                .words
+                .is_empty()
+        );
+        // An older build's upsert and tombstone.
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO words (word, updated_at, updated_by, deleted) VALUES ('old', 2, 'x', 1)
+                   ON CONFLICT (word) DO UPDATE SET updated_at = excluded.updated_at,
+                   deleted = excluded.deleted;
+                 INSERT INTO history (uuid, text) VALUES ('h1', 'hi');",
+            )
+            .unwrap();
+        let changed = store.export_changes(Some(&all.mark)).unwrap();
+        assert_eq!((changed.words.len(), changed.history.len()), (1, 1));
+        assert!(changed.words[0].deleted);
+        // A mark from another database, or ahead of ours, means everything.
+        let foreign = SyncMark {
+            store: "other".into(),
+            seq: changed.mark.seq,
+        };
+        assert_eq!(
+            store.export_changes(Some(&foreign)).unwrap().history.len(),
+            1
+        );
+        let ahead = SyncMark {
+            seq: changed.mark.seq + 1,
+            ..changed.mark.clone()
+        };
+        assert_eq!(store.export_changes(Some(&ahead)).unwrap().words.len(), 1);
+        drop(store);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    /// Reset asks peers for their full state again.
+    #[test]
+    fn reset_forgets_peer_marks() {
+        let store = Store::open_memory().unwrap();
+        let mark = SyncMark {
+            store: "s".into(),
+            seq: 4,
+        };
+        store.set_peer_mark(B, &mark).unwrap();
+        assert_eq!(store.peer_mark(B).unwrap(), Some(mark));
+        store.reset_all_data(&AppSettings::default()).unwrap();
+        assert_eq!(store.peer_mark(B).unwrap(), None);
     }
 }
