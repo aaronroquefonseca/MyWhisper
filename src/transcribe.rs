@@ -3848,8 +3848,56 @@ fn whisper_json_text(v: &serde_json::Value) -> String {
 }
 
 pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>, port: u16) -> Result<String, String> {
+    whisper_inference(wav, prompt, port, "json").map(|v| whisper_json_text(&v))
+}
+
+/// Speculative decode: segments with the engine's end timestamps, so
+/// confirmed text maps to the audio it covers. A reply without
+/// timestamps becomes one segment that never confirms.
+fn whisper_segments(
+    wav: &[u8],
+    prompt: Option<String>,
+    port: u16,
+) -> Result<Vec<crate::speculative::Segment>, String> {
+    whisper_inference(wav, prompt, port, "verbose_json").map(|v| whisper_json_segments(&v))
+}
+
+fn whisper_json_segments(v: &serde_json::Value) -> Vec<crate::speculative::Segment> {
+    let segments: Option<Vec<_>> =
+        v.get("segments")
+            .and_then(|s| s.as_array())
+            .and_then(|segments| {
+                segments
+                    .iter()
+                    .map(|s| {
+                        Some(crate::speculative::Segment {
+                            text: s
+                                .get("text")?
+                                .as_str()?
+                                .split_whitespace()
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                            end: (s.get("end")?.as_f64()?.max(0.0) * 16_000.0) as usize,
+                        })
+                    })
+                    .collect()
+            });
+    segments.unwrap_or_else(|| {
+        vec![crate::speculative::Segment {
+            text: whisper_json_text(v),
+            end: usize::MAX,
+        }]
+    })
+}
+
+fn whisper_inference(
+    wav: &[u8],
+    prompt: Option<String>,
+    port: u16,
+    format: &str,
+) -> Result<serde_json::Value, String> {
     let boundary = "mywhisperwav";
-    let mut fields = vec![("temperature", "0.0"), ("response_format", "json")];
+    let mut fields = vec![("temperature", "0.0"), ("response_format", format)];
     let prompt_owned;
     if let Some(p) = prompt.as_ref()
         && !p.is_empty()
@@ -3878,9 +3926,7 @@ pub fn whisper_transcribe(wav: &[u8], prompt: Option<String>, port: u16) -> Resu
         return Err(format!("whisper /inference: http {}", res.status()));
     }
     let text = res.text().map_err(|e| format!("whisper body: {e}"))?;
-    let v: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("whisper json: {e}"))?;
-    Ok(whisper_json_text(&v))
+    serde_json::from_str(&text).map_err(|e| format!("whisper json: {e}"))
 }
 
 // ----------------------------------------------------------------- cloud
@@ -4133,9 +4179,11 @@ struct SpecHandle {
     /// Explicit release finalizes the tail. Dropping the sender aborts
     /// speculative work when a capture is cancelled or abandoned.
     release: mpsc::Sender<()>,
-    /// Final (committed_text, committed_audio_len, full 16k buffer).
-    done_rx: mpsc::Receiver<(String, usize, Vec<f32>)>,
+    /// Final confirmed agreement and the full settled 16k buffer.
+    done_rx: mpsc::Receiver<SpecDone>,
 }
+
+type SpecDone = (crate::speculative::Agreement, Vec<f32>);
 
 /// First audio before the first speculative pass (1.5 s @ 16 kHz).
 const SPEC_FIRST_PASS: usize = 24_000;
@@ -4156,7 +4204,7 @@ fn run_spec(
     release: mpsc::Receiver<()>,
     data_dir: PathBuf,
     config: SpecConfig,
-    tx: mpsc::Sender<(String, usize, Vec<f32>)>,
+    tx: mpsc::Sender<SpecDone>,
     settled: Arc<AtomicBool>,
 ) {
     let SpecConfig {
@@ -4181,8 +4229,7 @@ fn run_spec(
         };
     let mut buffer: Vec<f32> = Vec::new();
     let mut consumed = 0usize;
-    let mut prev_hyp = String::new();
-    let mut committed = (String::new(), 0usize);
+    let mut agreement = crate::speculative::Agreement::default();
     let tick = Duration::from_secs_f32(update_secs.max(0.5));
     loop {
         match release.recv_timeout(tick) {
@@ -4198,8 +4245,9 @@ fn run_spec(
         if buffer.len() < SPEC_FIRST_PASS {
             continue;
         }
-        let window = crate::speculative::unconfirmed_window(&buffer, committed.1, overlap);
-        let wav = wav_bytes_16k(&audio::f32_to_i16(&window));
+        let start = agreement.window_start(overlap);
+        let window = &buffer[start..];
+        let wav = wav_bytes_16k(&audio::f32_to_i16(window));
         let prompt = prompt.get_or_insert_with(|| {
             let words = crate::store::Store::open(&data_dir.join("state.db"))
                 .ok()
@@ -4212,17 +4260,13 @@ fn run_spec(
             Err(mpsc::TryRecvError::Disconnected) => return,
             Err(mpsc::TryRecvError::Empty) => {}
         }
-        match whisper_transcribe(&wav, prompt.clone(), whisper_port) {
+        match whisper_segments(&wav, prompt.clone(), whisper_port) {
             Ok(hyp) => {
-                let agreed = crate::speculative::confirm_prefix(&prev_hyp, &hyp);
-                if agreed.split_whitespace().count() > committed.0.split_whitespace().count() {
-                    committed = (
-                        agreed,
-                        buffer.len().saturating_sub(overlap + SPEC_UNSTABLE_AUDIO),
-                    );
+                let before = agreement.audio;
+                agreement.observe(start, window.len(), hyp, SPEC_UNSTABLE_AUDIO);
+                if agreement.audio > before {
                     eprintln!("[stt] spec advanced its committed prefix");
                 }
-                prev_hyp = hyp;
             }
             Err(e) => eprintln!("[stt] spec pass: {e}"),
         }
@@ -4233,7 +4277,7 @@ fn run_spec(
     if append_pending(&mut consumed, &mut buffer).is_err() {
         return;
     }
-    let _ = tx.send((committed.0, committed.1, buffer));
+    let _ = tx.send((agreement, buffer));
 }
 
 struct CaptureResetCheck {
@@ -5198,24 +5242,24 @@ fn finish_session(
             return Ok(None);
         }
         match result {
-            Ok((committed, committed_len, buf)) => {
+            Ok((agreement, buf)) => {
                 eprintln!(
                     "[stt] release: spec agreed on {} words, tail from {:.1}s",
-                    committed.split_whitespace().count(),
-                    committed_len as f64 / 16_000.0
+                    agreement.text.split_whitespace().count(),
+                    agreement.audio as f64 / 16_000.0
                 );
-                let tail =
-                    crate::speculative::unconfirmed_window(&buf, committed_len, sess.spec_overlap);
+                let start = agreement.window_start(sess.spec_overlap).min(buf.len());
+                let tail = &buf[start..];
                 if tail.len() < MIN_SAMPLES_16K / 2 {
                     // Nothing (much) left: committed text is the answer.
-                    if !committed.trim().is_empty() {
-                        return Ok(empty_to_none(committed)
+                    if !agreement.text.trim().is_empty() {
+                        return Ok(empty_to_none(agreement.text)
                             .map(|t| (t, secs, wav_of(&buf, sess.keep_audio))));
                     }
                     eprintln!("[stt] spec produced no text; full recording");
                 } else {
                     let t0 = Instant::now();
-                    let tail_wav = wav_bytes_16k(&audio::f32_to_i16(&tail));
+                    let tail_wav = wav_bytes_16k(&audio::f32_to_i16(tail));
                     let prompt = crate::textnorm::dictionary_prompt(
                         words,
                         crate::textnorm::WHISPER_PROMPT_CHARS,
@@ -5224,13 +5268,13 @@ fn finish_session(
                         return Ok(None);
                     }
                     let result =
-                        whisper_transcribe(&tail_wav, prompt, engine_port(&sess.net, WHISPER_PORT));
+                        whisper_segments(&tail_wav, prompt, engine_port(&sess.net, WHISPER_PORT));
                     if !sess.reset.current() {
                         return Ok(None);
                     }
                     match result {
-                        Ok(tail_text) => {
-                            let merged = crate::speculative::merge_tail(&committed, &tail_text);
+                        Ok(tail) => {
+                            let merged = agreement.append(start, &tail);
                             eprintln!(
                                 "[stt] release: tail decode took {:.1}s",
                                 t0.elapsed().as_secs_f64()
@@ -7086,9 +7130,43 @@ mod tests {
         });
         std::thread::sleep(Duration::from_secs(5));
         release.send(()).unwrap();
-        let (committed, clen, buf) = rx.recv_timeout(Duration::from_secs(120)).unwrap();
-        eprintln!("spec committed={committed:?} clen={clen} buf={}", buf.len());
+        let (agreement, buf) = rx.recv_timeout(Duration::from_secs(120)).unwrap();
+        eprintln!("spec agreement={agreement:?} buf={}", buf.len());
         assert!(buf.len() >= 60_000, "buffer doesn't cover 4 s");
+    }
+
+    #[test]
+    fn whisper_segments_carry_end_timestamps() {
+        use crate::speculative::Segment;
+        let reply = serde_json::json!({
+            "text": " Hello, world. Again",
+            "segments": [
+                {"text": " Hello,\nworld.", "start": 0.0, "end": 1.5},
+                {"text": " Again", "start": 1.5, "end": 2.25},
+            ],
+        });
+        assert_eq!(
+            whisper_json_segments(&reply),
+            vec![
+                Segment {
+                    text: "Hello, world.".into(),
+                    end: 24_000
+                },
+                Segment {
+                    text: "Again".into(),
+                    end: 36_000
+                },
+            ]
+        );
+        // No timestamps: one segment that can never be confirmed early.
+        let plain = serde_json::json!({"text": "Hello world"});
+        assert_eq!(
+            whisper_json_segments(&plain),
+            vec![Segment {
+                text: "Hello world".into(),
+                end: usize::MAX
+            }]
+        );
     }
 
     #[test]
@@ -12747,7 +12825,7 @@ HTTPServer(("127.0.0.1", int(sys.argv[sys.argv.index("--port") + 1])), Handler).
         // Spec agreed on nothing: the whole buffer is an unconfirmed tail.
         let (spec_tx, spec_rx) = mpsc::channel();
         spec_tx
-            .send((String::new(), 0, vec![0.1f32; 32_000]))
+            .send((Default::default(), vec![0.1f32; 32_000]))
             .unwrap();
         let (release, _release_rx) = mpsc::channel();
         let spec = SpecHandle {
