@@ -3408,18 +3408,12 @@ fn whistle_pass(
     if lang != "auto" && !lang.is_empty() {
         cmd.args(["--audio-language", lang]);
     }
-    let out = cmd
-        .env("NEEDLE_TELEMETRY", "0")
-        .env("DO_NOT_TRACK", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|e| format!("spawn needle: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("needle: {}", out.status));
+    let mut needle = Needle::spawn(&mut cmd)?;
+    let status = needle.wait_until(Instant::now() + NEEDLE_PASS_TIMEOUT)?;
+    if !status.success() {
+        return Err(format!("needle: {status}"));
     }
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let stdout = String::from_utf8_lossy(&needle.out).trim().to_string();
     whistle_parse_stdout(&stdout).ok_or_else(|| "needle: empty output".to_string())
 }
 
@@ -3446,20 +3440,123 @@ fn whistle_parse_stdout(stdout: &str) -> Option<String> {
     Some(stdout.to_string())
 }
 
+// Every needle wait is bounded; test builds shrink the bounds so the
+// stall tests finish fast.
+const NEEDLE_FEED_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 5 });
+const NEEDLE_FINISH_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 });
+const NEEDLE_PASS_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 5 } else { 120 });
+const NEEDLE_OUTPUT_LIMIT: usize = 1024 * 1024;
+const NEEDLE_POLL: Duration = Duration::from_millis(5);
+
+/// A needle child with non-blocking stdout, so no read or exit wait
+/// can hang. Drop kills and reaps it.
+struct Needle {
+    child: Child,
+    stdout: std::process::ChildStdout,
+    out: Vec<u8>,
+}
+
+impl Needle {
+    fn spawn(cmd: &mut Command) -> Result<Self, String> {
+        use std::os::fd::AsRawFd;
+        kill_on_parent_death(cmd);
+        let mut child = cmd
+            .env("NEEDLE_TELEMETRY", "0")
+            .env("DO_NOT_TRACK", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("spawn needle: {e}"))?;
+        let Some(stdout) = child.stdout.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("needle stdout unavailable".to_string());
+        };
+        let needle = Self {
+            child,
+            stdout,
+            out: Vec::new(),
+        };
+        let fd = needle.stdout.as_raw_fd();
+        // SAFETY: fcntl on the pipe descriptor `needle` owns.
+        let ok = unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            flags != -1 && libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) != -1
+        };
+        if !ok {
+            return Err(format!(
+                "needle stdout: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(needle)
+    }
+
+    /// Collect what stdout holds now, without blocking.
+    fn drain(&mut self) -> Result<(), String> {
+        use std::io::Read;
+        let mut buf = [0u8; 8192];
+        loop {
+            match self.stdout.read(&mut buf) {
+                Ok(0) => return Ok(()),
+                Ok(n) if self.out.len() + n > NEEDLE_OUTPUT_LIMIT => {
+                    return Err("needle output limit exceeded".to_string());
+                }
+                Ok(n) => self.out.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(format!("needle output: {e}")),
+            }
+        }
+    }
+
+    fn exited(&mut self) -> Result<Option<std::process::ExitStatus>, String> {
+        self.child
+            .try_wait()
+            .map_err(|e| format!("needle wait: {e}"))
+    }
+
+    /// Exit status with stdout collected, or Err once `deadline` passes.
+    fn wait_until(&mut self, deadline: Instant) -> Result<std::process::ExitStatus, String> {
+        loop {
+            self.drain()?;
+            if let Some(status) = self.exited()? {
+                // Output written before exit is already in the pipe; a
+                // descendant holding it open must not extend the wait.
+                self.drain()?;
+                return Ok(status);
+            }
+            if Instant::now() >= deadline {
+                return Err("needle timed out".to_string());
+            }
+            std::thread::sleep(NEEDLE_POLL);
+        }
+    }
+}
+
+impl Drop for Needle {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 /// Whistle live session over a FIFO: needle `--audio-stream`
-/// decodes while the hold feeds PCM, committing pieces as they land
-/// (verified: NDJSON `{"text","words","pending"}` per chunk). The
-/// FIFO + /dev/shm staging never touch disk. On any setup failure
-/// the caller falls back to single-file decode.
+/// decodes while the hold feeds PCM. Each NDJSON record
+/// `{"text","words","pending"}` carries only the newly committed
+/// words (verified against the binary). The FIFO lives in a private
+/// /dev/shm dir and never touches disk. Any stall or failure is Err
+/// and the caller re-decodes the full recording from file.
 pub struct WhistleStream {
-    child: std::process::Child,
-    fifo: PathBuf,
-    /// Private 0700 tmpfs dir holding the FIFO; removed after `Drop`.
-    _stage: tempfile::TempDir,
+    // Field order is drop order: kill + reap needle, then remove the
+    // FIFO dir.
+    needle: Needle,
+    dir: tempfile::TempDir,
     writer: Option<std::fs::File>,
     header_sent: bool,
     rate: u32,
-    committed: Arc<Mutex<String>>,
+    committed: String,
 }
 
 impl WhistleStream {
@@ -3469,17 +3566,17 @@ impl WhistleStream {
         keywords: Option<&Path>,
         lang: &str,
     ) -> Result<Self, String> {
-        // Random dir created 0700, so no other user can open the FIFO
-        // or plant a link at its path.
-        let stage = tempfile::Builder::new()
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::Builder::new()
             .prefix(TMPFS_PREFIX)
             .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .tempdir_in(TMPFS_DIR)
-            .map_err(|e| format!("whistle stage: {e}"))?;
-        let fifo = stage.path().join("audio.wav");
-        let name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes())
-            .map_err(|e| format!("mkfifo: {e}"))?;
-        if unsafe { libc::mkfifo(name.as_ptr(), 0o600) } != 0 {
+            .map_err(|e| format!("whistle FIFO dir: {e}"))?;
+        let fifo = dir.path().join("audio.wav");
+        let path = std::ffi::CString::new(fifo.as_os_str().as_bytes())
+            .map_err(|_| "whistle FIFO path".to_string())?;
+        // SAFETY: NUL-terminated path inside the private 0700 dir.
+        if unsafe { libc::mkfifo(path.as_ptr(), 0o600) } != 0 {
             return Err(format!("mkfifo: {}", std::io::Error::last_os_error()));
         }
         let mut cmd = Command::new(engine);
@@ -3498,76 +3595,31 @@ impl WhistleStream {
         if lang != "auto" && !lang.is_empty() {
             cmd.args(["--audio-language", lang]);
         }
-        let mut child = cmd
-            .env("NEEDLE_TELEMETRY", "0")
-            .env("DO_NOT_TRACK", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("spawn needle stream: {e}"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "needle stdout unavailable".to_string())?;
-        let committed = Arc::new(Mutex::new(String::new()));
-        // Reader: last committed text wins; NDJSON lines.
-        let committed_r = committed.clone();
-        if crate::runtime::submit("whistle-read", move || {
-            use std::io::BufRead;
-            let reader = std::io::BufReader::new(stdout);
-            for line in reader.lines().map_while(Result::ok) {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line)
-                    && let Some(t) = v.get("text").and_then(|t| t.as_str())
-                {
-                    let t = t.trim();
-                    if !t.is_empty()
-                        && let Ok(mut c) = committed_r.lock()
-                    {
-                        *c = t.to_string();
-                    }
-                }
-            }
-        })
-        .is_err()
-        {
-            let _ = child.kill();
-            let _ = std::fs::remove_file(&fifo);
-            return Err("whistle stream: runtime saturated".to_string());
-        }
         Ok(Self {
-            child,
-            fifo,
-            _stage: stage,
+            needle: Needle::spawn(&mut cmd)?,
+            dir,
             writer: None,
             header_sent: false,
             rate: 0,
-            committed,
+            committed: String::new(),
         })
     }
 
-    /// Feed source-rate s16 mono. Opens the FIFO on first call (the
-    /// reader side is already waiting); unknown-length WAV header
-    /// convention (0xFFFFFFFF), verified against the binary.
+    /// Feed source-rate s16 mono. Opens the FIFO on first call;
+    /// unknown-length WAV header convention (0xFFFFFFFF), verified
+    /// against the binary. Open and write retry non-blocking until
+    /// NEEDLE_FEED_TIMEOUT, so a needle that never opens or never
+    /// drains the FIFO fails this call instead of hanging the pump.
     pub fn feed(&mut self, pcm: &[i16], rate: u32) -> Result<(), String> {
         if pcm.is_empty() {
             return Ok(());
         }
+        let deadline = Instant::now() + NEEDLE_FEED_TIMEOUT;
         if self.writer.is_none() {
-            // Child must be alive, else open() blocks forever.
-            match self.child.try_wait() {
-                Ok(None) => {}
-                _ => return Err("needle stream died at open".to_string()),
-            }
-            let w = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&self.fifo)
-                .map_err(|e| format!("fifo open: {e}"))?;
-            self.writer = Some(w);
+            self.writer = Some(self.open_fifo(deadline)?);
             self.rate = rate;
         }
-        use std::io::Write;
-        let w = self.writer.as_mut().unwrap();
+        let mut bytes = Vec::with_capacity(44 + pcm.len() * 2);
         if !self.header_sent {
             // RIFF/WAVE, 16-bit mono; lengths unknown (stream).
             let mut hdr = [0u8; 44];
@@ -3584,58 +3636,105 @@ impl WhistleStream {
             hdr[34..36].copy_from_slice(&16u16.to_le_bytes());
             hdr[36..40].copy_from_slice(b"data");
             hdr[40..44].copy_from_slice(&0xFFFFFF00u32.to_le_bytes());
-            w.write_all(&hdr).map_err(|e| format!("fifo header: {e}"))?;
+            bytes.extend_from_slice(&hdr);
             self.header_sent = true;
         }
-        let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
-        w.write_all(&bytes)
-            .map_err(|e| format!("fifo write: {e}"))?;
+        bytes.extend(pcm.iter().flat_map(|s| s.to_le_bytes()));
+        let mut rest = &bytes[..];
+        while !rest.is_empty() {
+            use std::io::Write;
+            let Some(writer) = self.writer.as_mut() else {
+                return Err("whistle FIFO closed".to_string());
+            };
+            match writer.write(rest) {
+                Ok(0) => return Err("whistle FIFO closed".to_string()),
+                Ok(n) => rest = &rest[n..],
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    self.retry(deadline, "write")?;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(format!("fifo write: {e}")),
+            }
+        }
+        self.read_committed()
+    }
+
+    fn open_fifo(&mut self, deadline: Instant) -> Result<std::fs::File, String> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let fifo = self.dir.path().join("audio.wav");
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+                .open(&fifo)
+            {
+                Ok(file) => return Ok(file),
+                // ENXIO: needle has not opened the read end yet.
+                Err(e) if e.raw_os_error() == Some(libc::ENXIO) => self.retry(deadline, "open")?,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(format!("fifo open: {e}")),
+            }
+        }
+    }
+
+    /// One bounded FIFO retry step; also drains stdout so a full
+    /// output pipe never stalls needle's reads.
+    fn retry(&mut self, deadline: Instant, phase: &str) -> Result<(), String> {
+        if let Some(status) = self.needle.exited()? {
+            return Err(format!("needle exited during FIFO {phase}: {status}"));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("needle stalled on FIFO {phase}"));
+        }
+        self.read_committed()?;
+        std::thread::sleep(NEEDLE_POLL);
         Ok(())
     }
 
-    /// End the stream: close the FIFO (EOF), wait for the decoder
-    /// (bounded), return the last committed text.
-    pub fn finish(mut self) -> Result<String, String> {
-        drop(self.writer.take());
-        // Bounded wait: the tail is short, the decoder streams.
-        let mut waited = 0;
-        let status = loop {
-            match self.child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) => {
-                    waited += 1;
-                    if waited >= 300 {
-                        break None;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(e) => return Err(format!("needle wait: {e}")),
-            }
-        };
-        match status {
-            None => {
-                let _ = self.child.kill();
-                eprintln!("[stt] needle stream hung; killed, using committed text");
-            }
-            Some(status) if !status.success() => {
-                eprintln!("[stt] needle stream exit: {status}");
-            }
-            _ => {}
+    fn read_committed(&mut self) -> Result<(), String> {
+        self.needle.drain()?;
+        while let Some(end) = self.needle.out.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = self.needle.out.drain(..=end).collect();
+            self.commit(&line);
         }
-        let _ = std::fs::remove_file(&self.fifo);
-        let text = self.committed.lock().map(|c| c.clone()).unwrap_or_default();
-        let text = text.trim().to_string();
-        if text.is_empty() {
+        Ok(())
+    }
+
+    /// Append one record's committed text; `pending` is unstable
+    /// preview and never enters the result.
+    fn commit(&mut self, line: &[u8]) {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(line)
+            && let Some(t) = v.get("text").and_then(|t| t.as_str())
+            && !t.trim().is_empty()
+        {
+            if !self.committed.is_empty() {
+                self.committed.push(' ');
+            }
+            self.committed.push_str(t.trim());
+        }
+    }
+
+    /// End the stream: close the FIFO (EOF), wait for needle to exit
+    /// within NEEDLE_FINISH_TIMEOUT, return the committed text. A
+    /// timeout or failed exit is Err, never a partial transcript.
+    pub fn finish(mut self) -> Result<String, String> {
+        let Some(writer) = self.writer.take() else {
+            return Err("whistle stream got no audio".to_string());
+        };
+        drop(writer);
+        let status = self
+            .needle
+            .wait_until(Instant::now() + NEEDLE_FINISH_TIMEOUT)?;
+        if !status.success() {
+            return Err(format!("needle stream exit: {status}"));
+        }
+        self.read_committed()?;
+        let tail = std::mem::take(&mut self.needle.out);
+        self.commit(&tail);
+        if self.committed.is_empty() {
             return Err("whistle stream produced nothing".to_string());
         }
-        Ok(text)
-    }
-}
-
-impl Drop for WhistleStream {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = std::fs::remove_file(&self.fifo);
+        Ok(std::mem::take(&mut self.committed))
     }
 }
 
@@ -3651,7 +3750,8 @@ fn pending_audio(rec: &Mutex<Recorder>, consumed: usize) -> Result<(Vec<i16>, u3
 
 /// Whistle FIFO pump: source-rate PCM straight to the live decoder
 /// (no resample — needle takes any rate). Read only new samples and
-/// keep the recorder whole for the file fallback.
+/// keep the recorder whole for the file fallback. Returning drops the
+/// stream (needle reaped, FIFO dir removed) before the caller reports.
 fn pump_whistle(
     mut stream: WhistleStream,
     rec: Arc<Mutex<Recorder>>,
@@ -3659,8 +3759,7 @@ fn pump_whistle(
     cancel: Arc<AtomicBool>,
     preview: bool,
     settled: Arc<AtomicBool>,
-    tx: mpsc::Sender<Result<String, String>>,
-) {
+) -> Result<String, String> {
     let mut consumed = 0usize;
     while !stop.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
         // Catch-up at source rate (see pump_online): burst while over
@@ -3675,48 +3774,29 @@ fn pump_whistle(
         if behind_secs <= 1.0 {
             std::thread::sleep(Duration::from_millis(200));
         }
-        let (chunk, rate) = match pending_audio(&rec, consumed) {
-            Ok(pending) => pending,
-            Err(error) => {
-                let _ = tx.send(Err(error));
-                return;
-            }
-        };
+        let (chunk, rate) = pending_audio(&rec, consumed)?;
         if chunk.is_empty() || rate == 0 {
             // Nothing new, or tap hasn't reported a rate yet: keep
             // the backlog for the next tick.
             continue;
         }
         consumed += chunk.len();
-        if let Err(e) = stream.feed(&chunk, rate) {
-            let _ = tx.send(Err(e));
-            return;
-        }
-        if preview
-            && let Ok(c) = stream.committed.lock()
-            && !c.trim().is_empty()
-        {
-            set_live_text(c.clone());
+        stream.feed(&chunk, rate)?;
+        if preview && !stream.committed.trim().is_empty() {
+            set_live_text(stream.committed.clone());
         }
     }
     if cancel.load(Ordering::Relaxed) {
-        let _ = tx.send(Err("cancelled".to_string()));
-        return; // stream dropped: child killed, fifo removed
+        return Err("cancelled".to_string());
     }
     // Settled audio only (see wait_settled): drain what the loop
     // missed past release before finalizing the stream.
     wait_settled(&settled);
-    let tail = pending_audio(&rec, consumed).and_then(|(chunk, rate)| {
-        if !chunk.is_empty() && rate != 0 {
-            stream.feed(&chunk, rate)?;
-        }
-        Ok(())
-    });
-    if let Err(error) = tail {
-        let _ = tx.send(Err(error));
-        return;
+    let (chunk, rate) = pending_audio(&rec, consumed)?;
+    if !chunk.is_empty() && rate != 0 {
+        stream.feed(&chunk, rate)?;
     }
-    let _ = tx.send(stream.finish());
+    stream.finish()
 }
 
 /// Offline (whole-utterance) transcription over one WS connection.
@@ -4726,15 +4806,14 @@ pub fn begin_utterance_for(
                 let _ = attach(
                     rx,
                     Box::new(move || {
-                        pump_whistle(
+                        let _ = tx.send(pump_whistle(
                             stream,
                             rec,
                             stop_pump,
                             cancel_pump,
                             preview,
                             whistle_settled,
-                            tx,
-                        );
+                        ));
                         drop(kw);
                     }),
                     None,
@@ -7662,7 +7741,7 @@ HTTPServer(("127.0.0.1", int(sys.argv[sys.argv.index("--port") + 1])), Handler).
         let _ = crate::runtime::init();
         let engine = Path::new("/bin/true");
         let stream = WhistleStream::open(engine, Path::new("model"), None, "auto").unwrap();
-        let fifo = stream.fifo.clone();
+        let fifo = stream.dir.path().join("audio.wav");
         let stage = fifo.parent().unwrap().to_path_buf();
         assert!(
             std::fs::symlink_metadata(&fifo)
@@ -7710,7 +7789,8 @@ HTTPServer(("127.0.0.1", int(sys.argv[sys.argv.index("--port") + 1])), Handler).
         // espeak speech at 16 kHz (built by the shell harness
         // into /tmp/wtest16k.wav);decodes to real words.
         let pcm: Vec<i16> = {
-            let raw = std::fs::read("/tmp/wtest16k.wav").expect("harness wav");
+            let wav = std::env::var("WHISTLE_TEST_WAV").unwrap_or("/tmp/wtest16k.wav".into());
+            let raw = std::fs::read(wav).expect("harness wav");
             assert!(raw.len() > 44);
             raw[44..]
                 .as_chunks::<2>()
@@ -12534,6 +12614,111 @@ HTTPServer(("127.0.0.1", int(sys.argv[sys.argv.index("--port") + 1])), Handler).
                 "unexpected retained audio: whistle={whistle}, keep_audio={keep_audio}"
             );
         }
+    }
+
+    /// Fake needle: stream mode records `pid fifo` then runs `body`;
+    /// file mode answers with the staged WAV size, proving the
+    /// fallback decoded the whole recording.
+    fn fake_needle(root: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let engine = root.join("needle");
+        let script = format!(
+            "#!/bin/sh\ncase \" $* \" in\n*' --audio-stream '*)\n  echo \"$$ $4\" > \"{}\"\n  {body}\n  ;;\n*) echo \"{{\\\"text\\\":\\\"file $(stat -c %s \"$4\")\\\"}}\" ;;\nesac\n",
+            root.join("stream").display()
+        );
+        std::fs::write(&engine, script).unwrap();
+        std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        engine
+    }
+
+    #[test]
+    fn whistle_stream_stalls_fall_back_to_full_file_decode() {
+        let _guard = serial();
+        // 3 s at 16 kHz: more than a 64 KiB pipe holds, so a reader
+        // that never drains blocks the write.
+        let pcm = vec![1_720i16; 48_000];
+        let full_file = format!("file {}", 44 + pcm.len() * 2);
+        let cases = [
+            ("never opens", "exec sleep 600", full_file.as_str()),
+            ("never reads", "exec 3<\"$4\"; exec sleep 600", &full_file),
+            (
+                "never exits",
+                "cat \"$4\" >/dev/null; echo '{\"text\":\"partial\",\"words\":[]}'; exec sleep 600",
+                &full_file,
+            ),
+            (
+                "healthy",
+                "cat \"$4\" >/dev/null; echo '{\"text\":\"hello\",\"words\":[],\"pending\":\"x\"}'; echo '{\"text\":\"world\",\"words\":[],\"pending\":\"\"}'",
+                "hello world",
+            ),
+        ];
+        for (name, body, expected) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let engine = fake_needle(root.path(), body);
+            let model = root.path().join("whistle.cact");
+            let recorder = Arc::new(Mutex::new(Recorder::default()));
+            recorder.lock().unwrap().start(16_000);
+            recorder.lock().unwrap().push(&pcm);
+            let (release, _released) = mpsc::channel();
+            let (_spec_done, done_rx) = mpsc::channel();
+            let spec = SpecHandle { release, done_rx };
+            let mut session =
+                stopped_whisper_session(root.path(), recorder.clone(), spec, free_port());
+            session.spec = None;
+            session.plan = Plan::WhistleCli {
+                engine: engine.clone(),
+                model: model.clone(),
+                lang: "auto".into(),
+            };
+            session.fallbacks.clear();
+            let stream = WhistleStream::open(&engine, &model, None, "auto").unwrap();
+            let (tx, rx) = mpsc::channel();
+            let (stop, cancel, settled) = (
+                session.stop.clone(),
+                session.cancel.clone(),
+                session.settled.clone(),
+            );
+            std::thread::spawn(move || {
+                let _ = tx.send(pump_whistle(stream, recorder, stop, cancel, false, settled));
+            });
+            session.whistle_rx = Some(rx);
+            let started = Instant::now();
+            let (text, _, _) = finish_session(session, &[]).unwrap().unwrap();
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "{name}: took {:?}",
+                started.elapsed()
+            );
+            assert_eq!(text, expected, "{name}");
+            let stream = std::fs::read_to_string(root.path().join("stream")).unwrap();
+            let (pid, fifo) = stream.trim().split_once(' ').unwrap();
+            assert!(
+                !Path::new(&format!("/proc/{pid}")).exists(),
+                "{name}: needle not killed and reaped"
+            );
+            assert!(
+                !Path::new(fifo).parent().unwrap().exists(),
+                "{name}: FIFO dir left behind"
+            );
+        }
+    }
+
+    #[test]
+    fn whistle_file_pass_times_out_and_reaps() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = fake_needle(root.path(), "");
+        // File mode that never exits.
+        std::fs::write(
+            &engine,
+            "#!/bin/sh\necho $$ > \"$(dirname \"$0\")/pid\"\nexec sleep 600\n",
+        )
+        .unwrap();
+        let started = Instant::now();
+        let error = whistle_pass(&engine, &engine, &engine, None, "auto").unwrap_err();
+        assert_eq!(error, "needle timed out");
+        assert!(started.elapsed() < NEEDLE_PASS_TIMEOUT + Duration::from_secs(3));
+        let pid = std::fs::read_to_string(root.path().join("pid")).unwrap();
+        assert!(!Path::new(&format!("/proc/{}", pid.trim())).exists());
     }
 
     #[test]
