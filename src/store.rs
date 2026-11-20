@@ -31,10 +31,13 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-const SCHEMA: &str = "
+const PRAGMAS: &str = "
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 PRAGMA secure_delete = ON;
+";
+
+const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -240,7 +243,7 @@ fn ensure_default_store() -> Result<(), String> {
     Err("keyring unavailable: unsupported platform".to_string())
 }
 
-fn db_key() -> Result<[u8; 32], String> {
+fn db_key(db: &Path) -> Result<[u8; 32], String> {
     if let Ok(hexkey) = std::env::var("MYWHISPER_DB_KEY") {
         return hex_decode_key(&hexkey)
             .ok_or_else(|| "MYWHISPER_DB_KEY must be 64 hex chars".to_string());
@@ -258,20 +261,61 @@ fn db_key() -> Result<[u8; 32], String> {
     )))]
     let entry = keyring_core::Entry::new("mywhisper", "state-db")
         .map_err(|e| format!("keyring unavailable: {e}"))?;
-    match entry.get_password() {
-        Ok(stored) => {
-            hex_decode_key(&stored).ok_or_else(|| "keyring holds a malformed db key".to_string())
-        }
-        Err(keyring_core::Error::NoEntry) => {
-            let mut raw = [0u8; 32];
-            getrandom::fill(&mut raw).map_err(|e| format!("rng: {e}"))?;
+    get_or_create_key(
+        db,
+        || match entry.get_password() {
+            Ok(stored) => Ok(Some(stored)),
+            Err(keyring_core::Error::NoEntry) => Ok(None),
+            Err(e) => Err(format!("keyring read failed: {e}")),
+        },
+        |hex| {
             entry
-                .set_password(&hex_encode(&raw))
-                .map_err(|e| format!("keyring store failed: {e}"))?;
-            Ok(raw)
-        }
-        Err(e) => Err(format!("keyring read failed: {e}")),
+                .set_password(hex)
+                .map_err(|e| format!("keyring store failed: {e}"))
+        },
+    )
+}
+
+/// Read the database key, or mint one on first run. `db-key.lock`
+/// serializes racing first runs so a later key never overwrites one
+/// that already encrypts the database, and a new key is returned only
+/// after the keyring hands it back.
+fn get_or_create_key(
+    db: &Path,
+    get: impl Fn() -> Result<Option<String>, String>,
+    set: impl Fn(&str) -> Result<(), String>,
+) -> Result<[u8; 32], String> {
+    let _lock = crate::private_fs::lock(&db.with_file_name("db-key.lock"))
+        .map_err(|e| format!("db key lock: {e}"))?;
+    if let Some(stored) = get()? {
+        return hex_decode_key(&stored)
+            .ok_or_else(|| "keyring holds a malformed db key".to_string());
     }
+    if holds_encrypted_data(db).map_err(|e| format!("inspect {}: {e}", db.display()))? {
+        // A new key cannot open it, and storing one hides the loss.
+        return Err("keyring has no key for the existing encrypted database".to_string());
+    }
+    let mut raw = [0u8; 32];
+    getrandom::fill(&mut raw).map_err(|e| format!("rng: {e}"))?;
+    let hex = hex_encode(&raw);
+    set(&hex)?;
+    match get()? {
+        Some(stored) if stored == hex => Ok(raw),
+        _ => Err("keyring did not keep the new db key".to_string()),
+    }
+}
+
+/// A non-empty database file without the plaintext SQLite header.
+fn holds_encrypted_data(db: &Path) -> std::io::Result<bool> {
+    use std::io::Read;
+    let file = match crate::private_fs::open_regular(db) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let mut header = Vec::new();
+    file.take(16).read_to_end(&mut header)?;
+    Ok(!header.is_empty() && header != b"SQLite format 3\0")
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -333,9 +377,72 @@ fn migrate_plaintext_to_encrypted(path: &Path, key: &[u8; 32]) -> rusqlite::Resu
     Ok(())
 }
 
+/// Bring any older schema up to date. Every step is idempotent and
+/// runs inside the caller's transaction on each open.
+fn migrate_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(SCHEMA)?;
+    // SQLite has no ADD COLUMN IF NOT EXISTS.
+    for (table, column, ddl) in [
+        ("words", "updated_at", "INTEGER NOT NULL DEFAULT 0"),
+        ("words", "updated_by", "TEXT NOT NULL DEFAULT ''"),
+        ("words", "deleted", "INTEGER NOT NULL DEFAULT 0"),
+        ("snippets", "updated_at", "INTEGER NOT NULL DEFAULT 0"),
+        ("snippets", "updated_by", "TEXT NOT NULL DEFAULT ''"),
+        ("snippets", "deleted", "INTEGER NOT NULL DEFAULT 0"),
+        ("snippets", "replacement", "TEXT NOT NULL DEFAULT ''"),
+        ("history", "duration_secs", "INTEGER NOT NULL DEFAULT 0"),
+        ("history", "raw_text", "TEXT NOT NULL DEFAULT ''"),
+        ("history", "deleted", "INTEGER NOT NULL DEFAULT 0"),
+        ("history", "discarded", "INTEGER NOT NULL DEFAULT 0"),
+        ("history", "uuid", "TEXT"),
+        ("devices", "address", "TEXT NOT NULL DEFAULT ''"),
+        ("devices", "addresses", "TEXT NOT NULL DEFAULT '[]'"),
+        ("devices", "trusted", "INTEGER NOT NULL DEFAULT 0"),
+        ("devices", "pending", "INTEGER NOT NULL DEFAULT 0"),
+        ("devices", "introducer", "INTEGER NOT NULL DEFAULT 0"),
+        ("devices", "last_sync", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !has_column(conn, table, column) {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"),
+                [],
+            )?;
+        }
+    }
+    // History gained a uuid primary key after v1 (which used an integer
+    // id). Backfill deterministic uuids for legacy rows, including rows an
+    // older build left NULL when it stopped between ALTER and UPDATE.
+    if has_column(conn, "history", "id") {
+        conn.execute(
+            "UPDATE history SET uuid = 'legacy-' || id || '-' || recorded_at
+             WHERE uuid IS NULL",
+            [],
+        )?;
+    }
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS history_uuid ON history (uuid)",
+        [],
+    )?;
+    // Rows predating raw_text carry the final text as raw (the
+    // pipeline was passthrough then, so this is exact).
+    conn.execute(
+        "UPDATE history SET raw_text = text WHERE raw_text = '' AND text <> ''",
+        [],
+    )?;
+    Ok(())
+}
+
 impl Store {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
-        let key = db_key()
+        // Racing first runs and the plaintext rewrite must not interleave.
+        let _init = crate::private_fs::lock(&path.with_extension("db.init.lock")).map_err(|e| {
+            rusqlite::Error::ToSqlConversionFailure(format!("db init lock: {e}").into())
+        })?;
+        Self::open_locked(path)
+    }
+
+    fn open_locked(path: &Path) -> rusqlite::Result<Self> {
+        let key = db_key(path)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(format!("db key: {e}").into()))?;
         let fresh = !path.exists();
         let conn = Connection::open(path)?;
@@ -351,56 +458,17 @@ impl Store {
                 drop(conn);
                 eprintln!("[store] plaintext database found, encrypting in place");
                 migrate_plaintext_to_encrypted(path, &key)?;
-                return Self::open(path);
+                return Self::open_locked(path);
             }
             return Err(err);
         }
-        conn.execute_batch(SCHEMA)?;
-        // Best-effort migration for pre-existing databases: SQLite has
-        // no ADD COLUMN IF NOT EXISTS, so a duplicate-column failure
-        // just means the column is already there.
-        for stmt in [
-            "ALTER TABLE words ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE words ADD COLUMN updated_by TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE words ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE snippets ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE snippets ADD COLUMN updated_by TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE snippets ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE snippets ADD COLUMN replacement TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE history ADD COLUMN duration_secs INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE history ADD COLUMN raw_text TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE history ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE history ADD COLUMN discarded INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE devices ADD COLUMN address TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE devices ADD COLUMN addresses TEXT NOT NULL DEFAULT '[]'",
-            "ALTER TABLE devices ADD COLUMN trusted INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE devices ADD COLUMN pending INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE devices ADD COLUMN introducer INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE devices ADD COLUMN last_sync INTEGER NOT NULL DEFAULT 0",
-        ] {
-            let _ = conn.execute(stmt, []);
-        }
-        // History gained a uuid primary key after v1 (which used an
-        // integer id). Backfill deterministic uuids for legacy rows so
-        // old databases keep working.
-        if !has_column(&conn, "history", "uuid") {
-            conn.execute("ALTER TABLE history ADD COLUMN uuid TEXT", [])?;
-            conn.execute(
-                "UPDATE history SET uuid = 'legacy-' || id || '-' || recorded_at
-                 WHERE uuid IS NULL",
-                [],
-            )?;
-        }
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS history_uuid ON history (uuid)",
-            [],
-        )?;
-        // Rows predating raw_text carry the final text as raw (the
-        // pipeline was passthrough then, so this is exact).
-        let _ = conn.execute(
-            "UPDATE history SET raw_text = text WHERE raw_text = '' AND text <> ''",
-            [],
-        );
+        conn.execute_batch(PRAGMAS)?;
+        // One transaction: a crash or error mid-migration leaves the
+        // previous schema intact, never a half-migrated one.
+        let tx =
+            rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate)?;
+        migrate_schema(&tx)?;
+        tx.commit()?;
         Ok(Self { conn })
     }
 
@@ -408,19 +476,22 @@ impl Store {
     /// tombstones; drop it. Slow on big histories, so the app runs it
     /// off the UI thread at startup; exports redact meanwhile.
     pub fn redact_old_tombstones(&self) -> rusqlite::Result<usize> {
-        let version: i64 = self
-            .conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        // The version check, scrub and bump commit together.
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version >= TOMBSTONES_REDACTED {
             return Ok(0);
         }
-        let n = self.conn.execute(
+        let n = tx.execute(
             "UPDATE history SET text = '', raw_text = ''
              WHERE deleted = 1 AND (text <> '' OR raw_text <> '')",
             [],
         )?;
-        self.conn
-            .execute_batch(&format!("PRAGMA user_version = {TOMBSTONES_REDACTED}"))?;
+        tx.execute_batch(&format!("PRAGMA user_version = {TOMBSTONES_REDACTED}"))?;
+        tx.commit()?;
         if n > 0 {
             self.truncate_wal_soon();
         }
@@ -469,7 +540,7 @@ impl Store {
                         std::thread::sleep(Duration::from_secs(2));
                     }
                     !path.exists()
-                        || db_key()
+                        || db_key(&path)
                             .is_ok_and(|key| truncate_wal_briefly(&path, &key).unwrap_or(false))
                 });
                 if !done {
@@ -500,23 +571,15 @@ impl Store {
         self.conn
             .query_row("SELECT value FROM kv WHERE key = 'settings'", [], |row| {
                 let json: String = row.get(0)?;
-                let decode_error = |error: serde_json::Error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(error),
-                    )
-                };
-                let mut value: serde_json::Value =
-                    serde_json::from_str(&json).map_err(decode_error)?;
-                let sync_enabled = value.pointer("/sync/enabled").and_then(|v| v.as_bool());
-                restore_local_vendor(&mut value);
-                let mut settings: AppSettings =
-                    serde_json::from_value(value).map_err(decode_error)?;
-                // Saved settings require explicit permission even when an
-                // older valid blob relies on serde's default for this field.
-                settings.sync.enabled = sync_enabled == Some(true);
-                Ok(settings)
+                decode_settings(&json)
+                    .map(|(settings, _)| settings)
+                    .map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })
             })
             .optional()
     }
@@ -610,12 +673,31 @@ impl Store {
         let json = value.to_string();
         // Switch-off and its epoch bump commit together, so no round
         // sees one without the other. `reset_all_data` already holds a
-        // transaction; SQLite cannot nest them.
-        let tx = if !settings.sync.enabled && self.conn.is_autocommit() {
-            Some(self.conn.unchecked_transaction()?)
+        // transaction; SQLite cannot nest them. Take the write lock before
+        // reading the old blob so a concurrent writer cannot stale it.
+        let tx = if self.conn.is_autocommit() {
+            Some(rusqlite::Transaction::new_unchecked(
+                &self.conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )?)
         } else {
             None
         };
+        // A blob this build could not read verbatim may hold fields a
+        // newer build or a manual repair needs: keep it before rewriting.
+        let stored: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM kv WHERE key = 'settings'", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if let Some(stored) = stored.filter(|raw| !matches!(decode_settings(raw), Ok((_, false)))) {
+            self.conn.execute(
+                "INSERT INTO kv (key, value) VALUES ('settings.backup', ?1)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [&stored],
+            )?;
+        }
         if !settings.sync.enabled {
             bump_epoch(&self.conn)?;
         }
@@ -1162,6 +1244,7 @@ impl Store {
 
     pub fn open_memory() -> rusqlite::Result<Self> {
         let conn = Connection::open_in_memory()?;
+        conn.execute_batch(PRAGMAS)?;
         conn.execute_batch(SCHEMA)?;
         Ok(Self { conn })
     }
@@ -1535,6 +1618,71 @@ pub struct PeerGossip {
 /// load and, for names it does not know, keeps the stored fallback.
 const LEGACY_LOCAL_PROVIDERS: &[(&str, &str)] = &[("Bark", "Nvidia"), ("Qwen", "OpenAi")];
 
+/// Decode a stored settings blob. A part that no longer decodes (an
+/// older or newer build's shape, a bad value) falls back to its default
+/// alone instead of resetting every preference; `true` marks such a
+/// lossy read. Only text that is not a JSON object fails outright.
+fn decode_settings(json: &str) -> serde_json::Result<(AppSettings, bool)> {
+    let mut saved: serde_json::Value = serde_json::from_str(json)?;
+    let mut sync_enabled = saved.pointer("/sync/enabled").and_then(|v| v.as_bool());
+    restore_local_vendor(&mut saved);
+    let (mut settings, lossy) = match serde_json::from_value::<AppSettings>(saved.clone()) {
+        Ok(settings) => (settings, false),
+        Err(error) if !saved.is_object() => return Err(error),
+        Err(_) => {
+            let mut repaired = serde_json::to_value(AppSettings::default())?;
+            overlay_decodable(&mut repaired, "", &saved);
+            // Sync permission still needs a sync section read verbatim.
+            if repaired.get("sync") != saved.get("sync") {
+                sync_enabled = None;
+            }
+            (serde_json::from_value(repaired)?, true)
+        }
+    };
+    // Saved settings require explicit permission even when an older
+    // valid blob relies on serde's default for this field.
+    settings.sync.enabled = sync_enabled == Some(true);
+    Ok((settings, lossy))
+}
+
+/// Copy each field of `saved` into the decodable `repaired` settings at
+/// `pointer` when the whole still decodes; descend into objects that
+/// do not, so only the failing leaves keep their defaults.
+fn overlay_decodable(repaired: &mut serde_json::Value, pointer: &str, saved: &serde_json::Value) {
+    let Some(fields) = saved.as_object() else {
+        return;
+    };
+    for (key, value) in fields {
+        let Some(object) = repaired
+            .pointer_mut(pointer)
+            .and_then(|v| v.as_object_mut())
+        else {
+            return;
+        };
+        let previous = object.insert(key.clone(), value.clone());
+        if serde_json::from_value::<AppSettings>(repaired.clone()).is_ok() {
+            continue;
+        }
+        let object = repaired
+            .pointer_mut(pointer)
+            .and_then(|v| v.as_object_mut())
+            .expect("parent object was just written");
+        match previous {
+            Some(previous) => {
+                let descend = previous.is_object() && value.is_object();
+                object.insert(key.clone(), previous);
+                if descend {
+                    let child = format!("{pointer}/{}", key.replace('~', "~0").replace('/', "~1"));
+                    overlay_decodable(repaired, &child, value);
+                }
+            }
+            None => {
+                object.remove(key);
+            }
+        }
+    }
+}
+
 fn stash_local_vendor(settings: &mut serde_json::Value) {
     let Some(stt) = settings.get_mut("stt").and_then(|v| v.as_object_mut()) else {
         return;
@@ -1832,7 +1980,7 @@ mod tests {
             .query_row("SELECT count(*) FROM history", [], |r| r.get::<_, i64>(0))
             .unwrap();
         store.add_history("b", "b", 1, 1, "node").unwrap();
-        let key = db_key().unwrap();
+        let key = db_key(&path).unwrap();
         let started = std::time::Instant::now();
         assert!(!truncate_wal_briefly(&path, &key).unwrap());
         assert!(started.elapsed() < Duration::from_secs(1));
@@ -2099,6 +2247,91 @@ mod tests {
         assert_eq!(upgraded.stt.whisper_model, "small");
     }
 
+    fn write_settings_blob(store: &Store, blob: &str) {
+        store
+            .conn
+            .execute(
+                "INSERT INTO kv (key, value) VALUES ('settings', ?1)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [blob],
+            )
+            .unwrap();
+    }
+
+    fn settings_backup(store: &Store) -> Option<String> {
+        store
+            .conn
+            .query_row(
+                "SELECT value FROM kv WHERE key = 'settings.backup'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap()
+    }
+
+    #[test]
+    fn one_bad_or_missing_setting_keeps_every_other_preference() {
+        use crate::settings::Theme;
+        let store = Store::open_memory().unwrap();
+        let mut settings = AppSettings::default();
+        settings.preferences.theme = Theme::Dark;
+        settings.preferences.ui_language = "es".into();
+        settings.stt.whisper_model = "small".into();
+        settings.sync.device_name = "desk".into();
+        let good = serde_json::to_value(&settings).unwrap();
+
+        // A bad value in one field, and an older blob missing a section.
+        let mut bad_field = good.clone();
+        bad_field["preferences"]["mic_warm_hold_secs"] = "forever".into();
+        let mut old_shape = good.clone();
+        old_shape.as_object_mut().unwrap().remove("privacy");
+        for blob in [&bad_field, &old_shape] {
+            write_settings_blob(&store, &blob.to_string());
+            let loaded = store.load_settings();
+            assert_eq!(loaded.preferences.theme, Theme::Dark, "{blob}");
+            assert_eq!(loaded.preferences.ui_language, "es");
+            assert_eq!(loaded.stt.whisper_model, "small");
+            assert_eq!(loaded.sync.device_name, "desk");
+            // An intact sync section keeps its explicit permission.
+            assert!(loaded.sync.enabled && store.sync_enabled());
+        }
+        let loaded = {
+            write_settings_blob(&store, &bad_field.to_string());
+            store.load_settings()
+        };
+        assert_eq!(
+            loaded.preferences.mic_warm_hold_secs,
+            AppSettings::default().preferences.mic_warm_hold_secs
+        );
+    }
+
+    #[test]
+    fn unreadable_settings_are_backed_up_before_any_rewrite() {
+        let store = Store::open_memory().unwrap();
+        let mut partial = serde_json::to_value(AppSettings::default()).unwrap();
+        partial["hotkeys"] = "future shape".into();
+        for blob in ["not json", &partial.to_string()] {
+            write_settings_blob(&store, blob);
+            let loaded = store.load_settings();
+            // Loading never rewrites the stored blob.
+            let stored: String = store
+                .conn
+                .query_row("SELECT value FROM kv WHERE key = 'settings'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(stored, blob);
+            store.save_settings(&loaded).unwrap();
+            assert_eq!(settings_backup(&store).as_deref(), Some(blob));
+        }
+        // Readable blobs are rewritten without touching the backup.
+        let backup = settings_backup(&store);
+        store.save_settings(&AppSettings::default()).unwrap();
+        store.save_settings(&AppSettings::default()).unwrap();
+        assert_eq!(settings_backup(&store), backup);
+    }
+
     #[test]
     fn unknown_local_provider_keeps_the_rest_of_the_settings() {
         use crate::settings::LocalSttProvider;
@@ -2201,12 +2434,8 @@ mod tests {
     /// This is the exact property UI refresh polls rely on.
     #[test]
     fn shared_gen_visible_across_connections() {
-        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "mywhisper-gen-test-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-        ));
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("state.db");
         // NOTE: Store::open needs the keyring; the test env has
         // a session keyring, same as production on this machine.
         // If the keyring is unavailable here, skip rather than fail:
@@ -2222,8 +2451,6 @@ mod tests {
         let v1 = read_gen(&a);
         assert!(v1 != v0, "gen write must be visible cross-connection");
         assert!(a.load_words().unwrap().contains(&"cross-conn".to_string()));
-        drop(a);
-        let _ = std::fs::remove_file(&dir);
     }
 
     const A: &str = "node-aaaa";
@@ -2401,6 +2628,187 @@ mod tests {
         }])
         .unwrap();
         assert_eq!(snippet(&a, "k").as_deref(), Some("new"));
+    }
+
+    /// In-memory stand-in for the Secret Service entry. Reads are slow
+    /// enough that unserialized first runs all see "no key".
+    #[derive(Default)]
+    struct FakeKeyring {
+        stored: Mutex<Option<String>>,
+        drop_writes: bool,
+    }
+
+    impl FakeKeyring {
+        fn key(&self, db: &Path) -> Result<[u8; 32], String> {
+            get_or_create_key(
+                db,
+                || {
+                    std::thread::sleep(Duration::from_millis(20));
+                    Ok(self.stored.lock().unwrap().clone())
+                },
+                |hex| {
+                    if !self.drop_writes {
+                        *self.stored.lock().unwrap() = Some(hex.to_string());
+                    }
+                    Ok(())
+                },
+            )
+        }
+    }
+
+    #[test]
+    fn racing_first_runs_share_one_stored_db_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.db");
+        let keyring = FakeKeyring::default();
+        let gate = std::sync::Barrier::new(6);
+        let keys: Vec<_> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..6)
+                .map(|_| {
+                    scope.spawn(|| {
+                        gate.wait();
+                        keyring.key(&db).unwrap()
+                    })
+                })
+                .collect();
+            workers.into_iter().map(|w| w.join().unwrap()).collect()
+        });
+        let stored = hex_decode_key(keyring.stored.lock().unwrap().as_deref().unwrap()).unwrap();
+        assert!(
+            keys.iter().all(|key| *key == stored),
+            "a key was overwritten"
+        );
+    }
+
+    #[test]
+    fn db_key_is_never_minted_for_an_existing_encrypted_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.db");
+        let keyring = FakeKeyring::default();
+        // Missing, empty and plaintext files may get a first key.
+        for contents in [None, Some(&b""[..]), Some(&b"SQLite format 3\0rest"[..])] {
+            if let Some(bytes) = contents {
+                std::fs::write(&db, bytes).unwrap();
+            }
+            *keyring.stored.lock().unwrap() = None;
+            keyring.key(&db).unwrap();
+        }
+        // Encrypted bytes whose key is gone: refuse, keyring untouched.
+        std::fs::write(&db, [0x5a; 4096]).unwrap();
+        *keyring.stored.lock().unwrap() = None;
+        assert!(keyring.key(&db).is_err());
+        assert!(keyring.stored.lock().unwrap().is_none());
+        // A keyring that loses the write never yields a key to encrypt with.
+        std::fs::remove_file(&db).unwrap();
+        let lossy = FakeKeyring {
+            drop_writes: true,
+            ..Default::default()
+        };
+        assert!(lossy.key(&db).is_err());
+    }
+
+    /// A database in the v1 layout (integer history ids, bare words),
+    /// encrypted with the test key.
+    fn legacy_db(path: &Path, history_tail: &str) -> Connection {
+        let key = hex_decode_key(&std::env::var("MYWHISPER_DB_KEY").unwrap()).unwrap();
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(&key_pragma(&key)).unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE words (word TEXT PRIMARY KEY);
+             CREATE TABLE history (id INTEGER PRIMARY KEY, text TEXT NOT NULL,
+                 words INTEGER NOT NULL DEFAULT 0,
+                 recorded_at INTEGER NOT NULL DEFAULT 0);
+             INSERT INTO history (id, text, recorded_at) VALUES (1, 'one', 10), (2, 'two', 20);
+             {history_tail}"
+        ))
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn interrupted_uuid_backfill_from_an_older_build_heals() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        // An older build added the column, then stopped before backfilling.
+        drop(legacy_db(
+            &path,
+            "ALTER TABLE history ADD COLUMN uuid TEXT;",
+        ));
+        let store = Store::open(&path).unwrap();
+        let mut uuids: Vec<_> = store
+            .load_history(10, true)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.uuid)
+            .collect();
+        uuids.sort();
+        assert_eq!(uuids, ["legacy-1-10", "legacy-2-20"]);
+    }
+
+    #[test]
+    fn a_failed_migration_leaves_the_previous_schema_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        // Duplicate uuids make the late unique index fail.
+        drop(legacy_db(
+            &path,
+            "ALTER TABLE history ADD COLUMN uuid TEXT; UPDATE history SET uuid = 'dup';",
+        ));
+        assert!(Store::open(&path).is_err());
+        let conn = legacy_conn(&path);
+        assert!(!has_column(&conn, "words", "deleted"));
+        assert!(!has_column(&conn, "history", "raw_text"));
+        let tables: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name IN ('kv', 'devices')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0);
+    }
+
+    fn legacy_conn(path: &Path) -> Connection {
+        let key = hex_decode_key(&std::env::var("MYWHISPER_DB_KEY").unwrap()).unwrap();
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(&key_pragma(&key)).unwrap();
+        conn
+    }
+
+    /// `state.db` written by main at 2478adc (synthetic data, all-zero
+    /// test key) keeps every record across the migration boundary.
+    #[test]
+    fn database_from_the_previous_release_opens_unchanged() {
+        if std::env::var("MYWHISPER_DB_KEY").as_deref() != Ok(&"0".repeat(64)) {
+            return; // The fixture is encrypted with the CI test key.
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        std::fs::copy(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/testdata/state-db-main-2478adc.db"
+            ),
+            &path,
+        )
+        .unwrap();
+        for _ in 0..2 {
+            let store = Store::open(&path).unwrap();
+            assert_eq!(user_version(&store), TOMBSTONES_REDACTED);
+            assert_eq!(store.redact_old_tombstones().unwrap(), 0);
+            let settings = store.load_settings();
+            assert_eq!(settings.stt.whisper_model, "small");
+            assert_eq!(settings.preferences.ui_language, "es");
+            assert_eq!(settings.sync.device_name, "fixture");
+            assert!(settings.sync.enabled && store.sync_enabled());
+            assert_eq!(store.load_words().unwrap(), ["Kubernetes"]);
+            assert_eq!(snippet(&store, "addr").as_deref(), Some("1 Main St"));
+            let history = store.load_history(10, true).unwrap();
+            assert_eq!(history.len(), 1);
+            assert_eq!(history[0].text, "one");
+            assert_eq!(store.export_history().unwrap().len(), 2);
+            assert!(store.get_peer(&"ab".repeat(32)).unwrap().unwrap().trusted);
+        }
     }
 
     #[test]
