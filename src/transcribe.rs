@@ -540,6 +540,36 @@ fn engine_failed() {
     ENGINE_FAILURES.fetch_add(1, Ordering::SeqCst);
 }
 
+/// Why the last dictation produced nothing, as an i18n tag for the
+/// pill. Fixed copy only: never engine output or transcript text.
+static FAILURE: Mutex<Option<&'static str>> = Mutex::new(None);
+
+fn report_failure(tag: &'static str) {
+    if let Ok(mut failure) = FAILURE.lock() {
+        *failure = Some(tag);
+    }
+}
+
+/// Take the failure reported by the dictation that just completed.
+/// shortcut: one global slot, so a stale completion can take a newer
+/// press's setup failure; key it by press ticket if that shows up.
+pub fn take_failure() -> Option<&'static str> {
+    FAILURE.lock().ok().and_then(|mut failure| failure.take())
+}
+
+/// Every engine of the accepted chain failed to start.
+const ENGINES_NOT_READY: &str = "no STT engine could start";
+
+fn failure_tag(error: &str) -> &'static str {
+    if error == CAPTURE_LIMIT_REACHED {
+        "dictation.err.toolong"
+    } else if error.starts_with(ENGINES_NOT_READY) {
+        "dictation.err.model"
+    } else {
+        "dictation.err.engine"
+    }
+}
+
 /// Hotkey input gate (banner toggle): false mutes all hotkey events.
 static HOTKEYS_LISTENING: AtomicBool = AtomicBool::new(true);
 
@@ -4559,6 +4589,7 @@ pub fn begin_utterance_for(
         Ok(v) => v,
         Err(e) => {
             eprintln!("[stt] press: cannot start: {e}");
+            report_failure("dictation.err.model");
             revoke_owner(owner);
             active_dec();
             return;
@@ -5037,6 +5068,7 @@ fn end_utterance_inner(through: u64, on_done: Option<Box<dyn FnOnce() + Send>>) 
     revoke_owner(sess.owner);
     if BUSY.swap(true, Ordering::SeqCst) {
         eprintln!("[stt] worker busy; dropping overlapping utterance");
+        report_failure("dictation.err.busy");
         sess.discard_capture();
         active_dec();
         if let Some(done) = on_done {
@@ -5109,6 +5141,7 @@ fn end_utterance_inner(through: u64, on_done: Option<Box<dyn FnOnce() + Send>>) 
                 }
                 Err(e) => {
                     engine_failed();
+                    report_failure(failure_tag(&e));
                     eprintln!("[stt] transcription failed: {e}");
                 }
             }
@@ -5122,6 +5155,7 @@ fn end_utterance_inner(through: u64, on_done: Option<Box<dyn FnOnce() + Send>>) 
             // utterance is dropped, but the app survives to dictate again.
             BUSY.store(false, Ordering::SeqCst);
             active_dec();
+            report_failure("dictation.err.busy");
             eprintln!("[stt] release: {e}");
             if let Ok(mut g) = on_done.lock()
                 && let Some(done) = g.take()
@@ -5166,6 +5200,7 @@ fn finish_session(
     // Failure is per-plan: local audio I/O below is gated on a ready,
     // socket-verified owned server, so a failed ensure (foreign port,
     // Stop since press) never sends audio anywhere.
+    let mut any_ready = true;
     if let Err(e) = ensure_servers(
         &sess.plan,
         &sess.data_dir,
@@ -5179,6 +5214,7 @@ fn finish_session(
         None,
     ) {
         eprintln!("[stt] primary not ready: {e}");
+        any_ready = false;
     }
     for (name, plan) in &sess.fallbacks {
         if let Err(e) = ensure_servers(
@@ -5192,6 +5228,8 @@ fn finish_session(
             None,
         ) {
             eprintln!("[stt] fallback {name} not ready: {e}");
+        } else {
+            any_ready = true;
         }
     }
     eprintln!("[stt] release: engine ready, transcribing ({secs:.1}s window)");
@@ -5295,6 +5333,7 @@ fn finish_session(
     let (pcm, rate) = sess.recorder.lock().unwrap().finish();
     if rate == 0 || pcm.is_empty() {
         eprintln!("[stt] release: no audio captured (mic unavailable or sim source)");
+        report_failure("dictation.err.mic");
         return Ok(None);
     }
     eprintln!("[stt] release: {} samples @ {} Hz", pcm.len(), rate);
@@ -5349,6 +5388,9 @@ fn finish_session(
                 last_err = e;
             }
         }
+    }
+    if !any_ready {
+        return Err(format!("{ENGINES_NOT_READY}; last: {last_err}"));
     }
     Err(format!("all STT options failed; last: {last_err}"))
 }
@@ -12836,6 +12878,63 @@ HTTPServer(("127.0.0.1", int(sys.argv[sys.argv.index("--port") + 1])), Handler).
         let (text, _, _) = finish_session(sess, &[]).unwrap().expect("no transcript");
         assert_eq!(text, "full chain");
         assert_eq!(fallback_hits.load(Ordering::SeqCst), 1);
+    }
+
+    /// Finding R28: capture and engine failures only reached stderr;
+    /// the pill hid as if nothing was said.
+    #[test]
+    fn dictation_failures_report_a_localized_reason() {
+        let _guard = serial();
+        let root = tempfile::tempdir().unwrap();
+        drop_servers(root.path());
+        let session = |recorder: Recorder| {
+            let (release, _) = mpsc::channel();
+            let (_, done_rx) = mpsc::channel();
+            let mut session = stopped_whisper_session(
+                root.path(),
+                Arc::new(Mutex::new(recorder)),
+                SpecHandle { release, done_rx },
+                free_port(),
+            );
+            session.spec = None;
+            session
+        };
+        let speech = || {
+            let mut recorder = Recorder::default();
+            recorder.start(16_000);
+            recorder.push(&[2_000; 16_000]);
+            recorder
+        };
+        let _ = take_failure();
+        // Mic never delivered audio.
+        assert_eq!(finish_session(session(Recorder::default()), &[]), Ok(None));
+        assert_eq!(take_failure(), Some("dictation.err.mic"));
+        // Only engine cannot start (Stop since press, no fallback).
+        let mut local_only = session(speech());
+        local_only.fallbacks.clear();
+        let error = finish_session(local_only, &[]).unwrap_err();
+        assert_eq!(failure_tag(&error), "dictation.err.model");
+        // An engine was reachable but every attempt failed.
+        let error = finish_session(session(speech()), &[]).unwrap_err();
+        assert_eq!(failure_tag(&error), "dictation.err.engine");
+        assert_eq!(failure_tag(CAPTURE_LIMIT_REACHED), "dictation.err.toolong");
+        assert_eq!(
+            take_failure(),
+            None,
+            "errors are reported once, by the worker"
+        );
+        for tag in [
+            "dictation.err.mic",
+            "dictation.err.toolong",
+            "dictation.err.model",
+            "dictation.err.engine",
+            "dictation.err.busy",
+        ] {
+            let copy = crate::i18n::tr(tag);
+            assert_ne!(copy, tag);
+            // The pill shows at most its last 12 words.
+            assert!(copy.split_whitespace().count() <= 12, "{copy}");
+        }
     }
 
     /// Finding: release drained the recorder before the spec thread's

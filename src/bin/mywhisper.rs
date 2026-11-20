@@ -339,6 +339,7 @@ fn run_headless(
                             let gen_at_release = gen_hide.load(std::sync::atomic::Ordering::SeqCst);
                             let gen_hide = gen_hide.clone();
                             mywhisper::transcribe::end_utterance(move || {
+                                let failure = mywhisper::transcribe::take_failure();
                                 // Stale completion (new press meanwhile):
                                 // leave the newer pill alone.
                                 if gen_hide.load(std::sync::atomic::Ordering::SeqCst)
@@ -346,7 +347,7 @@ fn run_headless(
                                 {
                                     return;
                                 }
-                                let _ = tx_done.send(PillCmd::Done(gen_at_release));
+                                let _ = tx_done.send(PillCmd::Done(gen_at_release, failure));
                             });
                         }
                         PillCmd::Cancel => {
@@ -365,12 +366,14 @@ fn run_headless(
                             let gen_at_cancel = gen_hide.load(std::sync::atomic::Ordering::SeqCst);
                             let gen_hide = gen_hide.clone();
                             mywhisper::transcribe::cancel_utterance(move || {
+                                // Cancelled on purpose: nothing to explain.
+                                let _ = mywhisper::transcribe::take_failure();
                                 if gen_hide.load(std::sync::atomic::Ordering::SeqCst)
                                     != gen_at_cancel
                                 {
                                     return;
                                 }
-                                let _ = tx_done.send(PillCmd::Done(gen_at_cancel));
+                                let _ = tx_done.send(PillCmd::Done(gen_at_cancel, None));
                             });
                         }
                         PillCmd::ShortcutCaptureReady(nonce) => {
@@ -380,14 +383,31 @@ fn run_headless(
                                 eprintln!("[hotkey] capture acknowledgement: {error}");
                             }
                         }
-                        PillCmd::Done(gen_at_release) => {
+                        PillCmd::Done(gen_at_release, failure) => {
                             // Completion race (Show arrived after send):
                             // only hide our own generation.
                             if gen_hide.load(std::sync::atomic::Ordering::SeqCst) != gen_at_release
                             {
                                 return gtk4::glib::ControlFlow::Continue;
                             }
-                            overlay.hide();
+                            let Some(tag) = failure else {
+                                overlay.hide();
+                                continue;
+                            };
+                            overlay.show_error(mywhisper::i18n::tr(tag));
+                            // Hide unless a new press took the pill meanwhile.
+                            let overlay = overlay.clone();
+                            let gen_error = gen_hide.clone();
+                            gtk4::glib::timeout_add_local_once(
+                                std::time::Duration::from_secs(4),
+                                move || {
+                                    if gen_error.load(std::sync::atomic::Ordering::SeqCst)
+                                        == gen_at_release
+                                    {
+                                        overlay.hide();
+                                    }
+                                },
+                            );
                         }
                         PillCmd::Apply(prefs) => overlay.apply_prefs(&prefs),
                     }

@@ -827,6 +827,27 @@ fn try_lookup(tag: &str) -> Option<(&'static str, &'static str)> {
         "feedback.deleted" => ("Deleted", "Eliminado"),
         "feedback.copied" => ("Copied to clipboard", "Copiado al portapapeles"),
         "feedback.copyretry" => ("Copy failed. Retry", "Error al copiar. Reintentar"),
+        // Dictation failures on the recording pill (12 words max, no transcript text)
+        "dictation.err.mic" => (
+            "No microphone audio. Check the microphone in General settings.",
+            "Sin audio del micrófono. Revísalo en Ajustes generales.",
+        ),
+        "dictation.err.toolong" => (
+            "Recording limit reached. Dictate in shorter parts.",
+            "Límite de grabación alcanzado. Dicta en partes más cortas.",
+        ),
+        "dictation.err.model" => (
+            "Speech engine not ready. Check Transcription in Settings.",
+            "Motor de voz no disponible. Revisa Transcripción en Ajustes.",
+        ),
+        "dictation.err.engine" => (
+            "Transcription failed. Check the engine or your connection.",
+            "La transcripción falló. Revisa el motor o tu conexión.",
+        ),
+        "dictation.err.busy" => (
+            "Still finishing the last dictation. Try again.",
+            "Aún termina el dictado anterior. Inténtalo de nuevo.",
+        ),
         "lm.applying" => ("Applying…", "Aplicando…"),
         "lm.applied" => ("Model settings applied", "Ajustes del modelo aplicados"),
         "lm.applyfailed" => (

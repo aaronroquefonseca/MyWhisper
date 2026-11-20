@@ -334,6 +334,19 @@ impl VoiceOverlay {
         self.set_state(OverlayState::Assistant);
     }
 
+    /// Failed dictation: compact pill with a short reason in the text
+    /// row. The caller hides it after a few seconds.
+    pub fn show_error(&self, message: &str) {
+        self.set_state(OverlayState::Error);
+        self.inner.viz.set_live_text(Some(message.to_string()));
+        // Same one-time tall re-present as the first live words.
+        if !self.inner.live_configured.get() {
+            self.inner.live_configured.set(true);
+            self.inner.window.set_visible(false);
+            self.inner.window.present();
+        }
+    }
+
     /// Hide the overlay entirely.
     pub fn hide(&self) {
         self.set_state(OverlayState::Hidden);
@@ -653,11 +666,6 @@ impl VoiceOverlay {
                 self.inner
                     .viz
                     .set_spinning(next == OverlayState::Processing);
-                if next == OverlayState::Error {
-                    eprintln!(
-                        "[poc] state {next} has no dedicated UI in POC; showing compact pill"
-                    );
-                }
                 if prev == OverlayState::Assistant {
                     // Animated collapse: swap to the small content FIRST
                     // (bottom-pinned), then shrink the surface. Shrinking
