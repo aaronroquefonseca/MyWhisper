@@ -1232,10 +1232,7 @@ fn hotkeys_page(state: &Rc<AppState>) -> GtkBox {
         let persist = persist.clone();
         reset.connect_clicked(move |_| {
             state.settings.borrow_mut().hotkeys.dictation_hotkeys =
-                vec![crate::settings::HotkeyBinding {
-                    combo: "F13".to_string(),
-                    mode: crate::settings::ActivationMode::Push,
-                }];
+                crate::settings::default_dictation_hotkeys();
             persist();
             refill_hotkey_list(&list, &state, &persist);
         });
@@ -1502,7 +1499,7 @@ impl Capture {
         }
         if let Some(entry) = self.add_entry.upgrade() {
             entry.set_sensitive(true);
-            entry.set_placeholder_text(Some("F13"));
+            entry.set_placeholder_text(Some("Ctrl+Super"));
         }
     }
 

@@ -260,9 +260,12 @@ where
         .collect())
 }
 
-fn default_dictation_hotkeys() -> Vec<HotkeyBinding> {
+/// Hold Ctrl+Super. Modifier-only, so nothing fires on release: Alt opens
+/// app menu bars and a lone Super opens the overview, but GNOME and KDE
+/// skip the overview when another key was held with it.
+pub(crate) fn default_dictation_hotkeys() -> Vec<HotkeyBinding> {
     vec![HotkeyBinding {
-        combo: "F13".to_string(),
+        combo: "Ctrl+Super".to_string(),
         mode: ActivationMode::Push,
     }]
 }
@@ -344,7 +347,7 @@ impl HotkeySettings {
     /// Effective bindings: the list is authoritative. The legacy
     /// single slot only fills an empty list (one-time migration for
     /// pre-multi-binding databases); an empty list with no legacy
-    /// means F13, never a stale default.
+    /// means the default binding, never a stale one.
     pub fn effective_hotkeys(&self) -> Vec<HotkeyBinding> {
         if !self.dictation_hotkeys.is_empty() {
             return self.dictation_hotkeys.clone();
@@ -997,7 +1000,7 @@ mod tests {
                 .unwrap();
         assert_eq!(modern.effective_hotkeys()[0].combo, "F8");
         let defaults: HotkeySettings = serde_json::from_str("{}").unwrap();
-        assert_eq!(defaults.dictation_hotkeys[0].combo, "F13");
+        assert_eq!(defaults.dictation_hotkeys[0].combo, "Ctrl+Super");
         assert!(serde_json::from_str::<HotkeySettings>(r#"{"dictation_hotkeys":null}"#).is_err());
     }
 
