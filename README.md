@@ -81,13 +81,19 @@ Release notes use dated, release-linked headings and the categories in [the rele
 
 ## Shortcut sources
 
+The default is **hold Ctrl+Super** (talk while held, release to type).
+Any key or combo works: add more in Settings → Shortcuts, each with Hold,
+Toggle or Smart. Portal desktops show their own dialog to confirm or change
+the key.
+
 Settings → Shortcuts → Shortcut source picks how hotkeys are heard:
 the desktop portal (KDE, GNOME 48+, Hyprland), X11 (XInput2) on X11
 sessions, or keyboard devices (`/dev/input`, needs the `input` group).
 Automatic tries them in that order.
 
 Compositor keybinds also work with any source (or alone, with
-"Compositor keybinds only"): bind a key to `mywhisper --dictate ACTION`.
+"Compositor keybinds only"): bind a key to `mywhisper --dictate ACTION`. F13 below is only
+an example key (handy on macro keyboards).
 
 ```kdl
 // niri: toggle (press starts, next press stops)
